@@ -64,10 +64,7 @@ std::string to_dot(const Adjacency &adj, std::span<const DotNode> nodes,
     // An adaptor over the liveness bits the freeze already computed: a
     // predicate, no traversal, and the vertices keep their ids.
     boost::write_graphviz_dp(
-        out,
-        boost::filtered_graph<Adjacency, boost::keep_all, IsLive>{
-            adj, boost::keep_all{}, IsLive{nodes}},
-        dp);
+        out, boost::filtered_graph{adj, boost::keep_all{}, IsLive{nodes}}, dp);
   }
   return out.str();
 }

@@ -4,35 +4,35 @@
 TEST(ForwardModeAD, TanDerivative) {
   double x0 = 0.5;
   Variable<Dual<double>, FixedString{"x"}> x;
-  auto [f, df] = tan(x).eval(Dual<double>{x0, 1.0});
+  auto [f, df] = tan(x).eval(Dual{x0, 1.0});
   ASSERT_DOUBLE_EQ(f, std::tan(x0));
   ASSERT_DOUBLE_EQ(df, 1.0 / (std::cos(x0) * std::cos(x0)));
 }
 TEST(ForwardModeAD, LogDerivative) {
   double x0 = 0.5;
   Variable<Dual<double>, FixedString{"x"}> x;
-  auto [f, df] = log(x).eval(Dual<double>{x0, 1.0});
+  auto [f, df] = log(x).eval(Dual{x0, 1.0});
   ASSERT_DOUBLE_EQ(f, std::log(x0));
   ASSERT_DOUBLE_EQ(df, 1.0 / x0);
 }
 TEST(ForwardModeAD, SqrtDerivative) {
   double x0 = 4.0;
   Variable<Dual<double>, FixedString{"x"}> x;
-  auto [f, df] = sqrt(x).eval(Dual<double>{x0, 1.0});
+  auto [f, df] = sqrt(x).eval(Dual{x0, 1.0});
   ASSERT_DOUBLE_EQ(f, 2.0);
   ASSERT_DOUBLE_EQ(df, 0.25);
 }
 TEST(ForwardModeAD, AsinDerivative) {
   double x0 = 0.5;
   Variable<Dual<double>, FixedString{"x"}> x;
-  auto [f, df] = asin(x).eval(Dual<double>{x0, 1.0});
+  auto [f, df] = asin(x).eval(Dual{x0, 1.0});
   ASSERT_DOUBLE_EQ(f, std::asin(x0));
   ASSERT_DOUBLE_EQ(df, 1.0 / std::sqrt(1.0 - x0 * x0));
 }
 TEST(ForwardModeAD, AcosDerivative) {
   double x0 = 0.5;
   Variable<Dual<double>, FixedString{"x"}> x;
-  auto [f, df] = acos(x).eval(Dual<double>{x0, 1.0});
+  auto [f, df] = acos(x).eval(Dual{x0, 1.0});
   ASSERT_DOUBLE_EQ(f, std::acos(x0));
   ASSERT_DOUBLE_EQ(df, -1.0 / std::sqrt(1.0 - x0 * x0));
 }
@@ -60,20 +60,20 @@ TEST(ForwardModeAD, CoshDerivative) {
 TEST(ForwardModeAD, TanhDerivative) {
   double x0 = 0.5;
   Variable<Dual<double>, FixedString{"x"}> x;
-  auto [f, df] = tanh(x).eval(Dual<double>{x0, 1.0});
+  auto [f, df] = tanh(x).eval(Dual{x0, 1.0});
   double c = std::cosh(x0);
   ASSERT_DOUBLE_EQ(f, std::tanh(x0));
   ASSERT_DOUBLE_EQ(df, 1.0 / (c * c));
 }
 TEST(ForwardModeAD, AbsDerivativePositive) {
   Variable<Dual<double>, FixedString{"x"}> x;
-  auto [f, df] = abs(x).eval(Dual<double>{2.0, 1.0});
+  auto [f, df] = abs(x).eval(Dual{2.0, 1.0});
   ASSERT_DOUBLE_EQ(f, 2.0);
   ASSERT_DOUBLE_EQ(df, 1.0);
 }
 TEST(ForwardModeAD, AbsDerivativeNegative) {
   Variable<Dual<double>, FixedString{"x"}> x;
-  auto [f, df] = abs(x).eval(Dual<double>{-2.0, 1.0});
+  auto [f, df] = abs(x).eval(Dual{-2.0, 1.0});
   ASSERT_DOUBLE_EQ(f, 2.0);
   ASSERT_DOUBLE_EQ(df, -1.0);
 }
@@ -91,8 +91,8 @@ TEST(ForwardModeAD, StructuredBinding) {
   static_assert(std::is_same_v<std::tuple_element_t<1, Dual<double>>, double>);
 }
 TEST(ForwardModeAD, BasicArithmetic) {
-  constexpr Dual<double> a{3.0, 1.0};
-  constexpr Dual<double> b{2.0, 0.0};
+  constexpr Dual a{3.0, 1.0};
+  constexpr Dual b{2.0, 0.0};
   auto [sum_val, sum_deriv] = a + b;
   EXPECT_DOUBLE_EQ(sum_val, 5.0);
   EXPECT_DOUBLE_EQ(sum_deriv, 1.0);
@@ -105,7 +105,7 @@ TEST(ForwardModeAD, BasicArithmetic) {
 }
 TEST(ForwardModeAD, DualScalarArithmetic) {
   // A bare scalar promotes to a zero-derivative Dual.
-  constexpr Dual<double> d{3.0, 1.0};
+  constexpr Dual d{3.0, 1.0};
 
   auto [add_v, add_d] = d + 2.0;
   EXPECT_DOUBLE_EQ(add_v, 5.0);
@@ -140,7 +140,7 @@ TEST(ForwardModeAD, ScalarPromotionDeepDual) {
   using DD = Dual<Dual<double>>;
   Variable<DD, ddx::impl::FixedString{"x"}> x;
   auto expr = x + 2.0;
-  DD result = expr.eval(DD{Dual<double>{2.0, 0.0}, Dual<double>{0.0, 0.0}});
+  DD result = expr.eval(DD{Dual{2.0, 0.0}, Dual{0.0, 0.0}});
   EXPECT_DOUBLE_EQ(get_real_part<2>(result), 4.0); // peel both Dual<> layers
 
   auto y = var<"y">;
@@ -148,49 +148,49 @@ TEST(ForwardModeAD, ScalarPromotionDeepDual) {
 }
 TEST(ForwardModeAD, PolynomialDerivative) {
   Variable<Dual<double>, FixedString{"x"}> x;
-  auto [f, df] = (x * x + x).eval(Dual<double>{3.0, 1.0});
+  auto [f, df] = (x * x + x).eval(Dual{3.0, 1.0});
   EXPECT_DOUBLE_EQ(f, 12.0);
   EXPECT_DOUBLE_EQ(df, 7.0);
 }
 TEST(ForwardModeAD, PartialDerivativeX) {
   Variable<Dual<double>, FixedString{"x"}> x;
   Variable<Dual<double>, FixedString{"y"}> y;
-  auto [f, df] = (x * y).eval(Dual<double>{3.0, 1.0}, Dual<double>{4.0, 0.0});
+  auto [f, df] = (x * y).eval(Dual{3.0, 1.0}, Dual{4.0, 0.0});
   EXPECT_DOUBLE_EQ(f, 12.0);
   EXPECT_DOUBLE_EQ(df, 4.0);
 }
 TEST(ForwardModeAD, PartialDerivativeY) {
   Variable<Dual<double>, FixedString{"x"}> x;
   Variable<Dual<double>, FixedString{"y"}> y;
-  auto [f, df] = (x * y).eval(Dual<double>{3.0, 0.0}, Dual<double>{4.0, 1.0});
+  auto [f, df] = (x * y).eval(Dual{3.0, 0.0}, Dual{4.0, 1.0});
   EXPECT_DOUBLE_EQ(f, 12.0);
   EXPECT_DOUBLE_EQ(df, 3.0);
 }
 TEST(ForwardModeAD, SinDerivative) {
   double x0 = std::numbers::pi / 4.0;
   Variable<Dual<double>, FixedString{"x"}> x;
-  auto [f, df] = sin(x).eval(Dual<double>{x0, 1.0});
+  auto [f, df] = sin(x).eval(Dual{x0, 1.0});
   EXPECT_DOUBLE_EQ(f, std::sin(x0));
   EXPECT_DOUBLE_EQ(df, std::cos(x0));
 }
 TEST(ForwardModeAD, CosDerivative) {
   double x0 = std::numbers::pi / 3.0;
   Variable<Dual<double>, FixedString{"x"}> x;
-  auto [f, df] = cos(x).eval(Dual<double>{x0, 1.0});
+  auto [f, df] = cos(x).eval(Dual{x0, 1.0});
   EXPECT_DOUBLE_EQ(f, std::cos(x0));
   EXPECT_DOUBLE_EQ(df, -std::sin(x0));
 }
 TEST(ForwardModeAD, ExpDerivative) {
   double x0 = 2.0;
   Variable<Dual<double>, FixedString{"x"}> x;
-  auto [f, df] = exp(x).eval(Dual<double>{x0, 1.0});
+  auto [f, df] = exp(x).eval(Dual{x0, 1.0});
   EXPECT_DOUBLE_EQ(f, std::exp(x0));
   EXPECT_DOUBLE_EQ(df, std::exp(x0));
 }
 TEST(ForwardModeAD, ChainRule) {
   double x0 = 1.0;
   Variable<Dual<double>, FixedString{"x"}> x;
-  auto [f, df] = sin(x * x).eval(Dual<double>{x0, 1.0});
+  auto [f, df] = sin(x * x).eval(Dual{x0, 1.0});
   EXPECT_DOUBLE_EQ(f, std::sin(x0 * x0));
   EXPECT_DOUBLE_EQ(df, 2.0 * x0 * std::cos(x0 * x0));
 }
@@ -199,7 +199,7 @@ TEST(ForwardModeAD, Equivalence) {
   Variable<Dual<double>, FixedString{"x"}> x;
   auto xv = var_of<"x">(x0);
   auto l = sin(xv * xv);
-  auto [f, df] = sin(x * x).eval(Dual<double>{x0, 1.0});
+  auto [f, df] = sin(x * x).eval(Dual{x0, 1.0});
   auto f2 = l.eval(x0);
   auto df2 = l.derivative().eval(x0);
   EXPECT_DOUBLE_EQ(f, std::sin(x0 * x0));
@@ -265,26 +265,26 @@ TEST(ReverseModeAD, ScalarLiteralCoercion) {
   auto y = var<"y", dual>;
   auto z = var<"z", dual>;
   auto expe = 3.0 * x * y + y * z;
-  auto g = Equation{expe}.jacobian(
-      Dual<double>{2.0, 0.0}, Dual<double>{3.0, 0.0}, Dual<double>{4.0, 0.0});
+  auto g =
+      Equation{expe}.jacobian(Dual{2.0, 0.0}, Dual{3.0, 0.0}, Dual{4.0, 0.0});
   EXPECT_DOUBLE_EQ(g[0], 9.0);  // df/dx = 3*y = 9
   EXPECT_DOUBLE_EQ(g[1], 10.0); // df/dy = 3*x + z = 10
   EXPECT_DOUBLE_EQ(g[2], 3.0);  // df/dz = y = 3
 }
 TEST(DualCompoundAssign, PlusEq) {
-  Dual<double> a{3.0, 1.0}, b{2.0, 0.5};
+  Dual a{3.0, 1.0}, b{2.0, 0.5};
   a += b;
   EXPECT_DOUBLE_EQ(a.template get<0>(), 5.0);
   EXPECT_DOUBLE_EQ(a.template get<1>(), 1.5);
 }
 TEST(DualCompoundAssign, MinusEq) {
-  Dual<double> a{3.0, 1.0}, b{2.0, 0.5};
+  Dual a{3.0, 1.0}, b{2.0, 0.5};
   a -= b;
   EXPECT_DOUBLE_EQ(a.template get<0>(), 1.0);
   EXPECT_DOUBLE_EQ(a.template get<1>(), 0.5);
 }
 TEST(DualCompoundAssign, TimesEq) {
-  Dual<double> a{3.0, 1.0}, b{2.0, 0.5};
+  Dual a{3.0, 1.0}, b{2.0, 0.5};
   a *= b;
   EXPECT_DOUBLE_EQ(a.template get<0>(), 6.0);
   EXPECT_DOUBLE_EQ(a.template get<1>(), 3.5);
@@ -299,28 +299,27 @@ TEST(DualCompoundAssign, DivEq) {
 // shapes that compile for `+` compile here: a same-T dual, an arithmetic
 // scalar, and -- one nesting up -- the inner Dual, which is dual2nd's scalar.
 TEST(DualCompoundAssign, TakesEveryShapeTheOperatorDoes) {
-  Dual<double> a{3.0, 1.0};
-  a += Dual<double>{2.0, 0.5}; // same-T dual
-  a += 2;                      // integral
-  a += 2.0f;                   // another floating type
+  Dual a{3.0, 1.0};
+  a += Dual{2.0, 0.5}; // same-T dual
+  a += 2;              // integral
+  a += 2.0f;           // another floating type
   EXPECT_DOUBLE_EQ(a.template get<0>(), 9.0);
   EXPECT_DOUBLE_EQ(a.template get<1>(), 1.5);
 
-  ddx::dual2nd d{Dual<double>{2.0, 1.0}, Dual<double>{1.0, 0.0}};
-  d *= Dual<double>{3.0, 0.0}; // the value type, one level down
+  ddx::dual2nd d{Dual{2.0, 1.0}, Dual{1.0, 0.0}};
+  d *= Dual{3.0, 0.0}; // the value type, one level down
   EXPECT_DOUBLE_EQ(d.template get<0>().template get<0>(), 6.0);
   EXPECT_DOUBLE_EQ(d.template get<1>().template get<0>(), 3.0);
 }
 TEST(ReverseModeAD_Dual, SingleVariable) {
   auto x = var<"x", dual>;
-  auto g = Equation{3.0 * x}.jacobian(Dual<double>{5.0, 0.0});
+  auto g = Equation{3.0 * x}.jacobian(Dual{5.0, 0.0});
   EXPECT_DOUBLE_EQ(g[0], 3.0);
 }
 TEST(ReverseModeAD_Dual, TwoVariables) {
   auto x = var<"x", dual>;
   auto y = var<"y", dual>;
-  auto g =
-      Equation{x * y}.jacobian(Dual<double>{3.0, 0.0}, Dual<double>{4.0, 0.0});
+  auto g = Equation{x * y}.jacobian(Dual{3.0, 0.0}, Dual{4.0, 0.0});
   EXPECT_DOUBLE_EQ(g[0], 4.0);
   EXPECT_DOUBLE_EQ(g[1], 3.0);
 }
@@ -329,7 +328,7 @@ TEST(ReverseModeAD_Dual, ThreeVariables) {
   auto y = var<"y", dual>;
   auto z = var<"z", dual>;
   auto g = Equation{3.0 * x * y + y * z}.jacobian(
-      Dual<double>{2.0, 0.0}, Dual<double>{3.0, 0.0}, Dual<double>{4.0, 0.0});
+      Dual{2.0, 0.0}, Dual{3.0, 0.0}, Dual{4.0, 0.0});
   EXPECT_DOUBLE_EQ(g[0], 9.0);
   EXPECT_DOUBLE_EQ(g[1], 10.0);
   EXPECT_DOUBLE_EQ(g[2], 3.0);
@@ -338,8 +337,8 @@ TEST(ReverseModeAD_Dual, TrigExp) {
   double xv = 1.0, yv = std::numbers::pi / 4.0;
   auto x = dual_var_of<"x">(xv);
   auto y = dual_var_of<"y">(yv);
-  auto g = Equation{exp(x) * sin(y)}.jacobian(Dual<double>{xv, 0.0},
-                                              Dual<double>{yv, 0.0});
+  auto g = Equation{exp(x) * sin(y)}.jacobian(Dual{xv, 0.0},
+                                              Dual{yv, 0.0});
   EXPECT_DOUBLE_EQ(g[0], std::exp(xv) * std::sin(yv));
   EXPECT_DOUBLE_EQ(g[1], std::exp(xv) * std::cos(yv));
 }
