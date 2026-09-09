@@ -99,23 +99,23 @@ template <impl::Numeric T>
 rebalance(Builder<T> &b, std::span<const NodeId> roots, std::size_t blocks = 16,
           std::size_t least = 16) {
   const auto size = static_cast<NodeId>(b.size());
-  const std::vector<bool> live = detail::reachable(b, roots);
+  const std::vector live = detail::reachable(b, roots);
 
   std::vector<std::uint32_t> uses(size, 0);
   for (const NodeId v : detail::live_ids(live)) {
     std::ranges::for_each(detail::operands_of(b, v),
                           [&uses](NodeId u) { ++uses[u]; });
   }
-  std::vector<bool> is_root(size, false);
+  std::vector is_root(size, false);
   for (const NodeId r : roots) {
     is_root[r] = true;
   }
 
-  std::vector<NodeId> remap(size, no_node);
+  std::vector remap(size, no_node);
   for (const NodeId v : detail::live_ids(live)) {
 
     // By value: building below may reallocate.
-    const Node<T> node = b[v];
+    const Node node = b[v];
     if (is_leaf(node.op)) {
       remap[v] = v;
       continue;

@@ -79,7 +79,7 @@ struct LaneType {
 class Emitter {
 public:
   Emitter(llvm::Module &m, llvm::IRBuilder<> &b, LaneType lanes)
-      : m_(m), b_(b), lanes_(lanes) {}
+      : m_{m}, b_{b}, lanes_{lanes} {}
 
   // A splat where the lane type is a vector.
   [[nodiscard]] llvm::Value *constant(double v) const {

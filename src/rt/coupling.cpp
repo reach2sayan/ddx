@@ -47,9 +47,9 @@ public:
 
 private:
   void link_conflicts() {
-    const auto conflicting = [this](const std::size_t j) {
+    const auto conflicting = [&](const std::size_t j) {
       return std::views::iota(j + 1, n_) |
-             std::views::filter([this, j](const std::size_t k) {
+             std::views::filter([&, j](const std::size_t k) {
                return rows_[j].intersects(rows_[k]);
              }) |
              std::views::transform(

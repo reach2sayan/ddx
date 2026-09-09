@@ -734,8 +734,14 @@ struct Compiler::Impl {
   // What a Compilation is handed: the process-wide JIT, and a share of this,
   // so the code outlives any Compiler that goes away mid-compile.
   [[nodiscard]] static Host host_of(const std::shared_ptr<Impl> &self) {
-    return Host{*self->jit,  *self->machine,     self->triple,  self->libmvec,
-                self->lanes, self->veclib_lanes, self->objects, self};
+    return Host{.jit = *self->jit,
+                .machine = *self->machine,
+                .triple = self->triple,
+                .libmvec = self->libmvec,
+                .lanes = self->lanes,
+                .veclib_lanes = self->veclib_lanes,
+                .objects = self->objects,
+                .code = self};
   }
 
   [[nodiscard]] static result<Kernel> run(const std::shared_ptr<Impl> &self,
@@ -779,7 +785,7 @@ struct Compiler::Impl {
 };
 
 Compiler::Compiler(std::shared_ptr<Impl> impl) noexcept
-    : impl_(std::move(impl)) {}
+    : impl_{std::move(impl)} {}
 
 std::string_view Compiler::host_identity() const noexcept {
   return impl_->host;

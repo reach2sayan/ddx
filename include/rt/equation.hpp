@@ -237,7 +237,7 @@ public:
                          (std::ranges::input_range<Args> && ...)) {
       ok = assign_range(at, args...);
     } else {
-      const std::array<T, sizeof...(Args)> positional{static_cast<T>(args)...};
+      const std::array positional{static_cast<T>(args)...};
       ok = assign_range(at, positional);
     }
     return ok.transform([&at] { return std::move(at); });
@@ -264,7 +264,7 @@ public:
     return point(args...).transform([this](const auto &at) {
       std::array<T, output_dim> f{};
       std::vector<T> cells(derivative_.partial.size());
-      gather(Want::Jacobian, at, std::span<T>{f}, cells);
+      gather(Want::Jacobian, at, std::span{f}, cells);
       return dense(cells);
     });
   }
@@ -274,7 +274,7 @@ public:
   // than its function is most of the graph.
   [[nodiscard]] constexpr result<std::vector<T>>
   gradient(const rt_detail::CPointArg<T> auto &...args) const {
-    return point(args...).transform([this](const auto &at) {
+    return point(args...).transform([&](const auto &at) {
       std::vector<T> cells(derivative_.partial.size());
       gather(Want::Gradient, at, {}, cells);
       return dense(cells);
@@ -404,8 +404,11 @@ public:
     if (poisoned()) {
       return std::nullopt;
     }
-    const auto snap = snapshot(Want::Jacobian);
-    return snap->kernel ? std::optional{snap->level} : std::nullopt;
+    if (const auto snap = snapshot(Want::Jacobian); snap->kernel) {
+      return snap->level;
+    } else {
+      return std::nullopt;
+    }
   }
 
   // Block until the *first* rung lands -- rungs[0], the cheap compile -- and
@@ -438,11 +441,10 @@ public:
     }
     const Lane &lane = lane_for(Want::Jacobian);
     const unsigned asked = lane.asked();
-    return asked >= Lane::ladder()
-               ? std::nullopt
-               : std::optional{Warmup{lane.points(),
-                                      Lane::rung_at(asked,
-                                                    effective_options())}};
+    return asked >= Lane::ladder() ? std::nullopt : std::optional{Warmup {
+      .points = lane.points(),
+      .threshold = Lane::rung_at(asked, effective_options())
+    }};
   }
 #endif
 

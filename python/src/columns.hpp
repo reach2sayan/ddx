@@ -36,9 +36,8 @@ using Array = pyb::array_t<double, pyb::array::c_style | pyb::array::forcecast>;
 using Shape = boost::container::static_vector<pyb::ssize_t, 4>;
 
 // The symbol list as text and as the interned Python strings a dict lookup
-// keys on: one object, built once, so the two cannot come apart.  Building a
-// key per symbol per call was most of what a dict point cost.  Interned, so
-// CPython's dict probe hits pointer identity before it compares characters.
+// keys on: Interned, so CPython's dict probe hits pointer identity before it
+// compares characters.
 class Symbols {
 public:
   explicit Symbols(std::span<const std::string> text)
@@ -50,7 +49,7 @@ public:
               }) |
               impl::to<std::vector<pyb::object>>()),
         listed_{keys_.size()} {
-    for (const auto [i, key] : std::views::enumerate(keys_)) {
+    for (const auto [i, key] : keys_ | std::views::enumerate) {
       listed_[static_cast<std::size_t>(i)] = key;
     }
   }

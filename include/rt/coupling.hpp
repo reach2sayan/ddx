@@ -47,12 +47,7 @@ using CouplingRows = std::vector<SymbolSet>;
 // exists to skip, which is what SymbolSet was chosen over vector<bool> for.
 // Forward only -- there is no find_prev, and nothing walks backwards.
 //
-// `v2` -- the CRTP flavour -- and never the unqualified name or `v3`.  Which
-// namespace stl_interfaces makes inline varies by compiler, and the two spell
-// their base differently, so an unqualified name is a different template per
-// toolchain.  `v3` is not merely un-inline on MSVC, it does not exist: Boost
-// gates it on `202002L < __cplusplus`, which MSVC reports as 199711L without
-// /Zc:__cplusplus whatever P0847 it implements.  `v2` needs only concepts.
+// `v2` -- the CRTP flavour -- and never the unqualified name or `v3`
 class SetBits : public boost::stl_interfaces::v2::proxy_iterator_interface<
                     SetBits, std::forward_iterator_tag, std::size_t> {
   using Interface = boost::stl_interfaces::v2::proxy_iterator_interface<
@@ -179,12 +174,9 @@ struct Sparsity {
   // value), which is what a caller scattering one back to a dense matrix wants.
   [[nodiscard]] constexpr auto
   cells(std::ranges::random_access_range auto &&values) const {
-    // Into the closure by value, never by reference.  A caller hands this a
-    // temporary -- `pattern.cells(scratch.rows())` -- and a captured reference
-    // to one survives the loop only under C++23's P2718, which GCC 15 and
-    // Clang 20 have and the GCC 14 floor does not: it read freed stack there,
-    // and passed everywhere else.  `views::all` copies a view and binds a
-    // container, so both spellings own their way back to the block.
+    // Into the closure by value, never by reference.  `views::all` copies a
+    // view and binds a container, so both spellings own their way back to the
+    // block.
     return entries() |
            std::views::transform(
                [block = std::views::all(DDX_FWD(values))](const Cell &c) {
@@ -219,9 +211,6 @@ static_assert(std::random_access_iterator<Sparsity::Iterator>);
 
 // Two columns share a colour only when no row couples them, so one sweep can
 // seed all of a colour's columns and the results still separate.
-//
-// Neither `count()` nor `width()` is stored: both are readable off the tables,
-// and a shape that is never written is a shape a loaded file cannot forge.
 struct Coloring {
   std::vector<std::size_t> color;   // per symbol
   std::vector<std::size_t> scatter; // count() * n; column a (colour, row) owns
@@ -331,8 +320,7 @@ template <impl::Numeric T>
       break;
     case 3:
       // As linear as an Add: it chooses between two derivatives rather than
-      // combining them.  The condition is not differentiated, so it carries no
-      // support at all.
+      // combining them.
       support[v] = support[node.b];
       support[v] |= support[node.c];
       break;

@@ -128,8 +128,6 @@ template <impl::Numeric T>
                      : (RTExpression{b, adj[child]} + RTExpression{b, c}).id(b);
   };
 
-  // Not a filtered view: the body writes adjoints into entries this traversal
-  // has not reached.
   for (NodeId v = n; v-- > 0;) {
     // no_node is "nothing reached it", a folded Const 0 is "what reached it
     // cancelled"; neither contributes below.
