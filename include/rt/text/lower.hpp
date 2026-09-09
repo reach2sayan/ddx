@@ -95,8 +95,7 @@ form(const Ast &ast, std::span<const RTExpression<T>> symbols,
 } // namespace detail
 
 // The arena gains one symbol per free identifier and one node per term; the
-// answer is the root.  Nothing is sealed here -- a system parses every one of
-// its functions into the same arena before any of them is an equation.
+// answer is the root.
 template <std::floating_point T>
 [[nodiscard]] result<RTExpression<T>> lower(Builder<T> &arena, const Ast &ast) {
   using Expr = RTExpression<T>;

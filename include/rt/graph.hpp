@@ -366,7 +366,7 @@ template <impl::Numeric T>
 
 template <impl::Numeric T = double> class GraphBuilder {
 public:
-  explicit constexpr GraphBuilder(Builder<T> &b) noexcept : builder_(&b) {
+  explicit constexpr GraphBuilder(Builder<T> &b) noexcept : builder_{&b} {
     detail::Sealing::seal(b);
   }
 
@@ -475,20 +475,26 @@ template <impl::Numeric T>
   } else {
     gb.values_from(sweeps.roots());
   }
-  if (want == Want::Vjp) {
+  switch (want) {
+  case Want::Value:
+    break;
+  case Want::Vjp:
     gb.vector_jacobian_from(sweeps.vector_jacobian());
-  } else if (want == Want::Jvp) {
+    break;
+  case Want::Jvp:
     gb.tangent_from(sweeps.tangent());
-  } else {
-    if (want != Want::Value) {
-      gb.jacobian_from(sweeps.jacobian());
-    }
-    if (want == Want::Hessian) {
-      gb.hessian_from(sweeps.hessian());
-    }
-    if (want == Want::Hvp) {
-      gb.hessian_vector_from(sweeps.hessian_vector());
-    }
+    break;
+  case Want::Jacobian:
+  case Want::Gradient:
+    gb.jacobian_from(sweeps.jacobian());
+    break;
+  case Want::Hessian:
+    gb.jacobian_from(sweeps.jacobian()).hessian_from(sweeps.hessian());
+    break;
+  case Want::Hvp:
+    gb.jacobian_from(sweeps.jacobian())
+        .hessian_vector_from(sweeps.hessian_vector());
+    break;
   }
   return gb.finish(contract);
 }

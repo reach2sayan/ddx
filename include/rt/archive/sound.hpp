@@ -28,7 +28,7 @@ namespace ddx::rt::detail {
 
 template <impl::Numeric T> class Sound {
 public:
-  explicit Sound(Snapshot<T> s) noexcept : s_(std::move(s)) {}
+  explicit Sound(Snapshot<T> s) noexcept : s_{std::move(s)} {}
 
   // Every refusal is the same one: the file parsed, and does not hold.  The
   // order is load-bearing -- each check is what the next one indexes with.

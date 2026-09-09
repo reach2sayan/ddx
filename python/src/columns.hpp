@@ -219,7 +219,7 @@ private:
 
     std::ranges::transform(
         std::views::iota(0uz, arity), columns_.begin(),
-        [base = a.data(), this](std::size_t j) { return base + j * n_; });
+        [n=n_, base = a.data()](std::size_t j) { return base + j * n; });
     held_.push_back(std::move(a));
   }
 

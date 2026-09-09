@@ -35,10 +35,10 @@ private:
 
 public:
   constexpr Dual() noexcept = default;
-  constexpr explicit Dual(T v, T d = T{}) noexcept : val_(v), deriv_(d) {}
+  constexpr explicit Dual(T v, T d = T{}) noexcept : val_{v}, deriv_{d} {}
   // deriv_ is left to its NSDMI: naming T{} here is one of the spellings
   // MSVC's front end cannot lower once T is itself a Dual (see dual_div).
-  constexpr Dual(CArithmetic auto s) noexcept : val_(T(s)) {}
+  constexpr Dual(CArithmetic auto s) noexcept : val_{T(s)} {}
 
   constexpr Dual &operator++() noexcept {
     ++val_;
@@ -71,7 +71,8 @@ template <Numeric T> inline constexpr bool is_dual_family_v<Dual<T>> = true;
 
 // The Dual ends of the recursions ops/scalar.hpp starts for a plain scalar.
 template <Numeric T> constexpr auto val(const Dual<T> &d) noexcept {
-  return val(d.template get<0>());
+  const auto &[real, _] = d;
+  return val(real);
 }
 template <Numeric T> constexpr bool all_zero(const Dual<T> &d) noexcept {
   const auto &[real, dual] = d;
@@ -154,7 +155,7 @@ DDX_ALWAYS_INLINE constexpr Dual<T> dual_div(const Dual<T> &a,
   const auto &[bv, bd] = b;
   const V inv = V{1} / bv;
   const V q = av * inv; // value = a / b
-  return Dual<T>{q, (ad - q * bd) * inv};
+  return Dual{q, (ad - q * bd) * inv};
 }
 
 template <Numeric T>
@@ -163,7 +164,7 @@ dual_div(const Dual<T> &a, const ConstOperand<Dual<T>> auto &s) noexcept {
   using V = T;
   const auto &[av, ad] = a; // s is a zero-derivative constant
   const V inv = V{1} / V(s);
-  return Dual<T>{av * inv, ad * inv};
+  return Dual{av * inv, ad * inv};
 }
 
 template <Numeric T>
@@ -173,7 +174,7 @@ dual_div(const ConstOperand<Dual<T>> auto &s, const Dual<T> &a) noexcept {
   const auto &[av, ad] = a; // s / a; inner kept T-on-left (wide-scalar-safe)
   const V inv = V{1} / av;
   const V q = V{s} * inv; // value = s / a
-  return Dual<T>{q, -(q * ad) * inv};
+  return Dual{q, -(q * ad) * inv};
 }
 
 // All three shapes of each operator; LEFT spells (scalar, Dual), the only one

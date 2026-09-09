@@ -8,9 +8,10 @@
 #include <cstddef>
 #include <ranges>
 
+#include <boost/assert.hpp>
+
 // A derivative tensor's symmetry as storage rather than convention.  (The
-// sparse-pattern layout is in coupling.hpp, next to the pass deriving it.)  The
-// mapping is a literal type, so nothing here allocates.
+// sparse-pattern layout is in coupling.hpp, next to the pass deriving it.)
 namespace ddx::impl {
 
 namespace detail {
@@ -126,7 +127,9 @@ template <std::size_t Lead> struct layout_leading_simplex {
                       "layout_leading_simplex: the symmetric axes must have "
                       "equal extents");
       } else {
-        assert(symmetric_axes_agree(e));
+        BOOST_ASSERT_MSG(symmetric_axes_agree(e),
+                         "layout_leading_simplex: the symmetric axes must have "
+                         "equal extents");
       }
     }
 

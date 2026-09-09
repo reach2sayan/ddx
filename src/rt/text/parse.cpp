@@ -14,19 +14,11 @@
 #include <utility>
 #include <vector>
 
-// Python's arithmetic grammar, and the only translation unit that sees
-// Boost.Parser -- which wraps every parse() in a try/catch and so cannot
-// compile under the -fno-exceptions the rest of ddx is built with.  The
-// CMakeLists beside this file takes the flag off this one object, and the catch
-// below is what keeps that local: nothing thrown here reaches a caller.
+// Python's arithmetic grammar
 namespace ddx::rt::text {
 namespace {
 
 namespace bp = boost::parser;
-
-// std::tuple, never boost::hana::tuple: Hana is opt-in (config.hpp:112-115) and
-// nothing here asks for it, but a default that flipped would reach MSVC before
-// it reached us.
 static_assert(BOOST_PARSER_USE_STD_TUPLE,
               "rt::text: Boost.Parser must use std::tuple, not Hana");
 
@@ -40,17 +32,13 @@ using bp::_pass;
 using bp::_val;
 
 // The name and arguments of a call, which the grammar reads as one sequence and
-// an aggregate attribute takes apart.  std::vector because the aggregate must
-// match the parser's default attribute; small_vector is refused at the
-// static_assert in parser.hpp.
+// an aggregate attribute takes apart.
 struct Call {
   std::string name;
   std::vector<std::uint32_t> args;
 };
 
-// Boost.Parser's own handler writes a caret diagnostic to a stream.  ddx
-// reports on the numeric path and nowhere else, so this one says only that the
-// parse failed and leaves the errc to say what about it did.
+// only that the parse failed and leaves the errc to say what about it did.
 struct Silent {
   template <typename Iter, typename Sentinel>
   constexpr bp::error_handler_result
@@ -116,9 +104,8 @@ constexpr auto fold_swapped = [](auto &ctx) {
 };
 
 // `a == b` is `le(a,b) * le(b,a)` -- both ways round, so a NaN operand answers
-// 0 -- and `a != b` is `1 - (a == b)`: the compositions operator== and
-// operator!= make in expressions.hpp, built in the same order, so the text and
-// the C++ spelling are the same arena node for node.
+// 0 `a != b` is `1 - (a == b)`: the compositions operator== and operator!= make
+// in expressions.hpp
 constexpr auto equal = [](auto &ctx) {
   Ast &ast = _globals(ctx).ast;
   const std::uint32_t l = _val(ctx);
@@ -293,7 +280,7 @@ result<Ast> parse(const std::string_view source) {
   // No expectation points in the grammar, so nothing above throws; the catch is
   // what keeps that a property of this file rather than of every caller.
   Silent quiet;
-  const std::optional<std::uint32_t> root = [&]() noexcept {
+  const auto root = [&]() noexcept -> std::optional<std::uint32_t> {
     try {
       return bp::parse(
           source,

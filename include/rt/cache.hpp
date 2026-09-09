@@ -113,10 +113,10 @@ template <impl::Numeric T = double> class LastValue {
 public:
   LastValue() : lanes_(std::make_unique<Lanes>()) {}
   explicit LastValue(bool on)
-      : lanes_(on ? std::make_unique<Lanes>() : nullptr) {}
+      : lanes_{on ? std::make_unique<Lanes>() : nullptr} {}
 
   LastValue(const LastValue &other)
-      : lanes_(other.lanes_ ? std::make_unique<Lanes>() : nullptr) {}
+      : lanes_{other.lanes_ ? std::make_unique<Lanes>() : nullptr} {}
   LastValue &operator=(const LastValue &other) {
     lanes_ = other.lanes_ ? std::make_unique<Lanes>() : nullptr;
     return *this;
@@ -253,7 +253,6 @@ template <typename Derived, impl::Numeric T, CValueCache<T> Cache>
 class Caching {
 protected:
   constexpr Caching() = default;
-
   constexpr void take_cache(Cache c) { cache_ = std::move(c); }
   [[nodiscard]] constexpr const Cache &cache() const noexcept { return cache_; }
 

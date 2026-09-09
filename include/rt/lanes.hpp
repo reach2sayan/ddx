@@ -49,10 +49,8 @@ private:
 // climb() re-reads under the lock, which is what makes a launch happen once.
 struct Guarded {
   template <typename U> using Counter = std::atomic<U>;
-
   [[nodiscard]] auto read() const { return std::shared_lock{mutex}; }
   [[nodiscard]] auto write() const { return std::unique_lock{mutex}; }
-
   mutable std::shared_mutex mutex;
 };
 
@@ -61,7 +59,6 @@ struct Guarded {
 struct Serialised {
   template <typename U> using Counter = Plain<U>;
   struct Held {};
-
   [[nodiscard]] static constexpr Held read() noexcept { return {}; }
   [[nodiscard]] static constexpr Held write() noexcept { return {}; }
 };
@@ -89,7 +86,7 @@ template <impl::Numeric T> struct Compiled {
   }
 };
 
-// What a lane needs from the equation that owns it.  A null `compiler` is a
+// What a lane needs from the equation that owns it.  null `compiler` is a
 // lane that will never compile: an interpreting backend, a poisoned equation
 // and a host with no JIT all arrive here as one.
 struct Setting {

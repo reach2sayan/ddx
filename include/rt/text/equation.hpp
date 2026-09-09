@@ -34,8 +34,7 @@ template <typename C, impl::Numeric T = double,
                             const Ss &...rest) {
   return impl::index_apply<sizeof...(Ss)>([&]<std::size_t... I>() {
     using Eq = impl::Equation<RTExpression<T>, detail::Repeat<I, T>..., C>;
-    const std::array<std::string_view, 1 + sizeof...(Ss)> sources{
-        first, std::string_view{rest}...};
+    const std::array sources{first, std::string_view{rest}...};
 
     auto arena = std::make_unique<Builder<T>>();
     std::vector<RTExpression<T>> roots;
@@ -62,9 +61,11 @@ template <typename C, impl::Numeric T = double,
   });
 }
 
-template <impl::Numeric T = double, std::convertible_to<std::string_view>... Ss>
+template <impl::Numeric T = double>
   requires std::floating_point<T>
-[[nodiscard]] auto equation(const std::string_view first, const Ss &...rest) {
+[[nodiscard]] auto
+equation(const std::string_view first,
+         const std::convertible_to<std::string_view> auto &...rest) {
   return equation(detail::NoCache<T>{}, first, rest...);
 }
 

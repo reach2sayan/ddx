@@ -27,8 +27,7 @@ namespace ddx::rt {
 struct Object {
   Want want = Want::Value;
   std::string symbol; // underivable, so adopt() is handed it back verbatim
-  // jit::Compiler::host_identity(): triple, CPU, folded features, LLVM version.
-  std::string host;
+  std::string host; // triple, CPU, folded features, LLVM version
   std::uint64_t digest = 0; // digest() of the lane's frozen graph
   jit::Codegen codegen;     // what the compile was given
   std::vector<std::byte> code;

@@ -535,3 +535,4 @@ docs/ad_jacobian.pdf
 /cmake-build-compare/
 /cmake-build-bench/
 .claude/
+!/docs/

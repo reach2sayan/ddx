@@ -35,7 +35,7 @@ to_graph(Builder<T> &b, const impl::CExpression auto &e) {
           if constexpr (sizeof...(rest) == 0) {
             return RTExpression<T>::form(*code, to_graph(b, first));
           } else {
-            RTExpression<T> acc = to_graph(b, first);
+            RTExpression acc = to_graph(b, first);
             ((acc = RTExpression<T>::form(*code, acc, to_graph(b, rest))), ...);
             return acc;
           }

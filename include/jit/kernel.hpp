@@ -170,10 +170,10 @@ struct KernelShape {
   template <impl::Numeric T>
   [[nodiscard]] static KernelShape of(const rt::Graph<T> &g) {
     const auto &layout = g.layout();
-    return {.arity = g.arity(),
-            .values = layout.values,
-            .jacobian = layout.jacobian,
-            .hessian = layout.hessian};
+    return KernelShape{.arity = g.arity(),
+                       .values = layout.values,
+                       .jacobian = layout.jacobian,
+                       .hessian = layout.hessian};
   }
   [[nodiscard]] constexpr std::size_t outputs() const noexcept {
     return values + jacobian + hessian;
@@ -277,7 +277,7 @@ private:
 class Ir {
 public:
   Ir(const Compiler &c, const rt::Graph<double> &g, Options opt = {}) noexcept
-      : compiler_(c), graph_(g), options_(opt) {}
+      : compiler_{c}, graph_{g}, options_{opt} {}
   Ir(const Compiler &&, const rt::Graph<double> &, Options = {}) = delete;
   Ir(const Compiler &, const rt::Graph<double> &&, Options = {}) = delete;
 
