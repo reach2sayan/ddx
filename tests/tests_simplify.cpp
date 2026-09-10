@@ -176,3 +176,53 @@ TEST(Simplify, ReciprocalsCancelOnTheSideDivisionPutsThem) {
                                std::remove_cvref_t<decltype(sy)>>);
   EXPECT_DOUBLE_EQ((sx * (sy / sx)).eval(12.0), 12.0);
 }
+// Two reasons a symbol differentiates to zero, and only one of them lifts.
+// The Jacobian machinery holds every symbol but one to make a column; that
+// hold has to come off the stored row, or differentiating the row a second
+// time -- the Hessian -- would see held symbols and answer zero.  A hold the
+// caller asked for outlives every rewrite.
+TEST(Simplify, JacobianRowsDifferentiateAgainButHeldSymbolsStayHeld) {
+  using ddx::impl::Freeze;
+  using ddx::impl::make_all_constant_except;
+  using ddx::impl::make_const_variable;
+  using ddx::impl::thaw_partials;
+  using ddx::impl::FixedString;
+  using Syms = ddx::impl::mp::mp_list<ddx::impl::symbol_type<FixedString{"x"}>,
+                                ddx::impl::symbol_type<FixedString{"y"}>>;
+
+  // Only the machinery's own hold is reversible; the caller's is not.
+  using Live = ddx::impl::Variable<double, FixedString{"y"}>;
+  using Held = ddx::impl::Variable<double, FixedString{"y"}, Freeze::held>;
+  using Part = ddx::impl::Variable<double, FixedString{"y"}, Freeze::partial>;
+  static_assert(
+      std::is_same_v<std::remove_cvref_t<decltype(thaw_partials(Part{}))>,
+                     Live>);
+  static_assert(
+      std::is_same_v<std::remove_cvref_t<decltype(thaw_partials(Held{}))>,
+                     Held>);
+
+  // f = x*x*y: df/dx = 2xy, and d2f/dxdy = 2x is only non-zero if the row
+  // came back thawed.
+  constexpr auto row =
+      ddx::impl::detail::make_derivatives(Syms{}, sx * sx * sy);
+  constexpr auto d2 = canonicalise(thaw_partials(
+      make_all_constant_except<FixedString{"y"}>(std::get<0>(row))
+          .derivative()));
+  constexpr std::array at{3.0, 5.0};
+  EXPECT_DOUBLE_EQ(ddx::impl::detail::eval_all<Syms>(at, std::get<0>(row))[0],
+                   30.0);
+  EXPECT_DOUBLE_EQ(ddx::impl::detail::eval_all<Syms>(at, d2)[0], 6.0);
+
+  // The same row, but with y held by the caller before the Jacobian was
+  // taken: d/dy is zero and stays zero through the second derivative.
+  constexpr auto held_row = ddx::impl::detail::make_derivatives(
+      Syms{}, make_const_variable<FixedString{"y"}>(sx * sx * sy));
+  constexpr auto held_d2 = canonicalise(thaw_partials(
+      make_all_constant_except<FixedString{"y"}>(std::get<0>(held_row))
+          .derivative()));
+  EXPECT_DOUBLE_EQ(
+      ddx::impl::detail::eval_all<Syms>(at, std::get<0>(held_row))[0], 30.0);
+  EXPECT_DOUBLE_EQ(
+      ddx::impl::detail::eval_all<Syms>(at, std::get<1>(held_row))[0], 0.0);
+  EXPECT_DOUBLE_EQ(ddx::impl::detail::eval_all<Syms>(at, held_d2)[0], 0.0);
+}
