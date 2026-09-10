@@ -1,6 +1,4 @@
-// The one TU that talks to OpenCL, and so the one that meets Boost.Compute's
-// exceptions: built with them on, and every one is caught here and becomes a
-// jit::error before it can reach a -fno-exceptions frame.
+// The one TU that talks to OpenCL
 #include "cl/device.hpp"
 #include "cl/kernel.hpp"
 #include "codegen.hpp"
