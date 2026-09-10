@@ -6,6 +6,7 @@
 #include "codegen.hpp"
 
 #include "rt/graph.hpp"
+#include "util/ranges.hpp"
 
 #include <boost/algorithm/string/join.hpp>
 #include <boost/algorithm/string/predicate.hpp>
@@ -116,7 +117,7 @@ struct Candidate {
   return boost::algorithm::join(
       found | std::views::transform([](const Candidate &c) {
         return c.fp64 ? c.name : c.name + " (no fp64)";
-      }) | std::ranges::to<std::vector<std::string>>(),
+      }) | impl::to<std::vector<std::string>>(),
       "; ");
 }
 
