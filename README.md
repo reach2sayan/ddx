@@ -1140,14 +1140,18 @@ thread-safe except `options()`.
 
 ## Python
 
-The same runtime, as an extension module. A [release](https://github.com/reach2sayan/ddx/releases)
-carries one wheel per platform and CPython version (3.11–3.14) and a source
-distribution. A wheel needs nothing installed beside it — LLVM is inside the
-library:
+The same runtime, as an extension module, published on PyPI as
+[`ddx-ad`](https://pypi.org/project/ddx-ad/) and imported as `ddx` —
+`pip install ddx` is an unrelated project. There is one wheel per platform and
+CPython version (3.11–3.14), and a wheel needs nothing installed beside it —
+LLVM is inside the library:
 
 ```sh
-uv pip install https://github.com/reach2sayan/ddx/releases/download/v1.3.0/ddx-1.3.0-cp312-cp312-manylinux_2_28_x86_64.whl
+pip install ddx-ad
 ```
+
+Each [release](https://github.com/reach2sayan/ddx/releases) carries the same
+wheels and a source distribution.
 
 | Wheel | JIT | OpenCL |
 |---|---|---|

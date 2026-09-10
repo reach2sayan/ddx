@@ -8,7 +8,8 @@ requires = ["scikit-build-core>=1.0", "pybind11>=3.0"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "ddx"
+# `ddx` on PyPI is an unrelated project; the import name is still `ddx`.
+name = "ddx-ad"
 dynamic = ["version"]
 description = "Reverse-mode automatic differentiation over a runtime graph, compiled through LLVM"
 readme = "README.md"
@@ -19,6 +20,11 @@ license-files = ["LICENSE.txt", "THIRD-PARTY-NOTICES.txt"]
 authors = [{ name = "Sayan", email = "reach2sayan@gmail.com" }]
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.23", "pydantic>=2.7"]
+
+[project.urls]
+Homepage = "https://github.com/reach2sayan/ddx"
+Documentation = "https://github.com/reach2sayan/ddx#readme"
+Issues = "https://github.com/reach2sayan/ddx/issues"
 
 [dependency-groups]
 # pybind11 is a build dependency above, where the wheel build gets it in an

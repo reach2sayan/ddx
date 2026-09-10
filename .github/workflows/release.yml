@@ -182,3 +182,25 @@ jobs:
       - name: Publish to nuget.org
         if: vars.NUGET_USER != ''
         run: dotnet nuget push dist/*.nupkg --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json
+
+  # PyPI as ddx-ad, by trusted publishing against the publisher registered on
+  # pypi.org (repo ddx, workflow release.yml, environment pypi).  After the
+  # GitHub release, since a version once on PyPI can never be uploaded again.
+  # Wheels only: the sdist builds the JIT, so a platform without a wheel would
+  # fail in CMake for want of LLVM 20 instead of finding no distribution.
+  pypi:
+    if: github.ref_type == 'tag'
+    needs: [version, release]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/ddx-ad/${{ needs.version.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

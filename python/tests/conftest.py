@@ -23,7 +23,7 @@ _EXPECTED = os.environ.get("DDX_PACKAGE_DIR")
 if _EXPECTED and Path(ddx.__file__).parent != Path(_EXPECTED).resolve() / "ddx":
     raise RuntimeError(
         f"imported ddx from {Path(ddx.__file__).parent}, not the build tree at "
-        f"{_EXPECTED}.  An editable install shadows it; `uv pip uninstall ddx` "
+        f"{_EXPECTED}.  An editable install shadows it; `uv pip uninstall ddx-ad` "
         f"or install non-editable."
     )
 
