@@ -21,5 +21,6 @@ wheels.</description>
     <file src="build\native\**" target="build\native" />
     <file src="README.md" target="" />
     <file src="LICENSE.txt" target="" />
+    <file src="THIRD-PARTY-NOTICES.txt" target="" />
   </files>
 </package>

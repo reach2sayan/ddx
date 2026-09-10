@@ -1,6 +1,6 @@
 #pragma once
 
-#include "jit/kernel.hpp" // jit::Options -- a header type in every build
+#include "jit/options.hpp"
 #include "rt/builder.hpp"
 #include "rt/coupling.hpp"
 #include "rt/derivative.hpp"

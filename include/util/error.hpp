@@ -43,7 +43,12 @@ namespace ddx {
   /* The text surface. */                                                                     \
   X(bad_syntax,       "not an expression this grammar accepts")                               \
   X(unknown_function, "no function of that name")                                             \
-  X(wrong_argument_count, "the function takes a different number of arguments")
+  X(wrong_argument_count, "the function takes a different number of arguments")          \
+                                                                                              \
+  /* The device. */                                                                           \
+  X(no_device,      "no OpenCL device with double precision answers the selector")            \
+  X(device_compile, "the device's compiler refused the emitted kernel")                       \
+  X(device_launch,  "the device could not run the kernel or move its columns")
 // clang-format on
 
 enum class errc : std::uint8_t {

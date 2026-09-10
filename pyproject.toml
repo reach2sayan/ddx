@@ -12,7 +12,10 @@ name = "ddx"
 dynamic = ["version"]
 description = "Reverse-mode automatic differentiation over a runtime graph, compiled through LLVM"
 readme = "README.md"
-license = { file = "LICENSE.txt" }
+license = "BSL-1.0"
+# The second is what libddx carries inside the wheel: LLVM, zlib and zstd, and
+# pybind11 in the extension.
+license-files = ["LICENSE.txt", "THIRD-PARTY-NOTICES.txt"]
 authors = [{ name = "Sayan", email = "reach2sayan@gmail.com" }]
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.23", "pydantic>=2.7"]
@@ -61,6 +64,9 @@ build-dir = "build/wheel/{wheel_tag}"
 DDX_BUILD_PYTHON = "ON"
 DDX_BUILD_JIT = "ON"
 DDX_BUILD_BENCHMARKS = "OFF"
+# Off rather than AUTO: AUTO would decide by the build machine, and a wheel
+# runs on others.  The device backend joins the wheel once CI can test it there.
+DDX_BUILD_OPENCL = "OFF"
 # A wheel runs on machines other than the one that built it: the x86 baseline
 # (AVX2), not the runner's CPU.  Kernels are compiled for the host at run time
 # regardless.

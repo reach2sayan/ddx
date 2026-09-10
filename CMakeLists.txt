@@ -70,9 +70,16 @@ add_subdirectory(include)
 
 # --- libddx -----------------------------------------------------------------
 option(DDX_BUILD_JIT "Build the LLVM JIT backend into libddx" OFF)
+set(DDX_BUILD_OPENCL AUTO CACHE STRING
+        "Build the OpenCL device backend into libddx: AUTO (where this host has an OpenCL runtime), ON or OFF")
+set_property(CACHE DDX_BUILD_OPENCL PROPERTY STRINGS AUTO ON OFF)
+ddx_resolve_opencl(DDX_OPENCL)
 
 add_subdirectory(src/rt)
 add_subdirectory(include/rt)
+# Header types in every build, whichever backends are compiled in.
+add_subdirectory(include/jit)
+add_subdirectory(include/cl)
 
 if (DDX_BUILD_JIT)
     # The JIT's defaults follow how the project itself was built.
@@ -94,7 +101,14 @@ if (DDX_BUILD_JIT)
 
     ddx_use_llvm()
     add_subdirectory(src/jit)
-    add_subdirectory(include/jit)
+endif ()
+
+if (DDX_OPENCL)
+    # Here, not in ddx_use_opencl(): enable_language() is file scope only, and
+    # libddx links the loader, which is C.
+    enable_language(C)
+    ddx_use_opencl()
+    add_subdirectory(src/cl)
 endif ()
 
 option(DDX_INSTALL "Generate install rules" ${PROJECT_IS_TOP_LEVEL})

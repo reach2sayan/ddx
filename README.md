@@ -80,6 +80,10 @@ until 20, and libc++ has no `views::enumerate` — hence the two floors.
 - `-DDDX_BUILD_JIT=ON` additionally needs an LLVM 20 installation, pointed at
   with `LLVM_DIR` — to build. The library it produces carries LLVM, and loads
   on a machine that has none.
+- The OpenCL device backend (`DDX_BUILD_OPENCL`) fetches the Khronos headers
+  and ICD loader at configure time and needs a C compiler for the loader;
+  nothing is installed to build it. The library loads on a machine with no
+  OpenCL at all; running on a device needs that device's driver.
 - `-DDDX_BUILD_PYTHON=ON` additionally needs **Python 3.11+** and pybind11; the
   module imports NumPy 1.23+ and pydantic 2.7+.
 
@@ -130,9 +134,10 @@ which option turns it on.
 | `ddx::ddx` | the header-only library — expressions, `Equation`, forward mode |
 | `ddx::rt` | that plus runtime expressions |
 | `ddx::jit` | `ddx::rt` with the LLVM backend compiled in |
+| `ddx::cl` | `ddx::rt` with the OpenCL device backend compiled in |
 
 Components for `find_package`: `ddx`, `util`, `ops`, `md`, `symbolic`, `dual`,
-`rt`, `jit`.
+`rt`, `jit`, `cl`.
 
 ## Building
 
@@ -144,15 +149,20 @@ ctest --test-dir build --output-on-failure
 
 Or through the presets:
 
-| Preset | Build type | JIT |
-|---|---|---|
-| `debug` | Debug | — |
-| `release` | Release | — |
-| `debug_jit` | Debug | yes |
-| `release_jit` | Release | yes |
-| `debug_jit_tsan` | Debug | yes — under ThreadSanitizer |
-| `python` | Release | yes — and the extension module |
-| `python_no_jit` | Release | — the extension module alone |
+| Preset | Build type | JIT | OpenCL |
+|---|---|---|---|
+| `debug` | Debug | — | auto |
+| `release` | Release | — | auto |
+| `debug_jit` | Debug | yes | auto |
+| `release_jit` | Release | yes | auto |
+| `debug_jit_tsan` | Debug | yes — under ThreadSanitizer | auto |
+| `python` | Release | yes — and the extension module | auto |
+| `python_no_jit` | Release | — the extension module alone | auto |
+| `release_cl` | Release | — | yes |
+| `debug_jit_cl` | Debug | yes | yes |
+
+"auto" builds the OpenCL backend where the configuring machine has an OpenCL
+runtime installed.
 
 ```sh
 cmake --preset release_jit
@@ -180,6 +190,7 @@ cmake --preset release_jit -DLLVM_DIR=/opt/llvm-20/lib/cmake/llvm
 | Option | Default | Meaning |
 |---|---|---|
 | `DDX_BUILD_JIT` | `OFF` | compile the LLVM backend into the library |
+| `DDX_BUILD_OPENCL` | `AUTO` | compile the OpenCL device backend into the library — `AUTO` does where this machine has an OpenCL runtime, `ON` or `OFF` decides |
 | `DDX_BUILD_PYTHON` | `OFF` | build the pybind11 extension module |
 | `DDX_BUILD_TESTS` | `ON` | build the GoogleTest tests |
 | `DDX_BUILD_BENCHMARKS` | `ON` | build the benchmark targets |
@@ -829,6 +840,7 @@ compiler is asked at all.
 | `Interpret` | the default. No compiler is asked, so a program that never says otherwise never loads LLVM |
 | `Compile` | start compiling now |
 | `Adapt` | start compiling once the batch traffic has paid for it — for a caller who cannot say up front which of their equations are hot |
+| `Device` | build for an OpenCL device, a GPU or otherwise — see [Running on a GPU](#running-on-a-gpu) |
 
 Either compiling backend answers first with a quick kernel and replaces it with
 a better one; every level agrees to the bit, so the swap is invisible.
@@ -848,7 +860,7 @@ if (const auto w = eq.warming()) {
 
 | Field | Default | Is |
 |---|---|---|
-| `backend` | `Interpret` | `Interpret`, `Compile` or `Adapt` |
+| `backend` | `Interpret` | `Interpret`, `Compile`, `Adapt` or `Device` |
 | `points` | `1` | the batch you intend to hand one call — stated, since the kernel is built before any call exists to infer it from |
 | `codegen.lanes` | `Lanes::derived()` | points per loop iteration; derived is the host's register width, scalar for a batch too short to fill one. `Lanes::scalar()` or `*Lanes::exactly(w)` states one. Every width gives the same bits |
 | `codegen.opt_level` | follows the build type | LLVM's IR pipeline, `Level::O0` to `Level::O3` — `O3` in a Release build, `O1` in a Debug one |
@@ -862,6 +874,7 @@ if (const auto w = eq.warming()) {
 | `retain_object` | `true` | keep the compiled object so [`save`](#saving-and-loading) can write it |
 | `cache_dir` | *(empty)* | keep compiled objects here between runs; a second run links instead of compiling |
 | `time_passes` | `false` | per-pass timing to stderr |
+| `device` | *(empty)* | under `Device`, which OpenCL device — [Running on a GPU](#running-on-a-gpu). Not saved with the equation: which devices exist is the machine's |
 
 `codegen` is everything the emitter reads, and so the identity a stored kernel
 is matched against and the object cache is keyed on; the fields around it are
@@ -885,6 +898,70 @@ three orders of magnitude quicker. Failing that, `codegen.codegen_level` — not
 ```cpp
 eq.options({.backend = rt::Backend::Compile, .points = 4096, .cache_dir = "/var/cache/ddx"});
 ```
+
+## Running on a GPU
+
+Build with the OpenCL backend and link `ddx::cl`. `DDX_BUILD_OPENCL` is on by
+default wherever the configuring machine has an OpenCL runtime. `Backend::Device`
+then builds each lane's graph as an OpenCL kernel for a device with double
+precision — an NVIDIA, AMD or Intel GPU, or a CPU runtime:
+
+```cpp
+eq.options({.backend = rt::Backend::Device});
+eq.wait_for_kernel();          // true once the device's compiler has built it
+eq.jacobian(xs, f, g, n);      // on the device
+```
+
+It behaves as the compiling backends do. Asking starts the build, calls are
+swept until it lands, and each lane builds the first time it is needed.
+`wait_for_kernel(want)` waits for one lane — the Jacobian's unless `want` names
+another.
+
+An empty `device` takes the first GPU with double precision, else the first
+device of any kind that has it. Anything else is matched, ignoring case, against
+the platform and device name:
+
+```cpp
+eq.options({.backend = rt::Backend::Device, .device = "NVIDIA"});
+eq.options({.backend = rt::Backend::Device, .device = "gfx1035"});
+eq.options({.backend = rt::Backend::Device, .device = "Intel"});   // its CPU runtime
+```
+
+`device_status()` names the device answering, or says why none is. It is empty
+under any other backend:
+
+```cpp
+if (const auto status = eq.device_status()) {
+  if (*status) {
+    std::println("on {}", **status);   // "<platform> / <device> / <driver> / <version>"
+  } else {
+    std::println("swept: {}", status->error().detail);
+  }
+}
+```
+
+A selector nothing matches, a machine with no device and a kernel the driver
+refuses all leave the equation answering from the sweep: `uses_kernel()` is
+false and `device_status()` carries the reason — `errc::no_device` or
+`errc::device_compile` with the driver's build log. A launch that fails is
+answered by the sweep too.
+
+Arithmetic agrees with the sweep **to the bit**: `+ - * /`, fused multiply-adds,
+comparisons, `abs`, `sign`, `max`, `min` and `select`. The device computes the
+graph the sweep walks, contraction included, and its compiler is given nothing
+that lets it reorder or fuse. The transcendentals are the device's own math
+library, which OpenCL bounds within a few ULP rather than rounding correctly, so
+a model with `exp`, `log` or `sin` in it agrees closely and not exactly.
+`kernel_level()` answers nothing for a device kernel.
+
+Every call copies the point columns to the device and the output columns back,
+so a short batch is quicker swept or compiled for the CPU; the device pays on
+large batches, where its arithmetic outweighs the copy. `benchmarks_cl` measures
+all three on one model as the batch grows.
+
+The device is usable without an equation as well: `cl::Device::create(selector)`
+picks one, `compile(graph)` builds a `cl::Kernel` with the batch calls' column
+layout, and `cl::source_of(graph)` is the OpenCL C a graph lowers to.
 
 ## Saving and loading
 
@@ -1047,7 +1124,8 @@ thread-safe except `options()`.
 | `options(opts)`, `options()` | set or read the compile options; setting returns `*this` |
 | `uses_kernel()`, `kernel_level()` | whether a batch call runs compiled code, and at which level |
 | `warming()` | under `Adapt`, points seen against the next threshold |
-| `wait_for_kernel()` | block until a compile in flight has landed |
+| `wait_for_kernel(want)` | block until the compile in flight for a lane has landed — the Jacobian's unless `want` names another |
+| `device_status()` | under `Device`, the device answering or why none is; empty under any other backend |
 | `save(path)`, `verify(path)` | write this equation; ask whether a file holds it |
 | `load(path)`, `loaded()` | read one; whether this one was read |
 
@@ -1085,7 +1163,8 @@ cmake --preset python               # in-tree, JIT
 cmake --preset python_no_jit        # in-tree, no LLVM
 ```
 
-`ddx.has_jit` says whether the copy you have was built with the LLVM backend.
+`ddx.has_jit` says whether the copy you have was built with the LLVM backend,
+and `ddx.has_opencl` whether it was built with the OpenCL one.
 Everything below works either way; without it, calls interpret.
 
 `equation` takes a model — a callable of no arguments returning one expression,
@@ -1248,6 +1327,11 @@ f.options = ddx.Options(backend=ddx.Backend.INTERPRET)   # discards the kernel
 set first. Assigning `options` does not: calls interpret until the kernel lands
 and switch over when it does, as in C++.
 
+`f.compile(backend=ddx.Backend.DEVICE)` builds for an OpenCL device instead, and
+`Options.device` picks one as in [Running on a GPU](#running-on-a-gpu).
+`f.device_status` names the device, is `None` under any other backend, and
+raises `ddx.Error` when no device answers.
+
 ### Saving and loading
 
 Equations save and load here too, over the same file format — a file written by
@@ -1285,6 +1369,7 @@ values, and only the code says which.
 | `options` | property — read or assign an `Options` |
 | `compile(**fields)` | set `Options`, block for the kernel, return self |
 | `uses_kernel`, `wait_for_kernel(*, want)` | whether a call runs compiled code, and blocking for it — for the Jacobian lane unless `want` names another |
+| `device_status` | property — under `DEVICE`, the device answering; `None` otherwise; raises when none answers |
 | `hessian_colors` | groups in the Hessian's compression |
 | `buffer(x, *, want)` | a `Call` bound to its buffers, for a loop |
 | `to_dot(*, all=False)` | the expression in Graphviz form; `all=True` draws the pruned nodes too |
@@ -1368,3 +1453,11 @@ std::format("{}", eq[idx<1>()]);        // "y_c" — ∂f/∂x
 
 [Boost Software License 1.0](LICENSE.txt). Suggestions and pull requests are
 welcome.
+
+What ddx bundles is permissively licensed as well, and
+[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) holds each licence: the
+OpenCL headers and loader (Apache 2.0) in an OpenCL build, LLVM (Apache 2.0 with
+LLVM exception), zlib and zstd in a JIT build and so in the wheels, pybind11 in
+the Python module, and the vendored mdspan header. It is installed beside
+`LICENSE.txt` and ships in the wheels and the NuGet package; whoever
+redistributes a JIT or OpenCL build of the library passes it on with it.

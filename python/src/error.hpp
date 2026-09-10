@@ -5,6 +5,7 @@
 #include <format>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 
@@ -22,6 +23,11 @@ struct PyError : error, std::runtime_error {
   explicit PyError(error e)
       : error(e), std::runtime_error(std::format("{}", e)) {}
   explicit PyError(errc c) : PyError(error{.code = c}) {}
+  // With what the library said beyond the code: a device's build log.
+  PyError(error e, std::string_view detail)
+      : error(e), std::runtime_error(detail.empty()
+                                         ? std::format("{}", e)
+                                         : std::format("{}: {}", e, detail)) {}
 };
 
 [[noreturn]] inline void fail_with(errc c) { throw PyError{c}; }

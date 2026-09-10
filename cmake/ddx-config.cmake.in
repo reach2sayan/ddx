@@ -4,6 +4,7 @@
 include(CMakeFindDependencyMacro)
 
 set(DDX_BUILD_JIT @DDX_BUILD_JIT@)
+set(DDX_BUILD_OPENCL @DDX_OPENCL@)
 
 if (NOT TARGET Boost::headers)
     add_library(Boost::headers INTERFACE IMPORTED)
@@ -19,6 +20,10 @@ if (DDX_BUILD_JIT AND NOT TARGET ddx::jit)
     add_library(ddx::jit INTERFACE IMPORTED)
     set_target_properties(ddx::jit PROPERTIES INTERFACE_LINK_LIBRARIES ddx::rt)
 endif ()
+if (DDX_BUILD_OPENCL AND NOT TARGET ddx::cl)
+    add_library(ddx::cl INTERFACE IMPORTED)
+    set_target_properties(ddx::cl PROPERTIES INTERFACE_LINK_LIBRARIES ddx::rt)
+endif ()
 
 set(ddx_CODEGEN_FLAGS "@DDX_CODEGEN_FLAGS@")
 set(ddx_FP_CONTRACT @DDX_FP_FLAGS@)
@@ -32,8 +37,10 @@ set(ddx_symbolic_FOUND TRUE)
 set(ddx_rt_FOUND TRUE)
 set(ddx_dual_FOUND TRUE)
 set(ddx_jit_FOUND ${DDX_BUILD_JIT})
+set(ddx_cl_FOUND ${DDX_BUILD_OPENCL})
 
 set(DDX_jit_OPTION DDX_BUILD_JIT)
+set(DDX_cl_OPTION DDX_BUILD_OPENCL)
 foreach (comp IN LISTS ddx_FIND_COMPONENTS)
     if (NOT ddx_${comp}_FOUND AND DEFINED DDX_${comp}_OPTION)
         set(ddx_NOT_FOUND_MESSAGE "this ddx was built without the '${comp}' \

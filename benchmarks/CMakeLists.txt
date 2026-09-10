@@ -22,6 +22,15 @@ if (DDX_BUILD_JIT)
     ddx_runtime_deps(benchmarks_hvp)
 endif ()
 
+if (DDX_OPENCL)
+    add_executable(benchmarks_cl cl/benchmark_cl.cpp)
+    # tests/rt/energy_models.hpp, the model every arm computes.
+    target_include_directories(benchmarks_cl PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+    target_link_libraries(benchmarks_cl PRIVATE benchmark::benchmark ddx::cl)
+    ddx_target_flags(benchmarks_cl)
+    ddx_runtime_deps(benchmarks_cl)
+endif ()
+
 add_custom_target(benchmark_json
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/benchmark-results"
         COMMAND $<TARGET_FILE:benchmarks>

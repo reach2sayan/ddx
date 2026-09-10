@@ -1,5 +1,6 @@
 #pragma once
 
+#include "jit/kernel.hpp"
 #include "rt/archive/codec.hpp"
 #include "rt/archive/container.hpp"
 #include "rt/archive/digest.hpp"

@@ -26,6 +26,18 @@
       }
     },
     {
+      "name": "cl",
+      "hidden": true,
+      "cacheVariables": {
+        "DDX_BUILD_OPENCL": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
       "name": "debug",
       "displayName": "Debug",
       "description": "The library and the runtime expression graph, interpreted.",
@@ -70,6 +82,25 @@
       "inherits": [
         "jit",
         "release"
+      ]
+    },
+    {
+      "name": "release_cl",
+      "displayName": "Release + OpenCL",
+      "description": "The OpenCL device backend compiled into libddx whatever this host has, and no JIT: what CI's opencl job builds.",
+      "inherits": [
+        "cl",
+        "release"
+      ]
+    },
+    {
+      "name": "debug_jit_cl",
+      "displayName": "Debug + JIT + OpenCL",
+      "description": "Both backends in one libddx.",
+      "inherits": [
+        "cl",
+        "jit",
+        "debug"
       ]
     },
     {
@@ -124,6 +155,14 @@
       "configurePreset": "release_jit"
     },
     {
+      "name": "release_cl",
+      "configurePreset": "release_cl"
+    },
+    {
+      "name": "debug_jit_cl",
+      "configurePreset": "debug_jit_cl"
+    },
+    {
       "name": "python",
       "configurePreset": "python"
     },
@@ -169,6 +208,16 @@
       "name": "release_jit",
       "inherits": "tbase",
       "configurePreset": "release_jit"
+    },
+    {
+      "name": "release_cl",
+      "inherits": "tbase",
+      "configurePreset": "release_cl"
+    },
+    {
+      "name": "debug_jit_cl",
+      "inherits": "tbase",
+      "configurePreset": "debug_jit_cl"
     },
     {
       "name": "python",

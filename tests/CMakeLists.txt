@@ -52,8 +52,27 @@ if (DDX_BUILD_JIT)
     if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND DDX_SANITIZE STREQUAL "off")
         add_test(NAME jit.exports
                 COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM} -DREADELF=${CMAKE_READELF}
-                -DLIB=$<TARGET_FILE:ddx_rt>
-                -P "${CMAKE_CURRENT_SOURCE_DIR}/jit/check_exports.cmake")
+                -DLIB=$<TARGET_FILE:ddx_rt> -DWHAT=LLVM -DFORBID=[Ll][Ll][Vv][Mm]
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/check_exports.cmake")
+    endif ()
+endif ()
+
+if (DDX_OPENCL)
+    file(GLOB DDX_CL_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cl/*.cpp")
+    add_executable(tests_cl ${DDX_CL_TEST_SOURCES})
+    # tests/rt/energy_models.hpp, the models the Equation-level checks run.
+    target_include_directories(tests_cl PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(tests_cl PRIVATE gtest_main ddx::cl)
+    ddx_target_flags(tests_cl)
+    ddx_runtime_deps(tests_cl)
+    gtest_discover_tests(tests_cl ${DDX_TEST_ENV})
+
+    # The loader's entry points and Boost.Compute's inlines, by name.
+    if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND DDX_SANITIZE STREQUAL "off")
+        add_test(NAME cl.exports
+                COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM} -DREADELF=${CMAKE_READELF}
+                -DLIB=$<TARGET_FILE:ddx_rt> -DWHAT=OpenCL "-DFORBID=[ ]cl[A-Z]|5boost7compute"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/check_exports.cmake")
     endif ()
 endif ()
 
@@ -64,6 +83,9 @@ if (DDX_TEST_PACKAGE AND DDX_INSTALL AND DDX_SANITIZE STREQUAL "off")
     set(DDX_PACKAGE_COMPONENTS rt dual)
     if (DDX_BUILD_JIT)
         list(APPEND DDX_PACKAGE_COMPONENTS jit)
+    endif ()
+    if (DDX_OPENCL)
+        list(APPEND DDX_PACKAGE_COMPONENTS cl)
     endif ()
     # $<SEMICOLON>: an escaped separator does not survive add_test()'s expansion.
     string(JOIN "$<SEMICOLON>" DDX_PACKAGE_COMPONENTS_ARG ${DDX_PACKAGE_COMPONENTS})
@@ -121,5 +143,16 @@ if (DDX_TEST_PACKAGE AND DDX_INSTALL AND DDX_SANITIZE STREQUAL "off")
                                 -DBoost_DIR=${Boost_DIR}
                                 -DDDX_CONSUMER_COMPONENTS=jit)
         set_tests_properties(package.missing_component PROPERTIES WILL_FAIL TRUE)
+    endif ()
+    if (NOT DDX_OPENCL)
+        add_test(NAME package.missing_component_cl
+                COMMAND ${CMAKE_CTEST_COMMAND} ${DDX_PACKAGE_CONFIG}
+                --build-and-test "${CMAKE_CURRENT_SOURCE_DIR}/package"
+                                 "${CMAKE_CURRENT_BINARY_DIR}/package/missing_component_cl"
+                --build-generator ${CMAKE_GENERATOR} ${DDX_PACKAGE_PROJECT}
+                --build-options -Dddx_DIR=${PROJECT_BINARY_DIR}
+                                -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+                                -DDDX_CONSUMER_COMPONENTS=cl)
+        set_tests_properties(package.missing_component_cl PROPERTIES WILL_FAIL TRUE)
     endif ()
 endif ()

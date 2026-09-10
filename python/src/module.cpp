@@ -189,13 +189,18 @@ PYBIND11_MODULE(_ddx, m) {
   using ddx::py::PyEquation;
   using ddx::py::PyExpression;
 
-  m.doc() = "ddx's runtime expression graph and LLVM JIT";
+  m.doc() = "ddx's runtime expression graph, LLVM JIT and OpenCL device";
   m.attr("__version__") = DDX_VERSION_STRING;
 
 #ifdef DDX_HAS_JIT
   m.attr("has_jit") = true;
 #else
   m.attr("has_jit") = false;
+#endif
+#ifdef DDX_HAS_OPENCL
+  m.attr("has_opencl") = true;
+#else
+  m.attr("has_opencl") = false;
 #endif
 
   // The class first, then a translator that puts the code on the instance --
@@ -351,6 +356,7 @@ PYBIND11_MODULE(_ddx, m) {
       .value("INTERPRET", jit::Backend::Interpret)
       .value("COMPILE", jit::Backend::Compile)
       .value("ADAPT", jit::Backend::Adapt)
+      .value("DEVICE", jit::Backend::Device)
       .finalize();
 
   pyb::native_enum<jit::VecLib>(m, "VecLib", "enum.IntEnum",
@@ -424,6 +430,7 @@ PYBIND11_MODULE(_ddx, m) {
       // neither belongs in a key that decides whether stored code may be run.
       .def_readwrite("retain_object", &jit::Options::retain_object)
       .def_readwrite("cache_dir", &jit::Options::cache_dir)
+      .def_readwrite("device", &jit::Options::device)
       .def(pyb::self == pyb::self);
   codegen("opt_level", &jit::Codegen::opt_level);
   codegen("codegen_level", &jit::Codegen::codegen_level);
@@ -463,6 +470,7 @@ PYBIND11_MODULE(_ddx, m) {
       .def_property_readonly("arity", &PyEquation::arity)
       .def_property_readonly("outputs", &PyEquation::outputs)
       .def_property_readonly("uses_kernel", &PyEquation::uses_kernel)
+      .def_property_readonly("device_status", &PyEquation::device_status)
       .def_property_readonly("hessian_colors", &PyEquation::hessian_colors)
       .def("wait_for_kernel", &PyEquation::wait_for_kernel, pyb::kw_only(),
            pyb::arg("want") = PyEquation::Want::Jacobian)

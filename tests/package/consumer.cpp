@@ -18,6 +18,12 @@
 #include "rt/graph.hpp"
 #endif
 
+#ifdef DDX_HAS_OPENCL
+#include "cl/device.hpp"
+#include "rt/derivative.hpp"
+#include "rt/graph.hpp"
+#endif
+
 namespace {
 
 bool close(double a, double b) { return std::fabs(a - b) < 1e-12; }
@@ -72,6 +78,27 @@ int main() {
   (*kernel)(in, std::span{outs, 1}, std::span{outs + 1, 2}, {}, 1);
   if (!close(out_gx, 0.5 + std::cos(1.25)) || !close(out_gy, 1.25)) {
     return fail("JIT-compiled jacobian is wrong");
+  }
+#endif
+
+#ifdef DDX_HAS_OPENCL
+  // The symbols resolving is the claim; a host with no device has nothing to
+  // run the kernel on, and a wrong answer from one that does is the failure.
+  if (const auto device = cl::Device::create()) {
+    const auto kernel = device->compile(
+        rt::GraphBuilder{b}.value(root).build_jacobian().finish());
+    if (!kernel) {
+      return fail(kernel.error().detail.c_str());
+    }
+    double xs0 = 1.25, xs1 = 0.5, out_f = 0, out_gx = 0, out_gy = 0;
+    const double *const in[] = {&xs0, &xs1};
+    double *const outs[] = {&out_f, &out_gx, &out_gy};
+    if (!(*kernel)(in, std::span{outs, 1}, std::span{outs + 1, 2}, {}, 1)) {
+      return fail("the device refused a launch");
+    }
+    if (!close(out_gx, 0.5 + std::cos(1.25)) || !close(out_gy, 1.25)) {
+      return fail("device-compiled jacobian is wrong");
+    }
   }
 #endif
 

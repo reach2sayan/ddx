@@ -23,7 +23,9 @@ class Options(BaseModel):
     """``COMPILE`` starts the compile there and then; calls before it lands are
     swept and switch over when it arrives.
         ``ADAPT`` waits until a lane has been
-    asked for ``warm_points`` before compiling it at all."""
+    asked for ``warm_points`` before compiling it at all.
+        ``DEVICE`` builds the graph for the OpenCL device ``device`` names, and
+    sweeps until it lands."""
 
     points: int = Field(_DEFAULTS.points, ge=1)
     lanes: int | None = Field(_DEFAULTS.lanes, ge=1)
@@ -51,6 +53,11 @@ class Options(BaseModel):
 
     retain_object: bool = _DEFAULTS.retain_object
     cache_dir: str = _DEFAULTS.cache_dir # empty disables it
+
+    device: str = _DEFAULTS.device
+    """Under ``DEVICE``, which OpenCL device: a case-insensitive part of
+    ``"<platform> / <device>"``. Empty takes the first GPU with double
+    precision, else the first device of any kind that has it."""
 
     def _native(self) -> _ddx._Options:
         native = _ddx._Options()

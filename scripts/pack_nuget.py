@@ -4,7 +4,7 @@
 The layout `nuget pack contrib/nuget/ddx.nuspec -BasePath <stage>` expects:
 
     <stage>/
-        README.md, LICENSE.txt
+        README.md, LICENSE.txt, THIRD-PARTY-NOTICES.txt
         build/native/ddx.targets
         build/native/include/**                      headers + the Boost subset
         build/native/lib/x64/{Release,Debug}/ddx.lib
@@ -40,6 +40,7 @@ def main() -> int:
     shutil.copy2(ROOT / "contrib" / "nuget" / "ddx.targets", native)
     shutil.copy2(ROOT / "README.md", args.stage)
     shutil.copy2(ROOT / "LICENSE.txt", args.stage)
+    shutil.copy2(ROOT / "THIRD-PARTY-NOTICES.txt", args.stage)
     shutil.copytree(args.release / "include", native / "include")
 
     missing = []

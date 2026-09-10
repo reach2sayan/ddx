@@ -89,6 +89,7 @@ public:
         sweeps_{std::move(r.rest.hessians)}, options_{r.rest.options},
         objects_{std::move(r.rest.objects)}, model_nodes_{r.rest.model_nodes},
         loaded_{true} {
+    settle_device();
     take_cache(PyCache{remember});
   }
 
@@ -231,6 +232,7 @@ public:
       return;
     }
     options_ = opt;
+    settle_device();
     lanes_ = {};
     // codegen decides the arithmetic, so what was remembered was answered by
     // another graph.
@@ -254,6 +256,27 @@ public:
 
   [[nodiscard]] bool uses_kernel() {
     return static_cast<bool>(lane(Want::Jacobian)->kernel);
+  }
+
+  // Under Backend.DEVICE the device answering, None under any other backend.
+  // Raises with the reason where no device answers or its compiler refused.
+  [[nodiscard]] std::optional<std::string> device_status() {
+    if (options_.backend != jit::Backend::Device) {
+      return std::nullopt;
+    }
+#ifdef DDX_HAS_OPENCL
+    const auto &device = cl::Device::shared(options_.device);
+    if (!device) {
+      throw PyError{error{device.error().code}, device.error().detail};
+    }
+    (void)lane(Want::Jacobian); // adopts a compile that has landed
+    if (const auto why = lane_for(Want::Jacobian).refused()) {
+      throw PyError{error{why->code}, why->detail};
+    }
+    return std::string{device->identity()};
+#else
+    fail_with(errc::no_device);
+#endif
   }
 
   // Colours, not n: the Hessian is stored compressed and scattered on read, so
@@ -355,11 +378,24 @@ private:
     out.options = effective_options();
     out.objects = objects_;
 #ifdef DDX_HAS_JIT
-    if (options_.backend != jit::Backend::Interpret) {
+    if (options_.backend == jit::Backend::Compile ||
+        options_.backend == jit::Backend::Adapt) {
       out.compiler = compiler();
     }
 #endif
+#ifdef DDX_HAS_OPENCL
+    out.device = device_;
+#endif
     return out;
+  }
+
+  // Looked up where the options change, so a call never resolves a selector.
+  void settle_device() {
+#ifdef DDX_HAS_OPENCL
+    device_ = options_.backend == jit::Backend::Device
+                  ? impl::rt_detail::shared_device(options_.device)
+                  : nullptr;
+#endif
   }
 
   // What a freeze asks for.  Every one of these sweeps on first call and
@@ -459,8 +495,8 @@ private:
     // Nothing here touches Python, so the GIL goes -- which is what lets
     // another thread call in while a long batch runs.
     const pyb::gil_scoped_release unlocked;
-    if (l.kernel) {
-      l.kernel(xs, out.values, out.jacobian, out.hessian, n);
+    // A kernel that could not run this call hands it back to the sweep.
+    if (l.kernel(xs, out.values, out.jacobian, out.hessian, n)) {
       return;
     }
     interpret(*l.graph, xs, out, n);
@@ -750,6 +786,10 @@ private:
   jit::Options options_{};
   // Machine code a file handed over, consulted once per lane by prepare().
   std::vector<rt::Object> objects_{};
+#ifdef DDX_HAS_OPENCL
+  // Settled with options_: null unless the backend is Device and one answered.
+  const cl::Device *device_ = nullptr;
+#endif
   // Where the model ends and the sweeps begin; set by make_equation once the
   // roots are in.
   std::uint32_t model_nodes_ = 0;

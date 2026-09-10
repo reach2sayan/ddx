@@ -2,11 +2,13 @@
 # beside this one exist so each gets its own badge, and a badge names a
 # workflow, never a job within one.
 #
-# Two jobs.  `build` is the library as a default configure makes it, no JIT,
+# Three jobs.  `build` is the library as a default configure makes it, no JIT,
 # with the Python module on top, on every OS.  `jit` is the other half --
 # libddx with LLVM inside, the JIT tests, and the module against it -- and
 # runs where the LLVM archives can be had: Linux, from scripts/build_llvm.py,
-# an hour once and then a cache.
+# an hour once and then a cache.  `opencl` is the device backend against pocl,
+# a CPU runtime with double precision, so every device test runs on a runner
+# with no GPU; it builds no LLVM, which also proves an OpenCL-only libddx.
 name: Build
 
 on:
@@ -210,4 +212,49 @@ jobs:
       # has them.
       - name: Test
         working-directory: ${{ github.workspace }}/build
+        run: ctest --build-config ${{ inputs.build_type }} --output-on-failure
+
+  opencl:
+    if: startsWith(inputs.os, 'ubuntu')
+    runs-on: ${{ inputs.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # pocl is the runtime the tests run on; the headers and the loader are
+      # fetched at a pinned hash like Boost, so nothing else is installed.
+      - name: Install compilers and pocl
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y clang-20 gcc-14 g++-14 pocl-opencl-icd
+
+      - name: Python environment
+        run: |
+          pipx install uv
+          uv sync --group dev --no-install-project
+
+      - name: Configure CMake
+        run: >
+          cmake -B ${{ github.workspace }}/build
+          -DCMAKE_CXX_COMPILER=${{ inputs.cpp_compiler }}
+          -DCMAKE_C_COMPILER=${{ inputs.c_compiler }}
+          -DCMAKE_BUILD_TYPE=${{ inputs.build_type }}
+          -DDDX_BUILD_OPENCL=ON
+          -DDDX_BUILD_PYTHON=ON
+          -DDDX_BUILD_BENCHMARKS=OFF
+          -DPython_ROOT_DIR=${{ github.workspace }}/.venv
+          -DPython_FIND_VIRTUALENV=ONLY
+          -S ${{ github.workspace }}
+
+      - name: Build
+        run: cmake --build "${{ github.workspace }}/build" --config ${{ inputs.build_type }}
+
+      - name: Build tests
+        run: cmake --build "${{ github.workspace }}/build" --config ${{ inputs.build_type }} --target tests
+
+      # By name, so a runner that ever gains another runtime still tests pocl.
+      - name: Test
+        working-directory: ${{ github.workspace }}/build
+        env:
+          DDX_TEST_DEVICE: Portable
         run: ctest --build-config ${{ inputs.build_type }} --output-on-failure

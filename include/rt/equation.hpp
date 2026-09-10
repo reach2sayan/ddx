@@ -20,12 +20,8 @@
 #include <boost/mp11/algorithm.hpp>
 #include <boost/mp11/list.hpp>
 
-// Optional: without it the batch calls interpret, under the same signatures.
-#ifdef DDX_HAS_JIT
-#include "jit/kernel.hpp"
-
-#include <future>
-#endif
+#include "cl/device.hpp"
+#include "jit/options.hpp"
 
 #include <filesystem>
 #include <mutex> // unique_lock, which <shared_mutex> does not carry
@@ -111,6 +107,16 @@ concept COutputPack =
 [[nodiscard]] inline jit::Compiler *shared_compiler() {
   static jit::result<jit::Compiler> instance = jit::Compiler::create();
   return instance ? &*instance : nullptr;
+}
+#endif
+
+#ifdef DDX_HAS_OPENCL
+// One device per selector for the process, as shared_compiler() is one LLJIT;
+// null where none answers the selector, and cl::Device::shared() says why.
+[[nodiscard]] inline const cl::Device *
+shared_device(std::string_view selector) {
+  const auto &device = cl::Device::shared(selector);
+  return device ? &*device : nullptr;
 }
 #endif
 
@@ -362,7 +368,6 @@ public:
     });
   }
 
-#ifdef DDX_HAS_JIT
   // Whether to compile at all, and how; discards anything already compiled.
   // The one non-const member: a call overlapping it is the caller's race.
   Equation &options(const jit::Options &opt) {
@@ -370,6 +375,7 @@ public:
       return *this;
     }
     options_ = opt;
+    settle_device();
     lanes_ = std::make_unique<Lanes>();
     // codegen decides the arithmetic, so what was remembered was answered by
     // another graph.
@@ -384,48 +390,44 @@ public:
   [[nodiscard]] const jit::Options &options() const noexcept {
     return options_;
   }
-#endif
 
   // Whether a batch call goes through compiled code: false with no backend,
   // on a refused compile, and under Interpret.
   [[nodiscard]] bool uses_kernel() const {
-#ifdef DDX_HAS_JIT
     return !poisoned() && static_cast<bool>(snapshot(Want::Jacobian)->kernel);
-#else
-    return false;
-#endif
   }
 
-#ifdef DDX_HAS_JIT
   // Which rung is answering, as its codegen level, and nothing where the sweep
-  // is.  Every rung gives the same bits, so this is the only way to see it
-  // climb.  Does not wait.
+  // or a device is.  Every rung gives the same bits, so this is the only way
+  // to see it climb.  Does not wait.
   [[nodiscard]] std::optional<jit::Level> kernel_level() const {
     if (poisoned()) {
       return std::nullopt;
     }
-    if (const auto snap = snapshot(Want::Jacobian); snap->kernel) {
+    if (const auto snap = snapshot(Want::Jacobian);
+        snap->kernel.jit_kernel() != nullptr) {
       return snap->level;
     } else {
       return std::nullopt;
     }
   }
 
-  // Block until the *first* rung lands -- rungs[0], the cheap compile -- and
-  // answer uses_kernel().  Nothing else waits.
+  // Block until the *first* rung of `want`'s lane lands -- rungs[0], the cheap
+  // compile -- and answer whether a kernel answers that lane.  Nothing else
+  // waits.
   //
   // Under Adapt it waits for a rung already bought and buys none: a call that
   // quietly overrode the counter would make every measurement of the policy a
   // lie.  A caller who wants a kernel now asks for Backend::Compile.
-  [[nodiscard]] bool wait_for_kernel() const {
+  [[nodiscard]] bool wait_for_kernel(Want want = Want::Jacobian) const {
     if (poisoned()) {
       return false;
     }
-    (void)snapshot(Want::Jacobian); // launches it, if nothing has yet
-    if (const auto first = lane_for(Want::Jacobian).pending(); first.valid()) {
+    (void)snapshot(want); // launches it, if nothing has yet
+    if (const auto first = lane_for(want).pending(); first.valid()) {
       first.wait();
     }
-    return static_cast<bool>(snapshot(Want::Jacobian)->kernel);
+    return static_cast<bool>(snapshot(want)->kernel);
   }
 
   // How far the Jacobian lane is toward its next rung, and nothing under any
@@ -446,7 +448,33 @@ public:
       .threshold = Lane::rung_at(asked, effective_options())
     }};
   }
+
+  // Under Backend::Device: the device answering, or why none is -- a selector
+  // nothing matched, or a kernel its compiler refused, with the build log.
+  // Nothing under any other backend.  Does not wait.
+  [[nodiscard]] std::optional<jit::result<std::string_view>>
+  device_status() const {
+    if (options_.backend != jit::Backend::Device) {
+      return std::nullopt;
+    }
+    if (poisoned()) {
+      return std::unexpected{jit::error{bad_->code, {}}};
+    }
+#ifdef DDX_HAS_OPENCL
+    const auto &device = cl::Device::shared(options_.device);
+    if (!device) {
+      return std::unexpected{device.error()};
+    }
+    (void)snapshot(Want::Jacobian); // adopts a compile that has landed
+    if (auto why = lane_for(Want::Jacobian).refused()) {
+      return std::unexpected{*std::move(why)};
+    }
+    return device->identity();
+#else
+    return std::unexpected{
+        jit::error{errc::no_device, "built without DDX_BUILD_OPENCL"}};
 #endif
+  }
 
   [[nodiscard]] std::optional<std::size_t> hessian_colors() const
     requires(output_dim == 1)
@@ -678,18 +706,16 @@ private:
     snap.vjp = vjp_;
     snap.jvp = jvp_;
     snap.model_nodes = model_nodes_;
-#ifdef DDX_HAS_JIT
     snap.options = options_;
     snap.objects = objects();
-#endif
     return snap;
   }
 
-#ifdef DDX_HAS_JIT
   // What the lanes are holding, for the file to carry.  Only kernels that kept
   // their bytes, so without retain_object an equation saves its graph and no
   // code.
   [[nodiscard]] std::vector<rt::Object> objects() const {
+#ifdef DDX_HAS_JIT
     if (poisoned()) {
       return {};
     }
@@ -705,9 +731,10 @@ private:
       }
     }
     return out;
-  }
-
+#else
+    return {};
 #endif
+  }
 
   // The roots as well as the digest: two equations over one arena share every
   // node and differ only in which ids they call outputs.
@@ -817,6 +844,16 @@ private:
     }
   }
 
+  // Looked up where the options change -- options() and the loaded
+  // constructor -- so a batch call never resolves a selector.
+  void settle_device() {
+#ifdef DDX_HAS_OPENCL
+    device_ = options_.backend == jit::Backend::Device
+                  ? rt_detail::shared_device(options_.device)
+                  : nullptr;
+#endif
+  }
+
   // What a system's hessian() walks: fixed once the sweeps land -- built or
   // loaded -- so a call sweeps without rebuilding the node list or the
   // schedule.
@@ -851,10 +888,9 @@ private:
         hessians_(std::move(r.rest.hessians)), hvp_(std::move(r.rest.hvp)),
         vjp_(std::move(r.rest.vjp)), jvp_(std::move(r.rest.jvp)),
         loaded_(true) {
-#ifdef DDX_HAS_JIT
     options_ = r.rest.options;
     objects_ = std::move(r.rest.objects);
-#endif
+    settle_device();
     settle_hessian_schedule();
     lanes_ = std::make_unique<Lanes>();
   }
@@ -998,15 +1034,21 @@ private:
   // as one, and so does a host with no JIT.
   [[nodiscard]] rt::detail::Setting setting() const {
     rt::detail::Setting out;
-#ifdef DDX_HAS_JIT
     if constexpr (std::same_as<T, double>) {
       out.options = effective_options();
       out.objects = objects_;
-      if (!bad_ && options_.backend != jit::Backend::Interpret) {
-        out.compiler = compiler();
+      if (!bad_) {
+#ifdef DDX_HAS_JIT
+        if (options_.backend == jit::Backend::Compile ||
+            options_.backend == jit::Backend::Adapt) {
+          out.compiler = compiler();
+        }
+#endif
+#ifdef DDX_HAS_OPENCL
+        out.device = device_;
+#endif
       }
     }
-#endif
     return out;
   }
 
@@ -1059,7 +1101,6 @@ private:
     return {.graph = std::move(swept), .compile_graph = std::move(compiled)};
   }
 
-#ifdef DDX_HAS_JIT
   // How wide to emit, from the batch the caller stated: a wide kernel computes
   // `w` points to answer for one, so a short batch emits scalar -- the same
   // threshold the sweep uses.  A stated `lanes` is honoured.
@@ -1067,20 +1108,17 @@ private:
     return jit::for_batch(options_, rt::block_lanes);
   }
 
+#ifdef DDX_HAS_JIT
   // A Kernel does not own its code, so the compiler outlives every kernel.
   // Null on a host with no JIT.
   static jit::Compiler *compiler() { return rt_detail::shared_compiler(); }
 #endif
 
-  // Decided in the *graph*, so sweep and kernel fold the same products.  A
-  // JIT-less build contracts too, so an answer does not depend on how the
-  // library was configured.
+  // Decided in the *graph*, so every backend folds the same products.  On by
+  // default in a JIT-less build as well -- DDX_JIT_DEFAULT_CONTRACT is the
+  // JIT's -- so an answer does not depend on how the library was configured.
   [[nodiscard]] bool contracts() const noexcept {
-#ifdef DDX_HAS_JIT
     return options_.codegen.contract;
-#else
-    return true;
-#endif
   }
 
   void interpret(const Compiled &c, std::span<const T *const> xs,
@@ -1163,28 +1201,19 @@ private:
     return {};
   }
 
-  [[nodiscard]] static rt::Answered
-  answered([[maybe_unused]] const Compiled &c) noexcept {
-#ifdef DDX_HAS_JIT
-    if constexpr (std::same_as<T, double>) {
-      if (c.kernel) {
-        return rt::Answered::ByKernel;
-      }
-    }
-#endif
-    return rt::Answered::BySweep;
+  [[nodiscard]] static rt::Answered answered(const Compiled &c) noexcept {
+    return c.kernel ? rt::Answered::ByKernel : rt::Answered::BySweep;
   }
 
+  // A kernel that could not run this call -- a device refusing a launch --
+  // hands it back, and the sweep answers.
   void run(const Compiled &c, std::span<const T *const> xs,
            const rt::Columns<T> &out, std::size_t n) const {
-#ifdef DDX_HAS_JIT
     if constexpr (std::same_as<T, double>) {
-      if (c.kernel) {
-        c.kernel(xs, out.values, out.jacobian, out.hessian, n);
+      if (c.kernel(xs, out.values, out.jacobian, out.hessian, n)) {
         return;
       }
     }
-#endif
     interpret(c, xs, out, n);
   }
 
@@ -1205,10 +1234,12 @@ private:
   // to here, so rebuilding the model reproduces the key.
   std::uint32_t model_nodes_ = 0;
 
-#ifdef DDX_HAS_JIT
   jit::Options options_{};
   // Machine code a file handed over, consulted once per lane by prepare().
   std::vector<rt::Object> objects_{};
+#ifdef DDX_HAS_OPENCL
+  // Settled with options_: null unless the backend is Device and one answered.
+  const cl::Device *device_ = nullptr;
 #endif
   // Eager: one reverse sweep is microseconds, and it keeps every per-point
   // accessor const and constexpr.
@@ -1240,11 +1271,9 @@ private:
 
 namespace ddx::rt {
 
-#ifdef DDX_HAS_JIT
 using jit::Backend;
 using jit::Lanes;
 using jit::Level;
-#endif
 
 // Over expressions already built in a caller's own arena.  Partial
 // specialisations contribute no deduction guides, so this is the whole of CTAD.

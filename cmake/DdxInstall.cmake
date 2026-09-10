@@ -36,6 +36,10 @@ install(EXPORT ddxTargets
         NAMESPACE ddx::
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ddx)
 
+# ddx's own licence, and those of what libddx and the installed headers carry.
+install(FILES "${PROJECT_SOURCE_DIR}/LICENSE.txt" "${PROJECT_SOURCE_DIR}/THIRD-PARTY-NOTICES.txt"
+        DESTINATION ${CMAKE_INSTALL_DOCDIR})
+
 # Two configs from one template: the build tree and the prefix hold Boost in
 # different places.
 set(DDX_BOOST_CONFIG_ROOT "${DDX_BOOST_ROOT}")

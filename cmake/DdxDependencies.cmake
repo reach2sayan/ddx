@@ -3,6 +3,7 @@
 #
 #   ddx_use_boost()            Boost, header-only, fetched         always
 #   ddx_use_llvm()             LLVM 20, found                      DDX_BUILD_JIT
+#   ddx_use_opencl()           OpenCL headers + ICD loader, fetched DDX_BUILD_OPENCL
 #   ddx_use_googletest()       GoogleTest, fetched                 top-level only
 #   ddx_use_googlebenchmark()  Google Benchmark, fetched           DDX_BUILD_BENCHMARKS
 #   ddx_use_pybind11()         pybind11, found in the build env    DDX_BUILD_PYTHON
@@ -145,6 +146,59 @@ function(_ddx_llvm_archives)
     get_target_property(deps LLVMSupport INTERFACE_LINK_LIBRARIES)
     string(REPLACE "zstd::libzstd_shared" "zstd::libzstd_static" deps "${deps}")
     set_property(TARGET LLVMSupport PROPERTY INTERFACE_LINK_LIBRARIES "${deps}")
+endfunction()
+
+# --- OpenCL -------------------------------------------------------------------
+# The Khronos headers and ICD loader, one tag for both.  The loader is built
+# static and swallowed into libddx: it dlopens a vendor's driver at run time,
+# so libddx needs no libOpenCL to load.
+set(DDX_OPENCL_VERSION "v2026.05.29" CACHE STRING
+        "KhronosGroup OpenCL-Headers and OpenCL-ICD-Loader tag to fetch")
+set(DDX_OPENCL_HEADERS_SHA256 "d9e6c48357de5002da11ce45de600e0c3ffe6ab4f628a3b9fe2b38603161658a"
+        CACHE STRING "SHA256 of the OpenCL-Headers archive DDX_OPENCL_VERSION names")
+set(DDX_OPENCL_LOADER_SHA256 "48fd0c5181db7cd046f4f731d5955694892e10998d49d09ee0d997e7e04fd939"
+        CACHE STRING "SHA256 of the OpenCL-ICD-Loader archive DDX_OPENCL_VERSION names")
+
+# Unpacked only: the loader is added below, with its options and out of ALL.
+foreach (_ddx_cl IN ITEMS Headers ICD-Loader)
+    string(TOLOWER "opencl-${_ddx_cl}" _ddx_cl_dir)
+    string(REPLACE "-" "_" _ddx_cl_name "${_ddx_cl_dir}")
+    if (_ddx_cl STREQUAL "Headers")
+        set(_ddx_cl_hash ${DDX_OPENCL_HEADERS_SHA256})
+    else ()
+        set(_ddx_cl_hash ${DDX_OPENCL_LOADER_SHA256})
+    endif ()
+    FetchContent_Declare(${_ddx_cl_name}
+            URL https://github.com/KhronosGroup/OpenCL-${_ddx_cl}/archive/refs/tags/${DDX_OPENCL_VERSION}.tar.gz
+            URL_HASH SHA256=${_ddx_cl_hash}
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+            SOURCE_SUBDIR ddx-does-not-build-this
+            SOURCE_DIR "${DDX_DEPS_DIR}/${_ddx_cl_dir}-${DDX_OPENCL_VERSION}"
+            SUBBUILD_DIR "${DDX_DEPS_DIR}/${_ddx_cl_dir}-${DDX_OPENCL_VERSION}-subbuild"
+            BINARY_DIR "${DDX_DEPS_DIR}/${_ddx_cl_dir}-${DDX_OPENCL_VERSION}-build")
+endforeach ()
+unset(_ddx_cl)
+unset(_ddx_cl_dir)
+unset(_ddx_cl_name)
+unset(_ddx_cl_hash)
+
+# A function, so the loader's options stay in its scope.  The caller enables C,
+# which has to happen at file scope.  Defines OpenCL (the loader) and
+# OpenCL::Headers.
+function(ddx_use_opencl)
+    if (TARGET OpenCL)
+        return()
+    endif ()
+    FetchContent_MakeAvailable(opencl_headers opencl_icd_loader)
+    set(OPENCL_ICD_LOADER_HEADERS_DIR "${opencl_headers_SOURCE_DIR}" CACHE PATH
+            "The OpenCL headers the ICD loader builds against" FORCE)
+    set(OPENCL_ICD_LOADER_BUILD_SHARED_LIBS OFF)
+    set(OPENCL_ICD_LOADER_PIC ON)
+    set(OPENCL_ICD_LOADER_BUILD_TESTING OFF)
+    set(ENABLE_OPENCL_LAYERS OFF)
+    add_subdirectory("${opencl_icd_loader_SOURCE_DIR}"
+            "${CMAKE_BINARY_DIR}/_deps/opencl-icd-loader-build" EXCLUDE_FROM_ALL SYSTEM)
+    message(STATUS "OpenCL ${DDX_OPENCL_VERSION}: headers and a static ICD loader")
 endfunction()
 
 # --- pybind11 ---------------------------------------------------------------

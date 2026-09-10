@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 from ._ddx import (Backend, Call, Expression, Level, VecLib, Want, abs,  # noqa: A004  -- the opcode is spelled `abs`, as it is in C++
                    acos, acosh, add, asin, asinh, atan, atan2, atanh,
                    cbrt, cos, cosh, div, erf, errc, exp,
-                   has_jit, hypot,
+                   has_jit, has_opencl, hypot,
                    log, log10, max,  # noqa: A004
                    min,  # noqa: A004
                    mul, neg,
@@ -93,10 +93,12 @@ def _set_options(self: Equation, options: Options) -> None:
 
 def _compile(self: Equation, **kwargs: Any) -> Equation:  # noqa: ANN401
 	"""Compile this equation's graph, and answer once the kernel has landed.
-	Keywords are ``Options`` fields; ``backend`` is implied. Returns self, so
+	Keywords are ``Options`` fields; ``backend`` defaults to ``COMPILE``, and
+	``DEVICE`` builds it for the OpenCL device instead. Returns self, so
 	``eq.compile(points=n).jacobian(xs)`` reads in one line.
 	"""
-	self.options = Options(backend=Backend.COMPILE, **kwargs)
+	kwargs.setdefault("backend", Backend.COMPILE)
+	self.options = Options(**kwargs)
 	self.wait_for_kernel()
 	return self
 
@@ -107,6 +109,6 @@ __all__ = ["Backend", "Call", "Equation", "Error", "Expression", "Level",
            "Options", "VecLib", "Want", "__version__",	"abs", "acos", "acosh",	"add",
            "asin", "asinh",	"atan", "atan2", "atanh", "cbrt", "cos",
            "cosh", "div", "equation", "erf", "errc", "exp",
-           "has_jit", "hypot", "load", "log", "log10", "max",
+           "has_jit", "has_opencl", "hypot", "load", "log", "log10", "max",
            "min", "mul", "neg", "pow", "select", "sign", "sin", "sinh", "sqrt",
            "tan", "tanh", "var",]
