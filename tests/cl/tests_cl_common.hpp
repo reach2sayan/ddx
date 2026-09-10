@@ -5,6 +5,7 @@
 #include "rt/builder.hpp"
 #include "rt/graph.hpp"
 #include "rt/interpret.hpp"
+#include "util/ranges.hpp"
 
 #include <gtest/gtest.h>
 
@@ -63,12 +64,12 @@ protected:
 
 [[nodiscard]] inline std::vector<double *> pointers(Columns &c) {
   return c | std::views::transform([](std::vector<double> &v) { return v.data(); }) |
-         std::ranges::to<std::vector<double *>>();
+         ddx::impl::to<std::vector<double *>>();
 }
 [[nodiscard]] inline std::vector<const double *> pointers(const Columns &c) {
   return c |
          std::views::transform([](const std::vector<double> &v) { return v.data(); }) |
-         std::ranges::to<std::vector<const double *>>();
+         ddx::impl::to<std::vector<const double *>>();
 }
 
 // The interpreter at every point, one column per output in the graph's order:

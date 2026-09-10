@@ -3,6 +3,7 @@
 // bytes are reported beside points because the device's floor is the copy.
 #include "rt/energy_models.hpp"
 #include "rt/equation.hpp"
+#include "util/ranges.hpp"
 
 #include <benchmark/benchmark.h>
 
@@ -25,7 +26,7 @@ constexpr std::size_t species = 8;
                            std::views::transform([](std::size_t i) {
                              return ddx::rt::var(std::format("x{}", i));
                            }) |
-                           std::ranges::to<std::vector<RE>>());
+                           ddx::impl::to<std::vector<RE>>());
   });
 }
 
@@ -49,10 +50,10 @@ void jacobian(benchmark::State &state, Backend backend) {
   std::vector<std::vector<double>> f(1, std::vector<double>(n));
   std::vector<std::vector<double>> g(*eq.jacobian_columns(), std::vector<double>(n));
   const auto xs = x | std::views::transform([](auto &c) -> const double * { return c.data(); }) |
-                  std::ranges::to<std::vector<const double *>>();
+                  ddx::impl::to<std::vector<const double *>>();
   const auto out = [](auto &cs) {
     return cs | std::views::transform([](auto &c) { return c.data(); }) |
-           std::ranges::to<std::vector<double *>>();
+           ddx::impl::to<std::vector<double *>>();
   };
   const auto fs = out(f);
   const auto gs = out(g);

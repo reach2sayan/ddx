@@ -48,7 +48,7 @@ const std::map<std::string_view, RE (*)(const RE &)> unary{
            return lo + (hi - lo) * (static_cast<double>(i) + 0.5) /
                            static_cast<double>(n);
          }) |
-         std::ranges::to<std::vector<double>>();
+         ddx::impl::to<std::vector<double>>();
 }
 
 void expect_within(const Builder<> &b, const ddx::rt::Graph<> &g,

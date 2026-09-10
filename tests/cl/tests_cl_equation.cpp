@@ -34,7 +34,7 @@ constexpr std::size_t symbols = 12;
                    std::views::transform([](std::size_t i) {
                      return ddx::rt::var(std::format("x{:02d}", i));
                    }) |
-                   std::ranges::to<std::vector<RE>>();
+                   ddx::impl::to<std::vector<RE>>();
     RE acc = 0.0;
     for (const std::size_t i : std::views::iota(0uz, 40uz)) {
       acc = acc + x[i % symbols] * x[(i + 1) % symbols] *
@@ -153,7 +153,7 @@ TEST_F(ClEquation, AModelWithTranscendentalsAgreesClosely) {
                              std::views::transform([](std::size_t i) {
                                return ddx::rt::var(std::format("x{}", i));
                              }) |
-                             std::ranges::to<std::vector<RE>>());
+                             ddx::impl::to<std::vector<RE>>());
     });
   };
   const auto swept = model();
