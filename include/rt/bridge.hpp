@@ -14,11 +14,12 @@
 namespace ddx::rt {
 
 // Sum and Multiply are n-ary in the type but binary in the graph, so a wide
-// node folds left into a chain.
-template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T>
-to_graph(Builder<T> &b, const impl::CExpression auto &e) {
-  using U = std::remove_cvref_t<decltype(e)>;
+// node folds left into a chain.  A frozen leaf has no spelling here: a Var is
+// always differentiated, so lowering one would quietly revive what the caller
+// held -- the tree is refused instead.
+template <impl::Numeric T, impl::CExpression U>
+  requires(!impl::holds_frozen<U>())
+[[nodiscard]] constexpr RTExpression<T> to_graph(Builder<T> &b, const U &e) {
   if constexpr (impl::CVariable<U>) {
     return var(b, U::label.view());
   } else if constexpr (impl::CLit<U>) {

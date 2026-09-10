@@ -114,6 +114,20 @@ template <CExpression T>
 using extract_symbols_from_expr_t =
     typename decltype(extract_symbols_impl<T>())::type;
 
+// Whether any leaf differentiates to zero, for either reason.
+template <CExpression T> consteval bool holds_frozen() {
+  if constexpr (CVariable<T>) {
+    return T::frozen;
+  } else if constexpr (CExpressionNode<T>) {
+    return []<COperation Op, CExpression... C>(
+               std::type_identity<Expression<Op, C...>>) {
+      return (holds_frozen<C>() || ...);
+    }(std::type_identity<T>{});
+  } else {
+    return false;
+  }
+}
+
 namespace detail {
 
 // The two things every driver asks of an expression: its canonical symbol list

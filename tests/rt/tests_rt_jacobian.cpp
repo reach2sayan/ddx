@@ -89,6 +89,28 @@ TEST(RtJacobian, Arithmetic) {
   expect_agrees_with_ddx(x * x * x + y * y - x * y, std::array{1.3, 2.1});
 }
 
+template <typename E>
+constexpr bool bridges = requires(ddx::rt::Builder<> &b, const E &e) {
+  ddx::rt::to_graph(b, e);
+};
+
+// rt has no leaf that reads a symbol and differentiates to zero, so a frozen
+// one is refused rather than lowered live.  A Jacobian row comes back thawed,
+// and bridges like any other tree.
+TEST(RtJacobian, BridgeRefusesFrozenLeaves) {
+  using ddx::impl::FixedString;
+  const auto held = ddx::impl::make_const_variable<FixedString{"y"}>(x * y);
+  const auto column =
+      ddx::impl::make_all_constant_except<FixedString{"x"}>(x * x * y)
+          .derivative();
+  const auto row = ddx::impl::thaw_partials(column);
+
+  static_assert(!bridges<decltype(held)>);
+  static_assert(!bridges<decltype(column)>);
+  static_assert(bridges<decltype(row)>);
+  expect_agrees_with_ddx(row, std::array{1.3, 2.1});
+}
+
 TEST(RtJacobian, BinaryFunctions) {
   expect_agrees_with_ddx(pow(x, y), std::array{1.7, 2.3});
   expect_agrees_with_ddx(atan2(x, y), std::array{1.3, 2.1});
