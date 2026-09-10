@@ -11,8 +11,9 @@ A C++23 library for differentiating expressions. Build a function over named
 symbols while the program runs — terms looped over a data file, a model read
 from configuration, an expression typed by a user, a loss that switches shape
 on a comparison — and ask it for values, gradients, Jacobians and Hessians. One
-point at a time, or a batch of thousands in a single call, interpreted or
-compiled to machine code through LLVM. There
+point at a time, or a batch of thousands in a single call, interpreted,
+compiled to machine code through LLVM, or [run on a GPU](#running-on-a-gpu)
+through OpenCL. There
 are [Python bindings](#python) over the same runtime, and a header-only
 [compile-time API](#compile-time-expressions) for expressions whose shape is
 known when you compile.
@@ -52,6 +53,7 @@ const auto eq = rt::equation([&] {
 [Points](#points) · [Values and derivatives](#values-and-derivatives) ·
 [Batches](#batches) · [Errors](#errors) ·
 [Ownership and threads](#ownership-and-threads) · [Compiling](#compiling) ·
+[Running on a GPU](#running-on-a-gpu) ·
 [Saving and loading](#saving-and-loading) · [Reference](#reference) ·
 [Python](#python) · [Compile-time expressions](#compile-time-expressions) ·
 [Printing](#printing)
@@ -97,7 +99,9 @@ target_link_libraries(my_app PRIVATE ddx::rt)
 ```
 
 Or from a package manager — both channels carry the interpreted library,
-without the JIT:
+without the JIT. The vcpkg port builds the OpenCL device backend as `AUTO`
+does, where the building machine has an OpenCL runtime; the NuGet package has
+none:
 
 - **vcpkg**: an overlay port lives in this repository —
   `vcpkg install ddx --overlay-ports=<ddx checkout>/contrib/vcpkg/ports` —
@@ -162,7 +166,8 @@ Or through the presets:
 | `debug_jit_cl` | Debug | yes | yes |
 
 "auto" builds the OpenCL backend where the configuring machine has an OpenCL
-runtime installed.
+runtime installed. It looks only on Linux, for an ICD in `/etc/OpenCL/vendors`
+or `$OCL_ICD_VENDORS`; on Windows and macOS it is off.
 
 ```sh
 cmake --preset release_jit
@@ -190,7 +195,7 @@ cmake --preset release_jit -DLLVM_DIR=/opt/llvm-20/lib/cmake/llvm
 | Option | Default | Meaning |
 |---|---|---|
 | `DDX_BUILD_JIT` | `OFF` | compile the LLVM backend into the library |
-| `DDX_BUILD_OPENCL` | `AUTO` | compile the OpenCL device backend into the library — `AUTO` does where this machine has an OpenCL runtime, `ON` or `OFF` decides |
+| `DDX_BUILD_OPENCL` | `AUTO` | compile the OpenCL device backend into the library — `AUTO` does where this machine has an OpenCL runtime (Linux only), `ON` or `OFF` decides |
 | `DDX_BUILD_PYTHON` | `OFF` | build the pybind11 extension module |
 | `DDX_BUILD_TESTS` | `ON` | build the GoogleTest tests |
 | `DDX_BUILD_BENCHMARKS` | `ON` | build the benchmark targets |
@@ -944,7 +949,9 @@ A selector nothing matches, a machine with no device and a kernel the driver
 refuses all leave the equation answering from the sweep: `uses_kernel()` is
 false and `device_status()` carries the reason — `errc::no_device` or
 `errc::device_compile` with the driver's build log. A launch that fails is
-answered by the sweep too.
+answered by the sweep too, and so is every call in a library built without the
+backend: `Backend::Device` is accepted there, and `device_status()` answers
+`errc::no_device`.
 
 Arithmetic agrees with the sweep **to the bit**: `+ - * /`, fused multiply-adds,
 comparisons, `abs`, `sign`, `max`, `min` and `select`. The device computes the
@@ -1142,10 +1149,10 @@ library:
 uv pip install https://github.com/reach2sayan/ddx/releases/download/v1.2.1/ddx-1.2.1-cp312-cp312-manylinux_2_28_x86_64.whl
 ```
 
-| Wheel | JIT |
-|---|---|
-| Linux x86_64 (glibc 2.28+) | yes |
-| Windows x64 | no — calls interpret |
+| Wheel | JIT | OpenCL |
+|---|---|---|
+| Linux x86_64 (glibc 2.28+) | yes | no |
+| Windows x64 | no — calls interpret | no |
 
 There is no macOS wheel: the tree uses C++23 ranges that libc++ does not have
 (`views::enumerate`, `cartesian_product`, `chunk`, `stride`, `ranges::fold`),
@@ -1331,6 +1338,11 @@ and switch over when it does, as in C++.
 `Options.device` picks one as in [Running on a GPU](#running-on-a-gpu).
 `f.device_status` names the device, is `None` under any other backend, and
 raises `ddx.Error` when no device answers.
+
+No wheel carries the device backend, and neither does `pip install .` unless
+asked with `-C cmake.define.DDX_BUILD_OPENCL=ON`; the `python` preset builds it
+as `AUTO` does. Where it is missing, `ddx.has_opencl` is `False`, `DEVICE`
+interprets, and `device_status` raises `errc.no_device`.
 
 ### Saving and loading
 
