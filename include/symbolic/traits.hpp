@@ -4,6 +4,7 @@
 // include-cleaner does not count as a reference -- hence the pragma.
 #include "symbolic/symbol.hpp"
 #include "util/fixed_string.hpp" // IWYU pragma: keep
+#include <cstdint>
 #include <tuple>
 #include <type_traits>
 
@@ -11,32 +12,53 @@ namespace ddx::impl {
 
 // Same leaf, same value lookup, zero derivative.  A pure type transform, which
 // keeps the symbolic Jacobian made of empty types.
-template <CVariable T> struct frozen_variable;
-template <Numeric T, CFixedString auto C, bool F>
-struct frozen_variable<Variable<T, C, F>> {
-  using type = Variable<T, C, true>;
+template <Freeze K, CVariable T> struct refrozen_variable;
+template <Freeze K, Numeric T, CFixedString auto C, Freeze F>
+struct refrozen_variable<K, Variable<T, C, F>> {
+  using type = Variable<T, C, K>;
 };
-template <CVariable T>
-using frozen_variable_t = typename frozen_variable<T>::type;
+template <Freeze K, CVariable T>
+using refrozen_variable_t = typename refrozen_variable<K, T>::type;
 
-// The two leaf rewrites are complements: one freezes the symbol named, the
-// other freezes every symbol but it.  The rest -- rebuilding a node from
-// rewritten children, leaving any other leaf alone -- is one walk, and a pure
-// type transform, so the symbolic Jacobian stays made of empty types.
-template <CFixedString auto symbol, bool FreezeMatch, CExpression T>
+// The three leaf rewrites.  `hold_match` is the caller holding one symbol
+// constant, `hold_others` is one Jacobian column, `lift_partials` undoes the
+// second and never the first.
+enum class Rewrite : std::uint8_t { hold_match, hold_others, lift_partials };
+
+template <Rewrite R>
+consteval Freeze next_freeze(Freeze now, bool match) noexcept {
+  if constexpr (R == Rewrite::hold_match) {
+    return match ? Freeze::held : now;
+  } else if constexpr (R == Rewrite::hold_others) {
+    // A held symbol stays held either way: only the machinery's own hold is
+    // reversible.
+    if (match) {
+      return now == Freeze::partial ? Freeze::none : now;
+    }
+    return now == Freeze::none ? Freeze::partial : now;
+  } else {
+    return now == Freeze::partial ? Freeze::none : now;
+  }
+}
+
+// Rebuilding a node from rewritten children, leaving any other leaf alone, is
+// one walk, and a pure type transform, so the symbolic Jacobian stays made of
+// empty types.
+template <Rewrite R, CFixedString auto symbol = FixedString{""}, CExpression T>
 constexpr auto refreeze(const T &e) noexcept {
   if constexpr (CVariable<T>) {
-    if constexpr ((T::label == symbol) == FreezeMatch) {
-      return frozen_variable_t<T>{};
-    } else {
+    constexpr Freeze kind = next_freeze<R>(T::freeze, T::label == symbol);
+    if constexpr (kind == T::freeze) {
       return e;
+    } else {
+      return refrozen_variable_t<kind, T>{};
     }
   } else if constexpr (CExpressionNode<T>) {
     return std::apply(
         [](const auto &...child) {
           return Expression<typename T::op_type,
-                            decltype(refreeze<symbol, FreezeMatch>(child))...>{
-              refreeze<symbol, FreezeMatch>(child)...};
+                            decltype(refreeze<R, symbol>(child))...>{
+              refreeze<R, symbol>(child)...};
         },
         e.expressions());
   } else {
@@ -46,12 +68,18 @@ constexpr auto refreeze(const T &e) noexcept {
 
 template <CFixedString auto symbol, CExpression E>
 constexpr auto make_const_variable(const E &e) noexcept {
-  return refreeze<symbol, true>(e);
+  return refreeze<Rewrite::hold_match, symbol>(e);
 }
 
 template <CFixedString auto symbol, CExpression E>
 constexpr auto make_all_constant_except(const E &e) noexcept {
-  return refreeze<symbol, false>(e);
+  return refreeze<Rewrite::hold_others, symbol>(e);
+}
+
+// A partial tree is differentiable again: what held the other symbols while it
+// was formed is lifted, so d/dy of a stored d/dx is not zero.
+template <CExpression E> constexpr auto thaw_partials(const E &e) noexcept {
+  return refreeze<Rewrite::lift_partials>(e);
 }
 
 // Alphabetical by name; a metafunction because that is what mp_sort takes.

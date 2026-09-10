@@ -5,6 +5,7 @@
 #include "util/fixed_string.hpp" // FixedString, CFixedString
 
 #include <concepts>
+#include <cstdint>
 #include <ranges>
 #include <string_view>
 #include <tuple>
@@ -39,10 +40,17 @@ template <FixedString S> [[nodiscard]] consteval auto operator""_s() noexcept {
 
 } // namespace literals
 
-template <Numeric T, CFixedString auto, bool Frozen = false> class Variable;
+// Why a symbol differentiates to zero.  `held` is the caller's own
+// make_const_variable and survives every rewrite; `partial` is the Jacobian
+// machinery holding the other symbols while one column is differentiated, and
+// is lifted once that derivative exists -- otherwise a stored partial tree
+// would differentiate to zero a second time.
+enum class Freeze : std::uint8_t { none, held, partial };
+
+template <Numeric T, CFixedString auto, Freeze = Freeze::none> class Variable;
 
 template <typename T> inline constexpr bool is_variable_v = false;
-template <Numeric T, CFixedString auto C, bool F>
+template <Numeric T, CFixedString auto C, Freeze F>
 inline constexpr bool is_variable_v<Variable<T, C, F>> = true;
 
 template <typename T>
@@ -55,7 +63,7 @@ template <typename... Ts> class Equation;
 template <Numeric T, auto... V>
 inline constexpr bool is_expression_type_v<Lit<T, V...>> = true;
 
-template <Numeric T, CFixedString auto C, bool F>
+template <Numeric T, CFixedString auto C, Freeze F>
 inline constexpr bool is_expression_type_v<Variable<T, C, F>> = true;
 
 template <COperation Op, CExpression... Children>

@@ -230,23 +230,25 @@ public:
 
 template <Numeric T> Lit(T) -> Lit<T>;
 
-// `Frozen`: still reads its slot from the seed array, but differentiates to
-// zero.
-template <Numeric T, CFixedString auto symbol, bool Frozen>
-class Variable : public EquationConvertible<Variable<T, symbol, Frozen>> {
+// Frozen: still reads its slot from the seed array, but differentiates to
+// zero.  Which of the two reasons it is frozen for matters only to the
+// rewrites in traits.hpp; every engine here asks `frozen`.
+template <Numeric T, CFixedString auto symbol, Freeze Kind>
+class Variable : public EquationConvertible<Variable<T, symbol, Kind>> {
 public:
   static constexpr auto label = symbol;
-  static constexpr bool frozen = Frozen;
+  static constexpr Freeze freeze = Kind;
+  static constexpr bool frozen = Kind != Freeze::none;
   using value_type = T;
 
   [[nodiscard]] constexpr auto derivative() const noexcept {
-    return Lit<T, Frozen ? 0 : 1>{};
+    return Lit<T, frozen ? 0 : 1>{};
   }
 
   template <std::size_t Base = 0>
   constexpr void backward(const auto &syms, T adj, auto &grads,
                           const auto &) const noexcept {
-    if constexpr (!Frozen) {
+    if constexpr (!frozen) {
       using Syms = std::decay_t<decltype(syms)>;
       constexpr auto idx = symbol_index<symbol, Syms>();
       static_assert(idx < mp::mp_size<Syms>::value,
@@ -264,7 +266,7 @@ public:
   eval_seeded(const std::array<U, N> &vals) const noexcept {
     constexpr auto idx = symbol_index<symbol, Syms>();
     static_assert(idx < N, "eval: no value supplied for this symbol");
-    if constexpr (Frozen) {
+    if constexpr (frozen) {
       return ConstantEmbedder<U>::embed(
           get_real_part<dual_depth_v<U>>(vals[idx]));
     } else {
@@ -348,12 +350,13 @@ struct tuple_element<I, ddx::impl::Lit<T, V...>> {
   using type = typename ddx::impl::detail::expression_element<T, I>::type;
 };
 
-template <ddx::impl::Numeric T, ddx::impl::CFixedString auto C, bool F>
+template <ddx::impl::Numeric T, ddx::impl::CFixedString auto C,
+          ddx::impl::Freeze F>
 struct tuple_size<ddx::impl::Variable<T, C, F>>
     : integral_constant<std::size_t, 2> {};
 
 template <std::size_t I, ddx::impl::Numeric T, ddx::impl::CFixedString auto C,
-          bool F>
+          ddx::impl::Freeze F>
 struct tuple_element<I, ddx::impl::Variable<T, C, F>> {
   using type = typename ddx::impl::detail::expression_element<T, I>::type;
 };

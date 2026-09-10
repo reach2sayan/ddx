@@ -17,7 +17,7 @@ template <typename T> struct tag_key_of {};
 template <auto S> struct tag_key_of<symbol_type<S>> {
   static constexpr auto value = S;
 };
-template <Numeric T, CFixedString auto S, bool F>
+template <Numeric T, CFixedString auto S, Freeze F>
 struct tag_key_of<Variable<T, S, F>> {
   static constexpr auto value = S;
 };

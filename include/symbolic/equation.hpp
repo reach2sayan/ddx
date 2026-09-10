@@ -32,8 +32,10 @@ using canonical_t = decltype(canonicalise(std::declval<const E &>()));
 template <CSymbol... Syms>
 constexpr auto make_derivatives(mp::mp_list<Syms...>,
                                 const CExpression auto &expr) noexcept {
-  return std::tuple(canonicalise(
-      make_all_constant_except<Syms::value>(expr).derivative())...);
+  // thaw_partials: the hold that made the column is lifted again, or the row
+  // it returns would differentiate to zero -- see Freeze in expressions.hpp.
+  return std::tuple(canonicalise(thaw_partials(
+      make_all_constant_except<Syms::value>(expr).derivative()))...);
 }
 
 template <CSymbol... Syms, CExpression... Exprs>
