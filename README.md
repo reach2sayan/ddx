@@ -70,8 +70,8 @@ A C++23 compiler and standard library:
 | **Clang** | 20 or newer, over libstdc++ 14+ — libc++ is not supported |
 | **MSVC** | Visual Studio 2022, `/std:c++latest` |
 
-Clang compiles the accessor spelling ddx uses from 18 but does not advertise it
-until 20, and libc++ has no `views::enumerate` — hence the two floors.
+Clang 20 is the oldest Clang CI builds, and libc++ has no `views::enumerate` —
+hence the two floors.
 
 - **CMake 3.26+**.
 - **Boost** is downloaded and unpacked at configure time; nothing needs to be
@@ -1173,11 +1173,8 @@ cmake --preset python_no_jit        # in-tree, no LLVM
 ```
 
 `ddx.has_jit` says whether the copy you have was built with the LLVM backend,
-and `ddx.has_opencl` whether it was built with the OpenCL one.
-Everything below works either way; without it, calls interpret.
-
-`equation` takes a model — a callable of no arguments returning one expression,
-or a tuple of them for a system — as a call or a decorator:
+and `ddx.has_opencl` whether it was built with the OpenCL one; without them,
+calls interpret.
 
 ```python
 import ddx
@@ -1187,212 +1184,17 @@ def f():
     x = ddx.var("x")
     y = ddx.var("y")
     return ddx.exp(x) * ddx.sin(y)
-```
 
-Or a string, or a list of strings for a system, in the same grammar the
-[C++ side](#written-down-instead) reads:
-
-```python
-g   = ddx.equation("exp(x) * sin(y)")
-sys = ddx.equation(["x*x + y*y - 4", "x*y - 1"])
-```
-
-Symbols are named inside the model with `ddx.var(name)`, and they order
-alphabetically as they do in C++. `f.symbols` lists them, `f.arity` counts them,
-`f.outputs` counts the model's outputs. Arithmetic operators work on
-`Expression`, and a bare number mixes in; the free functions are the same set
-the C++ side has.
-
-### Points
-
-A point is a sequence, or a dict keyed by symbol name. A 2-D array is a
-**batch** — shape `(symbols, points)`, one row per symbol:
-
-```python
-f.jacobian([2.0, 3.0])                      # positional, alphabetical
-f.jacobian({"x": 2.0, "y": 3.0})            # by name
-f.jacobian(np.array([[2.0], [3.0]]))        # a batch of one
-f.jacobian(np.array([[2.0, 2.5], [3.0, 3.5]]))   # a batch of two
-```
-
-### Values and derivatives
-
-Each call returns everything up to and including what it names, so a gradient
-never costs a second evaluation:
-
-| Call | Returns |
-|---|---|
-| `evaluate(x)` | `f` |
-| `jacobian(x)` | `(f, J)` |
-| `gradient(x)` | `J` alone, from a graph that does not compute `f` |
-| `hessian(x)` | `(f, J, H)` |
-| `jvp(v, x)` | $(f,\; J v)$ — the directional derivative of $f$ along $v$ |
-| `vjp(w, x)` | $(f,\; w^{\top} J)$ — the gradient of $w \cdot f$ |
-| `hvp(v, x)` | $(f,\; \nabla f,\; H v)$ — the directional derivative of $\nabla f$ along $v$ |
-
-```python
 value, gradient = f.jacobian([2.0, 3.0])
-value, gradient, hessian = f.hessian([2.0, 3.0])
-hessian.shape                               # (2, 2)
-
-value, gradient, hv = f.hvp([1.0, 0.0], [2.0, 3.0])
-hv.shape                                    # (2,) — H·v, without forming H
 ```
 
-Shapes follow the point: a single point gives a scalar `f`, an `(n,)` gradient
-and an `(n, n)` Hessian; a batch of `p` appends that axis, giving `(p,)`,
-`(n, p)` and `(n, n, p)`. A system prepends its output axis. Unlike the C++
-batch calls, the Hessian arrives **dense** — the compression is undone on the
-way out, so nothing here needs `hessian_columns`.
-
-The three products never form the matrix they are named after, which is what
-makes them worth having when $n^2$ storage is the problem — though not when
-speed is, since one product costs about what the whole matrix does. $Jv$ and
-$Hv$ take a direction over symbols, so it accepts the same spellings a point
-does — a sequence, a dict, or a `(symbols, points)` batch alongside a batched
-point. $w^{\top}J$ takes one weight per *function*, so it is positional only.
-`hvp` needs a single-output model, as `hessian`'s compressed path does.
-
-### Calling in a loop
-
-The calls above allocate their answers. `buffer(x)` binds the point and the
-answers once and hands back a `Call`: write the next point into `x`, call it,
-read the blocks back. Same arrays every time, so nothing is allocated per call.
-
-```python
-call = f.buffer(np.array([2.0, 3.0]))
-for _ in range(steps):
-    call()                                  # fills call.value and call.jacobian
-    call.x[:] = next_point(call.jacobian)
-```
-
-`want` chooses how far it goes, and a block nobody asked for is one nobody
-computes:
-
-| `want` | Fills |
-|---|---|
-| `Want.VALUE` | `value` |
-| `Want.JACOBIAN` *(default)* | `value`, `jacobian` |
-| `Want.GRADIENT` | `jacobian` |
-| `Want.HESSIAN` | `value`, `jacobian`, `hessian` |
-
-Reading a block the call did not ask for raises `errc.wrong_column_count`, and
-so does binding `Want.HESSIAN` on a system — a frozen graph carries one
-colouring, so m Hessians are read off the arena a point at a time.
-
-Shapes are the ones the allocating calls answer with, `value` included: one
-output at one point is a `float`, and everything else is an array. The point is
-bound as an array whatever was passed, so `call.x` is writable even when the
-argument was a list.
-
-### Remembering the last call
-
-`remember=True` gives the equation the same last-call cache the C++ side gets
-from `LastValue`, on the same terms: a repeated point is answered off the last
-one, a point one symbol away sweeps only what that symbol reaches, and the
-numbers are unchanged.
-
-```python
-f = ddx.equation(model, remember=True)
-value = f(x)              # swept
-grad = f.gradient(x)      # its own lane
-again = f(x)              # nothing swept
-```
-
-It applies to a point at a time and not to an array of them, and a lane a kernel
-answers serves a repeat without amending a moved point.
-
-### Errors
-
-Python raises where C++ returns `result<T>`. `ddx.Error` is a `RuntimeError`
-carrying the same code:
-
-```python
-try:
-    f.jacobian({"z": 1.0})
-except ddx.Error as e:
-    print(e)                                # "no symbol of that name"
-    e.code is ddx.errc.unknown_symbol       # True
-```
-
-`errc` is an `IntEnum`, so it compares and formats as its number — `e.code.name`
-is the spelling. The codes are the ones in the [table above](#errors); the
-exception's own message is the text.
-
-### Compiling
-
-`Options` is a frozen pydantic model of the same fields as `jit::Options`,
-validated on the way in. `eq.options` reads and assigns it; `eq.compile()` sets
-`backend=COMPILE`, waits for the kernel, and returns the equation, so a
-configure-and-use reads in one line:
-
-```python
-f.compile(points=batch.shape[1]).jacobian(batch)
-f.uses_kernel                               # True, once it has landed
-f.options = ddx.Options(backend=ddx.Backend.INTERPRET)   # discards the kernel
-```
-
-`compile()` blocks by construction — it is `wait_for_kernel()` with the options
-set first. Assigning `options` does not: calls interpret until the kernel lands
-and switch over when it does, as in C++.
-
-`f.compile(backend=ddx.Backend.DEVICE)` builds for an OpenCL device instead, and
-`Options.device` picks one as in [Running on a GPU](#running-on-a-gpu).
-`f.device_status` names the device, is `None` under any other backend, and
-raises `ddx.Error` when no device answers.
-
-No wheel carries the device backend, and neither does `pip install .` unless
-asked with `-C cmake.define.DDX_BUILD_OPENCL=ON`; the `python` preset builds it
-as `AUTO` does. Where it is missing, `ddx.has_opencl` is `False`, `DEVICE`
-interprets, and `device_status` raises `errc.no_device`.
-
-### Saving and loading
-
-Equations save and load here too, over the same file format — a file written by
-C++ loads in Python and the other way round:
-
-```python
-eq.save("f.ddx")
-same = ddx.load("f.ddx")          # no model runs, nothing is rebuilt
-
-@ddx.equation                      # or pair a model with a file, as a cache
-def model() -> ddx.Expression:
-    x, y = ddx.var("x"), ddx.var("y")
-    return ddx.exp(x) * y
-
-cached = ddx.equation(model, cache="f.ddx")
-cached.loaded                      # False the first run, True after
-```
-
-A text equation caches the same way: `ddx.equation("exp(x) * y", cache="f.ddx")`.
-
-`save`, `load` and `verify` raise `ddx.Error` rather than answering `False`:
-unreadable, unloadable and "a different equation" are three different `errc`
-values, and only the code says which.
-
-### Reference
-
-| Member | Is |
-|---|---|
-| `arity`, `outputs`, `symbols` | properties — symbol count, output count, canonical names |
-| `evaluate(x)`, `__call__(x)` | `f` at the point or batch |
-| `jacobian(x)` | `(f, J)` |
-| `gradient(x)` | `J` alone |
-| `jvp(v, x)`, `vjp(w, x)`, `hvp(v, x)` | $(f, Jv)$, $(f, w^{\top}J)$, $(f, \nabla f, Hv)$ |
-| `hessian(x)` | `(f, J, H)`, dense |
-| `options` | property — read or assign an `Options` |
-| `compile(**fields)` | set `Options`, block for the kernel, return self |
-| `uses_kernel`, `wait_for_kernel(*, want)` | whether a call runs compiled code, and blocking for it — for the Jacobian lane unless `want` names another |
-| `device_status` | property — under `DEVICE`, the device answering; `None` otherwise; raises when none answers |
-| `hessian_colors` | groups in the Hessian's compression |
-| `buffer(x, *, want)` | a `Call` bound to its buffers, for a loop |
-| `to_dot(*, all=False)` | the expression in Graphviz form; `all=True` draws the pruned nodes too |
-| `nodes(*, want)` | how many nodes a call for `want` evaluates |
-| `save(path)`, `verify(path)` | write this equation; raise unless `path` holds it |
-| `loaded` | property — whether this equation was read rather than built |
-
-`ddx.load(path)` reads one, and `ddx.equation(model, cache=path)` builds or reads
-as the file allows.
+It is the runtime above with Python's conventions: a model is a callable or a
+string in the [same grammar](#written-down-instead), a point is a sequence, a
+dict or a `(symbols, points)` NumPy batch, answers are arrays with the Hessian
+dense, errors raise `ddx.Error` carrying the same `errc`, and `Options` is a
+pydantic model of `jit::Options`. A file saved on either side loads on the
+other. [python/README.md](python/README.md) — the page PyPI shows — documents
+the module.
 
 ---
 
