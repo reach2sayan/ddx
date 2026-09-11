@@ -12,7 +12,7 @@ build-backend = "scikit_build_core.build"
 name = "ddx-ad"
 dynamic = ["version"]
 description = "Reverse-mode automatic differentiation over a runtime graph, compiled through LLVM"
-readme = "README.md"
+readme = "python/README.md"
 license = "BSL-1.0"
 # The second is what libddx carries inside the wheel: LLVM, zlib and zstd, and
 # pybind11 in the extension.

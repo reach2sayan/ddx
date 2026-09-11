@@ -523,6 +523,7 @@ build/
 /*/settings.local.json
 /build_test/*
 *.md
+!python/README.md
 
 # The ad_jacobian write-up and its build product are kept in the working tree
 # but out of the index, alongside the already-ignored *.md docs.
