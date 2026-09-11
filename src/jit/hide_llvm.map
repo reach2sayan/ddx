@@ -1,0 +1,8 @@
+/* ddx's own instantiations over LLVM types -- std::get on a
+   unique_ptr<llvm::Module>, a zip_view iterator over llvm::Value spans.
+   libstdc++ gives namespace std explicit default visibility, and Clang lets
+   that outrank -fvisibility=hidden where GCC does not.  Nothing ddx exports
+   names an LLVM type, so every symbol that does is local. */
+{
+  local: *4llvm*;
+};
