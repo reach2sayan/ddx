@@ -113,7 +113,6 @@
       ],
       "cacheVariables": {
         "DDX_BUILD_PYTHON": "ON",
-        "DDX_BUILD_BENCHMARKS": "OFF",
         "Python_ROOT_DIR": "${sourceDir}/.venv",
         "Python_FIND_VIRTUALENV": "ONLY"
       }
@@ -127,7 +126,6 @@
       ],
       "cacheVariables": {
         "DDX_BUILD_PYTHON": "ON",
-        "DDX_BUILD_BENCHMARKS": "OFF",
         "Python_ROOT_DIR": "${sourceDir}/.venv",
         "Python_FIND_VIRTUALENV": "ONLY"
       }

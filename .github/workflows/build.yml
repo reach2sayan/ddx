@@ -38,10 +38,8 @@ jobs:
       # The documented floor rather than a version above it, so what README.md
       # promises is what CI proves.  g++-14 for the libstdc++ 14 floor
       # (std::ranges::to), which clang on Linux compiles against too, so the
-      # line serves either Linux caller.  clang-20 because util/config.hpp gates
-      # on __cpp_explicit_this_parameter, which Clang does not define until 20 --
-      # 18 and 19 compile an explicit object parameter but do not advertise it.
-      # Compilers only: Boost is fetched at a pinned hash and never found, and
+      # line serves either Linux caller.  clang-20 for the Clang floor README.md
+      # documents.  Compilers only: Boost is fetched at a pinned hash and never found, and
       # an installed ddx carries the headers in its own prefix, so tests/package
       # needs none either.
       - name: Install compilers (Ubuntu)
@@ -196,7 +194,6 @@ jobs:
           -DCMAKE_BUILD_TYPE=${{ inputs.build_type }}
           -DDDX_BUILD_JIT=ON
           -DDDX_BUILD_PYTHON=ON
-          -DDDX_BUILD_BENCHMARKS=OFF
           -DCMAKE_PREFIX_PATH=${{ github.workspace }}/.deps/llvm-20
           -DPython_ROOT_DIR=${{ github.workspace }}/.venv
           -DPython_FIND_VIRTUALENV=ONLY
@@ -241,7 +238,6 @@ jobs:
           -DCMAKE_BUILD_TYPE=${{ inputs.build_type }}
           -DDDX_BUILD_OPENCL=ON
           -DDDX_BUILD_PYTHON=ON
-          -DDDX_BUILD_BENCHMARKS=OFF
           -DPython_ROOT_DIR=${{ github.workspace }}/.venv
           -DPython_FIND_VIRTUALENV=ONLY
           -S ${{ github.workspace }}

@@ -1,15 +1,15 @@
 #pragma once
 #include <utility>
 
-// P0847 is a hard requirement: every accessor below is written once as an
-// explicit object parameter.  The macro, not the syntax -- Clang 18 and 19
-// compile an explicit object parameter but do not advertise it until 20.
-#if !defined(__cpp_explicit_this_parameter)
-#error "ddx needs deducing this (P0847): GCC 14+, Clang 20+, MSVC 19.32+."
-#endif
-
-#define DDX_SELF this auto &&self
 #define DDX_FWD(X) std::forward<decltype(X)>(X)
+
+// Every value category *this can arrive as, with the expression that forwards
+// it: X(qualifier, self).
+#define DDX_VALUE_CATEGORIES(X)                                                \
+  X(&, (*this))                                                                \
+  X(const &, (*this))                                                          \
+  X(&&, std::move(*this))                                                      \
+  X(const &&, std::move(*this))
 
 // The sweep helpers and dual kernels are factored-out code, not calls; GCC
 // stops inlining them once a TU exhausts its inlining budget.
@@ -31,25 +31,30 @@
 #endif
 
 // Accessors for a class with a private static slot(auto &&self).  ... is a
-// trailing requires-clause.
+// trailing requires-clause.  The four categories are spelled out rather than
+// run through DDX_VALUE_CATEGORIES: MSVC's default preprocessor does not
+// re-split a forwarded __VA_ARGS__, so only the tail may be forwarded.
+#define DDX_SLOT_OVERLOAD_(Q, SELF, HEAD, NAME, PARAM, KEY, ...)               \
+  HEAD [[nodiscard]] constexpr decltype(auto) NAME(PARAM)                      \
+      Q noexcept __VA_ARGS__ {                                                 \
+    return slot<KEY>(SELF);                                                    \
+  }
+#define DDX_SLOT_OVERLOADS_(HEAD, NAME, PARAM, KEY, ...)                       \
+  DDX_SLOT_OVERLOAD_(&, *this, HEAD, NAME, PARAM, KEY, __VA_ARGS__)            \
+  DDX_SLOT_OVERLOAD_(const &, *this, HEAD, NAME, PARAM, KEY, __VA_ARGS__)      \
+  DDX_SLOT_OVERLOAD_(&&, std::move(*this), HEAD, NAME, PARAM, KEY,             \
+                     __VA_ARGS__)                                              \
+  DDX_SLOT_OVERLOAD_(const &&, std::move(*this), HEAD, NAME, PARAM, KEY,       \
+                     __VA_ARGS__)
 
 // One slot under a name of its own: no key parameter, the name is the key.
-#define DDX_SLOT_ACCESSOR(NAME, KEY)                                           \
-  [[nodiscard]] constexpr decltype(auto) NAME(DDX_SELF) noexcept {             \
-    return slot<KEY>(DDX_FWD(self));                                           \
-  }
+#define DDX_SLOT_ACCESSOR(NAME, KEY) DDX_SLOT_OVERLOADS_(, NAME, , KEY, )
 #define DDX_KEYED_GET(TPARAMS, KEY, ...)                                       \
-  template <TPARAMS>                                                           \
-  [[nodiscard]] constexpr decltype(auto) get(DDX_SELF) noexcept __VA_ARGS__ {  \
-    return slot<KEY>(DDX_FWD(self));                                           \
-  }
+  DDX_SLOT_OVERLOADS_(template <TPARAMS>, get, , KEY, __VA_ARGS__)
 // The same slot, reached through the empty tag operator[] deduces its key from.
 #define DDX_KEYED_SUBSCRIPT(TPARAMS, KEY, SUB_PARAM, ...)                      \
-  template <TPARAMS>                                                           \
-  [[nodiscard]] constexpr decltype(auto) operator[](                           \
-      DDX_SELF, SUB_PARAM) noexcept __VA_ARGS__ {                              \
-    return slot<KEY>(DDX_FWD(self));                                           \
-  }
+  DDX_SLOT_OVERLOADS_(template <TPARAMS>, operator[], SUB_PARAM, KEY,          \
+                      __VA_ARGS__)
 // Both spellings of one slot.  The two parameter lists differ because get<>
 // takes its key and operator[] deduces it from the tag.
 #define DDX_KEYED_ACCESSORS(GET_TPARAMS, SUB_TPARAMS, KEY, SUB_PARAM, ...)     \

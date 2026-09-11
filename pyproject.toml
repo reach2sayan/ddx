@@ -49,6 +49,53 @@ compare = [
     "matplotlib>=3.8",
     "pandas>=2.1",
 ]
+# torch and JAX for the GPU comparison, one build of the pair at a time.
+# PyPI's torch is the CUDA build on Linux, so each group takes torch from
+# PyTorch's own index; `scripts/compare.py --stack=rocm|cuda|cpu` syncs one.
+# The markers are where wheels exist: torch's ROCm build is Linux-only and stops
+# at CPython 3.14, its CUDA build has no macOS, and JAX starts at 3.12, its GPU
+# plugins on Linux only.  jax[rocm7-local] runs on the system's ROCm 7; torch's
+# ROCm wheel carries its own.  triton-rocm is named because it lives only on the
+# ROCm index, and a source scoped to a group reaches only what the group lists.
+stack-rocm = [
+    "torch>=2.10; sys_platform == 'linux' and python_version < '3.15'",
+    "triton-rocm; sys_platform == 'linux' and python_version < '3.15'",
+    "jax[rocm7-local]>=0.11; sys_platform == 'linux' and python_version >= '3.12' and python_version < '3.15'",
+]
+stack-cuda = [
+    "torch>=2.10; sys_platform != 'darwin'",
+    "jax[cuda13]>=0.11; sys_platform == 'linux' and python_version >= '3.12'",
+]
+stack-cpu = [
+    "torch>=2.10",
+    "jax>=0.11; python_version >= '3.12'",
+]
+
+[tool.uv]
+conflicts = [[{ group = "stack-rocm" }, { group = "stack-cuda" }, { group = "stack-cpu" }]]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-rocm", group = "stack-rocm" },
+    { index = "pytorch-cuda", group = "stack-cuda" },
+    { index = "pytorch-cpu", group = "stack-cpu" },
+]
+triton-rocm = [{ index = "pytorch-rocm", group = "stack-rocm" }]
+
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm7.0"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 # One version, CMake's: `project(ddx VERSION …)` is where it is written, and a
 # release tag is checked against the same line.
@@ -69,7 +116,6 @@ build-dir = "build/wheel/{wheel_tag}"
 [tool.scikit-build.cmake.define]
 DDX_BUILD_PYTHON = "ON"
 DDX_BUILD_JIT = "ON"
-DDX_BUILD_BENCHMARKS = "OFF"
 # Off rather than AUTO: AUTO would decide by the build machine, and a wheel
 # runs on others.  The device backend joins the wheel once CI can test it there.
 DDX_BUILD_OPENCL = "OFF"

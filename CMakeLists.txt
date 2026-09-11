@@ -133,8 +133,3 @@ if (DDX_BUILD_PYTHON)
     ddx_use_pybind11()
     add_subdirectory(python)
 endif ()
-
-option(DDX_BUILD_BENCHMARKS "Build Google Benchmark benchmarks" ON)
-if (DDX_BUILD_BENCHMARKS)
-    add_subdirectory(benchmarks)
-endif ()

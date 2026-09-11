@@ -5,7 +5,6 @@
 #   ddx_use_llvm()             LLVM 20, found                      DDX_BUILD_JIT
 #   ddx_use_opencl()           OpenCL headers + ICD loader, fetched DDX_BUILD_OPENCL
 #   ddx_use_googletest()       GoogleTest, fetched                 top-level only
-#   ddx_use_googlebenchmark()  Google Benchmark, fetched           DDX_BUILD_BENCHMARKS
 #   ddx_use_pybind11()         pybind11, found in the build env    DDX_BUILD_PYTHON
 include_guard(GLOBAL)
 
@@ -13,7 +12,6 @@ include(FetchContent)
 
 # --- versions ---------------------------------------------------------------
 set(DDX_GOOGLETEST_VERSION "1.18.0" CACHE STRING "GoogleTest release to fetch")
-set(DDX_GOOGLEBENCHMARK_VERSION "1.9.1" CACHE STRING "Google Benchmark release to fetch")
 
 # Exact, not a floor: the ORC C++ API is not stable across releases.
 set(DDX_LLVM_VERSION 20)
@@ -21,11 +19,6 @@ set(DDX_LLVM_VERSION 20)
 # --- declarations -----------------------------------------------------------
 FetchContent_Declare(googletest
         URL https://github.com/google/googletest/archive/refs/tags/v${DDX_GOOGLETEST_VERSION}.zip
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-        SYSTEM
-)
-FetchContent_Declare(googlebenchmark
-        URL https://github.com/google/benchmark/archive/refs/tags/v${DDX_GOOGLEBENCHMARK_VERSION}.zip
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SYSTEM
 )
@@ -224,22 +217,13 @@ macro(ddx_use_pybind11)
     endif ()
 endmacro()
 
-# --- GoogleTest, Google Benchmark -------------------------------------------
+# --- GoogleTest --------------------------------------------------------------
 macro(ddx_use_googletest)
     if (NOT TARGET gtest_main)
         set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
         set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
         FetchContent_MakeAvailable(googletest)
         _ddx_silence_dependency(gtest gtest_main gmock gmock_main)
-    endif ()
-endmacro()
-
-macro(ddx_use_googlebenchmark)
-    if (NOT TARGET benchmark::benchmark)
-        set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-        set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-        FetchContent_MakeAvailable(googlebenchmark)
-        _ddx_silence_dependency(benchmark benchmark_main)
     endif ()
 endmacro()
 

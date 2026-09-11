@@ -92,14 +92,15 @@ constexpr auto get_real_part(const Numeric auto &x) noexcept {
 }
 
 // `a op= b` spelled as `a = a op b`: the binary operators are the rule, and the
-// gate is the body itself, so whatever they refuse is refused here.  A
-// template so every level of Dual<Dual<T>> gets its own empty base: the outer
+// gate is the body itself, so whatever they refuse is refused here.  CRTP,
+// which also gives every level of Dual<Dual<T>> its own empty base: the outer
 // and its val_ cannot share one, and a shared base costs 8 bytes of padding.
-template <typename> struct compound_from_binary {
+template <typename Derived> struct compound_from_binary {
 #define DDX_COMPOUND_FROM_BINARY(OP)                                           \
-  template <typename Self, typename B>                                         \
-    requires requires(Self &d, const B &o) { d = d OP o; }                     \
-  constexpr Self &operator OP## = (this Self & self, const B &o) noexcept {    \
+  template <typename B>                                                        \
+    requires requires(Derived &d, const B &o) { d = d OP o; }                  \
+  constexpr Derived &operator OP##=(const B & o) & noexcept {                  \
+    auto &self = static_cast<Derived &>(*this);                                \
     return self = self OP o;                                                   \
   }
   DDX_COMPOUND_FROM_BINARY(+)

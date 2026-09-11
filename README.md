@@ -77,8 +77,8 @@ until 20, and libc++ has no `views::enumerate` — hence the two floors.
 - **Boost** is downloaded and unpacked at configure time; nothing needs to be
   installed, and no compiled Boost library is ever linked. Point
   `DDX_BOOST_INCLUDEDIR` at your own headers to use those instead.
-- GoogleTest and Google Benchmark are fetched at configure time, so a first
-  configure that builds the tests or the benchmarks wants a network.
+- GoogleTest is fetched at configure time, so a first configure that builds
+  the tests wants a network.
 - `-DDDX_BUILD_JIT=ON` additionally needs an LLVM 20 installation, pointed at
   with `LLVM_DIR` — to build. The library it produces carries LLVM, and loads
   on a machine that has none.
@@ -198,7 +198,6 @@ cmake --preset release_jit -DLLVM_DIR=/opt/llvm-20/lib/cmake/llvm
 | `DDX_BUILD_OPENCL` | `AUTO` | compile the OpenCL device backend into the library — `AUTO` does where this machine has an OpenCL runtime (Linux only), `ON` or `OFF` decides |
 | `DDX_BUILD_PYTHON` | `OFF` | build the pybind11 extension module |
 | `DDX_BUILD_TESTS` | `ON` | build the GoogleTest tests |
-| `DDX_BUILD_BENCHMARKS` | `ON` | build the benchmark targets |
 | `DDX_SANITIZE` | `off` | `thread`, `address` or `undefined` — instrument the build |
 | `DDX_INSTALL` | on if top-level | generate the install and `find_package` rules |
 | `ENABLE_NATIVE_ARCH` | `ON` | `-march=native`, else `x86-64-v3`; x86 only, arm64 takes the compiler's default |
@@ -501,9 +500,8 @@ coupling, where `hessian()` is $\text{colours} \times n$ and reaches $n^2$ when
 every symbol touches every other; `vjp` is $n$ where `jacobian()` is one column
 per structural nonzero; `jvp` is $m$.
 
-What that buys is **storage and bandwidth, not time**. Measured
-(`benchmarks/jit/benchmark_hvp.cpp`), one `hvp` costs about the same as one
-whole `hessian` — within 10% across $n = 8 \ldots 128$ on both dense and banded
+What that buys is **storage and bandwidth, not time**. Measured, one `hvp`
+costs about the same as one whole `hessian` — within 10% across $n = 8 \ldots 128$ on both dense and banded
 coupling — because the two lanes share one interned graph and the model's own
 cone dominates both. So:
 
@@ -963,8 +961,8 @@ a model with `exp`, `log` or `sin` in it agrees closely and not exactly.
 
 Every call copies the point columns to the device and the output columns back,
 so a short batch is quicker swept or compiled for the CPU; the device pays on
-large batches, where its arithmetic outweighs the copy. `benchmarks_cl` measures
-all three on one model as the batch grows.
+large batches, where its arithmetic outweighs the copy.
+`scripts/compare.py --gpu` measures it against torch and JAX on the same GPU.
 
 The device is usable without an equation as well: `cl::Device::create(selector)`
 picks one, `compile(graph)` builds a `cl::Kernel` with the batch calls' column

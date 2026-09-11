@@ -283,9 +283,9 @@ result<void> Kernel::operator()(std::span<const double *const> xs,
     k.kernel.set_arg(4, static_cast<cl_ulong>(n));
     const std::size_t global = (n + k.local - 1) / k.local * k.local;
     k.queue.enqueue_1d_range_kernel(k.kernel, 0, global, k.local);
-    for (const auto [slot, columns] : std::views::enumerate(outputs)) {
+    for (const auto [slot, columns] : outputs | std::views::enumerate) {
       const auto &from = k.buffers[static_cast<std::size_t>(slot) + 1];
-      for (const auto [j, column] : std::views::enumerate(columns)) {
+      for (const auto [j, column] : columns | std::views::enumerate) {
         k.queue.enqueue_read_buffer_async(
             from, static_cast<std::size_t>(j) * bytes, bytes, column);
       }

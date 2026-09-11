@@ -107,7 +107,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Configure
-        run: cmake -B build -DDDX_BUILD_TESTS=OFF -DDDX_BUILD_BENCHMARKS=OFF
+        run: cmake -B build -DDDX_BUILD_TESTS=OFF
 
       - name: Build and install both configs
         run: |
