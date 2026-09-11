@@ -49,6 +49,7 @@
 # Linker output
 *.ilk
 *.map
+!src/jit/hide_llvm.map
 *.exp
 
 # Precompiled Headers
