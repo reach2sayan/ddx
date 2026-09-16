@@ -77,6 +77,8 @@ DECK = [
         "build": "gcc 15.2 &middot; clang 18.1 &nbsp;&mdash;&nbsp; -std=c++23 -O2, "
                  "the same code on both",
         "alert": True,
+        "colophon": "Slides produced with Claude (Anthropic). The idea, the code and the "
+                    "measurements are the author's own.",
     },
     {
         "h2": "What an expression template is",
@@ -145,45 +147,6 @@ DECK = [
                 '<code>constexpr</code>, so it folds before the program runs.</p>',
     },
     {
-        "h2": "What does it cost at run time?",
-        "body": "<p>The same sum over the same 52.4M elements, one kernel per design, "
-                "measured with <code>perf stat</code>:</p>",
-        "table": (
-            ("design", "sizeof", "insns gcc", "insns clang",
-             "cycles/elem gcc", "cycles/elem clang"),
-            ("by value", "32", "64", "15", "3.066", "3.092"),
-            ("by reference", "16", "139", "15", "3.062", "3.096"),
-            ("in the type", "1", "60", "15", "3.054", "3.101"),
-        ),
-        "after": '<dl class="cmds">'
-                 '<dt>machine</dt><dd>AMD Ryzen 7 PRO 6850U (Zen 3+, 8C/16T, 400&ndash;4768 MHz) '
-                 '&middot; 32 KiB L1d and 512 KiB L2 per core &middot; 16 MiB shared L3 '
-                 '&middot; 27 GiB RAM</dd>'
-                 '<dt>system</dt><dd>Ubuntu 24.04.4, kernel 6.8.0, glibc 2.39, '
-                 '<code>powersave</code> governor, otherwise idle</dd>'
-                 '<dt>toolchain</dt><dd>gcc 15.2.0 and clang 18.1.3, both '
-                 '<code>-std=c++23 -O2 -march=native</code></dd>'
-                 '<dt>workload</dt><dd>2048 doubles (16 KiB, L1-resident) &times; 25&thinsp;600 '
-                 'reps = 52.4M elements per design, one design per process</dd>'
-                 '<dt>metric</dt><dd>cycles per element from <code>perf stat</code> &mdash; '
-                 'frequency-invariant, so the governor cannot flatter or punish a design; '
-                 'wall-clock agreed to within 3%</dd>'
-                 '<dt>method</dt><dd>three interleaved runs per design, median reported, '
-                 'spread &lt; 1%; accumulator escaped through an <code>asm volatile</code> '
-                 'barrier and <em>y</em> varied per rep, so nothing is hoisted or folded away</dd>'
-                 '</dl>'
-                 '<dl class="cmds">'
-                 '<dt>build</dt><dd>g++-15 -std=c++23 -O2 -march=native bench.cpp -o bench</dd>'
-                 '<dt>cycles</dt><dd>perf stat -e cycles ./bench value 2048 25600</dd>'
-                 '<dt>insns</dt><dd>objdump -d --demangle bench | '
-                 'awk \'/&lt;by_value::sum\\(/{f=1} f&amp;&amp;/\\t/{c++} '
-                 '/^$/{if(f)exit} END{print c}\'</dd>'
-                 '</dl>',
-        "step": '<p class="takeaway good">Identical within 1%, even with the data in L1. gcc '
-                'emits 64 or 139 instructions and clang 15, and they all take the same three '
-                'cycles per element.</p>',
-    },
-    {
         "h2": "The trade",
         "two": (
             ("Gained", ["no lifetimes", "no copies", "no size",
@@ -247,13 +210,6 @@ ALERT = (
 )
 
 
-def render_table(table):
-    head, rows = table[0], table[1:]
-    th = "".join(f"<th>{c}</th>" for c in head)
-    tr = "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in rows)
-    return f'<table class="data"><thead><tr>{th}</tr></thead><tbody>{tr}</tbody></table>'
-
-
 def render_two(two):
     cols = []
     for head, items, tone in two:
@@ -276,6 +232,8 @@ def render(deck, links):
                 parts.append(f'<p class="build">{slide["build"]}</p>')
             if slide.get("alert"):
                 parts.append(ALERT)
+            if slide.get("colophon"):
+                parts.append(f'<p class="colophon">{slide["colophon"]}</p>')
             out.append(f'<section class="slide title"><div class="pad">'
                        f'{"".join(parts)}</div></section>')
             continue
@@ -287,8 +245,6 @@ def render(deck, links):
             parts.append(slide["body"])
         if slide.get("code"):
             parts.append(render_code(slide["code"]))
-        if slide.get("table"):
-            parts.append(render_table(slide["table"]))
         if slide.get("after"):
             parts.append(slide["after"])
         if slide.get("two"):
@@ -426,21 +382,14 @@ pre.code .c { color: var(--grey); font-style: italic; }
 .alert b { color: var(--orange); }
 .slide:not(.title) .alert { margin: 0 0 .8em; max-width: none; }
 
+.colophon {
+  margin: 1em 0 0; font-size: .58em; color: var(--muted); font-style: italic;
+}
+
 .build {
   margin: .9em 0 0; font-size: .66em; color: var(--muted);
   font-family: "JetBrains Mono", ui-monospace, monospace;
 }
-
-dl.cmds {
-  display: grid; grid-template-columns: max-content 1fr; gap: .18em .9em;
-  margin: .5em 0 0; font-size: .5em; line-height: 1.45;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
-}
-dl.cmds dt {
-  color: var(--muted); text-transform: uppercase; letter-spacing: .08em;
-  font-weight: 700; text-align: right;
-}
-dl.cmds dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
 
 .matrix {
   margin: .5em 0 0; font-size: .64em; color: var(--muted);
@@ -459,20 +408,6 @@ dl.cmds dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
 .takeaway.good::before { content: "\\2713\\00a0"; color: var(--blue); font-weight: 700; }
 .takeaway.bad { border-left-color: var(--orange); }
 .takeaway.bad::before { content: "\\2717\\00a0"; color: var(--orange); font-weight: 700; }
-
-table.data {
-  border-collapse: collapse; margin: .2em 0 .3em; font-size: .78em;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
-}
-table.data th, table.data td {
-  padding: .3em 1.1em .3em 0; text-align: right; border-bottom: 1px solid var(--rule);
-}
-table.data th:first-child, table.data td:first-child { text-align: left; }
-table.data th {
-  font-weight: 700; color: var(--muted); text-transform: uppercase;
-  letter-spacing: .06em; font-size: .82em;
-}
-table.data tbody tr:last-child td { color: var(--blue); font-weight: 700; }
 
 /* ---------- two columns ---------- */
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 1em; margin-top: .8em; }
