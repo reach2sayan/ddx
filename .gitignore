@@ -538,3 +538,8 @@ docs/ad_jacobian.pdf
 /cmake-build-bench/
 .claude/
 !/docs/
+
+# The lightning talk is source plus one generated page: snippets/, build.py and
+# the index.html it writes are tracked; the benchmark binaries are not.
+/presentations/*/bench/*
+!/presentations/*/bench/*.cpp

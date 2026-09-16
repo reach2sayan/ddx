@@ -1,0 +1,3 @@
+auto e = x * y + two * x;   // nothing is evaluated -- this builds a tree
+
+Add< Mul< Var, Var >, Mul< Const, Var > >

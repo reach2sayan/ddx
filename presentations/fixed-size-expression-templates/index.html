@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>sizeof(x*y + 2*x) == 1</title>
+    <style>
+/* Okabe-Ito, on a dark ground: blue/orange/grey only, never red vs green.
+   Every coloured cue is doubled by a glyph, a weight or an italic. */
+:root {
+  --bg: #0f141b;
+  --panel: #19212b;
+  --rule: #33404f;
+  --ink: #edf1f7;
+  --muted: #aab7c8;
+  --blue: #63bdf0;
+  --orange: #eaa62b;
+  --grey: #9dabbd;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+  font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.deck { height: 100%; }
+.slide {
+  display: none; overflow: hidden; flex-direction: column; justify-content: center;
+  height: 100%; padding: 3.5vh 5vw 5vh; font-size: clamp(15px, 1.7vw, 26px);
+}
+.pad { width: 100%; }
+.slide.on { display: flex; }
+h1 { font-size: 2.6em; font-weight: 700; margin: 0 0 .4em; letter-spacing: -.01em; }
+h2 {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 1.5em;
+  font-size: 1.3em; font-weight: 650; margin: 0 0 .5em; color: var(--ink);
+  border-bottom: 2px solid var(--rule); padding-bottom: .35em;
+}
+.handle {
+  flex: none; text-align: right; font-size: .44em; font-weight: 400; line-height: 1.45;
+  font-family: "JetBrains Mono", ui-monospace, monospace; color: var(--muted);
+}
+.handle .ce { display: block; color: var(--blue); text-decoration: underline; }
+.handle .ce:hover { color: var(--orange); }
+.handle .whole { display: block; }
+h3 {
+  font-size: .72em; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .1em; color: var(--muted); margin: 0 0 .7em;
+}
+p, li { line-height: 1.55; margin: 0 0 .5em; }
+ul { margin: 0 0 .6em 1.1em; padding: 0; }
+li { margin-bottom: .35em; }
+em { font-style: normal; font-weight: 700; color: var(--blue); }
+.title { align-items: center; text-align: center; }
+.lede { font-size: 1.15em; color: var(--muted); }
+.note { font-size: .8em; color: var(--muted); }
+.mono, code, pre { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+p code, li code {
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 4px;
+  padding: .05em .35em; font-size: .88em;
+}
+
+/* ---------- code ---------- */
+pre.code {
+  margin: 0; padding: .7em 0; background: var(--panel);
+  border: 1px solid var(--rule); border-radius: 8px;
+  overflow: hidden; line-height: 1.4; font-size: .95em;
+  white-space: pre; tab-size: 2;
+}
+pre.code .line { display: block; padding: 0 1em 0 .9em; }
+pre.code .ln {
+  display: inline-block; width: 2.4em; text-align: right; margin-right: 1em;
+  color: #67748a; user-select: none;
+}
+pre.code .k { color: var(--blue); font-weight: 600; }
+/* The one new idea in the deck, marked in place: a rule, a tint and extra
+   weight, so it reads as marked with no colour at all. */
+pre.code .here {
+  background: #22303e; border-left: 3px solid var(--blue);
+  margin-left: -.9em; padding-left: calc(.9em - 3px); font-weight: 600;
+}
+pre.code .here .c { color: #b9c6d8; }
+pre.code .n { color: var(--orange); }
+pre.code .c { color: var(--grey); font-style: italic; }
+
+
+/* ---------- slideware alert ---------- */
+/* Orange, a siren, a rule and an upright weight -- four cues, so it still reads
+   as a warning with no colour at all. */
+.alert {
+  display: flex; gap: .7em; align-items: flex-start; text-align: left;
+  margin: 1.2em auto 0; max-width: 46em; padding: .7em .9em;
+  font-size: .68em; line-height: 1.5; color: var(--ink);
+  background: #2a2317; border: 1px solid var(--orange);
+  border-left: 4px solid var(--orange); border-radius: 8px;
+}
+.alert .siren { font-size: 1.2em; line-height: 1.2; color: var(--orange); }
+.alert b { color: var(--orange); }
+.slide:not(.title) .alert { margin: 0 0 .8em; max-width: none; }
+
+.build {
+  margin: .9em 0 0; font-size: .66em; color: var(--muted);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+
+dl.cmds {
+  display: grid; grid-template-columns: max-content 1fr; gap: .18em .9em;
+  margin: .5em 0 0; font-size: .5em; line-height: 1.45;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+dl.cmds dt {
+  color: var(--muted); text-transform: uppercase; letter-spacing: .08em;
+  font-weight: 700; text-align: right;
+}
+dl.cmds dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
+
+.matrix {
+  margin: .5em 0 0; font-size: .64em; color: var(--muted);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+.matrix b { color: var(--ink); font-weight: 700; }
+
+/* ---------- takeaways ---------- */
+.takeaway {
+  margin: .7em 0 0; padding-left: .8em; border-left: 3px solid var(--rule);
+  color: var(--ink);
+}
+.takeaway.big { font-size: 1.25em; font-weight: 650; }
+.takeaway.note { font-size: .78em; color: var(--muted); }
+.takeaway.good { border-left-color: var(--blue); }
+.takeaway.good::before { content: "\2713\00a0"; color: var(--blue); font-weight: 700; }
+.takeaway.bad { border-left-color: var(--orange); }
+.takeaway.bad::before { content: "\2717\00a0"; color: var(--orange); font-weight: 700; }
+
+table.data {
+  border-collapse: collapse; margin: .2em 0 .3em; font-size: .78em;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+table.data th, table.data td {
+  padding: .3em 1.1em .3em 0; text-align: right; border-bottom: 1px solid var(--rule);
+}
+table.data th:first-child, table.data td:first-child { text-align: left; }
+table.data th {
+  font-weight: 700; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .06em; font-size: .82em;
+}
+table.data tbody tr:last-child td { color: var(--blue); font-weight: 700; }
+
+/* ---------- two columns ---------- */
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 1em; margin-top: .8em; }
+.two > div {
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 8px;
+  padding: .9em 1.1em .7em;
+}
+.two p { margin-bottom: .35em; font-size: .92em; }
+.two .mark { display: inline-block; width: 1.4em; font-weight: 700; }
+.two .good .mark { color: var(--blue); }
+.two .bad .mark { color: var(--orange); }
+.two .bad { font-style: italic; }
+
+/* ---------- chrome ---------- */
+.bar { position: fixed; left: 0; bottom: 0; height: 3px; background: var(--blue); }
+.count {
+  position: fixed; right: 1.2em; bottom: 1em; font-size: 12px; color: var(--muted);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+@media print {
+  .slide { display: flex !important; page-break-after: always; height: 100vh; }
+  .bar, .count { display: none; }
+}
+</style>
+  </head>
+  <body>
+    <div class="deck">
+<section class="slide title"><div class="pad"><h1 class="mono">sizeof(x*y + 2*x) == 1</h1><p class="lede">Expression templates that never grow</p><p class="note">lightning talk &middot; CppCon 2026</p><p class="build">gcc 15.2 &middot; clang 18.1 &nbsp;&mdash;&nbsp; -std=c++23 -O2, the same code on both</p><div class="alert"><span class="siren">&#9888;</span><span><b>Slideware &mdash; do not try this (exactly) at home.</b> Every listing compiles and every number on it is real, but it is cut to fit a slide.</span></div></div></section>
+<section class="slide"><div class="pad"><h2>What an expression template is</h2><p>An expression template does not do the arithmetic when you write it. It <em>represents</em> the computation &mdash; and it represents it as a <em>type</em>:</p><pre class="code txt"><code><span class="line"><span class="k">auto</span> e = x * y + two * x;   <span class="c">// nothing is evaluated -- this builds a tree</span></span><span class="line">&nbsp;</span><span class="line">Add&lt; Mul&lt; Var, Var &gt;, Mul&lt; Const, Var &gt; &gt;</span></code></pre><p class="takeaway big">The structure is all in the type. So how many bytes does <code>e</code> need?</p></div></section>
+<section class="slide"><div class="pad"><h2>Attempt 1 &mdash; children by value<span class="handle"><a class="ce" href="https://godbolt.org/z/1qqo6Kra7" rel="noopener" target="_blank">https://godbolt.org/z/1qqo6Kra7</a><span class="whole">lines 1&ndash;27 of 41</span></span></h2><pre class="code cpp"><code><span class="line"><span class="ln">1</span><span class="c">// Children stored by value: safe, but the object grows with the expression.</span></span><span class="line"><span class="ln">2</span>&nbsp;</span><span class="line"><span class="ln">3</span><span class="k">struct</span> Var {</span><span class="line"><span class="ln">4</span>  <span class="k">double</span> v;</span><span class="line"><span class="ln">5</span>  <span class="k">constexpr</span> Var &amp;<span class="k">operator</span>=(<span class="k">double</span> d) { v = d; <span class="k">return</span> *this; }   <span class="c">// a variable can change</span></span><span class="line"><span class="ln">6</span>  <span class="k">constexpr</span> <span class="k">double</span> eval() <span class="k">const</span> { <span class="k">return</span> v; }</span><span class="line"><span class="ln">7</span>};</span><span class="line"><span class="ln">8</span>&nbsp;</span><span class="line"><span class="ln">9</span><span class="k">struct</span> Const {</span><span class="line"><span class="ln">10</span>  <span class="k">double</span> v;</span><span class="line"><span class="ln">11</span>  <span class="k">void</span> <span class="k">operator</span>=(<span class="k">double</span>) = delete;                              <span class="c">// a constant cannot</span></span><span class="line"><span class="ln">12</span>  <span class="k">constexpr</span> <span class="k">double</span> eval() <span class="k">const</span> { <span class="k">return</span> v; }</span><span class="line"><span class="ln">13</span>};</span><span class="line"><span class="ln">14</span>&nbsp;</span><span class="line"><span class="ln">15</span><span class="k">template</span> &lt;<span class="k">class</span> L, <span class="k">class</span> R&gt; <span class="k">struct</span> Add {</span><span class="line"><span class="ln">16</span>  L lhs; R rhs;                                                 <span class="c">// both children stored</span></span><span class="line"><span class="ln">17</span>  <span class="k">constexpr</span> <span class="k">double</span> eval() <span class="k">const</span> { <span class="k">return</span> lhs.eval() + rhs.eval(); }</span><span class="line"><span class="ln">18</span>};</span><span class="line"><span class="ln">19</span>&nbsp;</span><span class="line"><span class="ln">20</span><span class="k">template</span> &lt;<span class="k">class</span> L, <span class="k">class</span> R&gt; <span class="k">struct</span> Mul {</span><span class="line"><span class="ln">21</span>  L lhs; R rhs;</span><span class="line"><span class="ln">22</span>  <span class="k">constexpr</span> <span class="k">double</span> eval() <span class="k">const</span> { <span class="k">return</span> lhs.eval() * rhs.eval(); }</span><span class="line"><span class="ln">23</span>};</span><span class="line"><span class="ln">24</span>&nbsp;</span><span class="line"><span class="ln">25</span><span class="k">template</span> &lt;<span class="k">class</span> L, <span class="k">class</span> R&gt; <span class="k">constexpr</span> Add&lt;L, R&gt; <span class="k">operator</span>+(L l, R r) { <span class="k">return</span> {l, r}; }</span><span class="line"><span class="ln">26</span><span class="k">template</span> &lt;<span class="k">class</span> L, <span class="k">class</span> R&gt; <span class="k">constexpr</span> Mul&lt;L, R&gt; <span class="k">operator</span>*(L l, R r) { <span class="k">return</span> {l, r}; }</span></code></pre><p class="takeaway">Safe &mdash; every node owns its children. Which also means it owns a <em>copy</em>.</p></div></section>
+<section class="slide"><div class="pad"><h2>&hellip; and it grows<span class="handle"><a class="ce" href="https://godbolt.org/z/1qqo6Kra7" rel="noopener" target="_blank">https://godbolt.org/z/1qqo6Kra7</a><span class="whole">lines 28&ndash;41 of 41</span></span></h2><pre class="code cpp"><code><span class="line"><span class="ln">28</span><span class="k">int</span> main() {</span><span class="line"><span class="ln">29</span>  Var x{<span class="n">2.0</span>}, y{<span class="n">3.0</span>};</span><span class="line"><span class="ln">30</span>  Const two{<span class="n">2.0</span>};</span><span class="line"><span class="ln">31</span>&nbsp;</span><span class="line"><span class="ln">32</span>  <span class="k">static_assert</span>(<span class="k">sizeof</span>(x) == <span class="n">8</span>);</span><span class="line"><span class="ln">33</span>  <span class="k">static_assert</span>(<span class="k">sizeof</span>(x * y) == <span class="n">16</span>);</span><span class="line"><span class="ln">34</span>  <span class="k">static_assert</span>(<span class="k">sizeof</span>(x * y + two * x) == <span class="n">32</span>);        <span class="c">// one expression, four nodes</span></span><span class="line"><span class="ln">35</span>  <span class="k">static_assert</span>(<span class="k">sizeof</span>(x * y + two * x + x * y) == <span class="n">48</span>);</span><span class="line"><span class="ln">36</span>&nbsp;</span><span class="line"><span class="ln">37</span>  <span class="k">auto</span> e = x * y + two * x;</span><span class="line"><span class="ln">38</span>  if (e.eval() != <span class="n">10.0</span>) <span class="k">return</span> <span class="n">1</span>;</span><span class="line"><span class="ln">39</span>  x = <span class="n">4.0</span>;</span><span class="line"><span class="ln">40</span>  <span class="k">return</span> <span class="k">int</span>(e.eval());                  <span class="c">// still 10: the tree copied x, it never watched it</span></span><span class="line"><span class="ln">41</span>}</span></code></pre><p class="takeaway bad">Size is O(nodes) &mdash; a real model is kilobytes of expression &mdash; and every <code>operator+</code> copies the subtree it just built.</p></div></section>
+<section class="slide"><div class="pad"><h2>Attempt 2 &mdash; children by reference<span class="handle"><a class="ce" href="https://godbolt.org/z/xba4TMhf9" rel="noopener" target="_blank">https://godbolt.org/z/xba4TMhf9</a><span class="whole">lines 1&ndash;27 of 40</span></span></h2><pre class="code cpp"><code><span class="line"><span class="ln">1</span><span class="c">// Children stored by reference: fixed size, but the temporaries are gone.</span></span><span class="line"><span class="ln">2</span>&nbsp;</span><span class="line"><span class="ln">3</span><span class="k">struct</span> Var {</span><span class="line"><span class="ln">4</span>  <span class="k">double</span> v;</span><span class="line"><span class="ln">5</span>  Var &amp;<span class="k">operator</span>=(<span class="k">double</span> d) { v = d; <span class="k">return</span> *this; }   <span class="c">// a variable can change</span></span><span class="line"><span class="ln">6</span>  <span class="k">double</span> eval() <span class="k">const</span> { <span class="k">return</span> v; }</span><span class="line"><span class="ln">7</span>};</span><span class="line"><span class="ln">8</span>&nbsp;</span><span class="line"><span class="ln">9</span><span class="k">struct</span> Const {</span><span class="line"><span class="ln">10</span>  <span class="k">double</span> v;</span><span class="line"><span class="ln">11</span>  <span class="k">void</span> <span class="k">operator</span>=(<span class="k">double</span>) = delete;                    <span class="c">// a constant cannot</span></span><span class="line"><span class="ln">12</span>  <span class="k">double</span> eval() <span class="k">const</span> { <span class="k">return</span> v; }</span><span class="line"><span class="ln">13</span>};</span><span class="line"><span class="ln">14</span>&nbsp;</span><span class="line"><span class="ln">15</span><span class="k">template</span> &lt;<span class="k">class</span> L, <span class="k">class</span> R&gt; <span class="k">struct</span> Add {</span><span class="line"><span class="ln">16</span>  <span class="k">const</span> L &amp;lhs; <span class="k">const</span> R &amp;rhs;                         <span class="c">// 8 bytes each, whatever L and R are</span></span><span class="line"><span class="ln">17</span>  <span class="k">double</span> eval() <span class="k">const</span> { <span class="k">return</span> lhs.eval() + rhs.eval(); }</span><span class="line"><span class="ln">18</span>};</span><span class="line"><span class="ln">19</span>&nbsp;</span><span class="line"><span class="ln">20</span><span class="k">template</span> &lt;<span class="k">class</span> L, <span class="k">class</span> R&gt; <span class="k">struct</span> Mul {</span><span class="line"><span class="ln">21</span>  <span class="k">const</span> L &amp;lhs; <span class="k">const</span> R &amp;rhs;</span><span class="line"><span class="ln">22</span>  <span class="k">double</span> eval() <span class="k">const</span> { <span class="k">return</span> lhs.eval() * rhs.eval(); }</span><span class="line"><span class="ln">23</span>};</span><span class="line"><span class="ln">24</span>&nbsp;</span><span class="line"><span class="ln">25</span><span class="k">template</span> &lt;<span class="k">class</span> L, <span class="k">class</span> R&gt; Add&lt;L, R&gt; <span class="k">operator</span>+(<span class="k">const</span> L &amp;l, <span class="k">const</span> R &amp;r) { <span class="k">return</span> {l, r}; }</span><span class="line"><span class="ln">26</span><span class="k">template</span> &lt;<span class="k">class</span> L, <span class="k">class</span> R&gt; Mul&lt;L, R&gt; <span class="k">operator</span>*(<span class="k">const</span> L &amp;l, <span class="k">const</span> R &amp;r) { <span class="k">return</span> {l, r}; }</span></code></pre><p class="takeaway">A reference is 8 bytes whatever it points at.</p></div></section>
+<section class="slide"><div class="pad"><h2>&hellip; it watches, and then it dangles<span class="handle"><a class="ce" href="https://godbolt.org/z/xba4TMhf9" rel="noopener" target="_blank">https://godbolt.org/z/xba4TMhf9</a><span class="whole">lines 28&ndash;40 of 40</span></span></h2><pre class="code cpp"><code><span class="line"><span class="ln">28</span><span class="k">int</span> main() {</span><span class="line"><span class="ln">29</span>  Var x{<span class="n">2.0</span>}, y{<span class="n">3.0</span>};</span><span class="line"><span class="ln">30</span>  Const two{<span class="n">2.0</span>};</span><span class="line"><span class="ln">31</span>&nbsp;</span><span class="line"><span class="ln">32</span>  <span class="k">static_assert</span>(<span class="k">sizeof</span>(x * y) == <span class="n">16</span>);</span><span class="line"><span class="ln">33</span>  <span class="k">static_assert</span>(<span class="k">sizeof</span>(x * y + two * x) == <span class="n">16</span>);   <span class="c">// fixed, however deep</span></span><span class="line"><span class="ln">34</span>&nbsp;</span><span class="line"><span class="ln">35</span>  x = <span class="n">4.0</span>;                                        <span class="c">// a reference watches its variable:</span></span><span class="line"><span class="ln">36</span>  if ((x * y + two * x).eval() != <span class="n">20.0</span>) <span class="k">return</span> <span class="n">1</span>; <span class="c">// 20 now, not the 10 it was built with</span></span><span class="line"><span class="ln">37</span>&nbsp;</span><span class="line"><span class="ln">38</span>  <span class="k">auto</span> e = x * y + two * x;                       <span class="c">// both Muls die at this semicolon</span></span><span class="line"><span class="ln">39</span>  <span class="k">return</span> <span class="k">int</span>(e.eval());                           <span class="c">// read through dangling references</span></span><span class="line"><span class="ln">40</span>}</span></code></pre><p class="matrix">exit code &nbsp; <b>gcc 15</b> &nbsp;-O0 &rarr; 20 &nbsp;&middot;&nbsp; -O1 &rarr; 8 &nbsp;&middot;&nbsp; -O2 &rarr; 0 &nbsp;&middot;&nbsp; -O3 warns, at last &nbsp;&nbsp;&nbsp; <b>clang 18</b> &nbsp;20 at every level, silent.</p><p class="takeaway bad">A named subexpression outlives the temporaries it points at &mdash; right in debug, silently wrong in release.</p></div></section>
+<section class="slide"><div class="pad"><h2>Attempt 3 &mdash; the reference goes in the type (C++17)<span class="handle"><a class="ce" href="https://godbolt.org/z/TvajYG7EE" rel="noopener" target="_blank">https://godbolt.org/z/TvajYG7EE</a><span class="whole">lines 1&ndash;29 of 47</span></span></h2><p>Attempt 2 put the reference in the <em>object</em>. Put it in the <em>type</em> instead &mdash; the node has no members at all:</p><pre class="code cpp"><code><span class="line"><span class="ln">1</span><span class="c">// The reference moves into the type: the node stores nothing, so nothing can dangle.</span></span><span class="line"><span class="ln">2</span>&nbsp;</span><span class="line"><span class="ln">3</span><span class="k">struct</span> Var {                               <span class="c">// unchanged: a variable you can assign to</span></span><span class="line"><span class="ln">4</span>  <span class="k">double</span> v;</span><span class="line"><span class="ln">5</span>  <span class="k">constexpr</span> Var &amp;<span class="k">operator</span>=(<span class="k">double</span> d) { v = d; <span class="k">return</span> *this; }</span><span class="line"><span class="ln">6</span>};</span><span class="line"><span class="ln">7</span>&nbsp;</span><span class="line"><span class="ln">8</span><span class="k">struct</span> Const {                             <span class="c">// unchanged: it holds its value,</span></span><span class="line"><span class="ln">9</span>  <span class="k">double</span> v;                                <span class="c">// and nothing can assign to it</span></span><span class="line"><span class="ln">10</span>  <span class="k">void</span> <span class="k">operator</span>=(<span class="k">double</span>) = delete;</span><span class="line"><span class="ln">11</span>};</span><span class="line"><span class="ln">12</span>&nbsp;</span><span class="line here"><span class="ln">13</span><span class="c">// C++17 made this leaf legal: `auto` template parameters, and a referenced object</span></span><span class="line here"><span class="ln">14</span><span class="c">// that only needs static storage duration -- no linkage, so a local static will do.</span></span><span class="line here"><span class="ln">15</span><span class="k">template</span> &lt;<span class="k">const</span> <span class="k">auto</span> &amp;L&gt; <span class="k">struct</span> Ref {      <span class="c">// the reference is the type, not a member</span></span><span class="line here"><span class="ln">16</span>  <span class="k">double</span> eval() <span class="k">const</span> { <span class="k">return</span> L.v; }      <span class="c">// not constexpr: it reads a mutable object</span></span><span class="line here"><span class="ln">17</span>};</span><span class="line"><span class="ln">18</span>&nbsp;</span><span class="line"><span class="ln">19</span><span class="k">template</span> &lt;<span class="k">class</span> L, <span class="k">class</span> R&gt; <span class="k">struct</span> Add {                        <span class="c">// no data members</span></span><span class="line"><span class="ln">20</span>  <span class="k">double</span> eval() <span class="k">const</span> { <span class="k">return</span> L{}.eval() + R{}.eval(); }       <span class="c">// nor here: L and R are Refs</span></span><span class="line"><span class="ln">21</span>};</span><span class="line"><span class="ln">22</span>&nbsp;</span><span class="line"><span class="ln">23</span><span class="k">template</span> &lt;<span class="k">class</span> L, <span class="k">class</span> R&gt; <span class="k">struct</span> Mul {                        <span class="c">// no data members</span></span><span class="line"><span class="ln">24</span>  <span class="k">double</span> eval() <span class="k">const</span> { <span class="k">return</span> L{}.eval() * R{}.eval(); }</span><span class="line"><span class="ln">25</span>};</span><span class="line"><span class="ln">26</span>&nbsp;</span><span class="line"><span class="ln">27</span><span class="k">template</span> &lt;<span class="k">class</span> L, <span class="k">class</span> R&gt; <span class="k">constexpr</span> Add&lt;L, R&gt; <span class="k">operator</span>+(L, R) { <span class="k">return</span> {}; }</span><span class="line"><span class="ln">28</span><span class="k">template</span> &lt;<span class="k">class</span> L, <span class="k">class</span> R&gt; <span class="k">constexpr</span> Mul&lt;L, R&gt; <span class="k">operator</span>*(L, R) { <span class="k">return</span> {}; }</span></code></pre><p class="takeaway">Nothing to copy, nothing to dangle.</p></div></section>
+<section class="slide"><div class="pad"><h2>&hellip; one byte, and it still evaluates<span class="handle"><a class="ce" href="https://godbolt.org/z/TvajYG7EE" rel="noopener" target="_blank">https://godbolt.org/z/TvajYG7EE</a><span class="whole">lines 30&ndash;47 of 47</span></span></h2><pre class="code cpp"><code><span class="line"><span class="ln">30</span><span class="k">int</span> main() {</span><span class="line"><span class="ln">31</span>  static Var vx{<span class="n">2.0</span>}, vy{<span class="n">3.0</span>};             <span class="c">// the leaves live where you declared them</span></span><span class="line"><span class="ln">32</span>  static Const c2{<span class="n">2.0</span>};</span><span class="line"><span class="ln">33</span>&nbsp;</span><span class="line"><span class="ln">34</span>  <span class="k">constexpr</span> Ref&lt;vx&gt; x;</span><span class="line"><span class="ln">35</span>  <span class="k">constexpr</span> Ref&lt;vy&gt; y;</span><span class="line"><span class="ln">36</span>  <span class="k">constexpr</span> Ref&lt;c2&gt; two;</span><span class="line"><span class="ln">37</span>&nbsp;</span><span class="line"><span class="ln">38</span>  <span class="k">static_assert</span>(<span class="k">sizeof</span>(x) == <span class="n">1</span>);</span><span class="line"><span class="ln">39</span>  <span class="k">static_assert</span>(<span class="k">sizeof</span>(x * y) == <span class="n">1</span>);</span><span class="line"><span class="ln">40</span>  <span class="k">static_assert</span>(<span class="k">sizeof</span>(x * y + two * x) == <span class="n">1</span>);</span><span class="line"><span class="ln">41</span>  <span class="k">static_assert</span>(<span class="k">sizeof</span>(x * y + two * x + x * y) == <span class="n">1</span>);</span><span class="line"><span class="ln">42</span>&nbsp;</span><span class="line"><span class="ln">43</span>  <span class="k">auto</span> e = x * y + two * x;                <span class="c">// one byte, and it outlives every temporary</span></span><span class="line"><span class="ln">44</span>  if (e.eval() != <span class="n">10.0</span>) <span class="k">return</span> <span class="n">1</span>;</span><span class="line"><span class="ln">45</span>  vx = <span class="n">4.0</span>;</span><span class="line"><span class="ln">46</span>  <span class="k">return</span> <span class="k">int</span>(e.eval());                    <span class="c">// 20: the same one-byte object, the new value</span></span><span class="line"><span class="ln">47</span>}</span></code></pre><p class="takeaway">One byte, no lifetime, and it still reads the live variable. But the 2 arrives as <code>Ref&lt;c2&gt;</code>: the type records <em>where</em> the value lives, not <em>what</em> it is, so the compiler cannot fold it.</p></div></section>
+<section class="slide"><div class="pad"><h2>&hellip; and the constant's value too (C++20)<span class="handle"><a class="ce" href="https://godbolt.org/z/va3P4W185" rel="noopener" target="_blank">https://godbolt.org/z/va3P4W185</a><span class="whole">lines 1&ndash;28 of 43</span></span></h2><pre class="code cpp"><code><span class="line"><span class="ln">1</span><span class="c">// C++20 finished the job: a double is a template parameter too, so the constant</span></span><span class="line"><span class="ln">2</span><span class="c">// needs no object for a Ref to point at.</span></span><span class="line"><span class="ln">3</span>&nbsp;</span><span class="line"><span class="ln">4</span><span class="k">struct</span> Var {                               <span class="c">// untouched -- still a variable, still 8 bytes</span></span><span class="line"><span class="ln">5</span>  <span class="k">double</span> v;</span><span class="line"><span class="ln">6</span>  <span class="k">constexpr</span> Var &amp;<span class="k">operator</span>=(<span class="k">double</span> d) { v = d; <span class="k">return</span> *this; }</span><span class="line"><span class="ln">7</span>};</span><span class="line"><span class="ln">8</span>&nbsp;</span><span class="line"><span class="ln">9</span><span class="c">// A Ref still reads a mutable object, so its eval() still cannot be constexpr.</span></span><span class="line"><span class="ln">10</span><span class="k">template</span> &lt;<span class="k">const</span> <span class="k">auto</span> &amp;L&gt; <span class="k">struct</span> Ref {</span><span class="line"><span class="ln">11</span>  <span class="k">double</span> eval() <span class="k">const</span> { <span class="k">return</span> L.v; }</span><span class="line"><span class="ln">12</span>};</span><span class="line"><span class="ln">13</span>&nbsp;</span><span class="line here"><span class="ln">14</span><span class="k">template</span> &lt;<span class="k">double</span> V&gt; <span class="k">struct</span> Const {</span><span class="line here"><span class="ln">15</span>  <span class="k">constexpr</span> <span class="k">double</span> eval() <span class="k">const</span> { <span class="k">return</span> V; }   <span class="c">// no object to read: this folds</span></span><span class="line here"><span class="ln">16</span>};</span><span class="line"><span class="ln">17</span>&nbsp;</span><span class="line"><span class="ln">18</span><span class="k">template</span> &lt;<span class="k">class</span> L, <span class="k">class</span> R&gt; <span class="k">struct</span> Add {</span><span class="line"><span class="ln">19</span>  <span class="k">constexpr</span> <span class="k">double</span> eval() <span class="k">const</span> { <span class="k">return</span> L{}.eval() + R{}.eval(); }</span><span class="line"><span class="ln">20</span>};</span><span class="line"><span class="ln">21</span>&nbsp;</span><span class="line"><span class="ln">22</span><span class="k">template</span> &lt;<span class="k">class</span> L, <span class="k">class</span> R&gt; <span class="k">struct</span> Mul {</span><span class="line"><span class="ln">23</span>  <span class="k">constexpr</span> <span class="k">double</span> eval() <span class="k">const</span> { <span class="k">return</span> L{}.eval() * R{}.eval(); }</span><span class="line"><span class="ln">24</span>};</span><span class="line"><span class="ln">25</span>&nbsp;</span><span class="line"><span class="ln">26</span><span class="k">template</span> &lt;<span class="k">class</span> L, <span class="k">class</span> R&gt; <span class="k">constexpr</span> Add&lt;L, R&gt; <span class="k">operator</span>+(L, R) { <span class="k">return</span> {}; }</span><span class="line"><span class="ln">27</span><span class="k">template</span> &lt;<span class="k">class</span> L, <span class="k">class</span> R&gt; <span class="k">constexpr</span> Mul&lt;L, R&gt; <span class="k">operator</span>*(L, R) { <span class="k">return</span> {}; }</span></code></pre><p class="takeaway good">C++20 takes a <code>double</code> as a template parameter, so the 2 needs no object to point at.</p></div></section>
+<section class="slide"><div class="pad"><h2>&hellip; and the 2 costs nothing either<span class="handle"><a class="ce" href="https://godbolt.org/z/va3P4W185" rel="noopener" target="_blank">https://godbolt.org/z/va3P4W185</a><span class="whole">lines 29&ndash;43 of 43</span></span></h2><pre class="code cpp"><code><span class="line"><span class="ln">29</span><span class="k">int</span> main() {</span><span class="line"><span class="ln">30</span>  static Var vx{<span class="n">2.0</span>}, vy{<span class="n">3.0</span>};             <span class="c">// only the variables need an object now</span></span><span class="line"><span class="ln">31</span>&nbsp;</span><span class="line"><span class="ln">32</span>  <span class="k">constexpr</span> Ref&lt;vx&gt; x;</span><span class="line"><span class="ln">33</span>  <span class="k">constexpr</span> Ref&lt;vy&gt; y;</span><span class="line"><span class="ln">34</span>  <span class="k">constexpr</span> Const&lt;<span class="n">2.0</span>&gt; two;                <span class="c">// nothing to refer to: the value is the type</span></span><span class="line"><span class="ln">35</span>&nbsp;</span><span class="line"><span class="ln">36</span>  <span class="k">static_assert</span>(<span class="k">sizeof</span>(two) == <span class="n">1</span>);</span><span class="line"><span class="ln">37</span>  <span class="k">static_assert</span>(<span class="k">sizeof</span>(x * y + two * x) == <span class="n">1</span>);</span><span class="line"><span class="ln">38</span>  <span class="k">static_assert</span>((two * two).eval() == <span class="n">4.0</span>);  <span class="c">// constants alone fold at compile time</span></span><span class="line"><span class="ln">39</span>&nbsp;</span><span class="line"><span class="ln">40</span>  if ((x * y + two * x).eval() != <span class="n">10.0</span>) <span class="k">return</span> <span class="n">1</span>;</span><span class="line"><span class="ln">41</span>  vx = <span class="n">4.0</span>;</span><span class="line"><span class="ln">42</span>  <span class="k">return</span> <span class="k">int</span>((x * y + two * x).eval());      <span class="c">// 20, from an expression that stores nothing</span></span><span class="line"><span class="ln">43</span>}</span></code></pre><p class="takeaway good">One byte for the whole expression, still reading the live variable &mdash; and the part that needs no variable is <code>constexpr</code>, so it folds before the program runs.</p></div></section>
+<section class="slide"><div class="pad"><h2>What does it cost at run time?</h2><p>The same sum over the same 52.4M elements, one kernel per design, measured with <code>perf stat</code>:</p><table class="data"><thead><tr><th>design</th><th>sizeof</th><th>insns gcc</th><th>insns clang</th><th>cycles/elem gcc</th><th>cycles/elem clang</th></tr></thead><tbody><tr><td>by value</td><td>32</td><td>64</td><td>15</td><td>3.066</td><td>3.092</td></tr><tr><td>by reference</td><td>16</td><td>139</td><td>15</td><td>3.062</td><td>3.096</td></tr><tr><td>in the type</td><td>1</td><td>60</td><td>15</td><td>3.054</td><td>3.101</td></tr></tbody></table><dl class="cmds"><dt>machine</dt><dd>AMD Ryzen 7 PRO 6850U (Zen 3+, 8C/16T, 400&ndash;4768 MHz) &middot; 32 KiB L1d and 512 KiB L2 per core &middot; 16 MiB shared L3 &middot; 27 GiB RAM</dd><dt>system</dt><dd>Ubuntu 24.04.4, kernel 6.8.0, glibc 2.39, <code>powersave</code> governor, otherwise idle</dd><dt>toolchain</dt><dd>gcc 15.2.0 and clang 18.1.3, both <code>-std=c++23 -O2 -march=native</code></dd><dt>workload</dt><dd>2048 doubles (16 KiB, L1-resident) &times; 25&thinsp;600 reps = 52.4M elements per design, one design per process</dd><dt>metric</dt><dd>cycles per element from <code>perf stat</code> &mdash; frequency-invariant, so the governor cannot flatter or punish a design; wall-clock agreed to within 3%</dd><dt>method</dt><dd>three interleaved runs per design, median reported, spread &lt; 1%; accumulator escaped through an <code>asm volatile</code> barrier and <em>y</em> varied per rep, so nothing is hoisted or folded away</dd></dl><dl class="cmds"><dt>build</dt><dd>g++-15 -std=c++23 -O2 -march=native bench.cpp -o bench</dd><dt>cycles</dt><dd>perf stat -e cycles ./bench value 2048 25600</dd><dt>insns</dt><dd>objdump -d --demangle bench | awk '/&lt;by_value::sum\(/{f=1} f&amp;&amp;/\t/{c++} /^$/{if(f)exit} END{print c}'</dd></dl><p class="takeaway good">Identical within 1%, even with the data in L1. gcc emits 64 or 139 instructions and clang 15, and they all take the same three cycles per element.</p></div></section>
+<section class="slide"><div class="pad"><h2>The trade</h2><div class="two"><div><h3>Gained</h3><p class="good"><span class="mark">&#10003;</span>no lifetimes</p><p class="good"><span class="mark">&#10003;</span>no copies</p><p class="good"><span class="mark">&#10003;</span>no size</p><p class="good"><span class="mark">&#10003;</span>a fully inspectable tree</p></div><div><h3>Paid</h3><p class="bad"><span class="mark">&#10007;</span>an instantiation per expression</p><p class="bad"><span class="mark">&#10007;</span>leaves must be objects with static storage duration</p></div></div><p class="takeaway big good mono">sizeof(x*y + 2*x) == 1</p></div></section>
+<section class="slide title"><div class="pad"><h1 class="mono">Thank you</h1><p class="note">every slide carries its whole program &mdash; the link under each one opens it on Compiler Explorer</p></div></section>
+    </div>
+    <div class="bar"></div>
+    <div class="count"></div>
+    <script>
+const slides = [...document.querySelectorAll(".slide")];
+const bar = document.querySelector(".bar");
+const count = document.querySelector(".count");
+let at = 0;
+
+const draw = () => {
+  slides.forEach((s, i) => s.classList.toggle("on", i === at));
+  bar.style.width = ((at + 1) / slides.length) * 100 + "%";
+  count.textContent = at + 1 + " / " + slides.length;
+  if (location.hash !== "#" + (at + 1)) history.replaceState(null, "", "#" + (at + 1));
+  fit();
+};
+
+// Slideware, not a reader: no listing may scroll, in either direction.  Shrink
+// it until the whole program fits the slide, top to bottom and edge to edge.
+const fit = () => {
+  const slide = slides[at];
+  const pad = slide.querySelector(".pad");
+  const pre = slide.querySelector("pre.code");
+  const style = getComputedStyle(slide);
+  const room = slide.clientHeight - parseFloat(style.paddingTop)
+             - parseFloat(style.paddingBottom);
+  pad.style.fontSize = "";
+  if (pre) {
+    const over = () => pad.scrollHeight > room + 1 || pre.scrollWidth > pre.clientWidth + 1;
+    let size = 0.95;
+    pre.style.fontSize = size + "em";
+    while (size > 0.3 && over()) {
+      size -= 0.01;
+      pre.style.fontSize = size + "em";
+    }
+    pre.dataset.fit = size.toFixed(2);
+    return;
+  }
+  // No listing to shrink: scale the slide itself, so a dense table never clips.
+  let size = 1;
+  while (size > 0.55 && pad.scrollHeight > room + 1) {
+    size -= 0.02;
+    pad.style.fontSize = size + "em";
+  }
+};
+
+// One key, one slide.  Nothing is revealed in pieces.
+const go = (d) => {
+  at = Math.min(Math.max(at + d, 0), slides.length - 1);
+  draw();
+};
+
+addEventListener("keydown", (e) => {
+  const fwd = ["ArrowRight", "ArrowDown", "PageDown", " ", "Enter"];
+  const back = ["ArrowLeft", "ArrowUp", "PageUp", "Backspace"];
+  if (fwd.includes(e.key)) { e.preventDefault(); go(1); }
+  else if (back.includes(e.key)) { e.preventDefault(); go(-1); }
+  else if (e.key === "Home") { at = 0; draw(); }
+  else if (e.key === "End") { at = slides.length - 1; draw(); }
+  else if (e.key === "f") document.documentElement.requestFullscreen?.();
+});
+addEventListener("resize", fit);
+addEventListener("click", (e) => { if (!e.target.closest("a")) go(1); });
+
+at = Math.min(Math.max(parseInt(location.hash.slice(1), 10) || 1, 1), slides.length) - 1;
+draw();
+</script>
+  </body>
+</html>

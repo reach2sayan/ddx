@@ -1,0 +1,6 @@
+{
+  "01-by-value.cpp": "https://godbolt.org/z/1qqo6Kra7",
+  "02-by-reference.cpp": "https://godbolt.org/z/xba4TMhf9",
+  "03-in-the-type.cpp": "https://godbolt.org/z/TvajYG7EE",
+  "05-constant-in-the-type.cpp": "https://godbolt.org/z/va3P4W185"
+}
