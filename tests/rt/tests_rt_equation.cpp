@@ -293,6 +293,85 @@ TEST(RtEquation, BatchAgreesWithPerPoint) {
   }
 }
 
+// Every lane of a block sweep runs the scalar sweep's operations in its order,
+// so the two agree at every node to the bit -- contracted steps of both signs
+// included, which the block sweep packs and the scalar one does not.
+TEST(RtEquation, BlockSweepAgreesWithTheScalarSweepToTheBit) {
+  ddx::rt::Builder<> b;
+  const auto x = var(b, "x");
+  const auto y = var(b, "y");
+  const auto z = var(b, "z");
+  const auto expr = sqrt(abs(x * y + z)) * exp(-(y * z) + x) + x * x * y;
+  const auto root = expr.id(b);
+  std::ignore = ddx::rt::build_jacobian_impl(b, root);
+
+  const auto schedule = ddx::rt::detail::schedule_of(
+      b, std::views::iota(ddx::rt::NodeId{0},
+                          static_cast<ddx::rt::NodeId>(b.size())));
+  const auto contracted = [&](bool negated) {
+    return std::ranges::any_of(schedule, [negated](const ddx::rt::Step &s) {
+      return s.fma && s.fma.negated == negated;
+    });
+  };
+  ASSERT_TRUE(contracted(false));
+  ASSERT_TRUE(contracted(true));
+
+  constexpr std::size_t w = ddx::rt::block_lanes;
+  constexpr std::size_t symbols = 3;
+  std::vector<double> lanes(symbols * w);
+  for (const auto [k, v] : std::views::enumerate(lanes)) {
+    v = std::sin(1.7 * static_cast<double>(k) + 0.3) * 2.5;
+  }
+  std::vector<double> block(b.size() * w);
+  ddx::rt::evaluate_block<w>(b, lanes, schedule, std::span{block});
+
+  std::vector<double> tape(b.size());
+  for (const std::size_t k : std::views::iota(0uz, w)) {
+    const std::array at{lanes[k], lanes[w + k], lanes[2 * w + k]};
+    ddx::rt::evaluate_into(b, at, schedule, std::span{tape});
+    for (const std::size_t v : std::views::iota(0uz, b.size())) {
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(block[v * w + k]),
+                std::bit_cast<std::uint64_t>(tape[v]))
+          << "node " << v << " lane " << k;
+    }
+  }
+}
+
+// The same through the equation: two whole blocks and a tail, each point
+// against the scalar accessor that sweeps it alone.
+TEST(RtEquation, BatchAgreesWithPerPointToTheBit) {
+  ddx::rt::Builder<> b;
+  const auto x = var(b, "x");
+  const auto y = var(b, "y");
+  const auto z = var(b, "z");
+  const auto eq = ddx::rt::equation(sqrt(abs(x * y + z)) *
+                                        exp(-(y * z) + x) +
+                                    x * x * y);
+
+  constexpr std::size_t n = 2 * ddx::rt::block_lanes + 3;
+  std::vector<double> cx(n), cy(n), cz(n), f(n), dx(n), dy(n), dz(n);
+  for (const std::size_t i : std::views::iota(0uz, n)) {
+    const auto t = static_cast<double>(i);
+    cx[i] = std::sin(1.3 * t + 0.1);
+    cy[i] = std::cos(0.7 * t - 0.4) * 1.5;
+    cz[i] = 0.2 * t - 1.1;
+  }
+  const double *const columns[]{cx.data(), cy.data(), cz.data()};
+  double *const values[]{f.data()};
+  double *const partials[]{dx.data(), dy.data(), dz.data()};
+  ASSERT_TRUE(eq.jacobian(columns, values, partials, n).has_value());
+
+  for (const std::size_t i : std::views::iota(0uz, n)) {
+    const auto g = *eq.jacobian(cx[i], cy[i], cz[i]);
+    const auto bits = [](double d) { return std::bit_cast<std::uint64_t>(d); };
+    EXPECT_EQ(bits(f[i]), bits(*eq.evaluate(cx[i], cy[i], cz[i])))
+        << "point " << i;
+    EXPECT_EQ(bits(dx[i]), bits(g[0])) << "point " << i;
+    EXPECT_EQ(bits(dy[i]), bits(g[1])) << "point " << i;
+    EXPECT_EQ(bits(dz[i]), bits(g[2])) << "point " << i;
+  }
+}
+
 TEST(RtEquation, BatchHessianFillsTheCompressedColumns) {
   ddx::rt::Builder<> b;
   const auto x = var(b, "x");

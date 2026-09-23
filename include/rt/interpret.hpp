@@ -74,20 +74,43 @@ template <impl::Numeric T>
   }
 }
 
+template <typename Sign> struct fma_fn {
+  template <impl::Numeric T>
+  constexpr T operator()(const T &x, const T &y, const T &z) const noexcept {
+    return fused_multiply_add<T>(Sign{}(x), y, z);
+  }
+};
+
+// The sign is hoisted out of the lane loop rather than tested in it.
 template <std::size_t W, impl::Numeric T>
-constexpr void lanes_fma(bool negated, const T *DDX_RESTRICT x,
-                         const T *DDX_RESTRICT y, const T *DDX_RESTRICT z,
-                         T *DDX_RESTRICT out) noexcept {
-  // The sign is hoisted out of the lane loop rather than tested in it.
-  const auto sweep = [&](auto sign) {
-    for (std::size_t k = 0; k < W; ++k) {
-      out[k] = fused_multiply_add<T>(sign(x[k]), y[k], z[k]);
-    }
-  };
+constexpr void lanes_fma_signed(bool negated, const T *DDX_RESTRICT x,
+                                const T *DDX_RESTRICT y,
+                                const T *DDX_RESTRICT z,
+                                T *DDX_RESTRICT out) noexcept {
   if (negated) {
-    sweep(std::negate<>{});
+    lanes<W, fma_fn<std::negate<>>, T, true>(out, x, y, z);
   } else {
-    sweep(std::identity{});
+    lanes<W, fma_fn<std::identity>, T, true>(out, x, y, z);
+  }
+}
+
+// Out of line past one lane.  Inlined into the sweep's switch, GCC hoists the
+// two arms' shared loads above the branch and then packs only half of each.
+template <std::size_t W, impl::Numeric T>
+DDX_NOINLINE constexpr void
+lanes_fma_block(bool negated, const T *DDX_RESTRICT x, const T *DDX_RESTRICT y,
+                const T *DDX_RESTRICT z, T *DDX_RESTRICT out) noexcept {
+  lanes_fma_signed<W>(negated, x, y, z, out);
+}
+
+template <std::size_t W, impl::Numeric T>
+DDX_ALWAYS_INLINE constexpr void
+lanes_fma(bool negated, const T *DDX_RESTRICT x, const T *DDX_RESTRICT y,
+          const T *DDX_RESTRICT z, T *DDX_RESTRICT out) noexcept {
+  if constexpr (W == 1) {
+    lanes_fma_signed<W>(negated, x, y, z, out);
+  } else {
+    lanes_fma_block<W>(negated, x, y, z, out);
   }
 }
 
