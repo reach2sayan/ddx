@@ -21,6 +21,15 @@
 #define DDX_ALWAYS_INLINE inline
 #endif
 
+// The converse: a lane loop GCC vectorises on its own and not once inlined.
+#if defined(__GNUC__) || defined(__clang__)
+#define DDX_NOINLINE [[gnu::noinline]]
+#elif defined(_MSC_VER)
+#define DDX_NOINLINE __declspec(noinline)
+#else
+#define DDX_NOINLINE
+#endif
+
 // What the JIT spells NoAlias on the kernel's columns.  A tape reached through
 // a span carries no such promise, and without it every lane store is assumed
 // to land in the node array the next lane load reads.
