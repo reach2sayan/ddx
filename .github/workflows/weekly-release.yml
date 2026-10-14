@@ -1,9 +1,10 @@
 # Every Monday, main becomes a release: the patch number in project() goes up
 # by one, the bump is committed and tagged, and Release builds and publishes
 # the wheels for that tag.  A week in which main did not move produces nothing
-# -- the test is whether HEAD is already the commit the latest tag names --
-# and a red main is never released: the three compiler workflows must have
-# passed on HEAD.  "Run workflow" is the same thing on demand.
+# -- the test is whether anything but the vcpkg port pin, which each release
+# rewrites on top of its own tag, differs from the latest tag -- and a red
+# main is never released: the three compiler workflows must have passed on
+# HEAD.  "Run workflow" is the same thing on demand.
 #
 # The bump is pushed over SSH with the release-agent deploy key
 # (RELEASE_DEPLOY_KEY holds the private half): main is ruled "changes must be
@@ -12,7 +13,7 @@
 # made with the workflow's own token could not do.
 #
 # Minor and major bumps are written into project() by hand and tagged as
-# before; the next Monday finds HEAD already tagged and does nothing.
+# before; the next Monday finds nothing new past the tag and does nothing.
 name: Weekly release
 
 on:
@@ -37,7 +38,7 @@ jobs:
         id: since
         run: |
           last=$(git describe --tags --abbrev=0 --match 'v*')
-          if [[ $(git rev-parse "$last^{commit}") == $(git rev-parse HEAD) ]]; then
+          if git diff --quiet "$last" HEAD -- . ':!contrib/vcpkg/ports'; then
             echo "main is still $last; nothing to release"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
