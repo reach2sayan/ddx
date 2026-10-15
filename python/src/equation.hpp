@@ -76,18 +76,14 @@ public:
              std::vector<rt::NodeId> roots, bool remember = false)
       : PyCore{std::make_unique<rt::Builder<double>>(*arena),
                std::move(roots)},
-        symbols_{symbols().value_or(std::span<const std::string>{})},
-        inputs_{inputs().value_or(std::vector<std::string>{})} {
-    // An implicit no derivative can carry: raised here, where C++ poisons.
-    if (const auto why = status()) {
-      throw PyError{*why};
-    }
+        symbols_{*sound().symbols()}, inputs_{*inputs()} {
     take_cache(PyCache{remember});
   }
 
-  // From a file: the sweeps it carries arrive built.
+  // From a file: the sweeps it carries arrive built.  Binding an extern
+  // function by name has no Python spelling, so a file naming one is refused.
   explicit PyEquation(rt::Verified<double> snap, bool remember = false)
-      : PyCore{std::move(snap).rebuild()}, symbols_{*symbols()},
+      : PyCore{std::move(snap).rebuild()}, symbols_{*sound().symbols()},
         inputs_{*inputs()} {
     take_cache(PyCache{remember});
   }
@@ -96,6 +92,17 @@ public:
   // path in module.cpp writes and keys on.
   using PyCore::describes;
   using PyCore::snapshot;
+
+private:
+  // What C++ poisons is raised here, before anything reads the core.
+  [[nodiscard]] const PyCore &sound() const {
+    if (const auto why = status()) {
+      throw PyError{*why};
+    }
+    return *this;
+  }
+
+public:
 
   [[nodiscard]] std::size_t width() const { return symbol_count(); }
   [[nodiscard]] std::size_t height() const { return roots().size(); }

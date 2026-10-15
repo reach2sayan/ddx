@@ -197,16 +197,21 @@ template <impl::Numeric T>
 
 // An extern node's slot: which registered function, and which component of
 // its answer -- 0 the value, 1..k the first partials, then the upper triangle
-// of the second, row-major.
+// of the second, row-major.  A half-word each; fits() is the one bound.
 struct ExternSlot {
   std::uint32_t function = 0;
   std::uint32_t component = 0;
+  static constexpr std::uint32_t limit = 1u << 16;
 
   [[nodiscard]] static constexpr ExternSlot of(std::uint32_t slot) noexcept {
-    return {.function = slot >> 8, .component = slot & 0xFFu};
+    return {.function = slot >> 16, .component = slot & (limit - 1)};
   }
   [[nodiscard]] constexpr std::uint32_t packed() const noexcept {
-    return (function << 8) | component;
+    return (function << 16) | component;
+  }
+  [[nodiscard]] static constexpr bool fits(std::size_t function,
+                                           std::size_t components) noexcept {
+    return function < limit && components <= limit;
   }
 };
 

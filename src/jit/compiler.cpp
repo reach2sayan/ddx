@@ -754,6 +754,18 @@ struct Compiler::Impl {
     // neither cached on disk nor kept for a file.
     const bool portable = g.externs().empty();
     const bool caching = !opt.cache_dir.empty() && portable;
+    if (!portable) {
+      // The kernel calls through pointers the graph owns: it keeps them alive
+      // for as long as it can run, graph or no graph.
+      struct Retained {
+        std::shared_ptr<Impl> jit;
+        std::vector<std::shared_ptr<const rt::ExternFn<double>>> fns;
+      };
+      host.code = std::make_shared<Retained>(
+          self, g.externs() |
+                    std::views::transform(&rt::ExternEntry<double>::fn) |
+                    impl::to<std::vector<std::shared_ptr<const rt::ExternFn<double>>>>());
+    }
     Codegen emitted = opt.codegen;
     emitted.lanes = *Lanes::exactly(host.lanes_for(opt));
     const std::uint64_t key =

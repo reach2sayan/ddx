@@ -29,6 +29,7 @@ namespace ddx {
   X(nested_implicit,  "a residual reaches an implicit input other than its own")              \
   X(not_implicit,     "rt::closes() names something that is not an implicit input")           \
   X(extern_order,     "an extern function does not supply the partials this call needs")       \
+  X(extern_shape,     "an extern function's arity or order cannot be represented")            \
   X(unbound_extern,   "the file names an extern function the caller did not supply")          \
   X(not_univariate,   "needs exactly one symbol")                                             \
   X(not_single_output, "needs exactly one output, and this is a system")                      \

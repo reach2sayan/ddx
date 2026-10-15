@@ -161,9 +161,18 @@ TEST(RtExtern, AMisshapenRegistrationOrCallIsRefused) {
     const auto a = ddx::rt::var("a");
     return ddx::rt::extern_fn({.name = "g", .arity = 1, .order = 3}, g_of)(a);
   });
-  EXPECT_EQ(third.status()->code, ddx::errc::extern_order);
-  EXPECT_EQ(ddx::rt::equation("extern(x)").error().code,
-            ddx::errc::unknown_function);
+  EXPECT_EQ(third.status()->code, ddx::errc::extern_shape);
+  // 1 + 400 + 80200 components do not fit a slot's half-word of them.
+  const auto wide = ddx::rt::equation([] {
+    const auto a = ddx::rt::var("a");
+    return ddx::rt::extern_fn({.name = "g", .arity = 400, .order = 2}, g_of)(a);
+  });
+  EXPECT_EQ(wide.status()->code, ddx::errc::extern_shape);
+  for (const auto *text : {"extern(x)", "extern_d(x)", "extern_args(x, y)"}) {
+    EXPECT_EQ(ddx::rt::equation(text).error().code,
+              ddx::errc::unknown_function)
+        << text;
+  }
 }
 
 TEST(RtExtern, ABatchMatchesThePointCalls) {

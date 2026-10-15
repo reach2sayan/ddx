@@ -358,9 +358,10 @@ const auto eq = rt::equation([] {
 ```
 
 Any number of arguments, and the same expression may be passed twice. `order`
-is 1 or 2 — no call ddx answers asks for a third derivative — and with first
-partials only, `hessian`, `hvp` and `jacobian_jvp` answer
-`errc::extern_order` rather than zeros. ddx calls `fn` as often as it needs,
+is 1 or 2 — no call ddx answers asks for a third derivative; anything else
+registers as `errc::extern_shape` — and with first partials only, `hessian`,
+`hvp` and `jacobian_jvp` answer `errc::extern_order` rather than zeros. ddx
+calls `fn` as often as it needs,
 from any thread that sweeps, so it must be re-entrant and must not throw.
 
 A compiled kernel calls the function back once per point. Such a kernel holds
@@ -910,7 +911,8 @@ if (!j) {
 | `closed_twice` | an implicit input closed by two residuals |
 | `nested_implicit` | a residual that reads another implicit input |
 | `not_implicit` | `rt::closes` on something that is not an implicit input |
-| `extern_order` | a second-order call through an `rt::extern_fn` that supplies first partials only, or an `order` other than 1 or 2 |
+| `extern_order` | a second-order call through an `rt::extern_fn` that supplies first partials only |
+| `extern_shape` | an `rt::extern_fn` registration ddx cannot hold: `arity` 0, an `order` other than 1 or 2, no function, or past 65536 functions or components |
 | `unbound_extern` | a loaded file names an extern function `fns` did not supply |
 | `not_univariate` | `univariate_derivative` on more than one symbol |
 | `not_single_output` | a member about one function's Hessian, asked of a system |

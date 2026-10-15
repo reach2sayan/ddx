@@ -111,11 +111,14 @@ private:
   // and its argument list is as long as the function's arity: the interpreter
   // and the sweeps walk it without a bound.
   [[nodiscard]] bool externs() const {
-    return std::ranges::all_of(s_.externs,
-                               [](const ExternRecord &e) {
-                                 return e.arity >= 1 && e.order >= 1 &&
-                                        e.order <= 2;
-                               }) &&
+    return std::ranges::all_of(
+               s_.externs | std::views::enumerate,
+               [](const auto &at) {
+                 const auto &[i, e] = at;
+                 return e.arity >= 1 && e.order >= 1 && e.order <= 2 &&
+                        ExternSlot::fits(static_cast<std::size_t>(i),
+                                         extern_components(e.arity, e.order));
+               }) &&
            std::ranges::all_of(s_.nodes, [this](const Node<T> &node) {
              if (node.op != OpCode::Extern && node.op != OpCode::ExternD) {
                return true;

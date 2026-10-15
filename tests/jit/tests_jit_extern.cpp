@@ -73,4 +73,48 @@ TEST(JitExtern, AKernelCallsTheFunctionAndAgreesWithTheSweep) {
   EXPECT_EQ(*compiled.hessian(0.3, 1.1), *swept.hessian(0.3, 1.1));
 }
 
+// Two registered functions: the kernel's lanes are rebuilt over blocked spines,
+// and every extern node has to come back naming its own function and
+// component, not the first function's value.
+TEST(JitExtern, EveryFunctionAndComponentSurvivesTheRebuild) {
+  const auto h_of = [](std::span<const double> in, std::span<double> out) {
+    out[0] = in[0] * in[1];
+    out[1] = in[1];
+    out[2] = in[0];
+    out[3] = 0.0;
+    out[4] = 1.0;
+    out[5] = 0.0;
+  };
+  const auto model = [h_of] {
+    return ddx::rt::equation([h_of] {
+      const auto a = ddx::rt::var("a");
+      const auto b = ddx::rt::var("b");
+      const auto g = ddx::rt::extern_fn({.name = "g", .arity = 2}, g_of);
+      const auto h = ddx::rt::extern_fn({.name = "h", .arity = 2}, h_of);
+      auto spine = g(a, b) * h(b, a);
+      for (int k = 1; k <= 20; ++k) {
+        spine = spine + h(a, b) * static_cast<double>(k);
+      }
+      return spine;
+    });
+  };
+  const auto swept = model();
+  auto compiled = model();
+  compiled.options({.backend = ddx::jit::Backend::Compile});
+  ASSERT_TRUE(compiled.wait_for_kernel());
+  ASSERT_TRUE(compiled.uses_kernel());
+  // The spine is long enough to be blocked, so the last bits may differ; a
+  // wrong function or component differs in the first.
+  constexpr std::array<std::array<double, 2>, 3> at{
+      {{0.3, 1.1}, {-0.7, 0.4}, {1.2, -2.0}}};
+  for (const auto &[a, b] : at) {
+    EXPECT_NEAR(*compiled.evaluate(a, b), *swept.evaluate(a, b),
+                1e-12 * std::abs(*swept.evaluate(a, b)));
+    const auto j = *swept.jacobian(a, b);
+    for (const auto [x, y] : std::views::zip(*compiled.jacobian(a, b), j)) {
+      EXPECT_NEAR(x, y, 1e-12 * std::max(1.0, std::abs(y)));
+    }
+  }
+}
+
 } // namespace

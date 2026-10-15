@@ -44,7 +44,8 @@ struct Rooting {
 // The Builder's extern half, for the factory below and the sweeps.
 struct Externs {
   template <impl::Numeric T>
-  static constexpr std::uint32_t add(Builder<T> &b, ExternEntry<T> e) {
+  static constexpr std::optional<std::uint32_t> add(Builder<T> &b,
+                                                    ExternEntry<T> e) {
     return b.add_extern(std::move(e));
   }
   template <impl::Numeric T>
@@ -405,11 +406,8 @@ template <impl::Numeric T>
 [[nodiscard]] ExternFunction<T>
 extern_fn(Builder<T> &b, ExternSpec spec,
           std::type_identity_t<ExternFn<T>> fn) {
-  if (spec.arity == 0) {
-    return ExternFunction<T>{errc::wrong_argument_count};
-  }
-  if (spec.order < 1 || spec.order > 2 || !fn) {
-    return ExternFunction<T>{errc::extern_order};
+  if (spec.arity == 0 || spec.order < 1 || spec.order > 2 || !fn) {
+    return ExternFunction<T>{errc::extern_shape};
   }
   const auto index = detail::Externs::add(
       b, ExternEntry<T>{.name = std::string{spec.name},
@@ -417,7 +415,8 @@ extern_fn(Builder<T> &b, ExternSpec spec,
                         .order = static_cast<std::uint32_t>(spec.order),
                         .fn = std::make_shared<const ExternFn<T>>(
                             std::move(fn))});
-  return ExternFunction<T>{&b, index, spec.arity};
+  return index ? ExternFunction<T>{&b, *index, spec.arity}
+               : ExternFunction<T>{errc::extern_shape};
 }
 
 // The arena var() registers into while an equation() callback runs.  Thread-

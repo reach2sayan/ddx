@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cassert>
 #include <concepts>
 #include <cstdint>
 #include <iterator>
@@ -189,10 +190,7 @@ public:
 
   [[nodiscard]] constexpr NodeId make(OpCode op, NodeId a, NodeId b = no_node,
                                       NodeId c = no_node) {
-    // Opaque: no rule folds a function the program supplies.
-    if (is_extern(op)) {
-      return intern({.op = op, .a = a, .b = b, .c = c});
-    }
+    assert(!is_extern(op)); // formed with its slot, through rebuild() or a friend
     // fold() and the commutative swap are both binary questions; a third
     // operand means neither applies, and asking would hand a binary functor
     // three arguments.
@@ -207,6 +205,16 @@ public:
       return *chosen;
     }
     return intern({.op = op, .a = a, .b = b, .c = c});
+  }
+
+  // The same node over remapped operands: what a rewrite that keeps every
+  // operation forms.  An extern keeps its slot, which make() is never told,
+  // and no rule folds a function the program supplies.
+  [[nodiscard]] constexpr NodeId rebuild(Node<T> n, auto &&remap) {
+    for (NodeId *const u : {&n.a, &n.b, &n.c}) {
+      *u = *u == no_node ? no_node : remap(*u);
+    }
+    return is_extern(n.op) ? intern(n) : make(n.op, n.a, n.b, n.c);
   }
 
   [[nodiscard]] constexpr const Node<T> &operator[](NodeId id) const {
@@ -322,7 +330,10 @@ private:
   // Registering an extern, forming its nodes and binding a restored one's
   // function: the extern factory's and the sweeps' alone.
   friend struct detail::Externs;
-  constexpr std::uint32_t add_extern(ExternEntry<T> e) {
+  constexpr std::optional<std::uint32_t> add_extern(ExternEntry<T> e) {
+    if (!ExternSlot::fits(externs_.size(), extern_components(e.arity, e.order))) {
+      return std::nullopt;
+    }
     externs_.push_back(std::move(e));
     return static_cast<std::uint32_t>(externs_.size() - 1);
   }
