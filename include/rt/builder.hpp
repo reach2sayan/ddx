@@ -4,6 +4,7 @@
 #include "rt/apply.hpp"
 #include "rt/opcode.hpp"
 #include "util/config.hpp"
+#include "util/error.hpp"
 #include "util/ranges.hpp"
 
 #include <boost/describe/class.hpp>
@@ -38,6 +39,14 @@ template <impl::Numeric T>
 template <impl::Numeric T>
 [[nodiscard]] constexpr RTExpression<T> param(Builder<T> &b,
                                               std::string_view name);
+template <impl::Numeric T>
+[[nodiscard]] constexpr RTExpression<T> implicit(Builder<T> &b,
+                                                 std::string_view name);
+template <impl::Numeric T>
+constexpr void closes(const RTExpression<T> &z, const RTExpression<T> &f);
+namespace detail {
+struct Implicits;
+}
 
 // A named input: which kind of leaf, and its place among that kind.
 struct Input {
@@ -181,10 +190,24 @@ public:
   [[nodiscard]] constexpr const std::vector<std::string> &implicits() const {
     return implicits_.names;
   }
+  // The residual whose root each implicit input is, by slot; no_node for one
+  // nothing closed.  And the first misuse of closes(), which no expression
+  // can carry, for the equation to refuse with.
+  [[nodiscard]] constexpr std::span<const NodeId> closures() const {
+    return closures_;
+  }
+  [[nodiscard]] constexpr std::optional<errc> broken() const {
+    return broken_;
+  }
   [[nodiscard]] constexpr Inputs inputs() const {
     return {.vars = vars_.names.size(),
             .params = params_.names.size(),
             .implicits = implicits_.names.size()};
+  }
+
+  // The leaf a named input is.
+  [[nodiscard]] constexpr NodeId leaf(OpCode op, std::uint32_t slot) const {
+    return named(op).ids[slot];
   }
 
   // Which input `name` is, if any.
@@ -216,6 +239,8 @@ private:
   friend constexpr RTExpression<U> var(Builder<U> &, std::string_view);
   template <impl::Numeric U>
   friend constexpr RTExpression<U> param(Builder<U> &, std::string_view);
+  template <impl::Numeric U>
+  friend constexpr RTExpression<U> implicit(Builder<U> &, std::string_view);
   [[nodiscard]] constexpr NodeId input(OpCode op, std::string_view name) {
     const auto at = std::ranges::lower_bound(by_name_, name, {}, name_of());
     if (at != by_name_.end() && name_of()(*at) == name) {
@@ -226,8 +251,30 @@ private:
     kind.names.emplace_back(name);
     kind.ids.push_back(intern({.op = op, .slot = slot}));
     by_name_.insert(at, {.op = op, .slot = slot});
+    if (op == OpCode::Implicit) {
+      closures_.push_back(no_node);
+    }
     return kind.ids.back();
   }
+
+  // Implicit `z` is a root of `f`.  A misuse is kept rather than thrown: the
+  // equation built over this arena refuses with it.
+  template <impl::Numeric U>
+  friend constexpr void closes(const RTExpression<U> &, const RTExpression<U> &);
+  constexpr void close(NodeId z, NodeId f) {
+    if (z == no_node || nodes_[z].op != OpCode::Implicit) {
+      broken_ = broken_.value_or(errc::not_implicit);
+    } else if (closures_[nodes_[z].slot] != no_node) {
+      broken_ = broken_.value_or(errc::closed_twice);
+    } else {
+      closures_[nodes_[z].slot] = f;
+    }
+  }
+
+  // dz/ds for each implicit, by the implicit-function theorem, built the first
+  // time a sweep reaches the leaf and kept: derivative.hpp's alone.
+  friend struct detail::Implicits;
+  std::vector<std::vector<NodeId>> closure_rows_;
 
   // A seed slot is given rather than looked up.  Interning leaves one node per
   // slot.
@@ -245,8 +292,10 @@ private:
   constexpr void restore(std::vector<Node<T>> nodes,
                          std::vector<std::string> symbols,
                          std::vector<std::string> params,
-                         std::vector<std::string> implicits) {
+                         std::vector<std::string> implicits,
+                         std::vector<NodeId> closures) {
     nodes_ = std::move(nodes);
+    closures_ = std::move(closures);
     vars_.names = std::move(symbols);
     params_.names = std::move(params);
     implicits_.names = std::move(implicits);
@@ -504,6 +553,8 @@ private:
   // inside constant evaluation and no library flat container is constexpr
   // before C++26.
   std::vector<Input> by_name_;
+  std::vector<NodeId> closures_; // by implicit slot
+  std::optional<errc> broken_;
 
   [[nodiscard]] constexpr Named &named(OpCode op) {
     return op == OpCode::Var ? vars_ : op == OpCode::Param ? params_ : implicits_;

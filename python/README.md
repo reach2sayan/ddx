@@ -51,7 +51,9 @@ are named in. `f.symbols` lists them, `f.arity` counts them, `f.outputs`
 counts the model's outputs. `ddx.param(name)` is an input that is never
 differentiated — no Jacobian column — and is supplied with every point after
 the symbols; `f.params` lists the parameters and `f.inputs` everything a point
-supplies. A bare number mixes into an expression without
+supplies. `ddx.implicit(name)` is an input the caller solved for and
+`ddx.closes(z, F)` names the residual it is a root of: every derivative then
+carries `dz/dx = −F_x / F_z`, and `f.residual(x)` evaluates `F` at a point. A bare number mixes into an expression without
 wrapping, so an accumulator can start at `0.0`:
 
 ```python
@@ -243,6 +245,7 @@ is the spelling.
 | `no_arena` | a symbol was named outside a model |
 | `no_graph` | the model is a bare number, naming no function |
 | `name_clash` | one name used for both a symbol and a parameter |
+| `unclosed_implicit`, `closed_twice`, `nested_implicit`, `not_implicit` | an implicit input with no residual, with two, with one reading another implicit, or `closes` on something that is not one |
 | `not_single_output` | `hvp` or `hessian_colors` on a system |
 | `bad_syntax` | a string the grammar does not accept |
 | `unknown_function` | a string calls a function that does not exist |

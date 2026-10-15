@@ -514,8 +514,8 @@ TEST(RtArchive, DigestSeparatesTheSignedZeroes) {
   const std::array<Node<double>, 1> minus{Node<double>{.value = -0.0}};
 
   ASSERT_TRUE(plus[0].value == minus[0].value) << "the two must compare equal";
-  EXPECT_NE(ddx::rt::digest<double>(symbols, {}, {}, plus, 1),
-            ddx::rt::digest<double>(symbols, {}, {}, minus, 1));
+  EXPECT_NE(ddx::rt::digest<double>(symbols, {}, {}, {}, plus, 1),
+            ddx::rt::digest<double>(symbols, {}, {}, {}, minus, 1));
 }
 
 // The opcode table is what every opcode byte in the payload *means*, so it is

@@ -271,3 +271,26 @@ def test_restrict_keeps_the_chosen_columns() -> None:
     with pytest.raises(ddx.Error) as caught:
         eq.restrict(["nope"])
     assert caught.value.code is ddx.errc.unknown_symbol
+
+
+def test_an_implicit_input_carries_dz_dx() -> None:
+    def model():
+        a = ddx.var("a")
+        z = ddx.implicit("z")
+        ddx.closes(z, z * z - a)
+        return z
+
+    eq = ddx.equation(model)
+    assert eq.symbols == ["a"]
+    assert eq.inputs == ["a", "z"]
+    _, gradient = eq.jacobian([4.0, 2.0])
+    assert gradient.tolist() == [0.25]
+    _, _, hessian = eq.hessian({"a": 4.0, "z": 2.0})
+    assert hessian.tolist() == [[-0.03125]]
+    assert eq.residual([4.0, 3.0]) == [5.0]
+
+
+def test_an_unclosed_implicit_is_refused() -> None:
+    with pytest.raises(ddx.Error) as caught:
+        ddx.equation(lambda: ddx.var("a") * ddx.implicit("z"))
+    assert caught.value.code is ddx.errc.unclosed_implicit

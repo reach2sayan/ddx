@@ -108,7 +108,9 @@ private:
 
   [[nodiscard]] bool reachable() const {
     const auto in = within();
-    return std::ranges::all_of(s_.roots, in) &&
+    return s_.closures.size() == s_.implicits.size() &&
+           std::ranges::all_of(s_.closures, in) &&
+           std::ranges::all_of(s_.roots, in) &&
            std::ranges::all_of(s_.jacobian.value, in) &&
            std::ranges::all_of(s_.jacobian.partial, in) && in(s_.jacobian.zero);
   }
@@ -237,7 +239,8 @@ public:
   // Owning, and it consumes the node array: it *is* the arena's.
   [[nodiscard]] Rebuilt<T> rebuild() && {
     auto arena = std::make_unique<Builder<T>>();
-    arena->restore(std::move(s_.nodes), s_.symbols, s_.params, s_.implicits);
+    arena->restore(std::move(s_.nodes), s_.symbols, s_.params, s_.implicits,
+                   s_.closures);
     return {.arena = std::move(arena), .rest = std::move(s_)};
   }
   [[nodiscard]] Snapshot<T> release() && noexcept { return std::move(s_); }

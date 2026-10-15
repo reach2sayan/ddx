@@ -309,6 +309,18 @@ template <impl::Numeric T>
       support[v] = SymbolSet(n);
       if (node.op == OpCode::Var) {
         support[v].set(node.slot);
+      } else if (node.op == OpCode::Implicit) {
+        // Whatever its residual reads, and nonlinearly: z is a root, not a
+        // sum.  The sweep's dz/dx nodes are not in the arena yet, so the
+        // closure is read here rather than discovered.
+        const NodeId f = b.closures()[node.slot];
+        const auto through = detail::reachable(b, std::span{&f, 1});
+        for (const auto [u, leaf] : b.nodes() | std::views::enumerate) {
+          if (leaf.op == OpCode::Var && through[static_cast<NodeId>(u)]) {
+            support[v].set(leaf.slot);
+          }
+        }
+        detail::couple(rows, support[v], support[v]);
       }
       break;
     case 1:

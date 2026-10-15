@@ -76,7 +76,12 @@ public:
              std::vector<rt::NodeId> roots, bool remember = false)
       : PyCore{std::make_unique<rt::Builder<double>>(*arena),
                std::move(roots)},
-        symbols_{*symbols()}, inputs_{*inputs()} {
+        symbols_{symbols().value_or(std::span<const std::string>{})},
+        inputs_{inputs().value_or(std::vector<std::string>{})} {
+    // An implicit no derivative can carry: raised here, where C++ poisons.
+    if (const auto why = status()) {
+      throw PyError{*why};
+    }
     take_cache(PyCache{remember});
   }
 
@@ -199,6 +204,18 @@ public:
     scatter_jacobian(partials, g, at.size());
     return pyb::make_tuple(value_of(f, cell), std::move(g).array(),
                            std::move(out).array());
+  }
+
+  // F(z, x) for each implicit's residual at one point.
+  [[nodiscard]] std::vector<double> residual_at(const pyb::handle &x) const {
+    const Point at{x, inputs_};
+    if (at.batched()) {
+      fail_with(errc::wrong_column_count);
+    }
+    std::vector<double> point(at.columns().size());
+    std::ranges::transform(at.columns(), point.begin(),
+                           [](const double *c) { return *c; });
+    return unwrap(residual(point));
   }
 
   // (value, J, dJ/dv): the Jacobian and its derivative along `v`, both dense,

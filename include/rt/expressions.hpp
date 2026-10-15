@@ -39,6 +39,8 @@ template <impl::Numeric T = double>
 [[nodiscard]] RTExpression<T> var(std::string_view name) noexcept;
 template <impl::Numeric T = double>
 [[nodiscard]] RTExpression<T> param(std::string_view name) noexcept;
+template <impl::Numeric T = double>
+[[nodiscard]] RTExpression<T> implicit(std::string_view name) noexcept;
 
 // The primitive the one above reaches: it makes poison as well, for the arena
 // that has stopped taking symbols.
@@ -228,6 +230,13 @@ private:
   friend RTExpression<U> param(std::string_view) noexcept;
   template <impl::Numeric U>
   friend constexpr RTExpression<U> param(Builder<U> &, std::string_view);
+  template <impl::Numeric U>
+  friend RTExpression<U> implicit(std::string_view) noexcept;
+  template <impl::Numeric U>
+  friend constexpr RTExpression<U> implicit(Builder<U> &, std::string_view);
+  template <impl::Numeric U>
+  friend constexpr void closes(const RTExpression<U> &,
+                               const RTExpression<U> &);
 
   [[nodiscard]] constexpr Builder<T> *builder() const noexcept {
     return builder_;
@@ -266,6 +275,29 @@ template <impl::Numeric T>
   const NodeId id = b.input(OpCode::Param, name);
   return id == no_node ? RTExpression<T>::poison(errc::name_clash)
                        : RTExpression<T>{b, id};
+}
+// An input the caller solved for: a value in every call, like a parameter,
+// and a root of the residual closes() names -- so no derivative treats it as
+// fixed, and every one carries dz/dx = -F_x / F_z.
+template <impl::Numeric T>
+[[nodiscard]] constexpr RTExpression<T> implicit(Builder<T> &b,
+                                                 std::string_view name) {
+  const NodeId id = b.input(OpCode::Implicit, name);
+  return id == no_node ? RTExpression<T>::poison(errc::name_clash)
+                       : RTExpression<T>{b, id};
+}
+// `z` is a root of `f`: F(z, x) = 0 at every point the caller supplies.  ddx
+// never solves it; it differentiates as though it held.
+template <impl::Numeric T>
+constexpr void closes(const RTExpression<T> &z, const RTExpression<T> &f) {
+  if (z.why_ || f.why_) {
+    return; // the poison reaches the equation through its outputs
+  }
+  Builder<T> *const b = z.builder_ ? z.builder_ : f.builder_;
+  if (b == nullptr) {
+    return; // two literals: nothing names an arena to refuse in
+  }
+  b->close(z.builder_ ? z.id_ : no_node, f.id(*b));
 }
 // The direction a seeded product is taken along
 template <impl::Numeric T>
@@ -310,6 +342,12 @@ template <impl::Numeric T>
   return (detail::current_arena<T> == nullptr)
              ? RTExpression<T>::poison(errc::no_arena)
              : param(*detail::current_arena<T>, name);
+}
+template <impl::Numeric T>
+[[nodiscard]] RTExpression<T> implicit(std::string_view name) noexcept {
+  return (detail::current_arena<T> == nullptr)
+             ? RTExpression<T>::poison(errc::no_arena)
+             : implicit(*detail::current_arena<T>, name);
 }
 
 } // namespace ddx::rt

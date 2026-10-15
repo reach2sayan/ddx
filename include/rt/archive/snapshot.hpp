@@ -55,6 +55,7 @@ template <impl::Numeric T> struct Snapshot {
   std::vector<std::string> symbols;
   std::vector<std::string> params;
   std::vector<std::string> implicits;
+  std::vector<NodeId> closures; // the residual each implicit is a root of
   std::vector<Node<T>> nodes;
   std::vector<NodeId> roots;
   Jacobian jacobian;
@@ -69,7 +70,8 @@ template <impl::Numeric T> struct Snapshot {
   std::uint32_t model_nodes = 0;
   std::vector<Object> objects;
   BOOST_DESCRIBE_CLASS(Snapshot, (),
-                       (symbols, params, implicits, nodes, roots, jacobian,
+                       (symbols, params, implicits, closures, nodes, roots,
+                        jacobian,
                         hessians, hvp, vjp,
                         jvp, options, model_nodes, objects),
                        (), ())

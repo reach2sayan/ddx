@@ -44,6 +44,7 @@ template <impl::Numeric T>
 [[nodiscard]] std::uint64_t digest(std::span<const std::string> symbols,
                                    std::span<const std::string> params,
                                    std::span<const std::string> implicits,
+                                   std::span<const NodeId> closures,
                                    std::span<const Node<T>> nodes,
                                    std::size_t upto) {
   boost::hash2::fnv1a_64 h;
@@ -51,6 +52,7 @@ template <impl::Numeric T>
   for (const auto names : {symbols, params, implicits}) {
     boost::hash2::hash_append(h, detail::wire_flavor{}, names);
   }
+  std::ranges::for_each(closures, [&h](NodeId f) { detail::fold(h, f); });
   detail::fold(h, upto);
   for (const auto &n : nodes.first(std::min(upto, nodes.size()))) {
     boost::mp11::mp_for_each<boost::describe::describe_members<
@@ -63,11 +65,13 @@ template <impl::Numeric T>
 // The same key off a saved snapshot and off a live arena.
 template <impl::Numeric T>
 [[nodiscard]] std::uint64_t digest(const Snapshot<T> &s) {
-  return digest<T>(s.symbols, s.params, s.implicits, s.nodes, s.model_nodes);
+  return digest<T>(s.symbols, s.params, s.implicits, s.closures, s.nodes,
+                   s.model_nodes);
 }
 template <impl::Numeric T>
 [[nodiscard]] std::uint64_t digest(const Builder<T> &b, std::size_t upto) {
-  return digest<T>(b.symbols(), b.params(), b.implicits(), b.nodes(), upto);
+  return digest<T>(b.symbols(), b.params(), b.implicits(), b.closures(),
+                   b.nodes(), upto);
 }
 
 // Keyed on what codegen reads of a lane, so a consumer sees a compile is done

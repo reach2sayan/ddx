@@ -330,11 +330,45 @@ const auto eq = rt::equation([] {
 *eq.gradient("k"_s = 5.0, "x"_s = 3.0);   // {30}
 ```
 
-A point supplies every input: the symbols, then the parameters, by position or
-by name. `inputs()` lists them in that order and `input_count()` counts them,
-and a batch passes one column for each. A name is one kind of input, so naming
-`"k"` as both a symbol and a parameter poisons the equation with
-`errc::name_clash`.
+A point supplies every input: the symbols, then the parameters, then the
+implicit inputs below, by position or by name. `inputs()` lists them in that
+order and `input_count()` counts them, and a batch passes one column for each.
+A name is one kind of input, so naming `"k"` as both a symbol and a parameter
+poisons the equation with `errc::name_clash`.
+
+### Implicit inputs
+
+Some quantities are roots: a cubic equation of state's compressibility `Z`, a
+density solved from a pressure. Solving is the caller's — root selection is
+control flow — but every derivative downstream has to see that `Z` moves with
+the symbols. `rt::implicit(name)` is such an input, and `rt::closes(z, F)` names
+the residual it is a root of:
+
+```cpp
+const auto eq = rt::equation([] {
+  const auto a = rt::var("a");
+  const auto z = rt::implicit("z");
+  rt::closes(z, z * z - a);          // z is a root of z² − a
+  return z;
+});
+
+*eq.gradient(4.0, 2.0);              // {0.25}     — a = 4, z = 2: dz/da = −F_a / F_z
+*eq.hessian(4.0, 2.0);               // {−0.03125} — second order by the same rule
+*eq.residual(4.0, 2.0);              // {0}        — F at the point, a check on the root
+```
+
+`z` is supplied with every point, like a parameter, and has no Jacobian column.
+Every derivative — Jacobian, Hessian, `hvp`, `jvp`, `jacobian_jvp` — carries
+$\partial z / \partial x = -F_x / F_z$, and second order applies the same rule
+again, so a heat capacity through an equation of state needs nothing extra.
+ddx never solves $F = 0$ and never checks it: the derivatives are those of the
+root the caller supplied. `residual(point)` evaluates $F$ when you want to know.
+
+Each implicit needs exactly one `closes`, and its residual may read symbols,
+parameters and itself but no other implicit — a coupled set of them would need a
+linear solve, not a quotient. The equation is refused otherwise:
+`errc::unclosed_implicit`, `errc::closed_twice`, `errc::nested_implicit`, and
+`errc::not_implicit` for a `closes` on something that is not an implicit input.
 
 ### Written down instead
 
@@ -466,7 +500,7 @@ Every call that needs numbers takes them in five interchangeable spellings:
 ```
 
 **Positional order is declaration order**: the symbols in the order the model
-named them, then the parameters.
+named them, then the parameters, then the implicit inputs.
 
 ### Points by name at run time
 
@@ -807,6 +841,10 @@ if (!j) {
 | `no_arena` | a symbol was named outside an `rt::equation` callback |
 | `no_graph` | the expression is a bare literal, naming no function |
 | `name_clash` | a name used for two kinds of input, a symbol and a parameter |
+| `unclosed_implicit` | an `rt::implicit` input with no `rt::closes` |
+| `closed_twice` | an implicit input closed by two residuals |
+| `nested_implicit` | a residual that reads another implicit input |
+| `not_implicit` | `rt::closes` on something that is not an implicit input |
 | `not_univariate` | `univariate_derivative` on more than one symbol |
 | `not_single_output` | a member about one function's Hessian, asked of a system |
 | `unsupported_scalar` | `univariate_derivative` over an operation its Taylor arithmetic does not define |
@@ -1217,7 +1255,8 @@ thread-safe except `options()`.
 | `outputs()` | `std::optional<std::size_t>` — function count, `m` |
 | `symbols()` | `std::optional<std::span<const std::string>>` — declaration order |
 | `params()` | `std::optional<std::span<const std::string>>` — the parameters, declaration order |
-| `inputs()`, `input_count()` | every input a point supplies — symbols, then parameters — and how many |
+| `inputs()`, `input_count()` | every input a point supplies — symbols, parameters, implicits — and how many |
+| `residual(point)` | `result<std::vector<T>>` — each implicit's residual $F$ at the point |
 | `point(args…)` | `result<std::vector<T>>` — a point in positional order, from any of the five spellings |
 | `evaluate(point)` | `result<T>`, or `result<std::vector<T>>` for a system |
 | `jacobian(point)` | `result<std::vector<T>>`, dense row-major m × n |

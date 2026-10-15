@@ -51,6 +51,7 @@ class Equation:
     def hvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
     def jacobian(self, x: typing.Any) -> tuple: pass
     def jacobian_jvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
+    def residual(self, x: typing.Any) -> list[float]: pass
     def restrict(self, names: list[str]) -> Restricted: pass
     def jvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
     def nodes(self, *, want: Want = ...) -> int: pass
@@ -239,30 +240,34 @@ class errc(enum.IntEnum):
     """
     Why ddx refused; Error.code carries one.
     """
-    archive_corrupt: typing.ClassVar[errc]  # value = <errc.archive_corrupt: 14>
-    archive_io: typing.ClassVar[errc]  # value = <errc.archive_io: 12>
-    archive_mismatch: typing.ClassVar[errc]  # value = <errc.archive_mismatch: 15>
-    bad_archive: typing.ClassVar[errc]  # value = <errc.bad_archive: 13>
-    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 21>
-    device_compile: typing.ClassVar[errc]  # value = <errc.device_compile: 25>
-    device_launch: typing.ClassVar[errc]  # value = <errc.device_launch: 26>
+    archive_corrupt: typing.ClassVar[errc]  # value = <errc.archive_corrupt: 18>
+    archive_io: typing.ClassVar[errc]  # value = <errc.archive_io: 16>
+    archive_mismatch: typing.ClassVar[errc]  # value = <errc.archive_mismatch: 19>
+    bad_archive: typing.ClassVar[errc]  # value = <errc.bad_archive: 17>
+    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 25>
+    device_compile: typing.ClassVar[errc]  # value = <errc.device_compile: 29>
+    device_launch: typing.ClassVar[errc]  # value = <errc.device_launch: 30>
     index_out_of_range: typing.ClassVar[errc]  # value = <errc.index_out_of_range: 4>
-    jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 20>
-    jit_module: typing.ClassVar[errc]  # value = <errc.jit_module: 17>
-    jit_object: typing.ClassVar[errc]  # value = <errc.jit_object: 18>
-    jit_target: typing.ClassVar[errc]  # value = <errc.jit_target: 16>
-    jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 19>
+    jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 24>
+    jit_module: typing.ClassVar[errc]  # value = <errc.jit_module: 21>
+    jit_object: typing.ClassVar[errc]  # value = <errc.jit_object: 22>
+    jit_target: typing.ClassVar[errc]  # value = <errc.jit_target: 20>
+    jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 23>
     no_arena: typing.ClassVar[errc]  # value = <errc.no_arena: 6>
-    no_device: typing.ClassVar[errc]  # value = <errc.no_device: 24>
+    no_device: typing.ClassVar[errc]  # value = <errc.no_device: 28>
+    closed_twice: typing.ClassVar[errc]  # value = <errc.closed_twice: 10>
     name_clash: typing.ClassVar[errc]  # value = <errc.name_clash: 8>
+    nested_implicit: typing.ClassVar[errc]  # value = <errc.nested_implicit: 11>
+    not_implicit: typing.ClassVar[errc]  # value = <errc.not_implicit: 12>
+    unclosed_implicit: typing.ClassVar[errc]  # value = <errc.unclosed_implicit: 9>
     no_graph: typing.ClassVar[errc]  # value = <errc.no_graph: 7>
-    not_univariate: typing.ClassVar[errc]  # value = <errc.not_univariate: 9>
-    not_single_output: typing.ClassVar[errc]  # value = <errc.not_single_output: 10>
+    not_univariate: typing.ClassVar[errc]  # value = <errc.not_univariate: 13>
+    not_single_output: typing.ClassVar[errc]  # value = <errc.not_single_output: 14>
     short_point: typing.ClassVar[errc]  # value = <errc.short_point: 0>
-    unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 22>
+    unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 26>
     unknown_symbol: typing.ClassVar[errc]  # value = <errc.unknown_symbol: 3>
-    unsupported_scalar: typing.ClassVar[errc]  # value = <errc.unsupported_scalar: 11>
-    wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 23>
+    unsupported_scalar: typing.ClassVar[errc]  # value = <errc.unsupported_scalar: 15>
+    wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 27>
     wrong_arity: typing.ClassVar[errc]  # value = <errc.wrong_arity: 1>
     wrong_column_count: typing.ClassVar[errc]  # value = <errc.wrong_column_count: 5>
     wrong_direction: typing.ClassVar[errc]  # value = <errc.wrong_direction: 2>
@@ -341,6 +346,10 @@ def sqrt(x: Expression) -> Expression:
 def tan(x: Expression) -> Expression:
     ...
 def tanh(x: Expression) -> Expression:
+    ...
+def closes(z: Expression, f: Expression) -> None:
+    ...
+def implicit(name: str) -> Expression:
     ...
 def param(name: str) -> Expression:
     ...

@@ -55,8 +55,9 @@ pyb::handle error_class;
   if (!current_arena) {
     fail_with(errc::no_arena);
   }
-  const auto e = kind == rt::OpCode::Var ? rt::var(*current_arena, name)
-                                         : rt::param(*current_arena, name);
+  const auto e = kind == rt::OpCode::Var     ? rt::var(*current_arena, name)
+                 : kind == rt::OpCode::Param ? rt::param(*current_arena, name)
+                                             : rt::implicit(*current_arena, name);
   if (e.poisoned()) {
     fail_with(errc::name_clash);
   }
@@ -335,6 +336,16 @@ PYBIND11_MODULE(_ddx, m) {
         return ddx::py::make_input(rt::OpCode::Param, name);
       },
       pyb::arg("name"));
+  m.def(
+      "implicit",
+      [](std::string_view name) {
+        return ddx::py::make_input(rt::OpCode::Implicit, name);
+      },
+      pyb::arg("name"));
+  m.def(
+      "closes",
+      [](const PyExpression &z, const PyExpression &f) { closes(z, f); },
+      pyb::arg("z"), pyb::arg("f"));
 
   // Off the opcode table, by each row's factory spelling, so an opcode added
   // there reaches Python without this file changing.  The comparisons are
@@ -476,6 +487,7 @@ PYBIND11_MODULE(_ddx, m) {
       .def("hvp", &PyEquation::hvp, pyb::arg("v"), pyb::arg("x"))
       .def("jacobian_jvp", &PyEquation::jacobian_jvp, pyb::arg("v"),
            pyb::arg("x"))
+      .def("residual", &PyEquation::residual_at, pyb::arg("x"))
       .def(
           "restrict",
           [](const PyEquation &self, const std::vector<std::string> &names) {

@@ -93,9 +93,65 @@ partials(OpCode op, const RTExpression<S> &l, const RTExpression<S> &r) {
 // One root's row of the Jacobian.  build_jacobian_impl() is an overload set:
 // the number of roots picks the shape, as output_dim does.
 struct JacobianRow {
-  NodeId value = no_node;      // the node for f itself
-  std::vector<NodeId> partial; // one per symbol, in Builder::symbols() order
+  NodeId value = no_node;       // the node for f itself
+  std::vector<NodeId> partial;  // one per symbol, in Builder::symbols() order
+  std::vector<NodeId> implicit; // df/dz with every z held, one per implicit
 };
+
+template <impl::Numeric T>
+[[nodiscard]] constexpr JacobianRow
+build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift = true);
+
+namespace detail {
+// The implicit-function theorem's half of a sweep: for implicit z closed by
+// F(z, x) = 0, dz/dx_s = -F_s / F_z.  Built once per arena from one reverse
+// sweep of F that holds z fixed, the first time anything differentiates
+// through z, and kept on the Builder.
+struct Implicits {
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr std::vector<NodeId>
+  row(Builder<T> &b, std::uint32_t slot) {
+    b.closure_rows_.resize(b.closures().size());
+    if (b.closure_rows_[slot].empty()) {
+      const auto f = build_reverse_jacobian(b, b.closures()[slot], false);
+      const RTExpression<T> fz{b, f.implicit[slot]};
+      b.closure_rows_[slot] =
+          f.partial | std::views::transform([&](NodeId fs) {
+            return b.is_constant(fs, T{0})
+                       ? fs
+                       : (-(RTExpression<T>{b, fs} / fz)).id(b);
+          }) |
+          impl::to<std::vector<NodeId>>();
+    }
+    return b.closure_rows_[slot];
+  }
+};
+
+// Why the implicits cannot be differentiated, if they cannot: a misuse of
+// closes(), an implicit nothing closed, or a residual reaching another
+// implicit -- which would need a linear solve, not a quotient.
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::optional<errc> unclosed(const Builder<T> &b) {
+  if (b.broken()) {
+    return b.broken();
+  }
+  const auto implicits =
+      std::views::iota(0u, static_cast<std::uint32_t>(b.closures().size()));
+  for (const std::uint32_t slot : implicits) {
+    const NodeId f = b.closures()[slot];
+    if (f == no_node) {
+      return errc::unclosed_implicit;
+    }
+    const auto live = reachable(b, std::span{&f, 1});
+    if (std::ranges::any_of(implicits, [&](std::uint32_t other) {
+          return other != slot && live[b.leaf(OpCode::Implicit, other)];
+        })) {
+      return errc::nested_implicit;
+    }
+  }
+  return std::nullopt;
+}
+} // namespace detail
 
 // reverse_sweep, accumulating *nodes*.  It appends to the builder it reads: new
 // nodes land above the snapshot, so reverse id order stays topological.
@@ -106,9 +162,15 @@ struct JacobianRow {
 // sqrt at 0 -- so every contribution out of a guarded node is itself chosen by
 // the guard.  Guards are selects, read as select_impl reads a condition, and an
 // unguarded graph builds exactly the nodes it did without them.
+//
+// `ift` false holds every implicit fixed and only harvests df/dz; true -- the
+// default -- folds dz/dx in at the end, adj[z] * dz/dx_s into each symbol.
+// Second order needs nothing more: the partial then contains z, and the next
+// sweep over it reaches z and applies the same rule.
 template <impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow build_reverse_jacobian(Builder<T> &b,
-                                                           NodeId root) {
+                                                           NodeId root,
+                                                           bool ift) {
   const auto n = static_cast<NodeId>(b.size());
   std::vector<NodeId> adj(n, no_node);
   std::vector<NodeId> guard(n, no_node);
@@ -176,17 +238,36 @@ template <impl::Numeric T>
     }
   }
 
+  const auto implicits = b.inputs().implicits;
+  if (ift) {
+    for (const auto slot : std::views::iota(0u, static_cast<std::uint32_t>(
+                                                    implicits))) {
+      const NodeId z = b.leaf(OpCode::Implicit, slot);
+      if (z >= n || adj[z] == no_node || b.is_constant(adj[z], T{0})) {
+        continue;
+      }
+      for (const auto [s, dz] : detail::Implicits::row(b, slot) |
+                                    std::views::enumerate) {
+        add_to(b.leaf(OpCode::Var, static_cast<std::uint32_t>(s)), guard[z],
+               expr(adj[z]) * expr(dz));
+      }
+    }
+  }
+
   JacobianRow g{.value = root,
-                .partial = std::vector<NodeId>(b.symbols().size(), no_node)};
-  for (const auto [v, node] : std::views::enumerate(b.nodes().first(n)) |
-                                  std::views::filter([](const auto &entry) {
-                                    return std::get<1>(entry).op == OpCode::Var;
-                                  })) {
-    g.partial[node.slot] = adj[static_cast<std::size_t>(v)];
+                .partial = std::vector<NodeId>(b.symbols().size(), no_node),
+                .implicit = std::vector<NodeId>(implicits, no_node)};
+  for (const auto [v, node] : std::views::enumerate(b.nodes().first(n))) {
+    if (node.op == OpCode::Var) {
+      g.partial[node.slot] = adj[static_cast<std::size_t>(v)];
+    } else if (node.op == OpCode::Implicit) {
+      g.implicit[node.slot] = adj[static_cast<std::size_t>(v)];
+    }
   }
   // A symbol the expression never mentions has no leaf, so no adjoint reached
   // it; those partials are the literal zero.
   std::ranges::replace(g.partial, no_node, b.constant(T{0}));
+  std::ranges::replace(g.implicit, no_node, b.constant(T{0}));
   return g;
 }
 
@@ -203,6 +284,19 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
 
   for (const NodeId v : detail::live_ids(live)) {
     const auto node = b[v]; // by value: building below may reallocate
+    if (node.op == OpCode::Implicit) {
+      // dz = sum_s dz/dx_s dx_s: z moves with every symbol its residual does.
+      const auto dz = detail::Implicits::row(b, node.slot);
+      d[v] = std::ranges::fold_left(
+                 std::views::zip(dz, tangent) |
+                     std::views::transform([&b](const auto &pair) {
+                       const auto [zs, ts] = pair;
+                       return RTExpression<T>{b, zs} * RTExpression<T>{b, ts};
+                     }),
+                 RTExpression<T>{0}, std::plus<>{})
+                 .id(b);
+      continue;
+    }
     if (is_leaf(node.op)) {
       // A Seed is a direction, not a variable, so it carries no tangent.
       d[v] = node.op == OpCode::Var ? tangent[node.slot] : b.constant(T{0});
@@ -239,7 +333,9 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow build_symbolic_jacobian(Builder<T> &b,
                                                             NodeId root) {
   const auto nsym = b.symbols().size();
-  JacobianRow g{.value = root, .partial = std::vector<NodeId>(nsym, no_node)};
+  JacobianRow g{.value = root,
+                .partial = std::vector<NodeId>(nsym, no_node),
+                .implicit = {}};
   const std::array<NodeId, 1> roots{root};
 
   // One vector, the unit moved through it: interning makes both constants

@@ -309,6 +309,20 @@ public:
     return restrict(std::span{names});
   }
 
+  // F(z, x) for each implicit's closure, at a point: zero, to rounding, where
+  // the caller's root is one.  ddx never solves for z; this is the check.
+  [[nodiscard]] result<std::vector<T>>
+  residual(const impl::rt_detail::CPointArg<T> auto &...args) const {
+    return point(args...).transform([this](const auto &at) {
+      [[maybe_unused]] const auto held = reading();
+      const auto closures = arena_->closures();
+      const auto values = evaluate_reachable(*arena_, closures, at);
+      return closures |
+             std::views::transform([&values](NodeId f) { return values[f]; }) |
+             impl::to<std::vector<T>>();
+    });
+  }
+
   // Dense row-major m x n x n; the graph holds it compressed by colour.
   [[nodiscard]] result<std::vector<T>>
   hessian(const impl::rt_detail::CPointArg<T> auto &...args) const {
@@ -667,9 +681,17 @@ protected:
       : arena_(std::move(arena)), roots_(std::move(roots)),
         // Before any sweep appends: what a saved file is keyed on.
         model_nodes_(static_cast<std::uint32_t>(arena_->size())) {
-    // One reverse sweep per output is cheap, and it is what the column counts,
-    // the pattern and constant evaluation read.
-    derivative_ = build_jacobian_impl(*arena_, roots_);
+    // An implicit no derivative could carry refuses the whole equation, as a
+    // poisoned output would.
+    if (const auto why = unclosed(*arena_)) {
+      bad_ = error{*why};
+      arena_.reset();
+      roots_.clear();
+    } else {
+      // One reverse sweep per output is cheap, and it is what the column
+      // counts, the pattern and constant evaluation read.
+      derivative_ = build_jacobian_impl(*arena_, roots_);
+    }
     if !consteval {
       lanes_ = std::make_unique<Lanes>();
       latches_ = std::make_unique<Latches>();
@@ -822,6 +844,7 @@ protected:
     snap.symbols = arena_->symbols();
     snap.params = arena_->params();
     snap.implicits = arena_->implicits();
+    snap.closures.assign(arena_->closures().begin(), arena_->closures().end());
     snap.nodes.assign(arena_->nodes().begin(), arena_->nodes().end());
     return snap;
   }
