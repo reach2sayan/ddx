@@ -43,47 +43,63 @@ template <typename T> struct is_output {
   template <typename U> using fn = std::is_same<U, rt::RTExpression<T>>;
 };
 
-// Outputs, then at most one cache, and nothing else.
+// Outputs -- or rt::detail::Dynamic alone, a count the type does not fix --
+// then at most one cache, and nothing else.
+template <typename T, typename... Rest>
+inline constexpr bool dynamic_outputs =
+    std::same_as<outputs_of<T, Rest...>,
+                 boost::mp11::mp_list<rt::detail::Dynamic>>;
 template <typename T, typename... Rest>
 concept COutputPack =
+    dynamic_outputs<T, Rest...> ||
     boost::mp11::mp_all_of_q<outputs_of<T, Rest...>, is_output<T>>::value;
+
+// The count's policy: fixed by the pack, or Dynamic as written.
+template <typename T, typename... Rest>
+using policy_of = boost::mp11::mp_if_c<
+    dynamic_outputs<T, Rest...>, rt::detail::Dynamic,
+    rt::detail::Fixed<1 + boost::mp11::mp_size<outputs_of<T, Rest...>>::value>>;
 
 } // namespace rt_detail
 
-// rt::detail::Core with the output count in the type: evaluate() answers a T
-// for one function, and a file holding another count is refused.
+// rt::detail::Core with the output count in the type -- evaluate() answers a
+// T for one function, and a file holding another count is refused -- or, with
+// Dynamic in the pack, a count only known at run time: one function per
+// species read from a database, every value block a vector, and the
+// one-function members refusing with errc::not_single_output.
 template <Numeric T, typename... Rest>
   requires rt_detail::COutputPack<T, Rest...>
 class Equation<rt::RTExpression<T>, Rest...>
-    : public rt::detail::Core<T, rt_detail::cache_of<T, Rest...>> {
+    : public rt::detail::Facade<Equation<rt::RTExpression<T>, Rest...>, T,
+                                rt_detail::cache_of<T, Rest...>,
+                                rt_detail::policy_of<T, Rest...>> {
   using Cache = rt_detail::cache_of<T, Rest...>;
-  using Base = rt::detail::Core<T, Cache>;
-  friend Base;
+  using Outputs = rt_detail::policy_of<T, Rest...>;
+  using Base = rt::detail::Facade<Equation, T, Cache, Outputs>;
+  friend rt::detail::Core<T, Cache>;
 
 public:
-  static constexpr std::size_t output_dim =
-      1 + boost::mp11::mp_size<rt_detail::outputs_of<T, Rest...>>::value;
+  using Base::cached;
+  using Base::create;
+  // What the type fixes: rt::dynamic, 0, where it fixes nothing.
+  static constexpr std::size_t output_dim = Outputs::expected.value_or(0);
 
   // The outputs as their own pack: the class's holds the cache too.
   template <typename... Es>
   static constexpr bool are_outputs =
-      sizeof...(Es) + 1 == output_dim &&
+      Outputs::expected == sizeof...(Es) + 1 &&
       (std::same_as<Es, rt::RTExpression<T>> && ...);
 
-  // A refusal rides on the Equation rather than a result<Equation> at every
-  // call site; see poisoned().  The cache leads, because the functions are a
-  // pack and nothing can be deduced behind one.  `owned` is null where the
-  // outputs' arena is the caller's, which is then copied.
+  // The cache leads, because the functions are a pack and nothing can be
+  // deduced behind one.
   template <typename... Es>
     requires are_outputs<Es...>
   [[nodiscard]] static constexpr Equation
   create(Cache memo, std::unique_ptr<rt::Builder<T>> owned,
          rt::RTExpression<T> first, Es... rest) {
     const std::array outputs{first, rest...};
-    return Base::template make<Equation>(std::move(memo), outputs,
-                                         std::move(owned));
+    return Base::create(std::move(memo), std::move(owned), outputs);
   }
-
   template <typename... Es>
     requires are_outputs<Es...> && std::floating_point<T>
   [[nodiscard]] static Equation cached(Cache memo,
@@ -91,30 +107,8 @@ public:
                                        std::unique_ptr<rt::Builder<T>> owned,
                                        rt::RTExpression<T> first, Es... rest) {
     const std::array outputs{first, rest...};
-    return Base::template cached<Equation>(std::move(memo), path, outputs,
-                                           std::move(owned));
+    return Base::cached(std::move(memo), path, std::move(owned), outputs);
   }
-
-  [[nodiscard]] static result<Equation>
-  load(const std::filesystem::path &path, Cache memo = {},
-       const rt::ExternFns<T> &fns = {})
-    requires std::floating_point<T>
-  {
-    return Base::template load<Equation>(path, std::move(memo), output_dim,
-                                         fns);
-  }
-
-  [[nodiscard]] constexpr auto
-  evaluate(const rt_detail::CPointArg<T> auto &...args) const {
-    return this->values(args...).transform([](std::vector<T> f) {
-      if constexpr (output_dim == 1) {
-        return f.front();
-      } else {
-        return f;
-      }
-    });
-  }
-  using Base::evaluate;
 
 private:
   using Base::Base;
@@ -127,6 +121,10 @@ namespace ddx::rt {
 using jit::Backend;
 using jit::Lanes;
 using jit::Level;
+
+// An equation whose output count is a run-time number.
+template <impl::Numeric T = double, CValueCache<T> C = detail::NoCache<T>>
+using System = impl::Equation<RTExpression<T>, detail::Dynamic, C>;
 
 // Over expressions already built in a caller's own arena, which the equation
 // copies: the caller may go on building in it.  Partial
@@ -155,29 +153,22 @@ template <typename C, impl::Numeric T, typename... Ts>
 //     const auto y = var("y");
 //     return exp(x) * sin(y);
 //   });
+//
+// A callback returning an array is a system with that many functions in its
+// type; one returning any other range -- a vector built over a species list
+// -- is a System, with the count it held.
 
 namespace detail {
 
-// Run `assemble` inside a fresh arena, and hand both back.
-template <impl::Numeric T>
-[[nodiscard]] auto assemble(std::invocable auto &&assemble) {
-  auto arena = std::make_unique<Builder<T>>();
-  auto built = [&] {
-    const auto scope = scoped_arena(*arena);
-    return std::invoke(DDX_FWD(assemble));
-  }();
-  return std::pair{std::move(arena), std::move(built)};
-}
-
 // `make(type_identity<Eq>, roots...)` over the Equation type the build's shape
-// names: one root, or a tuple-like of them -- output_dim lives in the type, so
-// the size must too.
+// names: one root, a tuple-like of them -- the count lives in the type, so the
+// size must too -- or any other range, whose count is whatever it holds.
 template <impl::Numeric T, typename Cache, typename Built>
 [[nodiscard]] auto over(const Built &built, auto &&make) {
   if constexpr (std::same_as<Built, RTExpression<T>>) {
     return make(std::type_identity<impl::Equation<RTExpression<T>, Cache>>{},
                 built);
-  } else {
+  } else if constexpr (requires { std::tuple_size<Built>::value; }) {
     constexpr std::size_t outputs = std::tuple_size_v<Built>;
     static_assert(outputs > 0,
                   "equation: a system needs at least one function");
@@ -187,6 +178,10 @@ template <impl::Numeric T, typename Cache, typename Built>
               impl::Equation<RTExpression<T>, Repeat<Rest, T>..., Cache>>{},
           built[0], built[Rest + 1]...);
     });
+  } else {
+    const auto outputs = built | impl::to<std::vector<RTExpression<T>>>();
+    return make(std::type_identity<System<T, Cache>>{},
+                std::span<const RTExpression<T>>{outputs});
   }
 }
 
@@ -203,21 +198,27 @@ template <impl::Numeric T = double, CValueCache<T> C = detail::NoCache<T>>
 
 // An equation from a file and nothing else: symbols, arena, Jacobian and
 // colouring all come off disk, and no sweep runs.  The output count is part of
-// the type, so a file holding some other number is refused, not adapted to.
-// An extern function the file names is bound from `fns` by name.
+// the type, so a file holding some other number is refused, not adapted to --
+// or `dynamic`, a System, which takes whatever the file holds.  An extern
+// function the file names is bound from `fns` by name.
 //
 //   const auto eq = ddx::rt::load("f.ddx");        // one function
 //   const auto eq = ddx::rt::load<double, 3>("f.ddx");
+//   const auto sys = ddx::rt::load<double, ddx::rt::dynamic>("s.ddx");
+inline constexpr std::size_t dynamic = 0;
 template <impl::Numeric T = double, std::size_t Outputs = 1,
           CValueCache<T> C = detail::NoCache<T>>
   requires std::floating_point<T>
 [[nodiscard]] auto load(const std::filesystem::path &path, C memo = {},
                         const ExternFns<T> &fns = {}) {
-  static_assert(Outputs > 0, "load: a system needs at least one function");
-  return impl::index_apply<Outputs - 1>([&]<std::size_t... Rest>() {
-    return impl::Equation<RTExpression<T>, detail::Repeat<Rest, T>..., C>::load(
-        path, std::move(memo), fns);
-  });
+  if constexpr (Outputs == dynamic) {
+    return System<T, C>::load(path, std::move(memo), fns);
+  } else {
+    return impl::index_apply<Outputs - 1>([&]<std::size_t... Rest>() {
+      return impl::Equation<RTExpression<T>, detail::Repeat<Rest, T>...,
+                            C>::load(path, std::move(memo), fns);
+    });
+  }
 }
 
 // The same model, with a file to keep the work in:

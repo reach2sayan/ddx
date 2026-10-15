@@ -42,20 +42,16 @@ namespace ddx::py {
 
 class PyCall;
 
-// The compressed Hessian back into a dense n x n a caller reads, with the zeros
-// the colouring left out put back: one fill, then one copy per cell a column
-// owns.  Indexed through Coloring::entries, never as a dense colours x n grid
-// -- the block holds only the owned cells, so `cells()` is below count() * n
-// wherever the pattern is sparse and the dense reading runs off the end.
-inline void scatter_hessian(const rt::Coloring &coloring,
-                            std::span<double *const> cells, double *dense,
-                            std::size_t n, std::size_t points) {
-  const auto wide = static_cast<std::ptrdiff_t>(points);
-  std::ranges::fill_n(dense, static_cast<std::ptrdiff_t>(n * n) * wide, 0.0);
-  for (const rt::Cell &cell : coloring.entries()) {
-    std::ranges::copy_n(cells[cell.slot], wide,
-                        dense + (cell.row * n + cell.column) * points);
-  }
+// A compressed block -- the Jacobian's cells or the Hessian's owned cells --
+// back into the dense array a caller reads, `points` wide: one fill for the
+// zeros the layout left out, then rt::scatter over its entries.
+inline void scatter(const auto &layout, Columns &cells, Dense &dense,
+                    std::size_t n, std::size_t rows, std::size_t points) {
+  std::ranges::fill_n(dense.at(0),
+                      static_cast<std::ptrdiff_t>(rows * n * points), 0.0);
+  rt::scatter(
+      layout, [&cells](std::size_t k) { return cells.at(k); },
+      [&dense](std::size_t c) { return dense.at(c); }, n, points);
 }
 
 // A Python caller cannot name a C++ type, so the only choice is whether there
@@ -153,6 +149,7 @@ public:
 
   [[nodiscard]] pyb::tuple hessian(const pyb::handle &x) {
     const Point at{x, inputs_};
+    unwrap(orders(Want::Hessian));
     return height() == 1 ? hessian_from_lane(at) : hessian_from_arena(at);
   }
 
@@ -187,9 +184,7 @@ public:
   // (value, gradient, H v): the gradient comes off the same sweep.  One
   // output only, as hessian() is.
   [[nodiscard]] pyb::tuple hvp(const pyb::handle &v, const pyb::handle &x) {
-    if (height() != 1) {
-      fail_with(errc::not_single_output);
-    }
+    unwrap(ready(Want::Hvp));
     const Point at{x, inputs_};
     const Point dir{v, symbols_};
     const auto l = lane(Want::Hvp);
@@ -306,24 +301,12 @@ private:
   }
 
   // This side always hands back the dense matrix, so the zeros go back in
-  // here: one fill, then one copy per cell the pattern names.
+  // here.
   void scatter_jacobian(Scratch &cells, Dense &dense,
                         std::size_t points) const {
-    scatter(derivative().pattern, cells, dense, points);
-  }
-  static void scatter(const rt::Sparsity &pattern, Scratch &cells,
-                      Dense &dense, std::size_t points) {
-    const std::size_t n = pattern.columns;
-    const std::size_t wide = pattern.size() * n;
-    if (wide == 0) {
-      return;
-    }
-    std::ranges::fill_n(dense.at(0), static_cast<std::ptrdiff_t>(wide * points),
-                        0.0);
-    for (const auto [i, j, src] : pattern.cells(cells.rows())) {
-      std::ranges::copy_n(src, static_cast<std::ptrdiff_t>(points),
-                          dense.at(i * n + j));
-    }
+    const rt::Sparsity &pattern = derivative().pattern;
+    py::scatter(pattern, cells, dense, pattern.columns, pattern.size(),
+                points);
   }
 
   // --- the Hessian ---------------------------------------------------------
@@ -346,8 +329,7 @@ private:
 
     Dense dense{shape_of({ssize(height()), ssize(n), ssize(n)}, at),
                 at.size()};
-    scatter_hessian(l->graph->coloring(), compressed.rows(), dense.at(0), n,
-                    at.size());
+    py::scatter(l->graph->coloring(), compressed, dense, n, n, at.size());
     return pyb::make_tuple(value_of(f, cell), std::move(g).array(),
                            std::move(dense).array());
   }
@@ -521,25 +503,24 @@ public:
   PyCall(PyEquation &eq, PyEquation::Want want, const pyb::handle &x)
       : eq_(&eq), want_(want), x_(pyb::cast<Array>(x)), at_(x_, eq.inputs_) {
     // A system's Hessian is read off the arena a point at a time, so there is
-    // no lane to bind.
-    if (want_ == PyEquation::Want::Hessian && eq_->height() != 1) {
-      fail_with(errc::wrong_column_count);
-    }
+    // no lane to bind; the lane's own gate says so.
+    unwrap(eq_->ready(want_));
     const auto l = eq_->lane(want_);
     const auto outputs = ssize(eq_->height());
     const auto n = eq_->width();
-    if (want_ != PyEquation::Want::Gradient) {
-      f_.emplace(eq_->shape_of({outputs}, at_),
-                 PyEquation::count(*l, &rt::OutputSpans::values), at_.size());
+    // Each block the lane carries, as the graph says: the values, the
+    // Jacobian's cells, and -- compressed by colour -- the Hessian's.
+    const auto blocks = l->graph->output_blocks();
+    if (!blocks.values.empty()) {
+      f_.emplace(eq_->shape_of({outputs}, at_), blocks.values.size(),
+                 at_.size());
     }
-    if (want_ != PyEquation::Want::Value) {
-      partials_.emplace(PyEquation::count(*l, &rt::OutputSpans::jacobian),
-                        at_.size());
+    if (!blocks.jacobian.empty()) {
+      partials_.emplace(blocks.jacobian.size(), at_.size());
       g_.emplace(eq_->shape_of({outputs, ssize(n)}, at_), at_.size());
     }
     if (want_ == PyEquation::Want::Hessian) {
-      compressed_.emplace(PyEquation::count(*l, &rt::OutputSpans::hessian),
-                          at_.size());
+      compressed_.emplace(blocks.hessian.size(), at_.size());
       h_.emplace(eq_->shape_of({outputs, ssize(n), ssize(n)}, at_), at_.size());
     }
   }
@@ -577,8 +558,8 @@ public:
 
 private:
   void scatter(const PyEquation::Compiled &l) {
-    scatter_hessian(l.graph->coloring(), compressed_->rows(), h_->at(0),
-                    eq_->width(), at_.size());
+    py::scatter(l.graph->coloring(), *compressed_, *h_, eq_->width(),
+                eq_->width(), at_.size());
   }
 
   // A rank-0 block is the scalar case, where the allocating calls answer with

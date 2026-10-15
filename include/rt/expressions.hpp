@@ -385,7 +385,7 @@ extern_fn(ExternRecord record, std::type_identity_t<ExternFn<T>> fn) {
 
 // var(), param() and implicit(), in both spellings, off the table of named
 // kinds.
-#define DDX_RT_INPUT(fn, Op, label)                                            \
+#define DDX_RT_INPUT(fn, Op, ...)                                              \
   template <impl::Numeric T>                                                   \
   [[nodiscard]] constexpr RTExpression<T> fn(Builder<T> &b,                    \
                                              std::string_view name) {          \

@@ -9,7 +9,8 @@ __all__: list[str] = ['Backend', 'Call', 'Equation', 'Error', 'Expression',
                       'VecLib', 'Want', 'abs', 'acos', 'acosh', 'add', 'asin',
                       'asinh', 'atan', 'atan2', 'atanh', 'cbrt', 'cos',
                       'cosh', 'div', 'equation', 'erf', 'errc', 'exp',
-                      'has_jit', 'has_opencl', 'hypot', 'Level', 'load', 'log', 'log10',
+                      'has_jit', 'has_opencl', 'hypot', 'le', 'Level', 'load', 'log', 'log10',
+                      'lt',
                       'max', 'min', 'mul', 'neg', 'pow', 'select', 'sign',
                       'sin', 'sinh', 'sqrt', 'tan', 'tanh', 'var']
 class Backend(enum.IntEnum):
@@ -319,9 +320,13 @@ def exp(x: Expression) -> Expression:
     ...
 def hypot(x: Expression, y: Expression) -> Expression:
     ...
+def le(x: Expression, y: Expression) -> Expression:
+    ...
 def log(x: Expression) -> Expression:
     ...
 def log10(x: Expression) -> Expression:
+    ...
+def lt(x: Expression, y: Expression) -> Expression:
     ...
 def max(x: Expression, y: Expression) -> Expression:
     ...

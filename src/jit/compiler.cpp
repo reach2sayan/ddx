@@ -3,6 +3,7 @@
 #include "rt/archive/archive.hpp"
 #include "rt/derivative.hpp"
 #include "rt/expressions.hpp"
+#include "rt/lowering.hpp"
 
 #include <boost/hash2/fnv1a.hpp>
 #include <boost/hash2/hash_append.hpp>
@@ -72,28 +73,55 @@ void init_native_target_once() {
                .detail = (what + ": " + llvm::toString(std::move(e))).str()};
 }
 
-// Defined outright: GetForCurrentProcess resolves whatever a loaded module
-// exports, which need not be the libm this TU was compiled against.
-[[nodiscard]] llvm::Error define_libm(llvm::orc::ExecutionSession &es,
-                                      llvm::orc::JITDylib &jd,
-                                      const llvm::DataLayout &dl) {
+// A Call row of the opcode tables as the runtime symbol its lowering names,
+// through the functor the row carries; a row spelled any other way defines
+// nothing.  A template, so the other arity's lambda is never formed.
+template <rt::OpCode Op, typename Functor> void define_call(auto &def) {
+  if constexpr (rt::lowering_of(Op).how == rt::Lower::Call) {
+    if constexpr (rt::arity_of(Op) == 1) {
+      def(rt::lowering_of(Op).name,
+          +[](double u) noexcept { return double{Functor{}(u)}; });
+    } else {
+      def(rt::lowering_of(Op).name,
+          +[](double l, double r) noexcept { return double{Functor{}(l, r)}; });
+    }
+  }
+}
+
+// What a kernel calls that is not an intrinsic: every Call row of the
+// lowering table, through the functor its opcode row names, and the extern
+// trampoline.  Defined outright: GetForCurrentProcess resolves whatever a
+// loaded module exports, which need not be the libm this TU was compiled
+// against.
+[[nodiscard]] llvm::Error define_runtime(llvm::orc::ExecutionSession &es,
+                                         llvm::orc::JITDylib &jd,
+                                         const llvm::DataLayout &dl) {
   llvm::orc::MangleAndInterner mangle(es, dl);
   llvm::orc::SymbolMap syms;
-  syms.reserve(rt::op_count);
+  syms.reserve(rt::op_count + 1);
   // The unary + turns each lambda into a plain function pointer.
-  const auto def = [&](const char *name, auto *fn) {
-    syms[mangle(name)] = {llvm::orc::ExecutorAddr::fromPtr(fn),
-                          llvm::JITSymbolFlags::Exported |
-                              llvm::JITSymbolFlags::Callable};
+  const auto def = [&](std::string_view name, auto *fn) {
+    syms[mangle(llvm::StringRef{name.data(), name.size()})] = {
+        llvm::orc::ExecutorAddr::fromPtr(fn),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
   };
-#define DDX_JIT_LIBM(fn, Op, label, ...)                                       \
-  def(label, +[](double u) noexcept { return std::fn(u); });
-  DDX_UNARY_MATH_TABLE(DDX_JIT_LIBM)
-#undef DDX_JIT_LIBM
-  def("fabs", +[](double u) noexcept { return std::fabs(u); });
-  def("pow", +[](double l, double r) noexcept { return std::pow(l, r); });
-  def("atan2", +[](double l, double r) noexcept { return std::atan2(l, r); });
-  def("hypot", +[](double l, double r) noexcept { return std::hypot(l, r); });
+#define DDX_JIT_RUNTIME(fn, Op, label, functor, ...)                           \
+  define_call<rt::OpCode::Op, functor>(def);
+  DDX_RT_UNARY_TABLE(DDX_JIT_RUNTIME)
+  DDX_RT_BINARY_TABLE(DDX_JIT_RUNTIME)
+#undef DDX_JIT_RUNTIME
+#define DDX_JIT_RUNTIME(fn, Op, label)                                         \
+  def(rt::lowering_of(rt::OpCode::Op).name,                                    \
+      +[](double u) noexcept { return std::fn(u); });
+  DDX_UNARY_MATH_TABLE(DDX_JIT_RUNTIME)
+#undef DDX_JIT_RUNTIME
+  def(detail::trampoline_symbol,
+      +[](const void *fn, const double *in, std::uint64_t arity,
+          double *answer, std::uint64_t components) noexcept {
+        (*static_cast<const rt::ExternFn<double> *>(fn))(
+            {in, static_cast<std::size_t>(arity)},
+            {answer, static_cast<std::size_t>(components)});
+      });
   return jd.define(llvm::orc::absoluteSymbols(std::move(syms)));
 }
 
@@ -243,7 +271,9 @@ host_identity_of(const llvm::orc::JITTargetMachineBuilder &machine) {
   boost::hash2::fnv1a_64 h;
   h.update(features.data(), features.size());
   const llvm::StringRef cpu = machine.getCPU();
-  return std::format("{}/{}/feat-{:016x}/llvm-" LLVM_VERSION_STRING,
+  // The kernel's calling convention rides along, so an object from a build
+  // that passed different arguments is a miss and not a crash.
+  return std::format("{}/{}/feat-{:016x}/llvm-" LLVM_VERSION_STRING "/abi-2",
                      machine.getTargetTriple().str(),
                      cpu.empty() ? std::string_view{"generic"}
                                  : std::string_view{cpu.data(), cpu.size()},
@@ -430,7 +460,7 @@ private:
                    sym.takeError())};
     }
     return Kernel{sym->toPtr<Kernel::function_type>(), KernelShape::of(g_),
-                  std::move(host_.code),
+                  Externs::of(g_), std::move(host_.code),
                   std::make_shared<const std::string>(name_),
                   host_.objects.take(name_)};
   }
@@ -660,7 +690,7 @@ struct Compiler::Impl {
     const char prefix = dl.getGlobalPrefix();
 
     // Before the generators: a definition here beats anything they would find.
-    if (auto e = define_libm(impl->jit->getExecutionSession(), jd, dl)) {
+    if (auto e = define_runtime(impl->jit->getExecutionSession(), jd, dl)) {
       return std::unexpected{
           as_error(errc::jit_target, "defining libm", std::move(e))};
     }
@@ -694,7 +724,7 @@ struct Compiler::Impl {
   [[nodiscard]] static result<Kernel> link(const std::shared_ptr<Impl> &self,
                                            std::span<const std::byte> object,
                                            std::string_view symbol,
-                                           KernelShape shape) {
+                                           const rt::Graph<double> &g) {
     auto &jit = *self->jit;
     auto jd =
         jit.createJITDylib("ddx_adopted_" + std::to_string(self->counter++));
@@ -725,7 +755,8 @@ struct Compiler::Impl {
                                           llvm::StringRef{symbol},
                                       sym.takeError())};
     }
-    return Kernel{sym->toPtr<Kernel::function_type>(), shape, self,
+    return Kernel{sym->toPtr<Kernel::function_type>(), KernelShape::of(g),
+                  Externs::of(g), self,
                   std::make_shared<const std::string>(symbol), std::move(kept)};
   }
 
@@ -749,23 +780,7 @@ struct Compiler::Impl {
                                           const Options &opt,
                                           CompileReport &rep) {
     Host host = host_of(self);
-    // A kernel calling an extern function has that function's address -- and
-    // the trampoline's -- compiled in, which no other process shares: it is
-    // neither cached on disk nor kept for a file.
-    const bool portable = g.externs().empty();
-    const bool caching = !opt.cache_dir.empty() && portable;
-    if (!portable) {
-      // The kernel calls through pointers the graph owns: it keeps them alive
-      // for as long as it can run, graph or no graph.
-      struct Retained {
-        std::shared_ptr<Impl> jit;
-        std::vector<std::shared_ptr<const rt::ExternFn<double>>> fns;
-      };
-      host.code = std::make_shared<Retained>(
-          self, g.externs() |
-                    std::views::transform(&rt::ExternEntry<double>::fn) |
-                    impl::to<std::vector<std::shared_ptr<const rt::ExternFn<double>>>>());
-    }
+    const bool caching = !opt.cache_dir.empty();
     Codegen emitted = opt.codegen;
     emitted.lanes = *Lanes::exactly(host.lanes_for(opt));
     const std::uint64_t key =
@@ -774,8 +789,7 @@ struct Compiler::Impl {
       if (const auto entry = read_entry(opt.cache_dir, key)) {
         // The shape comes from the live graph, never the file: a forged entry
         // supplies code and a symbol, never a column count.
-        if (auto adopted =
-                link(self, entry->code, entry->symbol, KernelShape::of(g));
+        if (auto adopted = link(self, entry->code, entry->symbol, g);
             adopted) {
           // The phases are zero because they did not happen.
           rep.nodes = g.live_count();
@@ -788,7 +802,7 @@ struct Compiler::Impl {
 
     Options effective = opt;
     // A compile whose object will be stored has to keep it, whatever was asked.
-    effective.retain_object = (effective.retain_object || caching) && portable;
+    effective.retain_object = effective.retain_object || caching;
 
     Compilation work{std::move(host), g, effective,
                      "ddx_kernel_" + std::to_string(self->counter++), rep};
@@ -841,8 +855,9 @@ Compiler::compile_async(std::shared_ptr<const rt::Graph<double>> g,
 }
 
 result<Kernel> Compiler::adopt(std::span<const std::byte> object,
-                               std::string_view symbol, KernelShape shape) {
-  return Impl::link(impl_, object, symbol, shape);
+                               std::string_view symbol,
+                               const rt::Graph<double> &g) {
+  return Impl::link(impl_, object, symbol, g);
 }
 
 result<std::string> Compiler::render_ir(const rt::Graph<double> &g,

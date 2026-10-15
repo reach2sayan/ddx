@@ -1,6 +1,5 @@
 #include "energy_models.hpp"
 #include "rt/equation.hpp"
-#include "rt/system.hpp"
 
 #include <gtest/gtest.h>
 
@@ -30,7 +29,7 @@ using RE = ddx::rt::RTExpression<>;
 }
 
 [[nodiscard]] auto five_system() {
-  return ddx::rt::system([] {
+  return ddx::rt::equation([] {
     return five(ddx::rt::var("x"), ddx::rt::var("y"), ddx::rt::var("z"));
   });
 }
@@ -143,7 +142,7 @@ TEST(RtSystem, HessianStacksTheScalarHessians) {
 }
 
 TEST(RtSystem, AnEmptyRangeIsNoGraph) {
-  const auto sys = ddx::rt::system([] { return std::vector<RE>{}; });
+  const auto sys = ddx::rt::equation([] { return std::vector<RE>{}; });
   ASSERT_TRUE(sys.poisoned());
   EXPECT_EQ(sys.status()->code, ddx::errc::no_graph);
   EXPECT_FALSE(sys.outputs().has_value());
@@ -156,7 +155,7 @@ TEST(RtSystem, SavesAndLoadsAnyCount) {
   {
     const auto sys = five_system();
     ASSERT_TRUE(sys.save(path).has_value());
-    const auto loaded = ddx::rt::load_system(path);
+    const auto loaded = ddx::rt::load<double, ddx::rt::dynamic>(path);
     ASSERT_TRUE(loaded.has_value());
     EXPECT_TRUE(loaded->loaded());
     EXPECT_EQ(loaded->outputs(), 5u);

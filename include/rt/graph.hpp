@@ -211,6 +211,7 @@ public:
         g.inputs_.seeds =
             std::max(g.inputs_.seeds, std::size_t{g.properties_[v].slot} + 1);
       }
+      g.calls_extern_ |= kind_of(g.properties_[v].op) == Kind::Extern;
     }
     return g;
   }
@@ -241,10 +242,13 @@ public:
   }
 
   // The functions extern nodes call, shared with the arena: a kernel lowered
-  // from this graph calls them through the pointers held here.
+  // from this graph calls them by index into this table.
   [[nodiscard]] std::span<const ExternEntry<T>> externs() const {
     return externs_;
   }
+  // Whether a live node calls one: what a device, which cannot call the host,
+  // refuses -- a function the arena registered and nothing reaches is not.
+  [[nodiscard]] bool calls_extern() const noexcept { return calls_extern_; }
 
   // How many input columns `xs` carries: the symbol count is not the width.
   [[nodiscard]] std::size_t arity() const { return inputs_.total(); }
@@ -344,6 +348,7 @@ private:
   Inputs inputs_;
   std::vector<std::string> names_;
   std::vector<ExternEntry<T>> externs_;
+  bool calls_extern_ = false;
   std::vector<bool> live_;
   std::vector<NodeId> live_order_;
   std::vector<Step> schedule_;

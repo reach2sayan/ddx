@@ -248,12 +248,12 @@ const auto sys = rt::equation([] {
 ```
 
 When the number of functions is only known at run time — one per species read
-from a database — build an `rt::System` instead. `#include "rt/system.hpp"`;
-the callback returns any range of expressions, and `outputs()` says how many it
-held:
+from a database — return a `std::vector` (any range that is not an array) and
+the result is an `rt::System`: the same equation with the count outside its
+type, and `outputs()` says how many it held:
 
 ```cpp
-const auto sys = rt::system([&] {
+const auto sys = rt::equation([&] {
   std::vector<rt::RTExpression<>> out;
   for (const auto &s : species) {
     out.push_back(log_gamma(s, rt::var(s.name)));
@@ -364,10 +364,11 @@ registers as `errc::extern_shape` — and with first partials only, `hessian`,
 calls `fn` as often as it needs,
 from any thread that sweeps, so it must be re-entrant and must not throw.
 
-A compiled kernel calls the function back once per point. Such a kernel holds
-the function's address, so it is neither written to `cache_dir` nor saved with
-the equation; under `Backend::Device` the lane is interpreted, since device
-code cannot call into the host. Saving keeps the graph and the function's name:
+A compiled kernel calls the function back once per point, through a table the
+equation hands it, so the kernel holds no address of its own and is cached and
+saved like any other; under `Backend::Device` the lane is interpreted, since
+device code cannot call into the host. Saving keeps the graph and the
+function's name:
 `rt::equation(path, model)` binds it again by running the model, and
 `rt::load(path, memo, fns)` takes it from `fns`, a map from name to function —
 a file whose function is missing answers `errc::unbound_extern`.
@@ -1192,14 +1193,15 @@ to a file, and `load` reads it back without a model:
 const auto eq = rt::equation([] { return exp(rt::var("x")) * rt::var("y"); });
 eq.save("f.ddx");
 
-const auto same = *rt::load("f.ddx");            // no model, nothing rebuilt
-const auto sys  = *rt::load<double, 3>("s.ddx"); // three functions
+const auto same = *rt::load("f.ddx");                     // no model, nothing rebuilt
+const auto sys  = *rt::load<double, 3>("s.ddx");          // three functions
+const auto any  = *rt::load<double, rt::dynamic>("s.ddx"); // a System: any count
 ```
 
 The output count is a template parameter because it is part of the type, and a
 file holding some other number is refused rather than adapted to. A `System`
-has no count in its type, so `rt::load_system("s.ddx")` takes whatever the file
-holds.
+has no count in its type, so `rt::load<double, rt::dynamic>` takes whatever the
+file holds.
 
 Pair a model with a file and it becomes a cache — the lambda is the model as you
 would write it anyway, and the path is only where the result is kept:
@@ -1313,9 +1315,9 @@ behind `--trend` that the interpreter is tuned against.
 
 ## Reference
 
-`ddx::rt::equation(callback)` → `Equation`, and `ddx::rt::system(callback)` →
-`System` with the same members plus `outputs()`. All of it is `const` and
-thread-safe except `options()`.
+`ddx::rt::equation(callback)` → `Equation`, or `System` — the same type with
+the output count outside it — when the callback returns a vector. All of it is
+`const` and thread-safe except `options()`.
 
 | Member | Answers |
 |---|---|
@@ -1359,7 +1361,7 @@ thread-safe except `options()`.
 | `wait_for_kernel(want)` | block until the compile in flight for a lane has landed — the Jacobian's unless `want` names another |
 | `device_status()` | under `Device`, the device answering or why none is; empty under any other backend |
 | `save(path)`, `verify(path)` | write this equation; ask whether a file holds it |
-| `load(path, memo, fns)`, `loaded()` | read one, binding its extern functions from `fns` by name; whether this one was read — `rt::load_system(path, …)` for a `System` |
+| `load(path, memo, fns)`, `loaded()` | read one, binding its extern functions from `fns` by name; whether this one was read — `rt::load<double, rt::dynamic>(path, …)` for a `System` |
 
 ---
 

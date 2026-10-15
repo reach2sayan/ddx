@@ -30,13 +30,13 @@ namespace ddx::rt {
 // The named kinds are their own table, in the order a point passes them: it
 // is what the Builder keeps one name list per and what var()'s spellings,
 // the Python factories and the column layout are generated from.
-#define DDX_RT_NAMED_TABLE(X, ...)                                             \
-  X(var, Var, "var" __VA_OPT__(, ) __VA_ARGS__)                                \
-  X(param, Param, "param" __VA_OPT__(, ) __VA_ARGS__)                          \
-  X(implicit, Implicit, "implicit" __VA_OPT__(, ) __VA_ARGS__)
+#define DDX_RT_NAMED_TABLE(X)                                                  \
+  X(var, Var, "var", Named)                                                    \
+  X(param, Param, "param", Named)                                              \
+  X(implicit, Implicit, "implicit", Named)
 #define DDX_RT_LEAF_TABLE(X)                                                   \
   X(constant, Const, "const", Literal)                                         \
-  DDX_RT_NAMED_TABLE(X, Named)                                                 \
+  DDX_RT_NAMED_TABLE(X)                                                        \
   X(seed, Seed, "seed", Positional)
 
 // The last cell is the ops/adjoints.hpp descriptor carrying the reverse-mode
@@ -232,7 +232,7 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr std::optional<std::size_t>
 named_index(OpCode op) noexcept {
   std::size_t i = 0;
-#define DDX_RT_NAMED(fn, Op, label)                                            \
+#define DDX_RT_NAMED(fn, Op, ...)                                              \
   if (op == OpCode::Op) {                                                      \
     return i;                                                                  \
   }                                                                            \

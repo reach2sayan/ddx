@@ -356,9 +356,9 @@ public:
       return gather(Want::Hessian, at, f, g, h).transform([&] {
         // Only the cells the colouring stores; `out` is already zero, which
         // is what every other column of that colour is.
-        for (const Cell &cell : coloring.entries()) {
-          out[cell.row * n + cell.column] = h[cell.slot];
-        }
+        scatter(
+            coloring, [&h](std::size_t k) { return &h[k]; },
+            [&out](std::size_t c) { return &out[c]; }, n, 1);
         return std::move(out);
       });
     });
@@ -1119,6 +1119,7 @@ private:
     }
   }
 
+protected:
   // The gates, in the order a call meets them.  alive(): not poisoned.
   // single(): one function's, which a system refuses.  orders(): second order
   // is refused where a reachable extern supplies first partials only, rather
@@ -1146,6 +1147,7 @@ private:
     });
   }
 
+private:
   [[nodiscard]] auto reading() const {
     return std::shared_lock{sweeps_->arena};
   }
@@ -1304,11 +1306,10 @@ private:
   // back.
   [[nodiscard]] static constexpr std::vector<T>
   dense(const Sparsity &pattern, std::span<const T> cells) {
-    const std::size_t n = pattern.columns;
-    std::vector<T> out(pattern.size() * n, T{0});
-    for (const auto [i, j, v] : pattern.cells(cells)) {
-      out[i * n + j] = v;
-    }
+    std::vector<T> out(pattern.size() * pattern.columns, T{0});
+    scatter(
+        pattern, [&cells](std::size_t k) { return &cells[k]; },
+        [&out](std::size_t c) { return &out[c]; }, pattern.columns, 1);
     return out;
   }
 
@@ -1718,6 +1719,79 @@ private:
   Jacobian jacobian_;
   std::vector<std::size_t> kept_; // indices into the equation's cells
   std::unique_ptr<typename C::Lanes> lanes_;
+};
+
+// How many functions an equation has, as its type says: a count fixed there
+// refuses a file holding another and narrows one function's value to a
+// scalar; a run-time count takes any file and answers a vector.
+template <std::size_t N> struct Fixed {
+  static constexpr std::optional<std::size_t> expected = N;
+  static constexpr bool scalar = N == 1;
+};
+struct Dynamic {
+  static constexpr std::optional<std::size_t> expected = std::nullopt;
+  static constexpr bool scalar = false;
+};
+
+// Run `assemble` inside a fresh arena, and hand both back.
+template <impl::Numeric T>
+[[nodiscard]] auto assemble(std::invocable auto &&assemble) {
+  auto arena = std::make_unique<Builder<T>>();
+  auto built = [&] {
+    const auto scope = scoped_arena(*arena);
+    return std::invoke(DDX_FWD(assemble));
+  }();
+  return std::pair{std::move(arena), std::move(built)};
+}
+
+// What Equation and System are over Core: the three ways one comes to be, and
+// evaluate(), with `Outputs` the one place the count's policy acts.
+template <typename D, impl::Numeric T, CValueCache<T> Cache, typename Outputs>
+class Facade : public Core<T, Cache> {
+  using Base = Core<T, Cache>;
+
+public:
+  // A refusal rides on the equation rather than a result at every call site;
+  // see poisoned().  `owned` is null where the outputs' arena is the caller's,
+  // which is then copied.
+  [[nodiscard]] static constexpr D
+  create(Cache memo, std::unique_ptr<Builder<T>> owned,
+         std::span<const RTExpression<T>> outputs) {
+    return Base::template make<D>(std::move(memo), outputs, std::move(owned));
+  }
+  [[nodiscard]] static D cached(Cache memo, const std::filesystem::path &path,
+                                std::unique_ptr<Builder<T>> owned,
+                                std::span<const RTExpression<T>> outputs)
+    requires std::floating_point<T>
+  {
+    return Base::template cached<D>(std::move(memo), path, outputs,
+                                    std::move(owned));
+  }
+  // Nothing built and nothing swept; an extern function the file names is
+  // bound from `fns` by name.
+  [[nodiscard]] static result<D> load(const std::filesystem::path &path,
+                                      Cache memo = {},
+                                      const ExternFns<T> &fns = {})
+    requires std::floating_point<T>
+  {
+    return Base::template load<D>(path, std::move(memo), Outputs::expected,
+                                  fns);
+  }
+
+  [[nodiscard]] constexpr auto
+  evaluate(const impl::rt_detail::CPointArg<T> auto &...args) const {
+    return this->values(args...).transform([](std::vector<T> f) {
+      if constexpr (Outputs::scalar) {
+        return f.front();
+      } else {
+        return f;
+      }
+    });
+  }
+  using Base::evaluate;
+
+protected:
+  using Base::Base;
 };
 
 } // namespace ddx::rt::detail

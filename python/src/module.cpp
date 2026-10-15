@@ -320,7 +320,7 @@ PYBIND11_MODULE(_ddx, m) {
         pyb::arg("cache") = pyb::none(), pyb::arg("remember") = false);
   m.def("load", &ddx::py::load_equation, pyb::arg("path"), pyb::kw_only(),
         pyb::arg("remember") = false);
-#define DDX_PY_INPUT(fn, Op, label)                                            \
+#define DDX_PY_INPUT(fn, Op, ...)                                              \
   m.def(                                                                       \
       #fn,                                                                     \
       [](std::string_view name) {                                              \
@@ -335,8 +335,8 @@ PYBIND11_MODULE(_ddx, m) {
       pyb::arg("z"), pyb::arg("f"));
 
   // Off the opcode table, by each row's factory spelling, so an opcode added
-  // there reaches Python without this file changing.  The comparisons are
-  // operators here, and select is the one ternary, below.
+  // there reaches Python without this file changing; select, the one ternary,
+  // is below.
   for (const auto i : std::views::iota(0uz, rt::op_count)) {
     const auto op = static_cast<rt::OpCode>(i);
     const std::string name{rt::name_of(op)};
@@ -347,14 +347,12 @@ PYBIND11_MODULE(_ddx, m) {
           pyb::arg("x"));
       break;
     case rt::Kind::Binary:
-      if (op != rt::OpCode::Lt && op != rt::OpCode::Le) {
-        m.def(
-            name.c_str(),
-            [op](const PyExpression &l, const PyExpression &r) {
-              return binary(op, l, r);
-            },
-            pyb::arg("x"), pyb::arg("y"));
-      }
+      m.def(
+          name.c_str(),
+          [op](const PyExpression &l, const PyExpression &r) {
+            return binary(op, l, r);
+          },
+          pyb::arg("x"), pyb::arg("y"));
       break;
     default:
       break;

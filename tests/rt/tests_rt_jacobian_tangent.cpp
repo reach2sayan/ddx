@@ -1,6 +1,5 @@
 #include "energy_models.hpp"
 #include "rt/equation.hpp"
-#include "rt/system.hpp"
 
 #include <gtest/gtest.h>
 
@@ -131,7 +130,7 @@ TEST(RtJacobianTangent, TheBatchMatchesThePointCalls) {
 }
 
 TEST(RtJacobianTangent, ASystemTakesItInOneSweep) {
-  const auto sys = ddx::rt::system([] {
+  const auto sys = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
     const auto y = ddx::rt::var("y");
     return std::vector<RE>{x * x * y, sin(x * y)};

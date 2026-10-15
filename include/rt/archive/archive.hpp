@@ -53,8 +53,9 @@ struct Adopted {
   }
 };
 
-// The shape is taken from the graph just frozen, never from the file: a forged
-// entry may supply code and a symbol but cannot claim a column count.
+// The shape and the functions are taken from the graph just frozen, never
+// from the file: a forged entry may supply code and a symbol but cannot claim
+// a column count or an address.
 template <impl::Numeric T>
 [[nodiscard]] Adopted
 adopt_stored(std::span<const Object> objects, Want want, const Graph<T> &graph,
@@ -65,8 +66,7 @@ adopt_stored(std::span<const Object> objects, Want want, const Graph<T> &graph,
     return {};
   }
 
-  if (auto adopted =
-          compiler.adopt(have->code, have->symbol, jit::KernelShape::of(graph));
+  if (auto adopted = compiler.adopt(have->code, have->symbol, graph);
       !adopted) {
     return {};
   } else {

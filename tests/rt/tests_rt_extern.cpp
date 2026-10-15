@@ -1,5 +1,4 @@
 #include "rt/equation.hpp"
-#include "rt/system.hpp"
 #include "rt/text/equation.hpp"
 
 #include <gtest/gtest.h>
@@ -278,7 +277,7 @@ TEST(RtExtern, TheModelBindsACachedFile) {
 }
 
 TEST(RtExtern, ASystemThroughOneFunction) {
-  const auto sys = ddx::rt::system([] {
+  const auto sys = ddx::rt::equation([] {
     const auto a = ddx::rt::var("a");
     const auto b = ddx::rt::var("b");
     const auto g = ddx::rt::extern_fn({.name = "g", .arity = 2}, g_of)(a, b);

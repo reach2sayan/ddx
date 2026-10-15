@@ -374,6 +374,19 @@ template <impl::Numeric T>
   return rows;
 }
 
+// The cells a layout stores -- a Sparsity's or a Coloring's, each answering
+// entries() -- into a dense row-major block n wide, each cell `points` long:
+// cell(slot) is where a stored cell's values start, dense(i * n + j) where
+// they go.  The zeros are the caller's fill.  The one scatter the point calls
+// and the Python arrays share.
+constexpr void scatter(const auto &layout, auto &&cell, auto &&dense,
+                       std::size_t n, std::size_t points) {
+  for (const Cell &c : layout.entries()) {
+    std::ranges::copy_n(cell(c.slot), static_cast<std::ptrdiff_t>(points),
+                        dense(c.row * n + c.column));
+  }
+}
+
 // Columns j and k conflict iff their coupling rows overlap -- the CPR colouring
 // symbolic/coupling.hpp runs at compile time, and carries the citations.
 [[nodiscard]] DDX_API Coloring color_columns(const CouplingRows &rows);

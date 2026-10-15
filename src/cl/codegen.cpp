@@ -1,5 +1,7 @@
 #include "codegen.hpp"
 
+#include "rt/lowering.hpp"
+
 #include "cl/kernel.hpp"
 #include "rt/opcode.hpp"
 
@@ -65,41 +67,40 @@ void expression(std::string &out, const rt::Graph<double> &g, rt::NodeId v) {
   case rt::Kind::Args:
     std::unreachable(); // Device::compile refuses a graph that calls the host
   case rt::Kind::Unary:
+  case rt::Kind::Binary: {
+    const auto &[how, name] = rt::lowering_of(p.op);
+    switch (how) {
+    case rt::Lower::Infix:
+      std::format_to(sink, "v{} {} v{}", a, name, b);
+      return;
+    // 1.0 or 0.0, ordered: a NaN operand compares false.
+    case rt::Lower::Compare:
+      std::format_to(sink, "(double)(v{} {} v{})", a, name, b);
+      return;
+    case rt::Lower::Call:
+      if (rt::arity_of(p.op) == 1) {
+        std::format_to(sink, "{}(v{})", name, a);
+      } else {
+        std::format_to(sink, "{}(v{}, v{})", name, a, b);
+      }
+      return;
+    case rt::Lower::Special:
+    case rt::Lower::None:
+      break;
+    }
     switch (p.op) {
     case rt::OpCode::Neg:
       std::format_to(sink, "-v{}", a);
-      return;
-    case rt::OpCode::Abs:
-      std::format_to(sink, "fabs(v{})", a);
       return;
     // The last arm reaches only ±0 and NaN, as in the LLVM emitter.
     case rt::OpCode::Sign:
       std::format_to(sink, "(v{0} > 0.0 ? 1.0 : (v{0} < 0.0 ? -1.0 : v{0} - v{0}))", a);
       return;
-    default:
-      std::format_to(sink, "{}(v{})", label, a);
-      return;
-    }
-  case rt::Kind::Binary:
-    switch (p.op) {
-    case rt::OpCode::Add:
-    case rt::OpCode::Mul:
-    case rt::OpCode::Div:
-      std::format_to(sink, "v{} {} v{}", a, label, b);
-      return;
-    // 1.0 or 0.0, ordered: a NaN operand compares false.
-    case rt::OpCode::Lt:
-    case rt::OpCode::Le:
-      std::format_to(sink, "(double)(v{} {} v{})", a, label, b);
-      return;
-    case rt::OpCode::Max:
-    case rt::OpCode::Min:
+    default: // Max and Min, through the prelude's NaN-propagating pair
       std::format_to(sink, "ddx_{}(v{}, v{})", label, a, b);
       return;
-    default:
-      std::format_to(sink, "{}(v{}, v{})", label, a, b);
-      return;
     }
+  }
   case rt::Kind::Ternary:
     // Select, the one ternary.  C's != is unordered, so a NaN condition takes
     // the first arm, as select_impl does.

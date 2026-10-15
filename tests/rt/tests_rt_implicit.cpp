@@ -1,7 +1,6 @@
 #include "ddx.hpp"
 #include "energy_models.hpp"
 #include "rt/equation.hpp"
-#include "rt/system.hpp"
 
 #include <gtest/gtest.h>
 
@@ -264,7 +263,7 @@ TEST(RtImplicit, AnOutputNotThroughZIsUnaffected) {
 }
 
 TEST(RtImplicit, ASystemOfOutputsThroughZ) {
-  const auto sys = ddx::rt::system([] {
+  const auto sys = ddx::rt::equation([] {
     const auto a = ddx::rt::var("a");
     const auto z = ddx::rt::implicit("z");
     ddx::rt::closes(z, z * z - a);
