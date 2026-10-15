@@ -92,7 +92,7 @@ class Format {
   // Bumped by hand only for what neither stamp can see: a reordered section, a
   // change in coverage.  A new prologue or payload field no longer needs it --
   // Container::stamp() folds both shapes and refuses the old file itself.
-  static constexpr std::uint32_t format = 3;
+  static constexpr std::uint32_t format = 4;
 
   // The prologue this build would write, against the one the file carries.
   template <std::floating_point T>
@@ -134,7 +134,7 @@ struct SaveFn {
         .scalar_size = sizeof(T),
         .scalar_kind = ScalarKind::Floating,
         .model_nodes = snap.model_nodes,
-        .model_digest = digest<T>(snap.symbols, snap.nodes, snap.model_nodes)};
+        .model_digest = digest(snap)};
     return Container::write(path, Container::pack(Format::magic, h, body));
   }
 };
@@ -220,8 +220,7 @@ private:
                                           const Snapshot<T> &snap) {
     const bool agrees = head.model_nodes == snap.model_nodes &&
                         snap.model_nodes <= snap.nodes.size() &&
-                        digest<T>(snap.symbols, snap.nodes, snap.model_nodes) ==
-                            head.model_digest;
+                        digest(snap) == head.model_digest;
     return agrees ? result<void>{} : fail(errc::archive_corrupt);
   }
 };

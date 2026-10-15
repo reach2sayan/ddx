@@ -4,11 +4,13 @@
 #include "rt/coupling.hpp"
 #include "rt/opcode.hpp"
 #include "util/error.hpp"
+#include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>
 
 #include <algorithm>
 #include <span>
+#include <string_view>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -44,22 +46,30 @@ private:
     return [n = s_.nodes.size()](NodeId v) { return v < n; };
   }
 
-  // var() keeps them sorted and unique.
+  // One namespace for every named input, as Builder::input keeps it: no name
+  // twice, within a kind or across two.
   [[nodiscard]] bool symbols() const {
-    return std::ranges::is_sorted(s_.symbols) &&
-           std::ranges::adjacent_find(s_.symbols) == s_.symbols.end();
+    std::vector<std::string_view> names;
+    impl::append(names, s_.symbols);
+    impl::append(names, s_.params);
+    impl::append(names, s_.implicits);
+    std::ranges::sort(names);
+    return std::ranges::adjacent_find(names) == names.end();
   }
 
   // Topological: every operand strictly below its reader, which is what the
-  // runtime single-passes on.  Also what puts every Var's slot in range, which
-  // vars() then indexes by.
+  // runtime single-passes on.  Also what puts every named leaf's slot in range,
+  // which vars() then indexes by.
   [[nodiscard]] bool nodes() const {
     const auto nsym = s_.symbols.size();
+    const auto nparam = s_.params.size();
+    const auto nimplicit = s_.implicits.size();
     // A seed slot is an xs column the kernel loads, and the widest block any
     // lane can carry is one per symbol or one per function.
     const auto nseed = std::max(nsym, s_.roots.size());
     return std::ranges::all_of(
-        s_.nodes | std::views::enumerate, [nsym, nseed](const auto &at) {
+        s_.nodes | std::views::enumerate,
+        [nsym, nparam, nimplicit, nseed](const auto &at) {
           const auto &[i, node] = at;
           const auto arity = arity_of(node.op);
           return (arity >= 1 ? node.a < static_cast<NodeId>(i)
@@ -69,24 +79,31 @@ private:
                  (arity == 3 ? node.c < static_cast<NodeId>(i)
                              : node.c == no_node) &&
                  (node.op != OpCode::Var || node.slot < nsym) &&
+                 (node.op != OpCode::Param || node.slot < nparam) &&
+                 (node.op != OpCode::Implicit || node.slot < nimplicit) &&
                  (node.op != OpCode::Seed || node.slot < nseed) &&
                  // As make() sorts them: contraction_at's tie-break reads it.
                  (!is_commutative<T>(node.op) || node.a <= node.b);
         });
   }
 
-  // Exactly one Var per symbol: Builder::restore walks for them, so a symbol
-  // named by none would leave a no_node for var() to hand back.  Interning is
-  // what makes it exactly one rather than at least one.
+  // Exactly one leaf per named input: Builder::restore walks for them, so a
+  // name no leaf carries would leave a no_node for var() to hand back.
+  // Interning is what makes it exactly one rather than at least one.
   [[nodiscard]] bool vars() const {
-    boost::container::small_vector<std::uint32_t, 32> named(s_.symbols.size(),
-                                                            0);
-    for (const auto &node : s_.nodes) {
-      if (node.op == OpCode::Var) {
-        ++named[node.slot]; // nodes() pinned the slot
+    const auto one_each = [this](OpCode op, std::size_t names) {
+      boost::container::small_vector<std::uint32_t, 32> named(names, 0);
+      for (const auto &node : s_.nodes) {
+        if (node.op == op) {
+          ++named[node.slot]; // nodes() pinned the slot
+        }
       }
-    }
-    return std::ranges::all_of(named, [](std::uint32_t k) { return k == 1; });
+      return std::ranges::all_of(named,
+                                 [](std::uint32_t k) { return k == 1; });
+    };
+    return one_each(OpCode::Var, s_.symbols.size()) &&
+           one_each(OpCode::Param, s_.params.size()) &&
+           one_each(OpCode::Implicit, s_.implicits.size());
   }
 
   [[nodiscard]] bool reachable() const {
@@ -220,7 +237,7 @@ public:
   // Owning, and it consumes the node array: it *is* the arena's.
   [[nodiscard]] Rebuilt<T> rebuild() && {
     auto arena = std::make_unique<Builder<T>>();
-    arena->restore(std::move(s_.nodes), std::move(s_.symbols));
+    arena->restore(std::move(s_.nodes), s_.symbols, s_.params, s_.implicits);
     return {.arena = std::move(arena), .rest = std::move(s_)};
   }
   [[nodiscard]] Snapshot<T> release() && noexcept { return std::move(s_); }

@@ -127,7 +127,7 @@ template <std::size_t W, impl::Numeric U>
 // The only place that turns a Step into numbers.
 template <std::size_t W, impl::Numeric T>
 DDX_ALWAYS_INLINE constexpr void sweep_step(const Builder<T> &b,
-                                            std::size_t symbols, const Step &s,
+                                            const Inputs &inputs, const Step &s,
                                             auto at, auto &&lane) {
   const auto &[i, fma] = s;
   const Node<T> &n = b[i];
@@ -144,7 +144,7 @@ DDX_ALWAYS_INLINE constexpr void sweep_step(const Builder<T> &b,
     }
   } else if (is_leaf(n.op)) {
     const auto src = at + static_cast<std::ptrdiff_t>(
-                              input_column(symbols, n.op, n.slot) * W);
+                              input_column(inputs, n.op, n.slot) * W);
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }
@@ -166,9 +166,9 @@ constexpr void evaluate_block(const Builder<T> &b, const R &point_lanes,
                               std::span<const Step> schedule,
                               std::span<U> tape) {
   const auto lane = detail::lanes_of<W>(tape);
-  const std::size_t symbols = b.symbols().size();
+  const Inputs inputs = b.inputs();
   for (const Step &s : schedule) {
-    detail::sweep_step<W>(b, symbols, s, std::ranges::begin(point_lanes), lane);
+    detail::sweep_step<W>(b, inputs, s, std::ranges::begin(point_lanes), lane);
   }
 }
 

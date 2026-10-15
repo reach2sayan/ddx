@@ -41,23 +41,13 @@ TEST(RtSeed, AskingTwiceInternsOnce) {
   EXPECT_EQ(a.id(b), c.id(b));
 }
 
-// The point of not being a Var: seal() gates symbols because a new one moves
-// the slots above it, and a seed slot moves nothing.
-TEST(RtSeed, ASealedArenaStillTakesOne) {
-  ddx::rt::Builder<> b;
-  const auto x = var(b, "x");
-  (void)ddx::rt::build_jacobian_impl(b, (x * x).id(b)); // every sweep seals
-  EXPECT_TRUE(var(b, "late").poisoned()) << "symbols stay sealed";
-  EXPECT_FALSE(seed(b, 0).poisoned());
-}
-
 TEST(RtSeed, WidensTheGraphArity) {
   ddx::rt::Builder<> b;
   const auto x = var(b, "x");
   const auto f = x + seed(b, 0);
   const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
 
-  EXPECT_EQ(graph.symbols().size(), 1u);
+  EXPECT_EQ(graph.inputs().vars, 1u);
   EXPECT_EQ(graph.arity(), 2u);
 }
 
@@ -69,7 +59,7 @@ TEST(RtSeed, AGraphWithoutSeedsIsUnchanged) {
   const auto f = x * y;
   const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
 
-  EXPECT_EQ(graph.arity(), graph.symbols().size());
+  EXPECT_EQ(graph.arity(), graph.inputs().vars);
 }
 
 TEST(RtSeed, ADeadSeedDoesNotWiden) {

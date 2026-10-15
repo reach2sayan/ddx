@@ -22,18 +22,6 @@
 #include <utility>
 #include <vector>
 
-namespace ddx::impl {
-// Redeclared rather than relied on through rt/expressions.hpp: GraphBuilder
-// befriends it below.
-template <typename... Ts> class Equation;
-} // namespace ddx::impl
-
-namespace ddx::py {
-// The Python equation freezes three lanes off one sweep as the facade does, so
-// it hands over a Hessian for the same reason.
-class PyEquation;
-} // namespace ddx::py
-
 namespace ddx::rt {
 
 // Befriended by Graph: the CSR itself is the writer's business.
@@ -180,7 +168,10 @@ public:
     impl::append(g.outputs_, blocks.hessian);
     g.coloring_ = std::move(coloring);
     g.jacobian_ = std::move(jacobian);
-    g.symbols_.assign(b.symbols().begin(), b.symbols().end());
+    g.inputs_ = b.inputs();
+    g.names_ = b.symbols();
+    impl::append(g.names_, b.params());
+    impl::append(g.names_, b.implicits());
     g.properties_.reserve(b.size());
 
     std::vector<std::pair<std::size_t, std::size_t>> edges;
@@ -208,7 +199,8 @@ public:
     // that kept no seed keeps the kernel and the digest it had.
     for (const auto &[v, fma] : g.schedule_) {
       if (g.properties_[v].op == OpCode::Seed) {
-        g.seeds_ = std::max(g.seeds_, std::size_t{g.properties_[v].slot} + 1);
+        g.inputs_.seeds =
+            std::max(g.inputs_.seeds, std::size_t{g.properties_[v].slot} + 1);
       }
     }
     return g;
@@ -232,12 +224,15 @@ public:
   [[nodiscard]] const Coloring &coloring() const { return coloring_; }
   // Which (function, symbol) cells the jacobian block holds, in its order.
   [[nodiscard]] const Sparsity &jacobian_pattern() const { return jacobian_; }
-  [[nodiscard]] const std::vector<std::string> &symbols() const {
-    return symbols_;
+  // How many input columns of each kind `xs` carries, and the names of all
+  // but the seeds, in column order.
+  [[nodiscard]] const Inputs &inputs() const { return inputs_; }
+  [[nodiscard]] const std::vector<std::string> &names() const {
+    return names_;
   }
 
-  // How many input columns `xs` carries: symbols().size() is not the width.
-  [[nodiscard]] std::size_t arity() const { return symbols_.size() + seeds_; }
+  // How many input columns `xs` carries: the symbol count is not the width.
+  [[nodiscard]] std::size_t arity() const { return inputs_.total(); }
 
   [[nodiscard]] bool live(NodeId v) const { return live_[v]; }
 
@@ -331,8 +326,8 @@ private:
   Layout layout_;
   Coloring coloring_;
   Sparsity jacobian_;
-  std::vector<std::string> symbols_;
-  std::size_t seeds_ = 0;
+  Inputs inputs_;
+  std::vector<std::string> names_;
   std::vector<bool> live_;
   std::vector<NodeId> live_order_;
   std::vector<Step> schedule_;
@@ -366,9 +361,7 @@ template <impl::Numeric T>
 
 template <impl::Numeric T = double> class GraphBuilder {
 public:
-  explicit constexpr GraphBuilder(Builder<T> &b) noexcept : builder_{&b} {
-    detail::Sealing::seal(b);
-  }
+  explicit constexpr GraphBuilder(Builder<T> &b) noexcept : builder_{&b} {}
 
   // The function the kernel computes.
   constexpr GraphBuilder &value(const RTExpression<T> &root) {

@@ -51,7 +51,10 @@ struct Object {
 
 // All the C++ facade and PyEquation share, and so the only thing serialised.
 template <impl::Numeric T> struct Snapshot {
+  // Each kind of named input in declaration order, which is slot order.
   std::vector<std::string> symbols;
+  std::vector<std::string> params;
+  std::vector<std::string> implicits;
   std::vector<Node<T>> nodes;
   std::vector<NodeId> roots;
   Jacobian jacobian;
@@ -66,7 +69,8 @@ template <impl::Numeric T> struct Snapshot {
   std::uint32_t model_nodes = 0;
   std::vector<Object> objects;
   BOOST_DESCRIBE_CLASS(Snapshot, (),
-                       (symbols, nodes, roots, jacobian, hessians, hvp, vjp,
+                       (symbols, params, implicits, nodes, roots, jacobian,
+                        hessians, hvp, vjp,
                         jvp, options, model_nodes, objects),
                        (), ())
 };

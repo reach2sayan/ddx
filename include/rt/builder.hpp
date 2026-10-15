@@ -22,12 +22,6 @@
 #include <utility>
 #include <vector>
 
-namespace ddx::impl {
-// Befriended by Builder: making an arena's symbols final is an Equation's
-// alone.
-template <typename... Ts> class Equation;
-} // namespace ddx::impl
-
 namespace ddx::rt {
 
 using NodeId = std::uint32_t;
@@ -36,14 +30,21 @@ inline constexpr NodeId no_node = ~NodeId{0};
 template <impl::Numeric T> class RTExpression;
 template <impl::Numeric T = double> class Builder;
 template <impl::Numeric T> class Verified;
-namespace detail {
-struct Sealing;
-}
 
-// Befriended by Builder: naming a symbol is var()'s alone.
+// Befriended by Builder: naming an input is var()'s and param()'s alone.
 template <impl::Numeric T>
 [[nodiscard]] constexpr RTExpression<T> var(Builder<T> &b,
                                             std::string_view name);
+template <impl::Numeric T>
+[[nodiscard]] constexpr RTExpression<T> param(Builder<T> &b,
+                                              std::string_view name);
+
+// A named input: which kind of leaf, and its place among that kind.
+struct Input {
+  OpCode op = OpCode::Var;
+  std::uint32_t slot = 0;
+  constexpr bool operator==(const Input &) const = default;
+};
 
 // Befriended for symmetry with var(); a seed slot moves nothing.
 template <impl::Numeric T>
@@ -169,8 +170,30 @@ public:
   [[nodiscard]] constexpr std::span<const Node<T>> nodes() const {
     return nodes_;
   }
+  // Each kind's names in declaration order, which is slot order: the order a
+  // positional point is read in and every result is laid out in.
   [[nodiscard]] constexpr const std::vector<std::string> &symbols() const {
-    return symbols_;
+    return vars_.names;
+  }
+  [[nodiscard]] constexpr const std::vector<std::string> &params() const {
+    return params_.names;
+  }
+  [[nodiscard]] constexpr const std::vector<std::string> &implicits() const {
+    return implicits_.names;
+  }
+  [[nodiscard]] constexpr Inputs inputs() const {
+    return {.vars = vars_.names.size(),
+            .params = params_.names.size(),
+            .implicits = implicits_.names.size()};
+  }
+
+  // Which input `name` is, if any.
+  [[nodiscard]] constexpr std::optional<Input>
+  lookup(std::string_view name) const {
+    const auto at = std::ranges::lower_bound(by_name_, name, {}, name_of());
+    return at != by_name_.end() && name_of()(*at) == name
+               ? std::optional{*at}
+               : std::nullopt;
   }
 
   [[nodiscard]] constexpr bool is_constant(NodeId id, const T &v) const {
@@ -185,67 +208,66 @@ public:
   }
 
 private:
-  // A slot is the symbol's place in the alphabet, which is the order a
-  // positional point is read in.  Naming one out of order lifts the slots above
-  // it, which is the walk over vars_ -- interning leaving one Var per symbol.
+  // One namespace for every named input: a name is a symbol or a parameter,
+  // never both, and naming it again hands back the same leaf.  A new name takes
+  // the next slot of its kind and moves nothing already built.  no_node is a
+  // name already taken by the other kind, which var() and param() poison.
   template <impl::Numeric U>
   friend constexpr RTExpression<U> var(Builder<U> &, std::string_view);
-  [[nodiscard]] constexpr NodeId variable(std::string_view name) {
-    const auto at = std::ranges::lower_bound(symbols_, name);
-    const auto slot = static_cast<std::uint32_t>(at - symbols_.begin());
-    if (at != symbols_.end() && *at == name) {
-      return vars_[slot];
+  template <impl::Numeric U>
+  friend constexpr RTExpression<U> param(Builder<U> &, std::string_view);
+  [[nodiscard]] constexpr NodeId input(OpCode op, std::string_view name) {
+    const auto at = std::ranges::lower_bound(by_name_, name, {}, name_of());
+    if (at != by_name_.end() && name_of()(*at) == name) {
+      return at->op == op ? named(op).ids[at->slot] : no_node;
     }
-    // An Equation that has already frozen a lane cannot follow that lift.
-    // Naming one again is free, adding one is not; var() turns the no_node
-    // into a poisoned expression.
-    if (sealed_) {
-      return no_node;
-    }
-    symbols_.emplace(at, name);
-    for (const NodeId v : vars_ | std::views::drop(slot)) {
-      ++nodes_[v].slot;
-    }
-    vars_.insert(std::ranges::next(vars_.begin(), slot),
-                 intern({.op = OpCode::Var, .slot = slot}));
-    return vars_[slot];
+    Named &kind = named(op);
+    const auto slot = static_cast<std::uint32_t>(kind.names.size());
+    kind.names.emplace_back(name);
+    kind.ids.push_back(intern({.op = op, .slot = slot}));
+    by_name_.insert(at, {.op = op, .slot = slot});
+    return kind.ids.back();
   }
 
-  // Not gated on sealed_, unlike variable(): a seed slot is given rather than
-  // looked up, so it lifts nothing.  Interning leaves one node per slot.
+  // A seed slot is given rather than looked up.  Interning leaves one node per
+  // slot.
   template <impl::Numeric U>
   friend constexpr RTExpression<U> seed(Builder<U> &, std::uint32_t);
   [[nodiscard]] constexpr NodeId seed_node(std::uint32_t slot) {
     return intern({.op = OpCode::Seed, .slot = slot});
   }
 
-  // Makes the symbol numbering final: the Equation taking this arena over and
-  // every sweep seal on entry, since a partial is positional in symbols() and
-  // a symbol named afterwards would shift the ones above it.  Building more
-  // expressions over the symbols already here stays open.
-  template <typename... Ts> friend class impl::Equation;
-  friend struct detail::Sealing;
-  constexpr void seal() noexcept { sealed_ = true; }
-
   // An arena as it was, not as make() would form it again: make() folds and
   // swaps commutative operands, and the saved sweeps name subexpressions by id.
-  // Sealed on arrival; the one caller holds a snapshot Sound has passed, which
-  // is what checks what this cannot.
+  // The one caller holds a snapshot Sound has passed, which is what checks
+  // what this cannot.
   friend class Verified<T>;
   constexpr void restore(std::vector<Node<T>> nodes,
-                         std::vector<std::string> symbols) {
+                         std::vector<std::string> symbols,
+                         std::vector<std::string> params,
+                         std::vector<std::string> implicits) {
     nodes_ = std::move(nodes);
-    symbols_ = std::move(symbols);
-    // Slot-addressed, as variable() keeps it; interning leaves exactly one Var
-    // node per symbol, so this walk fills every entry.
-    vars_.assign(symbols_.size(), no_node);
-    for (const auto [id, n] : nodes_ | std::views::enumerate) {
-      if (n.op == OpCode::Var) {
-        vars_[n.slot] = static_cast<NodeId>(id);
+    vars_.names = std::move(symbols);
+    params_.names = std::move(params);
+    implicits_.names = std::move(implicits);
+    by_name_.clear();
+    for (const OpCode op : {OpCode::Var, OpCode::Param, OpCode::Implicit}) {
+      Named &kind = named(op);
+      // Interning leaves exactly one leaf per name, so this walk fills every
+      // entry.
+      kind.ids.assign(kind.names.size(), no_node);
+      for (const auto [id, n] : nodes_ | std::views::enumerate) {
+        if (n.op == op) {
+          kind.ids[n.slot] = static_cast<NodeId>(id);
+        }
+      }
+      for (const std::uint32_t slot :
+           std::views::iota(0u, static_cast<std::uint32_t>(kind.ids.size()))) {
+        by_name_.push_back({.op = op, .slot = slot});
       }
     }
+    std::ranges::sort(by_name_, {}, name_of());
     rehash();
-    sealed_ = true;
   }
 
   static constexpr std::uint64_t payload_of(const Node<T> &n) {
@@ -469,13 +491,32 @@ private:
   // Open-addressed by hand: interning runs inside constant evaluation and no
   // library hash container is constexpr.
   std::vector<NodeId> table_; // power-of-two capacity; no_node == free slot
-  // With vars_, a flat map by hand: interning runs inside constant evaluation
-  // and no library flat container is constexpr before C++26.
-  std::vector<std::string> symbols_;
-  // Slot-addressed, so a renamed slot is a write rather than a rehash: a Var
-  // node's hash goes stale as its slot moves.
-  std::vector<NodeId> vars_;
-  bool sealed_ = false;
+  // One per kind of named input, slot-addressed: names[slot] and the leaf
+  // ids[slot] interning made for it.
+  struct Named {
+    std::vector<std::string> names;
+    std::vector<NodeId> ids;
+  };
+  Named vars_;
+  Named params_;
+  Named implicits_;
+  // Every named input, sorted by name: a flat map by hand, since interning runs
+  // inside constant evaluation and no library flat container is constexpr
+  // before C++26.
+  std::vector<Input> by_name_;
+
+  [[nodiscard]] constexpr Named &named(OpCode op) {
+    return op == OpCode::Var ? vars_ : op == OpCode::Param ? params_ : implicits_;
+  }
+  [[nodiscard]] constexpr const Named &named(OpCode op) const {
+    return op == OpCode::Var ? vars_ : op == OpCode::Param ? params_ : implicits_;
+  }
+  // The key by_name_ is sorted on.
+  [[nodiscard]] constexpr auto name_of() const {
+    return [this](const Input &in) -> std::string_view {
+      return named(in.op).names[in.slot];
+    };
+  }
 };
 
 // What a walker reads: an id-addressed source that answers a node's operation

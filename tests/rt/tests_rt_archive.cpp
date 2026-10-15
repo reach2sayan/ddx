@@ -239,6 +239,13 @@ TEST(RtArchive, RefusesForeignAndFutureFiles) {
   file.write(future);
   EXPECT_EQ(ddx::rt::load(file.path()).error().code, ddx::errc::bad_archive);
 
+  // Format 3 numbered symbols alphabetically, so its positional points would
+  // mean something else here: refused, not reinterpreted.
+  auto older = whole;
+  older[ddx::rt::detail::Container::magic_bytes] = std::byte{3};
+  file.write(older);
+  EXPECT_EQ(ddx::rt::load(file.path()).error().code, ddx::errc::bad_archive);
+
   // Letting a reserved byte through would make claiming it later a silent
   // format change.  Named, not a literal: the described field list decides
   // where the tail starts, and a field added to it moves this.
@@ -507,8 +514,8 @@ TEST(RtArchive, DigestSeparatesTheSignedZeroes) {
   const std::array<Node<double>, 1> minus{Node<double>{.value = -0.0}};
 
   ASSERT_TRUE(plus[0].value == minus[0].value) << "the two must compare equal";
-  EXPECT_NE(ddx::rt::digest<double>(symbols, plus, 1),
-            ddx::rt::digest<double>(symbols, minus, 1));
+  EXPECT_NE(ddx::rt::digest<double>(symbols, {}, {}, plus, 1),
+            ddx::rt::digest<double>(symbols, {}, {}, minus, 1));
 }
 
 // The opcode table is what every opcode byte in the payload *means*, so it is

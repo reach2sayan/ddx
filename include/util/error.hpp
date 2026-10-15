@@ -13,8 +13,8 @@ namespace ddx {
 // clang-format off
 #define DDX_ERRC_TABLE(X)                                                                     \
   /* A point that does not match the expression's symbols. */                                 \
-  X(short_point,        "the point supplies fewer values than the expression has symbols")    \
-  X(wrong_arity,        "the point supplies one value per symbol, and this one does not")     \
+  X(short_point,        "the point supplies fewer values than the expression has inputs")     \
+  X(wrong_arity,        "the point supplies one value per input, and this one does not")      \
   X(wrong_direction,    "the direction supplies one value per symbol, and this one does not") \
   X(unknown_symbol,     "no symbol of that name")                                             \
   X(index_out_of_range, "the index does not name a symbol of this expression")                \
@@ -23,7 +23,7 @@ namespace ddx {
   /* Runtime graphs. */                                                                       \
   X(no_arena,         "no arena is current -- name symbols inside ddx::rt::equation()")       \
   X(no_graph,         "the expression has no graph (a bare literal names none)")              \
-  X(sealed_arena,     "the arena already backs an equation, so its symbols are final")        \
+  X(name_clash,       "the name is already an input of another kind")                          \
   X(not_univariate,   "needs exactly one symbol")                                             \
   X(not_single_output, "needs exactly one output, and this is a system")                      \
   X(unsupported_scalar, "an operation the sweep's scalar type does not define")               \

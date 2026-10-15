@@ -34,7 +34,7 @@ from ._ddx import (Backend, Call, Expression, Level, VecLib, Want, abs,  # noqa:
                    min,  # noqa: A004
                    mul, neg,
                    pow,  # noqa: A004
-                   select, sign, sin, sinh, sqrt, tan, tanh,
+                   param, select, sign, sin, sinh, sqrt, tan, tanh,
                    var, )
 from ._options import Options
 
@@ -110,5 +110,5 @@ __all__ = ["Backend", "Call", "Equation", "Error", "Expression", "Level",
            "asin", "asinh",	"atan", "atan2", "atanh", "cbrt", "cos",
            "cosh", "div", "equation", "erf", "errc", "exp",
            "has_jit", "has_opencl", "hypot", "load", "log", "log10", "max",
-           "min", "mul", "neg", "pow", "select", "sign", "sin", "sinh", "sqrt",
+           "min", "mul", "neg", "param", "pow", "select", "sign", "sin", "sinh", "sqrt",
            "tan", "tanh", "var",]

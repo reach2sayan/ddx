@@ -37,6 +37,8 @@ struct Rooting {
 // arena turns into a poisoned expression.
 template <impl::Numeric T = double>
 [[nodiscard]] RTExpression<T> var(std::string_view name) noexcept;
+template <impl::Numeric T = double>
+[[nodiscard]] RTExpression<T> param(std::string_view name) noexcept;
 
 // The primitive the one above reaches: it makes poison as well, for the arena
 // that has stopped taking symbols.
@@ -69,8 +71,9 @@ public:
     return builder_ == nullptr;
   }
 
-  // Whether the symbol named no slot -- no arena current, or a sealed one --
-  // which surfaces as an errc out of equation() rather than as a zero.
+  // Whether the input named no leaf -- no arena current, or a name another
+  // kind of input has -- which surfaces as an errc out of equation() rather
+  // than as a zero.
   [[nodiscard]] constexpr bool poisoned() const noexcept {
     return why_.has_value();
   }
@@ -221,6 +224,10 @@ private:
   friend RTExpression<U> var(std::string_view) noexcept;
   template <impl::Numeric U>
   friend constexpr RTExpression<U> var(Builder<U> &, std::string_view);
+  template <impl::Numeric U>
+  friend RTExpression<U> param(std::string_view) noexcept;
+  template <impl::Numeric U>
+  friend constexpr RTExpression<U> param(Builder<U> &, std::string_view);
 
   [[nodiscard]] constexpr Builder<T> *builder() const noexcept {
     return builder_;
@@ -247,8 +254,17 @@ private:
 template <impl::Numeric T>
 [[nodiscard]] constexpr RTExpression<T> var(Builder<T> &b,
                                             std::string_view name) {
-  const NodeId id = b.variable(name);
-  return id == no_node ? RTExpression<T>::poison(errc::sealed_arena)
+  const NodeId id = b.input(OpCode::Var, name);
+  return id == no_node ? RTExpression<T>::poison(errc::name_clash)
+                       : RTExpression<T>{b, id};
+}
+// An input that is read and never differentiated: no Jacobian column, and a
+// value in every call.
+template <impl::Numeric T>
+[[nodiscard]] constexpr RTExpression<T> param(Builder<T> &b,
+                                              std::string_view name) {
+  const NodeId id = b.input(OpCode::Param, name);
+  return id == no_node ? RTExpression<T>::poison(errc::name_clash)
                        : RTExpression<T>{b, id};
 }
 // The direction a seeded product is taken along
@@ -281,12 +297,19 @@ template <impl::Numeric T>
 
 } // namespace detail
 
-// The spelling a model uses; the two-argument form above is the primitive.
+// The spellings a model uses; the two-argument forms above are the
+// primitives.
 template <impl::Numeric T>
 [[nodiscard]] RTExpression<T> var(std::string_view name) noexcept {
   return (detail::current_arena<T> == nullptr)
              ? RTExpression<T>::poison(errc::no_arena)
              : var(*detail::current_arena<T>, name);
+}
+template <impl::Numeric T>
+[[nodiscard]] RTExpression<T> param(std::string_view name) noexcept {
+  return (detail::current_arena<T> == nullptr)
+             ? RTExpression<T>::poison(errc::no_arena)
+             : param(*detail::current_arena<T>, name);
 }
 
 } // namespace ddx::rt

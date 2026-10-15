@@ -18,15 +18,6 @@ namespace ddx::rt {
 
 namespace detail {
 
-// The sweeps' side of Builder::seal(): a struct, not a friended function
-// template per sweep, so builder.hpp forward-declares an empty type.
-struct Sealing {
-  template <impl::Numeric T>
-  static constexpr void seal(Builder<T> &b) noexcept {
-    b.seal();
-  }
-};
-
 // A template, so `if constexpr` actually discards: deriv_from_value reuses the
 // primal node, and d(exp)/du becomes the exp node itself.
 template <typename Fn, impl::Numeric T>
@@ -118,7 +109,6 @@ struct JacobianRow {
 template <impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow build_reverse_jacobian(Builder<T> &b,
                                                            NodeId root) {
-  detail::Sealing::seal(b);
   const auto n = static_cast<NodeId>(b.size());
   std::vector<NodeId> adj(n, no_node);
   std::vector<NodeId> guard(n, no_node);
@@ -207,7 +197,6 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr std::vector<NodeId>
 tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
               std::span<const NodeId> tangent) {
-  detail::Sealing::seal(b);
   const auto n = static_cast<NodeId>(b.size());
   const auto live = detail::reachable(b, roots);
   std::vector<NodeId> d(n, no_node);
@@ -249,7 +238,6 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
 template <impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow build_symbolic_jacobian(Builder<T> &b,
                                                             NodeId root) {
-  detail::Sealing::seal(b);
   const auto nsym = b.symbols().size();
   JacobianRow g{.value = root, .partial = std::vector<NodeId>(nsym, no_node)};
   const std::array<NodeId, 1> roots{root};
@@ -393,7 +381,6 @@ namespace detail {
 template <impl::Numeric T>
 [[nodiscard]] constexpr RTExpression<T>
 seeded_sum(Builder<T> &b, std::span<const NodeId> ids) {
-  detail::Sealing::seal(b);
   auto term = [&b, ids](std::size_t j) {
     return seed(b, static_cast<std::uint32_t>(j)) * RTExpression<T>{b, ids[j]};
   };

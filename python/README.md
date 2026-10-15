@@ -46,9 +46,12 @@ def f():
     return ddx.exp(x) * ddx.sin(y)
 ```
 
-Symbols are named inside the model with `ddx.var(name)` and order
-alphabetically. `f.symbols` lists them, `f.arity` counts them, `f.outputs`
-counts the model's outputs. A bare number mixes into an expression without
+Symbols are named inside the model with `ddx.var(name)` and take the order they
+are named in. `f.symbols` lists them, `f.arity` counts them, `f.outputs`
+counts the model's outputs. `ddx.param(name)` is an input that is never
+differentiated — no Jacobian column — and is supplied with every point after
+the symbols; `f.params` lists the parameters and `f.inputs` everything a point
+supplies. A bare number mixes into an expression without
 wrapping, so an accumulator can start at `0.0`:
 
 ```python
@@ -105,7 +108,7 @@ g   = ddx.equation("exp(x) * sin(y)")
 sys = ddx.equation(["x*x + y*y - 4", "x*y - 1"])
 ```
 
-Free identifiers become the symbols, still ordered alphabetically. The grammar
+Free identifiers become the symbols, in the order they first appear. The grammar
 is Python's arithmetic: `+ - * /`, `**` for exponentiation (`^` is not an
 operator), parentheses, unary signs, decimals and exponent notation, and the
 functions in the table above. Comparisons bind looser than arithmetic, so
@@ -116,11 +119,11 @@ that does not parse raises `ddx.Error` with `bad_syntax`, `unknown_function` or
 
 ## Points
 
-A point is a sequence, or a dict keyed by symbol name. A 2-D array is a
-**batch** — shape `(symbols, points)`, one row per symbol:
+A point is a sequence, or a dict keyed by input name. A 2-D array is a
+**batch** — shape `(inputs, points)`, one row per input:
 
 ```python
-f.jacobian([2.0, 3.0])                      # positional, alphabetical
+f.jacobian([2.0, 3.0])                      # positional, declaration order
 f.jacobian({"x": 2.0, "y": 3.0})            # by name
 f.jacobian(np.array([[2.0], [3.0]]))        # a batch of one
 f.jacobian(np.array([[2.0, 2.5], [3.0, 3.5]]))   # a batch of two
@@ -161,7 +164,7 @@ is, since one product costs about what the whole matrix does. `J·v` and `H·v`
 take a direction over symbols, so it accepts the same spellings a point does —
 a sequence, a dict, or a `(symbols, points)` batch alongside a batched point.
 `wᵀJ` takes one weight per *function*, so it is positional only. `hvp` needs a
-single-output model.
+single-output model, and raises `errc.not_single_output` on a system.
 
 ## Calling in a loop
 
@@ -233,6 +236,8 @@ is the spelling.
 | `wrong_column_count` | a batch block has the wrong number of columns |
 | `no_arena` | a symbol was named outside a model |
 | `no_graph` | the model is a bare number, naming no function |
+| `name_clash` | one name used for both a symbol and a parameter |
+| `not_single_output` | `hvp` or `hessian_colors` on a system |
 | `bad_syntax` | a string the grammar does not accept |
 | `unknown_function` | a string calls a function that does not exist |
 | `wrong_argument_count` | a string calls one with the wrong arity |
@@ -307,7 +312,8 @@ values, and only the code says which.
 
 | Member | Is |
 |---|---|
-| `arity`, `outputs`, `symbols` | properties — symbol count, output count, canonical names |
+| `arity`, `outputs`, `symbols` | properties — symbol count, output count, names in declaration order |
+| `params`, `inputs` | properties — the parameters, and every input a point supplies |
 | `evaluate(x)`, `__call__(x)` | `f` at the point or batch |
 | `jacobian(x)` | `(f, J)` |
 | `gradient(x)` | `J` alone |
@@ -317,7 +323,7 @@ values, and only the code says which.
 | `compile(**fields)` | set `Options`, block for the kernel, return self |
 | `uses_kernel`, `wait_for_kernel(*, want)` | whether a call runs compiled code, and blocking for it — for the Jacobian lane unless `want` names another |
 | `device_status` | property — under `DEVICE`, the device answering; `None` otherwise; raises when none answers |
-| `hessian_colors` | groups in the Hessian's compression |
+| `hessian_colors` | groups in the Hessian's compression; raises on a system |
 | `buffer(x, *, want)` | a `Call` bound to its buffers, for a loop |
 | `to_dot(*, all=False)` | the expression in Graphviz form; `all=True` draws the pruned nodes too |
 | `nodes(*, want)` | how many nodes a call for `want` evaluates |

@@ -13,13 +13,12 @@
 // type, so the walk is a compile-time recursion that emits nodes.
 namespace ddx::rt {
 
+namespace detail {
+
 // Sum and Multiply are n-ary in the type but binary in the graph, so a wide
-// node folds left into a chain.  A frozen leaf has no spelling here: a Var is
-// always differentiated, so lowering one would quietly revive what the caller
-// held -- the tree is refused instead.
+// node folds left into a chain.
 template <impl::Numeric T, impl::CExpression U>
-  requires(!impl::holds_frozen<U>())
-[[nodiscard]] constexpr RTExpression<T> to_graph(Builder<T> &b, const U &e) {
+[[nodiscard]] constexpr RTExpression<T> lower(Builder<T> &b, const U &e) {
   if constexpr (impl::CVariable<U>) {
     return var(b, U::label.view());
   } else if constexpr (impl::CLit<U>) {
@@ -34,15 +33,29 @@ template <impl::Numeric T, impl::CExpression U>
     return std::apply(
         [&](const auto &first, const auto &...rest) {
           if constexpr (sizeof...(rest) == 0) {
-            return RTExpression<T>::form(*code, to_graph(b, first));
+            return RTExpression<T>::form(*code, lower(b, first));
           } else {
-            RTExpression acc = to_graph(b, first);
-            ((acc = RTExpression<T>::form(*code, acc, to_graph(b, rest))), ...);
+            RTExpression acc = lower(b, first);
+            ((acc = RTExpression<T>::form(*code, acc, lower(b, rest))), ...);
             return acc;
           }
         },
         e.expressions());
   }
+}
+
+} // namespace detail
+
+// The symbols are declared first, in the compile-time Equation's canonical
+// order, so a symbol's graph column is its column there too.  A frozen leaf has
+// no spelling here: a Var is always differentiated, so lowering one would
+// quietly revive what the caller held -- the tree is refused instead.
+template <impl::Numeric T, impl::CExpression U>
+  requires(!impl::holds_frozen<U>())
+[[nodiscard]] constexpr RTExpression<T> to_graph(Builder<T> &b, const U &e) {
+  impl::mp::mp_for_each<impl::extract_symbols_from_expr_t<U>>(
+      [&b]<typename S>(S) { (void)var(b, S::name); });
+  return detail::lower(b, e);
 }
 
 } // namespace ddx::rt

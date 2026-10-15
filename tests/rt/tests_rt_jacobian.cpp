@@ -49,8 +49,8 @@ void expect_close(double got, double want) {
   }
 }
 
-// Symbols are matched by name: Equation reports partials alphabetically, the
-// builder numbers them in first-seen order.
+// to_graph declares the symbols in the compile-time Equation's canonical order
+// before lowering, so the two sides' columns line up by name.
 template <ddx::impl::CExpression E, std::size_t N>
 void expect_agrees_with_ddx(const E &e, std::array<double, N> pt) {
   ddx::rt::Builder<> b;
@@ -65,7 +65,7 @@ void expect_agrees_with_ddx(const E &e, std::array<double, N> pt) {
   const auto expected_grad = std::apply(
       [&](auto... a) { return ddx::Equation{e}.jacobian(a...); }, pt);
 
-  // Both sides number their symbols alphabetically, so slot i is partial i.
+  // Both sides number their symbols the same way, so slot i is partial i.
   for (std::size_t i = 0; i < b.symbols().size(); ++i) {
     SCOPED_TRACE("partial d/d" + std::string{b.symbols()[i]});
     expect_close(values[g.partial[i]], expected_grad[i]);
@@ -574,8 +574,10 @@ TEST(RtJacobian, ComparisonsComposeFromTheTwoOpcodes) {
   // Equation is move-only, so each spelling is built and read where it is made
   // rather than handed back out of a helper.
   const auto value = [](auto build, double a, double b) {
-    const auto eq = ddx::rt::equation(
-        [&build] { return build(ddx::rt::var("x"), ddx::rt::var("y")); });
+    const auto eq = ddx::rt::equation([&build] {
+      const auto x = ddx::rt::var("x");
+      return build(x, ddx::rt::var("y"));
+    });
     const std::array<double, 2> at{a, b};
     return *eq.evaluate(std::span<const double>{at});
   };
@@ -654,11 +656,15 @@ TEST(RtJacobian, ComparisonsAgreeWithTheKernelAtNaN) {
   // tell an ordered `fcmp` from an unordered one.  C's `!=` is unordered, so a
   // NaN condition is true; the kernel has to say the same.
   {
+    // Declared one statement each: the order of a call's arguments is
+    // unspecified, and the symbols take the order they are named in.
     auto raw = ddx::rt::equation([] {
-      return select(ddx::rt::var("c"), ddx::rt::var("t"), ddx::rt::var("f"));
+      const auto c = ddx::rt::var("c");
+      const auto f = ddx::rt::var("f");
+      const auto t = ddx::rt::var("t");
+      return select(c, t, f);
     });
-    // Symbols sort alphabetically: c, f, t.
-    const std::array<double, 3> at{nan, 1.0, 2.0};
+    const std::array<double, 3> at{nan, 1.0, 2.0}; // c, f, t
     const double interpreted = *raw.evaluate(std::span<const double>{at});
     raw.options({.backend = ddx::jit::Backend::Compile, .points = 1});
     ASSERT_TRUE(raw.wait_for_kernel());

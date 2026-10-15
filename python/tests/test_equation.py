@@ -87,6 +87,16 @@ def test_a_batched_hessian_needs_one_function(system: ddx.Equation) -> None:
     assert caught.value.code is ddx.errc.wrong_column_count
 
 
+def test_one_function_members_refuse_a_system(system: ddx.Equation) -> None:
+    """H·v and the colour count are about one function's Hessian."""
+    with pytest.raises(ddx.Error) as caught:
+        system.hvp([1.0, 0.0], [1.0, 2.0])
+    assert caught.value.code is ddx.errc.not_single_output
+    with pytest.raises(ddx.Error) as colors:
+        _ = system.hessian_colors
+    assert colors.value.code is ddx.errc.not_single_output
+
+
 def test_shapes_drop_the_axes_that_are_not_there(scalar: ddx.Equation) -> None:
     batch = np.array([[2.0, 2.5, 3.0], [3.0, 3.5, 4.0]])
 
@@ -183,3 +193,45 @@ def test_a_sparse_coupling_scatters_to_the_right_cells() -> None:
             ]
         )
     )
+
+
+def test_symbols_take_the_order_they_are_named_in() -> None:
+    def model():
+        b = ddx.var("b")
+        a = ddx.var("a")
+        return a * a * b
+
+    eq = ddx.equation(model)
+    assert eq.symbols == ["b", "a"]
+    assert eq([1.0, 2.0]) == 4.0  # b = 1, a = 2
+    assert eq({"a": 2.0, "b": 1.0}) == 4.0
+
+
+def test_a_param_is_an_input_with_no_column() -> None:
+    def model():
+        x = ddx.var("x")
+        return ddx.param("a") * x * x
+
+    eq = ddx.equation(model)
+    assert eq.symbols == ["x"]
+    assert eq.params == ["a"]
+    assert eq.inputs == ["x", "a"]
+    assert eq.arity == 1
+    assert eq([3.0, 2.0]) == 18.0
+    _, gradient = eq.jacobian({"x": 3.0, "a": 5.0})
+    assert gradient.tolist() == [30.0]
+    _, _, hv = eq.hvp([1.0], [3.0, 5.0])  # a direction is over the symbols only
+    assert hv.tolist() == [10.0]
+    with pytest.raises(ddx.Error) as missing:
+        eq({"x": 3.0})
+    assert missing.value.code is ddx.errc.wrong_arity
+
+
+def test_a_name_is_one_kind_of_input() -> None:
+    def model():
+        x = ddx.var("x")
+        return x * ddx.param("x")
+
+    with pytest.raises(ddx.Error) as caught:
+        ddx.equation(model)
+    assert caught.value.code is ddx.errc.name_clash

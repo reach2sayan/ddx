@@ -60,7 +60,7 @@ TEST(RtEquationHvp, ANamedSymbolIsThatHessianColumn) {
   const std::array point{2.0, 0.5};
   const auto dense = *eq.hessian(point);
 
-  // Symbols are alphabetical, so "a" is column 0 and "b" is column 1.
+  // Symbols are in declaration order, so "a" is column 0 and "b" is column 1.
   for (const auto [j, name] : std::array{"a", "b"} | std::views::enumerate) {
     const auto column = *eq.hvp(name, point);
     ASSERT_EQ(column.size(), 2u);

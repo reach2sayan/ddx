@@ -76,13 +76,14 @@ public:
              std::vector<rt::NodeId> roots, bool remember = false)
       : PyCore{std::make_unique<rt::Builder<double>>(*arena),
                std::move(roots)},
-        symbols_{*symbols()} {
+        symbols_{*symbols()}, inputs_{*inputs()} {
     take_cache(PyCache{remember});
   }
 
   // From a file: the sweeps it carries arrive built.
   explicit PyEquation(rt::Verified<double> snap, bool remember = false)
-      : PyCore{std::move(snap).rebuild()}, symbols_{*symbols()} {
+      : PyCore{std::move(snap).rebuild()}, symbols_{*symbols()},
+        inputs_{*inputs()} {
     take_cache(PyCache{remember});
   }
 
@@ -97,9 +98,15 @@ public:
   // The Python spelling: a list over the keys Symbols already built, so an
   // access costs increfs and never a PyUnicode.
   [[nodiscard]] pyb::list symbols_list() const { return symbols_.listed(); }
+  [[nodiscard]] pyb::list params_list() const {
+    return pyb::cast(std::vector<std::string>(params()->begin(),
+                                              params()->end()));
+  }
+  // What a point supplies: the symbols, then the parameters.
+  [[nodiscard]] pyb::list inputs_list() const { return inputs_.listed(); }
 
   [[nodiscard]] pyb::object evaluate(const pyb::handle &x) {
-    const Point at{x, symbols_};
+    const Point at{x, inputs_};
     const auto l = lane(Want::Value);
     if (scalar(at)) {
       Cell f;
@@ -113,7 +120,7 @@ public:
   }
 
   [[nodiscard]] pyb::tuple jacobian(const pyb::handle &x) {
-    const Point at{x, symbols_};
+    const Point at{x, inputs_};
     const auto l = lane(Want::Jacobian);
     Scratch cells{count(*l, &rt::OutputSpans::jacobian), at.size()};
     Dense g{shape_of({ssize(height()), ssize(width())}, at), at.size()};
@@ -127,7 +134,7 @@ public:
 
   // The Jacobian alone, from a lane with no value block.
   [[nodiscard]] pyb::object gradient(const pyb::handle &x) {
-    const Point at{x, symbols_};
+    const Point at{x, inputs_};
     const auto l = lane(Want::Gradient);
     Scratch cells{count(*l, &rt::OutputSpans::jacobian), at.size()};
     Dense g{shape_of({ssize(height()), ssize(width())}, at), at.size()};
@@ -137,12 +144,12 @@ public:
   }
 
   [[nodiscard]] pyb::tuple hessian(const pyb::handle &x) {
-    const Point at{x, symbols_};
+    const Point at{x, inputs_};
     return height() == 1 ? hessian_from_lane(at) : hessian_from_arena(at);
   }
 
   [[nodiscard]] pyb::tuple jvp(const pyb::handle &v, const pyb::handle &x) {
-    const Point at{x, symbols_};
+    const Point at{x, inputs_};
     const Point dir{v, symbols_};
     const auto l = lane(Want::Jvp);
     Block out{shape_of({ssize(height())}, at),
@@ -155,7 +162,7 @@ public:
   }
 
   [[nodiscard]] pyb::tuple vjp(const pyb::handle &w, const pyb::handle &x) {
-    const Point at{x, symbols_};
+    const Point at{x, inputs_};
     // By position: the covector is indexed by function, and a dict would have
     // nothing to key on.
     const Point dir{w, height()};
@@ -175,7 +182,7 @@ public:
     if (height() != 1) {
       fail_with(errc::not_single_output);
     }
-    const Point at{x, symbols_};
+    const Point at{x, inputs_};
     const Point dir{v, symbols_};
     const auto l = lane(Want::Hvp);
     const std::size_t n = width();
@@ -377,7 +384,9 @@ private:
     return f ? std::move(*f).array() : pyb::object{pyb::float_(cell.value)};
   }
 
+  // A direction is over the symbols; a point over every input.
   Symbols symbols_;
+  Symbols inputs_;
 };
 
 // A call bound to its buffers: the point's columns, the output arrays and the
@@ -389,7 +398,7 @@ public:
   // The equation outlives the call through pyb::keep_alive on the factory,
   // never through a member: the binding states the lifetime once.
   PyCall(PyEquation &eq, PyEquation::Want want, const pyb::handle &x)
-      : eq_(&eq), want_(want), x_(pyb::cast<Array>(x)), at_(x_, eq.symbols_) {
+      : eq_(&eq), want_(want), x_(pyb::cast<Array>(x)), at_(x_, eq.inputs_) {
     // A system's Hessian is read off the arena a point at a time, so there is
     // no lane to bind.
     if (want_ == PyEquation::Want::Hessian && eq_->height() != 1) {

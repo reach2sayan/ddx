@@ -64,9 +64,13 @@ class Equation:
     @property
     def hessian_colors(self) -> int: pass
     @property
+    def inputs(self) -> list[str]: pass
+    @property
     def loaded(self) -> bool: pass
     @property
     def outputs(self) -> int: pass
+    @property
+    def params(self) -> list[str]: pass
     @property
     def symbols(self) -> list[str]: pass
     @property
@@ -224,29 +228,30 @@ class errc(enum.IntEnum):
     """
     Why ddx refused; Error.code carries one.
     """
-    archive_corrupt: typing.ClassVar[errc]  # value = <errc.archive_corrupt: 13>
-    archive_io: typing.ClassVar[errc]  # value = <errc.archive_io: 11>
-    archive_mismatch: typing.ClassVar[errc]  # value = <errc.archive_mismatch: 14>
-    bad_archive: typing.ClassVar[errc]  # value = <errc.bad_archive: 12>
-    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 20>
-    device_compile: typing.ClassVar[errc]  # value = <errc.device_compile: 24>
-    device_launch: typing.ClassVar[errc]  # value = <errc.device_launch: 25>
+    archive_corrupt: typing.ClassVar[errc]  # value = <errc.archive_corrupt: 14>
+    archive_io: typing.ClassVar[errc]  # value = <errc.archive_io: 12>
+    archive_mismatch: typing.ClassVar[errc]  # value = <errc.archive_mismatch: 15>
+    bad_archive: typing.ClassVar[errc]  # value = <errc.bad_archive: 13>
+    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 21>
+    device_compile: typing.ClassVar[errc]  # value = <errc.device_compile: 25>
+    device_launch: typing.ClassVar[errc]  # value = <errc.device_launch: 26>
     index_out_of_range: typing.ClassVar[errc]  # value = <errc.index_out_of_range: 4>
-    jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 19>
-    jit_module: typing.ClassVar[errc]  # value = <errc.jit_module: 16>
-    jit_object: typing.ClassVar[errc]  # value = <errc.jit_object: 17>
-    jit_target: typing.ClassVar[errc]  # value = <errc.jit_target: 15>
-    jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 18>
+    jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 20>
+    jit_module: typing.ClassVar[errc]  # value = <errc.jit_module: 17>
+    jit_object: typing.ClassVar[errc]  # value = <errc.jit_object: 18>
+    jit_target: typing.ClassVar[errc]  # value = <errc.jit_target: 16>
+    jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 19>
     no_arena: typing.ClassVar[errc]  # value = <errc.no_arena: 6>
-    no_device: typing.ClassVar[errc]  # value = <errc.no_device: 23>
+    no_device: typing.ClassVar[errc]  # value = <errc.no_device: 24>
+    name_clash: typing.ClassVar[errc]  # value = <errc.name_clash: 8>
     no_graph: typing.ClassVar[errc]  # value = <errc.no_graph: 7>
     not_univariate: typing.ClassVar[errc]  # value = <errc.not_univariate: 9>
-    sealed_arena: typing.ClassVar[errc]  # value = <errc.sealed_arena: 8>
+    not_single_output: typing.ClassVar[errc]  # value = <errc.not_single_output: 10>
     short_point: typing.ClassVar[errc]  # value = <errc.short_point: 0>
-    unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 21>
+    unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 22>
     unknown_symbol: typing.ClassVar[errc]  # value = <errc.unknown_symbol: 3>
-    unsupported_scalar: typing.ClassVar[errc]  # value = <errc.unsupported_scalar: 10>
-    wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 22>
+    unsupported_scalar: typing.ClassVar[errc]  # value = <errc.unsupported_scalar: 11>
+    wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 23>
     wrong_arity: typing.ClassVar[errc]  # value = <errc.wrong_arity: 1>
     wrong_column_count: typing.ClassVar[errc]  # value = <errc.wrong_column_count: 5>
     wrong_direction: typing.ClassVar[errc]  # value = <errc.wrong_direction: 2>
@@ -325,6 +330,8 @@ def sqrt(x: Expression) -> Expression:
 def tan(x: Expression) -> Expression:
     ...
 def tanh(x: Expression) -> Expression:
+    ...
+def param(name: str) -> Expression:
     ...
 def var(name: str) -> Expression:
     ...

@@ -17,13 +17,17 @@
 // spelling, enumerator, label), the shape DDX_UNARY_MATH_TABLE already has.
 namespace ddx::rt {
 
-// A Seed is a symbol's opposite: an input column that is never differentiated.
-// Being a leaf that is not a Var is what keeps it out of symbols(), out of the
-// reverse sweep's harvest and out of the coupling pattern, with no slot-range
-// convention for any of them to agree on.
+// Every leaf but Const reads an input column.  Only a Var is differentiated:
+// being a leaf that is not a Var is what keeps a Param, an Implicit or a Seed
+// out of symbols(), out of the reverse sweep's harvest and out of the coupling
+// pattern, with no slot-range convention for any of them to agree on.  A Param
+// is a named input present in every lane; an Implicit, one the caller solved
+// for; a Seed, a seeded product's direction.
 #define DDX_RT_LEAF_TABLE(X)                                                   \
   X(constant, Const, "const")                                                  \
   X(var, Var, "var")                                                           \
+  X(param, Param, "param")                                                     \
+  X(implicit, Implicit, "implicit")                                            \
   X(seed, Seed, "seed")
 
 // The last cell is the ops/adjoints.hpp descriptor carrying the reverse-mode
@@ -169,11 +173,37 @@ template <impl::Numeric T>
   return arity_of(op) == 0;
 }
 
-// Which column of `xs` a leaf reads: the symbols first, then the seeds.
-// Written once, because the interpreter, codegen and the ABI have to agree.
-[[nodiscard]] constexpr std::size_t input_column(std::size_t symbols, OpCode op,
+// How many input columns of each kind a call passes, in the order it passes
+// them: symbols, parameters, implicits, then a seeded product's direction.
+struct Inputs {
+  std::size_t vars = 0;
+  std::size_t params = 0;
+  std::size_t implicits = 0;
+  std::size_t seeds = 0;
+
+  [[nodiscard]] constexpr std::size_t named() const noexcept {
+    return vars + params + implicits;
+  }
+  [[nodiscard]] constexpr std::size_t total() const noexcept {
+    return named() + seeds;
+  }
+  constexpr bool operator==(const Inputs &) const = default;
+};
+
+// Which column of `xs` a leaf reads.  Written once, because the interpreter,
+// codegen and the ABI have to agree.
+[[nodiscard]] constexpr std::size_t input_column(const Inputs &in, OpCode op,
                                                  std::uint32_t slot) noexcept {
-  return op == OpCode::Var ? slot : symbols + slot;
+  switch (op) {
+  case OpCode::Var:
+    return slot;
+  case OpCode::Param:
+    return in.vars + slot;
+  case OpCode::Implicit:
+    return in.vars + in.params + slot;
+  default:
+    return in.named() + slot;
+  }
 }
 
 } // namespace ddx::rt

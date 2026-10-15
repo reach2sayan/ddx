@@ -47,8 +47,7 @@ double ddx_min(double a, double b) {
 }
 
 // One node's right-hand side, mirroring the LLVM emitter's rules node for node.
-void expression(std::string &out, const rt::Graph<double> &g,
-                std::size_t symbols, rt::NodeId v) {
+void expression(std::string &out, const rt::Graph<double> &g, rt::NodeId v) {
   const auto &p = g[v];
   const auto [a, b, c] = g.operands(v);
   const std::string_view label = rt::label_of(p.op);
@@ -59,7 +58,7 @@ void expression(std::string &out, const rt::Graph<double> &g,
       out += literal(p.value);
     } else {
       std::format_to(sink, "xs[{}ul * n + i]",
-                     rt::input_column(symbols, p.op, p.slot));
+                     rt::input_column(g.inputs(), p.op, p.slot));
     }
     return;
   case 1:
@@ -136,14 +135,13 @@ std::string emit_source(const rt::Graph<double> &g) {
 
   // Ids are topological, so one pass needs no worklist, and a multiply every
   // reader swallowed into an fma is never reached.
-  const std::size_t symbols = g.symbols().size();
   for (const auto &[v, fma] : schedule) {
     std::format_to(sink, "  const double v{} = ", v);
     if (fma) {
       std::format_to(sink, "fma({}v{}, v{}, v{})", fma.negated ? "-" : "",
                      fma.x, fma.y, fma.z);
     } else {
-      expression(out, g, symbols, v);
+      expression(out, g, v);
     }
     out += ";\n";
   }

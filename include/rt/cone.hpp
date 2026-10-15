@@ -33,7 +33,7 @@ public:
   template <impl::Numeric T>
   Cone(const Builder<T> &b, std::span<const Step> schedule,
        std::size_t columns) {
-    const std::size_t symbols = b.symbols().size();
+    const Inputs inputs = b.inputs();
     steps_ = schedule.size();
 
     std::vector<std::uint32_t> at(b.size(), unscheduled);
@@ -46,7 +46,7 @@ public:
     seeds_.assign(columns + 1, 0);
     for (const auto &[i, s] : schedule | std::views::enumerate) {
       const Node<T> &n = b[s.node];
-      if (const auto column = read_by(n, s, symbols)) {
+      if (const auto column = read_by(n, s, inputs)) {
         ++seeds_[*column + 1];
         continue;
       }
@@ -65,7 +65,7 @@ public:
     seeded_.resize(seeds_.back());
     std::vector<std::uint32_t> cursor = seeds_;
     for (const auto &[i, s] : schedule | std::views::enumerate) {
-      if (const auto column = read_by(b[s.node], s, symbols)) {
+      if (const auto column = read_by(b[s.node], s, inputs)) {
         seeded_[cursor[*column]++] = static_cast<std::uint32_t>(i);
       }
     }
@@ -121,11 +121,11 @@ private:
   // literal is a leaf that no point moves.
   template <impl::Numeric T>
   [[nodiscard]] static constexpr std::optional<std::size_t>
-  read_by(const Node<T> &n, const Step &s, std::size_t symbols) {
+  read_by(const Node<T> &n, const Step &s, const Inputs &inputs) {
     if (s.fma || !is_leaf(n.op) || n.op == OpCode::Const) {
       return std::nullopt;
     }
-    return input_column(symbols, n.op, n.slot);
+    return input_column(inputs, n.op, n.slot);
   }
 
   // An absent operand is no_node; a contraction's three are all real.
@@ -155,10 +155,10 @@ void evaluate_reached(const Builder<T> &b, const R &point,
                       std::span<U> tape) {
   cone.reach(changed, dirty, pending);
   const auto lane = detail::lanes_of<1>(tape);
-  const std::size_t symbols = b.symbols().size();
+  const Inputs inputs = b.inputs();
   for (auto step = dirty.find_first(); step != boost::dynamic_bitset<>::npos;
        step = dirty.find_next(step)) {
-    detail::sweep_step<1>(b, symbols, schedule[step], std::ranges::begin(point),
+    detail::sweep_step<1>(b, inputs, schedule[step], std::ranges::begin(point),
                           lane);
   }
 }

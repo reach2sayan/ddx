@@ -306,7 +306,7 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
       value[v] = p.op == rt::OpCode::Const
                      ? emit.constant(p.value)
                      : emit.load(cols.inputs[rt::input_column(
-                                     g.symbols().size(), p.op, p.slot)],
+                                     g.inputs(), p.op, p.slot)],
                                  index, mask, "");
       break;
     case 1:

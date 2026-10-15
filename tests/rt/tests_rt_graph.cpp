@@ -80,7 +80,7 @@ TEST(RtGraph, CarriesSymbolsAndOutputs) {
   const auto graph =
       ddx::rt::GraphBuilder{b}.value(root).build_jacobian().finish();
 
-  EXPECT_EQ(graph.symbols().size(), 2u);
+  EXPECT_EQ(graph.inputs().vars, 2u);
   EXPECT_EQ(graph.outputs().size(), 3u); // value plus two partials
 }
 

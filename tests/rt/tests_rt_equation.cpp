@@ -105,11 +105,11 @@ TEST(RtEquation, NamesAndPointsBothComeFromRunTimeStrings) {
 
   ASSERT_FALSE(eq.poisoned());
   EXPECT_TRUE(std::ranges::equal(
-      *eq.symbols(), std::array<std::string_view, 2>{"alpha", "beta"}));
+      *eq.symbols(), std::array<std::string_view, 2>{"beta", "alpha"}));
 
   const std::map<std::string, double> vm{{"alpha", 3.0}, {"beta", 5.0}};
   EXPECT_DOUBLE_EQ(*eq.evaluate(vm), 1.0 * 5.0 + 2.0 * 3.0);
-  EXPECT_TRUE(std::ranges::equal(*eq.jacobian(vm), std::array{2.0, 1.0}));
+  EXPECT_TRUE(std::ranges::equal(*eq.jacobian(vm), std::array{1.0, 2.0}));
 
   // Any range of pairs, not only a map, and the key need not own its text.
   const std::vector<std::pair<std::string_view, double>> pairs{{"beta", 5.0},

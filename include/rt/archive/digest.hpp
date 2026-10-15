@@ -37,15 +37,20 @@ constexpr void fold(boost::hash2::fnv1a_64 &h, const auto &v) {
 }
 } // namespace detail
 
-// The model as the file keys on it: symbols, then the arena up to `upto`.
-// Field by field, never a memcpy -- Node<double> has interior padding.
+// The model as the file keys on it: every input's name, kind by kind, then the
+// arena up to `upto`.  Field by field, never a memcpy -- Node<double> has
+// interior padding.
 template <impl::Numeric T>
 [[nodiscard]] std::uint64_t digest(std::span<const std::string> symbols,
+                                   std::span<const std::string> params,
+                                   std::span<const std::string> implicits,
                                    std::span<const Node<T>> nodes,
                                    std::size_t upto) {
   boost::hash2::fnv1a_64 h;
-  // Length-framed by hash_append itself, for the symbols and each of them.
-  boost::hash2::hash_append(h, detail::wire_flavor{}, symbols);
+  // Length-framed by hash_append itself, for each list and each name.
+  for (const auto names : {symbols, params, implicits}) {
+    boost::hash2::hash_append(h, detail::wire_flavor{}, names);
+  }
   detail::fold(h, upto);
   for (const auto &n : nodes.first(std::min(upto, nodes.size()))) {
     boost::mp11::mp_for_each<boost::describe::describe_members<
@@ -53,6 +58,16 @@ template <impl::Numeric T>
         [&](auto D) { detail::fold(h, n.*D.pointer); });
   }
   return h.result();
+}
+
+// The same key off a saved snapshot and off a live arena.
+template <impl::Numeric T>
+[[nodiscard]] std::uint64_t digest(const Snapshot<T> &s) {
+  return digest<T>(s.symbols, s.params, s.implicits, s.nodes, s.model_nodes);
+}
+template <impl::Numeric T>
+[[nodiscard]] std::uint64_t digest(const Builder<T> &b, std::size_t upto) {
+  return digest<T>(b.symbols(), b.params(), b.implicits(), b.nodes(), upto);
 }
 
 // Keyed on what codegen reads of a lane, so a consumer sees a compile is done
@@ -63,8 +78,10 @@ template <impl::Numeric T>
 template <impl::Numeric T>
 [[nodiscard]] std::uint64_t digest(const Graph<T> &g) {
   boost::hash2::fnv1a_64 h;
-  detail::fold(h, g.symbols().size());
-  detail::fold(h, g.arity());
+  const Inputs &in = g.inputs();
+  for (const std::size_t count : {in.vars, in.params, in.implicits, in.seeds}) {
+    detail::fold(h, count);
+  }
   detail::fold(h, g.layout());
   const auto schedule = g.schedule();
   detail::fold(h, schedule.size());

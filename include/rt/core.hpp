@@ -131,6 +131,8 @@ public:
   [[nodiscard]] constexpr std::optional<std::size_t> outputs() const {
     return unless_poisoned([this] { return roots_.size(); });
   }
+  // Declaration order, which is the order of a positional point and of every
+  // derivative's columns.
   [[nodiscard]] constexpr std::optional<std::span<const std::string>>
   symbols() const {
     if (poisoned()) {
@@ -140,15 +142,35 @@ public:
     // would deduce optional<vector> and span the copy as it died.
     return std::span<const std::string>{arena_->symbols()};
   }
+  [[nodiscard]] constexpr std::optional<std::span<const std::string>>
+  params() const {
+    if (poisoned()) {
+      return std::nullopt;
+    }
+    return std::span<const std::string>{arena_->params()};
+  }
+  // Everything a point supplies, in the order a positional one is read: the
+  // symbols, then the parameters.
+  [[nodiscard]] constexpr std::optional<std::size_t> input_count() const {
+    return unless_poisoned([this] { return arena_->inputs().named(); });
+  }
+  [[nodiscard]] std::optional<std::vector<std::string>> inputs() const {
+    return unless_poisoned([this] {
+      auto names = arena_->symbols();
+      impl::append(names, arena_->params());
+      impl::append(names, arena_->implicits());
+      return names;
+    });
+  }
 
-  // The symbol list exists only at run time, so every spelling can refuse.
+  // The input list exists only at run time, so every spelling can refuse.
   template <impl::rt_detail::CPointArg<T>... Args>
   [[nodiscard]] constexpr result<std::vector<T>>
   point(const Args &...args) const {
     if (bad_) {
       return std::unexpected{*bad_};
     }
-    std::vector<T> at(symbol_count(), T{});
+    std::vector<T> at(arena_->inputs().named(), T{});
     result<void> ok{};
     if constexpr ((impl::CEntry<Args> && ...) && sizeof...(Args) > 0) {
       std::vector<bool> seen(at.size(), false);
@@ -211,12 +233,12 @@ public:
     if (bad_) {
       return std::unexpected{*bad_};
     }
-    const auto slot = slot_of(along);
-    if (!slot) {
+    const auto input = arena_->lookup(along);
+    if (!input || input->op != OpCode::Var) {
       return fail(errc::unknown_symbol);
     }
     boost::container::small_vector<T, 64> unit(symbol_count(), T{0});
-    unit[*slot] = T{1};
+    unit[input->slot] = T{1};
     return hvp(std::span<const T>{unit}, args...);
   }
 
@@ -390,7 +412,7 @@ public:
     requires(Order > 0)
   [[nodiscard]] result<T> univariate_derivative(T x0) const {
     return single().and_then([&]() -> result<T> {
-      if (symbol_count() != 1) {
+      if (arena_->inputs().named() != 1 || symbol_count() != 1) {
         return fail(errc::not_univariate);
       }
       using Taylor = impl::TaylorDual<T, Order>;
@@ -609,8 +631,8 @@ protected:
     settle_device();
   }
 
-  // Poison first, and by the code it carries: a sealed or absent arena is a
-  // different mistake from a literal that reached no graph.
+  // Poison first, and by the code it carries: a clashing name or an absent
+  // arena is a different mistake from a literal that reached no graph.
   [[nodiscard]] static constexpr std::optional<error>
   why_not(std::span<const RTExpression<T>> outputs) noexcept {
     for (const RTExpression<T> &e : outputs) {
@@ -633,7 +655,6 @@ protected:
     auto arena = owned ? std::move(owned)
                        : std::make_unique<Builder<T>>(
                              *Rooting::builder(outputs.front()));
-    Sealing::seal(*arena);
     auto roots = outputs | std::views::transform([&arena](const auto &e) {
                    return e.id(*arena);
                  }) |
@@ -706,8 +727,7 @@ protected:
                                       std::span<const NodeId> roots,
                                       std::size_t model_nodes) {
     return std::ranges::equal(snap.roots, roots) &&
-           digest<T>(snap.symbols, snap.nodes, snap.model_nodes) ==
-               digest<T>(arena.symbols(), arena.nodes(), model_nodes);
+           digest(snap) == digest(arena, model_nodes);
   }
   [[nodiscard]] bool describes(const Snapshot<T> &snap) const {
     [[maybe_unused]] const auto held = reading();
@@ -731,6 +751,8 @@ protected:
     snap.objects = objects();
     [[maybe_unused]] const auto held = reading();
     snap.symbols = arena_->symbols();
+    snap.params = arena_->params();
+    snap.implicits = arena_->implicits();
     snap.nodes.assign(arena_->nodes().begin(), arena_->nodes().end());
     return snap;
   }
@@ -825,8 +847,9 @@ protected:
     return std::span<Ptr const>{std::ranges::data(r), std::ranges::size(r)};
   }
 
-  // The point columns and the direction's, in one array: symbols first, then
-  // the seeds, which is the order the ABI takes and input_column() states.
+  // The point columns and the direction's, in one array: the named inputs
+  // first, then the seeds, which is the order the ABI takes and input_column()
+  // states.
   [[nodiscard]] static auto widen(const auto &xs, const auto &seeds) {
     boost::container::small_vector<const T *, 64> out;
     out.reserve(std::ranges::size(xs) + std::ranges::size(seeds));
@@ -947,19 +970,9 @@ private:
     return arena_->size();
   }
 
-  // The slot a symbol name occupies, or nullopt.  The table is sorted -- the
-  // Builder inserts at lower_bound and the loader verifies is_sorted.
-  [[nodiscard]] constexpr std::optional<std::size_t>
-  slot_of(std::string_view name) const {
-    const auto &names = arena_->symbols();
-    const auto it = std::ranges::lower_bound(names, name);
-    return it == names.end() || *it != name
-               ? std::nullopt
-               : std::optional{static_cast<std::size_t>(it - names.begin())};
-  }
-
-  // The three seeded products: the point widened by `along` -- symbols first,
-  // then the seeds, which is the order the ABI takes and input_column() states.
+  // The three seeded products: the point widened by `along` -- the named
+  // inputs first, then the seeds, which is the order the ABI takes and
+  // input_column() states.
   template <Want W>
   [[nodiscard]] result<std::vector<T>>
   seeded(std::span<const T> along,
@@ -1001,12 +1014,13 @@ private:
                                                   std::vector<bool> &seen,
                                                   std::string_view name,
                                                   const auto &value) const {
-    const auto slot = slot_of(name);
-    if (!slot) {
+    const auto input = arena_->lookup(name);
+    if (!input) {
       return fail(errc::unknown_symbol);
     }
-    at[*slot] = static_cast<T>(value);
-    seen[*slot] = true;
+    const auto column = input_column(arena_->inputs(), input->op, input->slot);
+    at[column] = static_cast<T>(value);
+    seen[column] = true;
     return {};
   }
 
@@ -1176,8 +1190,7 @@ private:
     }
     ensure(want);
     [[maybe_unused]] const bool rebalance = rebalances(want);
-    // Under the write lock: GraphBuilder seals the arena it freezes.
-    [[maybe_unused]] const auto held = writing();
+    [[maybe_unused]] const auto held = reading();
     Frozen from{*this, roots_, derivative_};
     auto swept = std::make_shared<const Graph<T>>(
         freeze_for(want, *arena_, from, contracts()));

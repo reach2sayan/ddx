@@ -86,20 +86,38 @@ TEST(RtBuilder, SymbolsInternByName) {
   EXPECT_EQ(b.symbols()[0], "x");
 }
 
-// The compile-time Equation<...>::symbols is sorted, so a slot here is the same
-// place in the alphabet -- which is what lets a positional point mean the same
-// thing on both sides, however the model happened to name them.  A symbol named
-// late lifts the slots above it, and the node built before it moves with them.
-TEST(RtBuilder, SlotsAreAlphabeticalNotNamingOrder) {
+// A slot is the order the model named its symbols in, so a symbol named late
+// takes the next slot and moves nothing already built.
+TEST(RtBuilder, SlotsAreDeclarationOrder) {
   Builder<> b;
   const auto z = var(b, "z");
   const auto s = sin(z); // built while z is the only symbol
   const auto a = var(b, "a");
 
-  EXPECT_EQ(b.symbols(), (std::vector<std::string>{"a", "z"}));
-  EXPECT_EQ(b[a.id(b)].slot, 0u);
-  EXPECT_EQ(b[z.id(b)].slot, 1u);
+  EXPECT_EQ(b.symbols(), (std::vector<std::string>{"z", "a"}));
+  EXPECT_EQ(b[z.id(b)].slot, 0u);
+  EXPECT_EQ(b[a.id(b)].slot, 1u);
   EXPECT_EQ(b[s.id(b)].a, z.id(b)) << "the subexpression still names z";
+}
+
+// One namespace for every named input: a parameter cannot take a symbol's name,
+// and parameters number their own slots after the symbols' columns.
+TEST(RtBuilder, ParamsShareTheNamespaceAndNumberTheirOwnSlots) {
+  Builder<> b;
+  const auto x = var(b, "x");
+  const auto k = ddx::rt::param(b, "k");
+  const auto y = var(b, "y");
+
+  EXPECT_EQ(b.symbols(), (std::vector<std::string>{"x", "y"}));
+  EXPECT_EQ(b.params(), (std::vector<std::string>{"k"}));
+  EXPECT_EQ(b[k.id(b)].op, ddx::rt::OpCode::Param);
+  EXPECT_EQ(b[k.id(b)].slot, 0u);
+  EXPECT_EQ(b[y.id(b)].slot, 1u);
+  EXPECT_EQ(ddx::rt::param(b, "k").id(b), k.id(b));
+  EXPECT_TRUE(ddx::rt::param(b, "x").poisoned()) << "x is a symbol";
+  EXPECT_TRUE(var(b, "k").poisoned()) << "k is a parameter";
+  EXPECT_EQ(ddx::rt::input_column(b.inputs(), ddx::rt::OpCode::Param, 0), 2u);
+  (void)x;
 }
 
 // Compound assignment rebinds the handle through the same operators, so an
