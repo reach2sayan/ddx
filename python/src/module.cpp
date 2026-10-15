@@ -353,22 +353,24 @@ PYBIND11_MODULE(_ddx, m) {
   for (const auto i : std::views::iota(0uz, rt::op_count)) {
     const auto op = static_cast<rt::OpCode>(i);
     const std::string name{rt::name_of(op)};
-    // An extern is a function the program registers, not one to call by name.
-    if (rt::is_extern(op)) {
-      continue;
-    }
-    if (rt::arity_of(op) == 1) {
+    switch (rt::kind_of(op)) {
+    case rt::Kind::Unary:
       m.def(
           name.c_str(), [op](const PyExpression &u) { return unary(op, u); },
           pyb::arg("x"));
-    } else if (rt::arity_of(op) == 2 && op != rt::OpCode::Lt &&
-               op != rt::OpCode::Le) {
-      m.def(
-          name.c_str(),
-          [op](const PyExpression &l, const PyExpression &r) {
-            return binary(op, l, r);
-          },
-          pyb::arg("x"), pyb::arg("y"));
+      break;
+    case rt::Kind::Binary:
+      if (op != rt::OpCode::Lt && op != rt::OpCode::Le) {
+        m.def(
+            name.c_str(),
+            [op](const PyExpression &l, const PyExpression &r) {
+              return binary(op, l, r);
+            },
+            pyb::arg("x"), pyb::arg("y"));
+      }
+      break;
+    default:
+      break;
     }
   }
 

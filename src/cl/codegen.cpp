@@ -13,6 +13,7 @@
 #include <ranges>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace ddx::cl::detail {
 namespace {
@@ -52,16 +53,18 @@ void expression(std::string &out, const rt::Graph<double> &g, rt::NodeId v) {
   const auto [a, b, c] = g.operands(v);
   const std::string_view label = rt::label_of(p.op);
   auto sink = std::back_inserter(out);
-  switch (rt::arity_of(p.op)) {
-  case 0:
-    if (p.op == rt::OpCode::Const) {
-      out += literal(p.value);
-    } else {
-      std::format_to(sink, "xs[{}ul * n + i]",
-                     rt::input_column(g.inputs(), p.op, p.slot));
-    }
+  switch (rt::kind_of(p.op)) {
+  case rt::Kind::Const:
+    out += literal(p.value);
     return;
-  case 1:
+  case rt::Kind::Input:
+    std::format_to(sink, "xs[{}ul * n + i]",
+                   rt::input_column(g.inputs(), p.op, p.slot));
+    return;
+  case rt::Kind::Extern:
+  case rt::Kind::Args:
+    std::unreachable(); // Device::compile refuses a graph that calls the host
+  case rt::Kind::Unary:
     switch (p.op) {
     case rt::OpCode::Neg:
       std::format_to(sink, "-v{}", a);
@@ -77,7 +80,7 @@ void expression(std::string &out, const rt::Graph<double> &g, rt::NodeId v) {
       std::format_to(sink, "{}(v{})", label, a);
       return;
     }
-  case 2:
+  case rt::Kind::Binary:
     switch (p.op) {
     case rt::OpCode::Add:
     case rt::OpCode::Mul:
@@ -97,7 +100,7 @@ void expression(std::string &out, const rt::Graph<double> &g, rt::NodeId v) {
       std::format_to(sink, "{}(v{}, v{})", label, a, b);
       return;
     }
-  default:
+  case rt::Kind::Ternary:
     // Select, the one ternary.  C's != is unordered, so a NaN condition takes
     // the first arm, as select_impl does.
     std::format_to(sink, "(v{} != 0.0 ? v{} : v{})", a, b, c);

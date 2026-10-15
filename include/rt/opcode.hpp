@@ -23,13 +23,14 @@ namespace ddx::rt {
 // out of symbols(), out of the reverse sweep's harvest and out of the coupling
 // pattern, with no slot-range convention for any of them to agree on.  A Param
 // is a named input present in every lane; an Implicit, one the caller solved
-// for; a Seed, a seeded product's direction.
+// for; a Seed, a seeded product's direction.  The last cell is what the slot
+// is: nothing, a place among the named inputs of that kind, or a position.
 #define DDX_RT_LEAF_TABLE(X)                                                   \
-  X(constant, Const, "const")                                                  \
-  X(var, Var, "var")                                                           \
-  X(param, Param, "param")                                                     \
-  X(implicit, Implicit, "implicit")                                            \
-  X(seed, Seed, "seed")
+  X(constant, Const, "const", Literal)                                         \
+  X(var, Var, "var", Named)                                                    \
+  X(param, Param, "param", Named)                                              \
+  X(implicit, Implicit, "implicit", Named)                                     \
+  X(seed, Seed, "seed", Positional)
 
 // The last cell is the ops/adjoints.hpp descriptor carrying the reverse-mode
 // rule, which the compile-time ops call too -- the rule is written once, there.
@@ -65,11 +66,11 @@ namespace ddx::rt {
 // which function, packed into the slot) take one operand: the argument list.
 // A list of one is the argument itself; a longer one is ExternArgs(first,
 // rest), the same rule all the way down, so every node holds only real
-// operands.  The last cell is the arity.
+// operands.  The last cells are the arity and the Kind.
 #define DDX_RT_EXTERN_TABLE(X)                                                 \
-  X(extern_call, Extern, "extern", 1)                                          \
-  X(extern_partial, ExternD, "extern_d", 1)                                    \
-  X(extern_args, ExternArgs, "extern_args", 2)
+  X(extern_call, Extern, "extern", 1, Extern)                                  \
+  X(extern_partial, ExternD, "extern_d", 1, Extern)                            \
+  X(extern_args, ExternArgs, "extern_args", 2, Args)
 
 #define DDX_RT_OP_TABLE(X)                                                     \
   DDX_RT_LEAF_TABLE(X)                                                         \
@@ -94,39 +95,58 @@ inline constexpr std::size_t op_count = [] {
   return n;
 }();
 
+// What a walker does with a node: the one classification every sweep, emitter
+// and checker switches on, so none tests an opcode ahead of its arity.  A
+// Const is a literal, an Input reads a column, an Extern calls the program's
+// function (its value or one partial), an Args node is an argument list.
+enum class Kind : std::uint8_t {
+  Const,
+  Input,
+  Unary,
+  Binary,
+  Ternary,
+  Extern,
+  Args
+};
+
 namespace detail {
+
+enum class Role : std::uint8_t { Literal, Named, Positional };
 
 struct OpInfo {
   std::string_view name; // the factory spelling, and the Python name
   std::string_view label;
   std::uint8_t arity;
+  Kind kind;
 };
 
-// Arity is which sub-table a row sits in, so the three groups fill one array in
-// three passes.  Each row lands at its own enumerator, so nothing depends on
-// the table order matching the enum's.
+// Arity and kind are which sub-table a row sits in, so the groups fill one
+// array in one pass each.  Each row lands at its own enumerator, so nothing
+// depends on the table order matching the enum's.
 inline constexpr std::array op_info = [] {
   std::array<OpInfo, op_count> t{};
-#define DDX_RT_ROW(fn, Op, label, ...)                                         \
-  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 0};
+#define DDX_RT_ROW(fn, Op, label, role, ...)                                   \
+  t[static_cast<std::size_t>(OpCode::Op)] = {                                  \
+      #fn, label, 0,                                                           \
+      Role::role == Role::Literal ? Kind::Const : Kind::Input};
   DDX_RT_LEAF_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
 #define DDX_RT_ROW(fn, Op, label, ...)                                         \
-  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 1};
+  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 1, Kind::Unary};
   DDX_RT_UNARY_TABLE(DDX_RT_ROW)
   DDX_UNARY_MATH_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
 #define DDX_RT_ROW(fn, Op, label, ...)                                         \
-  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 2};
+  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 2, Kind::Binary};
   DDX_RT_BINARY_TABLE(DDX_RT_ROW)
   DDX_RT_COMPARE_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
 #define DDX_RT_ROW(fn, Op, label, ...)                                         \
-  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 3};
+  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 3, Kind::Ternary};
   DDX_RT_TERNARY_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
-#define DDX_RT_ROW(fn, Op, label, arity)                                       \
-  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, arity};
+#define DDX_RT_ROW(fn, Op, label, arity, kind)                                 \
+  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, arity, Kind::kind};
   DDX_RT_EXTERN_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
   return t;
@@ -161,6 +181,9 @@ namespace detail {
 [[nodiscard]] constexpr std::uint8_t arity_of(OpCode op) noexcept {
   return detail::info(op).arity;
 }
+[[nodiscard]] constexpr Kind kind_of(OpCode op) noexcept {
+  return detail::info(op).kind;
+}
 
 // By label, at compile time for the bridge and at run time for a loader: byte
 // values are table-order, so appending a transcendental shifts every enumerator
@@ -187,13 +210,41 @@ template <impl::Numeric T>
 }
 
 [[nodiscard]] constexpr bool is_leaf(OpCode op) noexcept {
-  return arity_of(op) == 0;
+  return kind_of(op) == Kind::Const || kind_of(op) == Kind::Input;
+}
+[[nodiscard]] constexpr bool is_extern(OpCode op) noexcept {
+  return kind_of(op) == Kind::Extern || kind_of(op) == Kind::Args;
+}
+// What text and Python may call by name: an operation on operands, not a
+// leaf and not a function the program registered.
+[[nodiscard]] constexpr bool callable(OpCode op) noexcept {
+  return !is_leaf(op) && !is_extern(op);
 }
 
-[[nodiscard]] constexpr bool is_extern(OpCode op) noexcept {
-  return op == OpCode::Extern || op == OpCode::ExternD ||
-         op == OpCode::ExternArgs;
+// Which kind of named input a leaf is, in table order: what the Builder keeps
+// one name list per, and the column order the named inputs are passed in.
+[[nodiscard]] constexpr std::optional<std::size_t>
+named_index(OpCode op) noexcept {
+  std::size_t i = 0;
+#define DDX_RT_NAMED(fn, Op, label, role)                                      \
+  if constexpr (detail::Role::role == detail::Role::Named) {                   \
+    if (op == OpCode::Op) {                                                    \
+      return i;                                                                \
+    }                                                                          \
+    ++i;                                                                       \
+  }
+  DDX_RT_LEAF_TABLE(DDX_RT_NAMED)
+#undef DDX_RT_NAMED
+  return std::nullopt;
 }
+inline constexpr std::size_t named_count = [] {
+  std::size_t n = 0;
+#define DDX_RT_NAMED(fn, Op, label, role)                                      \
+  n += detail::Role::role == detail::Role::Named;
+  DDX_RT_LEAF_TABLE(DDX_RT_NAMED)
+#undef DDX_RT_NAMED
+  return n;
+}();
 
 // An extern node's slot: which registered function, and which component of
 // its answer -- 0 the value, 1..k the first partials, then the upper triangle

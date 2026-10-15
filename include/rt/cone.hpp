@@ -122,7 +122,7 @@ private:
   template <impl::Numeric T>
   [[nodiscard]] static constexpr std::optional<std::size_t>
   read_by(const Node<T> &n, const Step &s, const Inputs &inputs) {
-    if (s.fma || !is_leaf(n.op) || n.op == OpCode::Const) {
+    if (s.fma || kind_of(n.op) != Kind::Input) {
       return std::nullopt;
     }
     return input_column(inputs, n.op, n.slot);

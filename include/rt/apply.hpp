@@ -128,14 +128,14 @@ dispatch(OpCode op, auto &&visit) {
     return visit(Row<impl::detail::Op##Fn<T>, probes_##Op<T>, 1>{});
     DDX_UNARY_MATH_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
-#define DDX_RT_DISPATCH(fn, Op, label)                                         \
+#define DDX_RT_DISPATCH(fn, Op, label, ...)                                    \
   case OpCode::Op:                                                             \
     return visit(Row<void, true, 0>{});
     DDX_RT_LEAF_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
     // Opaque to every scalar: the interpreter calls the function itself, and
     // supports() saying no is what keeps a Taylor sweep away from one.
-#define DDX_RT_DISPATCH(fn, Op, label, arity)                                  \
+#define DDX_RT_DISPATCH(fn, Op, label, arity, ...)                             \
   case OpCode::Op:                                                             \
     return visit(Row<void, false, arity>{});
     DDX_RT_EXTERN_TABLE(DDX_RT_DISPATCH)

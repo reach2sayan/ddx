@@ -169,7 +169,7 @@ template <impl::Numeric T>
   return std::ranges::any_of(
       std::views::iota(NodeId{0}, static_cast<NodeId>(b.size())),
       [&](NodeId v) {
-        return live[v] && b[v].op == OpCode::Extern &&
+        return live[v] && kind_of(b[v].op) == Kind::Extern &&
                b.externs()[ExternSlot::of(b[v].slot).function].order < 2;
       });
 }
@@ -262,12 +262,14 @@ template <impl::Numeric T>
       continue;
     }
     const auto node = b[v]; // by value: building below may reallocate
-    if (is_leaf(node.op)) {
-      continue;
-    }
     const RTExpression<T> a = expr(adj[v]);
     const NodeId g = guard[v];
-    if (node.op == OpCode::Extern || node.op == OpCode::ExternD) {
+    switch (kind_of(node.op)) {
+    case Kind::Const:
+    case Kind::Input:
+    case Kind::Args: // never reached: a call hands adjoints to its arguments
+      break;
+    case Kind::Extern: {
       // The chain rule through a function that differentiated itself: each
       // argument gets the adjoint times the component one order up.
       const auto [fn, at] = ExternSlot::of(node.slot);
@@ -278,21 +280,28 @@ template <impl::Numeric T>
           add_to(arg, g, a * detail::component(b, fn, *up, node.a));
         }
       }
-    } else if (arity_of(node.op) == 1) {
+      break;
+    }
+    case Kind::Unary:
       add_to(node.a, g,
              detail::contribution(node.op, a, expr(node.a), expr(v)));
-    } else if (arity_of(node.op) == 3) {
+      break;
+    case Kind::Ternary: {
       // Here rather than in ops/adjoints.hpp: two arms of different types is
       // what a type-encoded tree cannot hold, so there is no compile-time rule
       // to share with.  Nothing reaches the condition -- it chooses.
       const RTExpression<T> cond = expr(node.a);
       add_to(node.b, both(g, cond).id(b), a);
       add_to(node.c, both(g, select(cond, zero, one)).id(b), a);
-    } else {
+      break;
+    }
+    case Kind::Binary: {
       const auto [cl, cr] =
           detail::contributions(node.op, a, expr(node.a), expr(node.b));
       add_to(node.a, g, cl);
       add_to(node.b, g, cr);
+      break;
+    }
     }
   }
 
@@ -342,7 +351,8 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
 
   for (const NodeId v : detail::live_ids(live)) {
     const auto node = b[v]; // by value: building below may reallocate
-    if (node.op == OpCode::Extern || node.op == OpCode::ExternD) {
+    switch (kind_of(node.op)) {
+    case Kind::Extern: {
       const auto [fn, at] = ExternSlot::of(node.slot);
       const ExternEntry<T> e = b.externs()[fn];
       RTExpression<T> sum{0};
@@ -354,44 +364,53 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
         }
       }
       d[v] = sum.id(b);
-      continue;
+      break;
     }
-    if (node.op == OpCode::Implicit) {
-      // dz = sum_s dz/dx_s dx_s: z moves with every symbol its residual does.
-      const auto dz = detail::Implicits::row(b, node.slot);
-      d[v] = std::ranges::fold_left(
-                 std::views::zip(dz, tangent) |
-                     std::views::transform([&b](const auto &pair) {
-                       const auto [zs, ts] = pair;
-                       return RTExpression<T>{b, zs} * RTExpression<T>{b, ts};
-                     }),
-                 RTExpression<T>{0}, std::plus<>{})
-                 .id(b);
-      continue;
-    }
-    if (is_leaf(node.op)) {
-      // A Seed is a direction, not a variable, so it carries no tangent.
-      d[v] = node.op == OpCode::Var ? tangent[node.slot] : b.constant(T{0});
-      continue;
-    }
-    if (arity_of(node.op) == 1) {
+    case Kind::Const:
+    case Kind::Args: // a list has no value to move
+      d[v] = b.constant(T{0});
+      break;
+    case Kind::Input:
+      if (node.op == OpCode::Implicit) {
+        // dz = sum_s dz/dx_s dx_s: z moves with every symbol its residual does.
+        const auto dz = detail::Implicits::row(b, node.slot);
+        d[v] = std::ranges::fold_left(
+                   std::views::zip(dz, tangent) |
+                       std::views::transform([&b](const auto &pair) {
+                         const auto [zs, ts] = pair;
+                         return RTExpression<T>{b, zs} *
+                                RTExpression<T>{b, ts};
+                       }),
+                   RTExpression<T>{0}, std::plus<>{})
+                   .id(b);
+      } else {
+        // A Seed is a direction, not a variable, so it carries no tangent.
+        d[v] = node.op == OpCode::Var ? tangent[node.slot] : b.constant(T{0});
+      }
+      break;
+    case Kind::Unary: {
       const RTExpression<T> u{b, node.a};
       const RTExpression<T> self{b, v};
       d[v] = (detail::partial(node.op, u, self) * RTExpression<T>{b, d[node.a]})
                  .id(b);
-    } else if (arity_of(node.op) == 3) {
+      break;
+    }
+    case Kind::Ternary:
       // select(c, dt, df): the condition picks the derivative as it picks
       // the value.
       d[v] = select(RTExpression<T>{b, node.a}, RTExpression<T>{b, d[node.b]},
                     RTExpression<T>{b, d[node.c]})
                  .id(b);
-    } else {
+      break;
+    case Kind::Binary: {
       const RTExpression<T> l{b, node.a};
       const RTExpression<T> r{b, node.b};
       const auto [dl, dr] = detail::partials(node.op, l, r);
       d[v] = (dl * RTExpression<T>{b, d[node.a]} +
               dr * RTExpression<T>{b, d[node.b]})
                  .id(b);
+      break;
+    }
     }
   }
 

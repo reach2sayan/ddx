@@ -80,16 +80,14 @@ private:
   // the id.
   [[nodiscard]] std::string text(NodeId v) const {
     const auto &p = graph_[v];
-    switch (p.op) {
-    case OpCode::Var:
-    case OpCode::Param:
-    case OpCode::Implicit:
-      return std::format("{}: {}", v,
-                         graph_.names()[input_column(graph_.inputs(), p.op,
-                                                     p.slot)]);
-    case OpCode::Seed:
-      return std::format("{}: v[{}]", v, p.slot);
-    case OpCode::Const:
+    switch (kind_of(p.op)) {
+    case Kind::Input:
+      return named_index(p.op)
+                 ? std::format("{}: {}", v,
+                               graph_.names()[input_column(graph_.inputs(),
+                                                           p.op, p.slot)])
+                 : std::format("{}: v[{}]", v, p.slot);
+    case Kind::Const:
       if constexpr (std::formattable<T, char>) {
         return std::format("{}: {}", v, p.value);
       } else {

@@ -360,11 +360,19 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
       continue;
     }
     const auto operands = g.operands(v);
-    if (p.op == rt::OpCode::ExternArgs) {
+    switch (rt::kind_of(p.op)) {
+    case rt::Kind::Const:
+      value[v] = emit.constant(p.value);
+      break;
+    case rt::Kind::Input:
+      value[v] = emit.load(
+          cols.inputs[rt::input_column(g.inputs(), p.op, p.slot)], index, mask,
+          "");
+      break;
+    case rt::Kind::Args:
       value[v] = emit.constant(0.0); // a list: nothing reads its value
-      continue;
-    }
-    if (rt::is_extern(p.op)) {
+      break;
+    case rt::Kind::Extern: {
       const auto [fn, component] = rt::ExternSlot::of(p.slot);
       const auto &e = g.externs()[fn];
       const auto args = rt::extern_arguments(g, operands[0], e.arity) |
@@ -373,24 +381,16 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
                         }) |
                         impl::to<std::vector<llvm::Value *>>();
       value[v] = emit.extern_call(e, component, args);
-      continue;
-    }
-    switch (rt::arity_of(p.op)) {
-    case 0:
-      value[v] = p.op == rt::OpCode::Const
-                     ? emit.constant(p.value)
-                     : emit.load(cols.inputs[rt::input_column(
-                                     g.inputs(), p.op, p.slot)],
-                                 index, mask, "");
       break;
-    case 1:
+    }
+    case rt::Kind::Unary:
       value[v] = emit.unary(p.op, value[operands[0]]);
       break;
-    case 3:
+    case rt::Kind::Ternary:
       value[v] = emit.ternary(p.op, value[operands[0]], value[operands[1]],
                               value[operands[2]]);
       break;
-    default:
+    case rt::Kind::Binary:
       value[v] = emit.binary(p.op, value[operands[0]], value[operands[1]]);
       break;
     }

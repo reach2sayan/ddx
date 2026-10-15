@@ -120,7 +120,7 @@ private:
                                          extern_components(e.arity, e.order));
                }) &&
            std::ranges::all_of(s_.nodes, [this](const Node<T> &node) {
-             if (node.op != OpCode::Extern && node.op != OpCode::ExternD) {
+             if (kind_of(node.op) != Kind::Extern) {
                return true;
              }
              const auto [fn, component] = ExternSlot::of(node.slot);
@@ -130,7 +130,7 @@ private:
              const ExternRecord &e = s_.externs[fn];
              NodeId args = node.a;
              for (auto left = e.arity; left > 1; --left) {
-               if (s_.nodes[args].op != OpCode::ExternArgs) {
+               if (kind_of(s_.nodes[args].op) != Kind::Args) {
                  return false;
                }
                args = s_.nodes[args].b;

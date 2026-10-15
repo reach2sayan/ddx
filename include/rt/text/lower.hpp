@@ -51,7 +51,9 @@ form(const Ast &ast, std::span<const RTExpression<T>> symbols,
     return i < from.size() ? result<Expr>{from[i]} : fail(errc::bad_syntax);
   };
 
-  if (is_leaf(t.op)) {
+  switch (kind_of(t.op)) {
+  case Kind::Const:
+  case Kind::Input:
     return std::visit(
         [&]<typename Index>(const Index &leaf) -> result<Expr> {
           if constexpr (std::same_as<Index, NameIndex>) {
@@ -70,13 +72,11 @@ form(const Ast &ast, std::span<const RTExpression<T>> symbols,
           }
         },
         t.leaf);
-  }
-  if (arity_of(t.op) == 1) {
+  case Kind::Unary:
     return at(built, t.a).transform([&t](const Expr &u) {
       return Expr::form(t.op, u);
     });
-  }
-  if (arity_of(t.op) == 3) {
+  case Kind::Ternary:
     return at(built, t.a).and_then([&](const Expr &c) {
       return at(built, t.b).and_then([&](const Expr &x) {
         return at(built, t.c).transform([&](const Expr &y) {
@@ -84,12 +84,17 @@ form(const Ast &ast, std::span<const RTExpression<T>> symbols,
         });
       });
     });
-  }
-  return at(built, t.a).and_then([&](const Expr &l) {
-    return at(built, t.b).transform([&](const Expr &r) {
-      return Expr::form(t.op, l, r);
+  case Kind::Binary:
+    return at(built, t.a).and_then([&](const Expr &l) {
+      return at(built, t.b).transform([&](const Expr &r) {
+        return Expr::form(t.op, l, r);
+      });
     });
-  });
+  case Kind::Extern:
+  case Kind::Args:
+    break; // the parser refuses the names
+  }
+  return fail(errc::bad_syntax);
 }
 
 } // namespace detail

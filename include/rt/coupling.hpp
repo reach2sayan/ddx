@@ -304,8 +304,11 @@ template <impl::Numeric T>
   std::vector<SymbolSet> support(b.size());
   for (const NodeId v : detail::live_ids(live)) {
     const auto &node = b[v];
-    switch (arity_of(node.op)) {
-    case 0:
+    switch (kind_of(node.op)) {
+    case Kind::Const:
+      support[v] = SymbolSet(n);
+      break;
+    case Kind::Input:
       support[v] = SymbolSet(n);
       if (node.op == OpCode::Var) {
         support[v].set(node.slot);
@@ -323,20 +326,30 @@ template <impl::Numeric T>
         detail::couple(rows, support[v], support[v]);
       }
       break;
-    case 1:
+    case Kind::Unary:
       support[v] = support[node.a];
       // Negation is linear; anything else couples its argument with itself.
       if (node.op != OpCode::Neg) {
         detail::couple(rows, support[v], support[v]);
       }
       break;
-    case 3:
+    case Kind::Extern:
+      // Nonlinear in every argument the list carries.
+      support[v] = support[node.a];
+      detail::couple(rows, support[v], support[v]);
+      break;
+    case Kind::Args:
+      // A list carries its arguments' support; the call couples it.
+      support[v] = support[node.a];
+      support[v] |= support[node.b];
+      break;
+    case Kind::Ternary:
       // As linear as an Add: it chooses between two derivatives rather than
       // combining them.
       support[v] = support[node.b];
       support[v] |= support[node.c];
       break;
-    default:
+    case Kind::Binary:
       // Zero derivative everywhere it exists, so no support and no coupling --
       // the conservative arm below cost a colour or two per tested quantity.
       if (node.op == OpCode::Lt || node.op == OpCode::Le) {
