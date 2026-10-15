@@ -210,7 +210,7 @@ static_assert(sizeof(Node<double>) == sizeof(detail::TwoOperandNode<double>));
 // digest keys on -- one described list, so adding to it reaches all three.
 template <impl::Numeric T> struct Model {
   // Each named kind's names in declaration order, which is slot order.
-  std::array<std::vector<std::string>, named_count> names;
+  PerKind<std::vector<std::string>> names;
   std::vector<NodeId> closures; // the residual each implicit is a root of
   std::vector<ExternEntry<T>> externs;
   std::vector<Node<T>> nodes;
@@ -730,7 +730,7 @@ private:
   // library hash container is constexpr.
   std::vector<NodeId> table_; // power-of-two capacity; no_node == free slot
   // Per named kind, the leaf interning made for each slot.
-  std::array<std::vector<NodeId>, named_count> ids_;
+  PerKind<std::vector<NodeId>> ids_;
   // Every named input, sorted by name: a flat map by hand, since interning runs
   // inside constant evaluation and no library flat container is constexpr
   // before C++26.

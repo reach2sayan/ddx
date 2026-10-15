@@ -56,10 +56,16 @@ template <typename U>
 template <typename V> constexpr bool is_vector_v = false;
 template <typename U, typename A>
 constexpr bool is_vector_v<std::vector<U, A>> = true;
-// A fixed count travels in the schema, not the payload.
+// A fixed count travels in the schema, not the payload.  A PerKind is one of
+// these: the wire sees the array it is, never the copies it respells.
 template <typename V> constexpr bool is_array_v = false;
 template <typename U, std::size_t N>
 constexpr bool is_array_v<std::array<U, N>> = true;
+template <typename U> constexpr bool is_array_v<PerKind<U>> = true;
+template <typename V> constexpr std::size_t array_size_v = 0;
+template <typename U, std::size_t N>
+constexpr std::size_t array_size_v<std::array<U, N>> = N;
+template <typename U> constexpr std::size_t array_size_v<PerKind<U>> = named_count;
 
 // Every member, a base class's included: ExternEntry carries its record as a
 // base and its function -- which no file holds -- beside it.
@@ -349,7 +355,7 @@ template <typename V> constexpr void fold_schema(boost::hash2::fnv1a_32 &h) {
   } else if constexpr (is_array_v<U>) {
     text("arr<");
     boost::hash2::hash_append(h, wire_flavor{},
-                              static_cast<std::uint32_t>(std::tuple_size_v<U>));
+                              static_cast<std::uint32_t>(array_size_v<U>));
     fold_schema<typename U::value_type>(h);
     text(">");
   } else {

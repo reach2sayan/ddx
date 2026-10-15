@@ -249,6 +249,63 @@ inline constexpr std::size_t named_count = [] {
   return n;
 }();
 
+// One T per named kind: a std::array, and on every compiler but one nothing
+// besides.  GCC before 15 deallocates twice when constant evaluation copies an
+// array whose elements allocate, so there the copies are spelled element by
+// element -- the one spelling it gets right.  An equation copies the arena it
+// was lent, which is what makes a consteval equation reach this at all; the
+// run-time copy is the array's own either way.
+template <typename T> struct PerKind : std::array<T, named_count> {
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 15
+  using Array = std::array<T, named_count>;
+  constexpr PerKind() = default;
+  constexpr PerKind(const PerKind &other) : Array(other.copied()) {
+    if consteval {
+      std::ranges::copy(other, this->begin());
+    }
+  }
+  constexpr PerKind(PerKind &&other) noexcept : Array(std::move(other).taken()) {
+    if consteval {
+      std::ranges::move(other, this->begin());
+    }
+  }
+  constexpr PerKind &operator=(const PerKind &other) {
+    if consteval {
+      std::ranges::copy(other, this->begin());
+    } else {
+      static_cast<Array &>(*this) = other;
+    }
+    return *this;
+  }
+  constexpr PerKind &operator=(PerKind &&other) noexcept {
+    if consteval {
+      std::ranges::move(other, this->begin());
+    } else {
+      static_cast<Array &>(*this) = std::move(other);
+    }
+    return *this;
+  }
+
+private:
+  // What the base is built from: its own copy, which is the whole of this at
+  // run time, and an empty array during constant evaluation -- the elements
+  // the constructor's body then assigns are what the bug is dodged by.  A
+  // prvalue, so the run-time copy lands in the base and no second one exists.
+  [[nodiscard]] constexpr Array copied() const {
+    if consteval {
+      return Array{};
+    }
+    return *this;
+  }
+  [[nodiscard]] constexpr Array taken() && {
+    if consteval {
+      return Array{};
+    }
+    return std::move(*this);
+  }
+#endif
+};
+
 // An extern node's slot: which registered function, and which component of
 // its answer -- 0 the value, 1..k the first partials, then the upper triangle
 // of the second, row-major.  A half-word each; fits() is the one bound.
