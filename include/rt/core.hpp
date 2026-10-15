@@ -93,15 +93,50 @@ struct Nothing {};
 
 template <typename C> class Restricted;
 
-// The arena's lock and one flag per sweep built on first ask.  On the heap:
-// neither moves, and constant evaluation never reaches them.
+// A sweep built on first ask and kept: the flag beside its value, so neither
+// travels without the other.  One a file carried arrives built.
+template <typename V> class Lazy {
+public:
+  const V &get(auto &&build) {
+    std::call_once(flag_, [&] { value_ = build(); });
+    return value_;
+  }
+  void settle(V v) {
+    std::call_once(flag_, [&] { value_ = std::move(v); });
+  }
+  // Read only after get() or settle(): what a freeze reads of the sweeps.
+  [[nodiscard]] const V &peek() const noexcept { return value_; }
+
+private:
+  std::once_flag flag_;
+  V value_;
+};
+
+#ifdef DDX_HAS_JIT
+// The roots and Jacobian a kernel is lowered from; see rt/rebalance.hpp.
+struct Rebalanced {
+  std::vector<NodeId> roots;
+  Jacobian derivative;
+};
+#endif
+
+// The arena's lock and every sweep built on first ask.  On the heap: neither
+// moves, and constant evaluation never reaches them.
 //
 // Lock order: a lane's lock, then the arena's.  A sweep appends to the arena,
 // so it writes; an interpreter reads.  Nothing under the arena's lock touches a
 // lane, and nothing under either reacquires what a Yield gave up.
-struct Latches {
+struct Sweeps {
   std::shared_mutex arena;
-  std::once_flag hessians, hvp, vjp, jvp, tangent, rebalanced, walk;
+  Lazy<std::vector<Hessian>> hessians;
+  Lazy<HessianVector> hvp;
+  Lazy<VectorJacobian> vjp;
+  Lazy<Tangent> jvp;
+  Lazy<std::vector<NodeId>> tangent; // not saved: one forward sweep
+  Lazy<std::vector<Step>> walk;      // a system's hessian() schedule
+#ifdef DDX_HAS_JIT
+  Lazy<Rebalanced> rebalanced;
+#endif
 };
 
 // An equation: an arena of its own, its roots, the Jacobian swept up front and
@@ -139,19 +174,13 @@ public:
   // derivative's columns.
   [[nodiscard]] constexpr std::optional<std::span<const std::string>>
   symbols() const {
-    if (poisoned()) {
-      return std::nullopt;
-    }
-    // Not std::optional{...}: symbols() answers with a const vector&, so CTAD
-    // would deduce optional<vector> and span the copy as it died.
-    return std::span<const std::string>{arena_->symbols()};
+    return unless_poisoned(
+        [this] { return std::span<const std::string>{arena_->symbols()}; });
   }
   [[nodiscard]] constexpr std::optional<std::span<const std::string>>
   params() const {
-    if (poisoned()) {
-      return std::nullopt;
-    }
-    return std::span<const std::string>{arena_->params()};
+    return unless_poisoned(
+        [this] { return std::span<const std::string>{arena_->params()}; });
   }
   // Everything a point supplies, in the order a positional one is read: the
   // symbols, then the parameters.
@@ -159,12 +188,7 @@ public:
     return unless_poisoned([this] { return arena_->inputs().named(); });
   }
   [[nodiscard]] std::optional<std::vector<std::string>> inputs() const {
-    return unless_poisoned([this] {
-      auto names = arena_->symbols();
-      impl::append(names, arena_->params());
-      impl::append(names, arena_->implicits());
-      return names;
-    });
+    return unless_poisoned([this] { return arena_->names(); });
   }
 
   // The input list exists only at run time, so every spelling can refuse.
@@ -200,11 +224,12 @@ public:
   // here and this spelling never meets the compression.
   [[nodiscard]] constexpr result<std::vector<T>>
   jacobian(const impl::rt_detail::CPointArg<T> auto &...args) const {
-    return point(args...).transform([this](const auto &at) {
+    return point(args...).and_then([this](const auto &at) {
       std::vector<T> f(roots_.size());
       std::vector<T> cells(derivative_.partial.size());
-      gather(Want::Jacobian, at, f, cells);
-      return dense(derivative_.pattern, cells);
+      return gather(Want::Jacobian, at, f, cells).transform([&] {
+        return dense(derivative_.pattern, cells);
+      });
     });
   }
 
@@ -213,10 +238,11 @@ public:
   // than its function is most of the graph.
   [[nodiscard]] constexpr result<std::vector<T>>
   gradient(const impl::rt_detail::CPointArg<T> auto &...args) const {
-    return point(args...).transform([&](const auto &at) {
+    return point(args...).and_then([this](const auto &at) {
       std::vector<T> cells(derivative_.partial.size());
-      gather(Want::Gradient, at, {}, cells);
-      return dense(derivative_.pattern, cells);
+      return gather(Want::Gradient, at, {}, cells).transform([&] {
+        return dense(derivative_.pattern, cells);
+      });
     });
   }
 
@@ -225,9 +251,7 @@ public:
   [[nodiscard]] result<std::vector<T>>
   hvp(std::span<const T> direction,
       const impl::rt_detail::CPointArg<T> auto &...args) const {
-    return single()
-        .and_then([this] { return orders(Want::Hvp); })
-        .and_then([&] { return seeded<Want::Hvp>(direction, args...); });
+    return seeded<Want::Hvp>(direction, args...);
   }
 
   // The j-th Hessian column, named and not indexed: the symbol list exists
@@ -258,26 +282,7 @@ public:
   [[nodiscard]] result<std::vector<T>>
   jacobian_jvp(std::span<const T> direction,
                const impl::rt_detail::CPointArg<T> auto &...args) const {
-    if (bad_) {
-      return std::unexpected{*bad_};
-    }
-    if (direction.size() != symbol_count()) {
-      return fail(errc::wrong_direction);
-    }
-    if (const auto ok = orders(Want::JacobianTangent); !ok) {
-      return std::unexpected{ok.error()};
-    }
-    return point(args...).transform([&](const auto &at) {
-      boost::container::small_vector<T, 64> widened;
-      widened.reserve(at.size() + direction.size());
-      impl::append(widened, at);
-      impl::append(widened, direction);
-      std::vector<T> f(roots_.size());
-      std::vector<T> g(derivative_.partial.size());
-      std::vector<T> dg(derivative_.partial.size());
-      gather(Want::JacobianTangent, widened, f, g, dg);
-      return dense(derivative_.pattern, dg);
-    });
+    return seeded<Want::JacobianTangent>(direction, args...);
   }
   // Along one symbol's basis vector: d/dx_j of the whole Jacobian.
   [[nodiscard]] result<std::vector<T>>
@@ -295,18 +300,18 @@ public:
     requires std::convertible_to<std::ranges::range_reference_t<R>,
                                  std::string_view>
   [[nodiscard]] result<Restricted<Core>> restrict(const R &names) const {
-    if (bad_) {
-      return std::unexpected{*bad_};
-    }
-    std::vector<bool> chosen(symbol_count(), false);
-    for (const std::string_view name : names) {
-      const auto input = arena_->lookup(name);
-      if (!input || input->op != OpCode::Var) {
-        return fail(errc::unknown_symbol);
-      }
-      chosen[input->slot] = true;
-    }
-    return Restricted<Core>{*this, chosen};
+    return alive().and_then([&]() -> result<Restricted<Core>> {
+      std::vector<bool> chosen(symbol_count(), false);
+      return std::ranges::fold_left(
+                 names, result<void>{},
+                 [&](result<void> ok, std::string_view name) {
+                   return ok.and_then([&] {
+                     return symbol(name).transform(
+                         [&](std::uint32_t slot) { chosen[slot] = true; });
+                   });
+                 })
+          .transform([&] { return Restricted<Core>{*this, chosen}; });
+    });
   }
   [[nodiscard]] result<Restricted<Core>>
   restrict(std::initializer_list<std::string_view> names) const {
@@ -330,30 +335,32 @@ public:
   // Dense row-major m x n x n; the graph holds it compressed by colour.
   [[nodiscard]] result<std::vector<T>>
   hessian(const impl::rt_detail::CPointArg<T> auto &...args) const {
-    if (const auto ok = orders(Want::Hessian); !ok) {
-      return std::unexpected{ok.error()};
-    }
-    return point(args...).transform([this](const auto &at) {
+    return point(args...).and_then([this](const auto &at) {
       const std::size_t m = roots_.size();
       const std::size_t n = symbol_count();
       std::vector<T> out(m * n * n);
-      if (m == 1) {
-        const Coloring &coloring = hessians().front().coloring;
-        std::array<T, 1> f{};
-        std::vector<T> g(derivative_.partial.size());
-        std::vector<T> h(hessians().front().compressed.size());
-        gather(Want::Hessian, at, f, g, h);
-        // Only the cells the colouring stores; `out` is already zero, which is
-        // what every other column of that colour is.
+      if (is_system()) {
+        // Off the arena, one output's Hessian at a time: no lane holds m
+        // colourings.  The gate is the lane's, asked without one.
+        return orders(Want::Hessian).transform([&] {
+          std::vector<T> f(m);
+          std::vector<T> g(m * n);
+          walk(at, f, g, out);
+          return std::move(out);
+        });
+      }
+      const Coloring &coloring = hessians().front().coloring;
+      std::array<T, 1> f{};
+      std::vector<T> g(derivative_.partial.size());
+      std::vector<T> h(hessians().front().compressed.size());
+      return gather(Want::Hessian, at, f, g, h).transform([&] {
+        // Only the cells the colouring stores; `out` is already zero, which
+        // is what every other column of that colour is.
         for (const Cell &cell : coloring.entries()) {
           out[cell.row * n + cell.column] = h[cell.slot];
         }
-      } else {
-        std::vector<T> f(m);
-        std::vector<T> g(m * n);
-        walk(at, f, g, out);
-      }
-      return out;
+        return std::move(out);
+      });
     });
   }
 
@@ -383,19 +390,12 @@ public:
   // Sweep and freeze `wants` now, so the calls that follow -- from any number
   // of threads -- find their lanes built and never take a write lock.
   [[nodiscard]] result<void> prepare(std::initializer_list<Want> wants) const {
-    if (bad_) {
-      return std::unexpected{*bad_};
-    }
-    for (const Want want : wants) {
-      if (needs_single(want) && roots_.size() != 1) {
-        return fail(errc::not_single_output);
-      }
-      if (const auto ok = orders(want); !ok) {
-        return ok;
-      }
-      (void)lane(want);
-    }
-    return {};
+    return std::ranges::fold_left(
+        wants, result<void>{}, [this](result<void> ok, Want want) {
+          return ok.and_then([&] { return ready(want); }).transform([&] {
+            (void)lane(want);
+          });
+        });
   }
 
   // Whether a batch call goes through compiled code: false with no backend,
@@ -647,7 +647,7 @@ public:
   // Where H(i, j) sits, or nullopt for a cell the colouring calls zero.
   [[nodiscard]] std::optional<std::size_t> hessian_cell(std::size_t i,
                                                         std::size_t j) const {
-    if (poisoned() || roots_.size() != 1 || i >= symbol_count() ||
+    if (poisoned() || is_system() || i >= symbol_count() ||
         j >= symbol_count()) {
       return std::nullopt;
     }
@@ -661,7 +661,7 @@ public:
   [[nodiscard]] result<void> save(const std::filesystem::path &path) const
     requires std::floating_point<T>
   {
-    return poisoned() ? std::unexpected{*bad_} : rt::save(snapshot(), path);
+    return alive().and_then([&] { return rt::save(snapshot(), path); });
   }
 
   // Whether `path` holds *this* equation.  rt::verify() answers the other
@@ -669,11 +669,11 @@ public:
   [[nodiscard]] result<void> verify(const std::filesystem::path &path) const
     requires std::floating_point<T>
   {
-    if (poisoned()) {
-      return std::unexpected{*bad_};
-    }
-    return load_snapshot<T>(path).and_then([this](const Verified<T> &snap) {
-      return describes(*snap) ? result<void>{} : fail(errc::archive_mismatch);
+    return alive().and_then([&] {
+      return load_snapshot<T>(path).and_then([this](const Verified<T> &snap) {
+        return describes(*snap) ? result<void>{}
+                                : fail(errc::archive_mismatch);
+      });
     });
   }
 
@@ -686,68 +686,79 @@ protected:
   using Lanes = std::array<Lane, want_count>;
 
   // Poisoned: arena_ null, roots_ empty, every accessor short-circuiting first.
-  constexpr explicit Core(error why) : bad_(why) {
-    if !consteval {
-      lanes_ = std::make_unique<Lanes>();
-      latches_ = std::make_unique<Latches>();
-    }
-  }
+  constexpr explicit Core(error why) : bad_(why) { settle(); }
 
   // The arena is the equation's own from here: one it was lent is copied, so
   // nothing another equation or the caller builds can move a node under it.
-  constexpr Core(std::unique_ptr<Builder<T>> arena, std::vector<NodeId> roots)
+  constexpr Core(std::unique_ptr<Builder<T>> arena, std::vector<NodeId> roots,
+                 Cache memo = {})
       : arena_(std::move(arena)), roots_(std::move(roots)),
         // Before any sweep appends: what a saved file is keyed on.
         model_nodes_(static_cast<std::uint32_t>(arena_->size())) {
     // An implicit no derivative could carry refuses the whole equation, as a
     // poisoned output would.
     if (const auto why = unclosed(*arena_)) {
-      bad_ = error{*why};
-      arena_.reset();
-      roots_.clear();
+      poison(error{*why});
     } else {
       // One reverse sweep per output is cheap, and it is what the column
       // counts, the pattern and constant evaluation read.
       derivative_ = build_jacobian_impl(*arena_, roots_);
-      first_order_ = first_order_only(*arena_, roots_);
     }
-    if !consteval {
-      lanes_ = std::make_unique<Lanes>();
-      latches_ = std::make_unique<Latches>();
-    }
+    settle();
+    this->take_cache(std::move(memo));
   }
 
   // The snapshot's node array is installed verbatim, not replayed: make() folds
   // and would renumber the ids the saved sweeps name.  A block the file carries
-  // counts as swept.
-  explicit Core(Rebuilt<T> r)
+  // arrives built.
+  explicit Core(Rebuilt<T> r, Cache memo = {})
       : arena_(std::move(r.arena)), roots_(std::move(r.rest.roots)),
         model_nodes_(r.rest.model_nodes), options_(r.rest.options),
         objects_(std::move(r.rest.objects)),
-        derivative_(std::move(r.rest.jacobian)),
-        hessians_(std::move(r.rest.hessians)), hvp_(std::move(r.rest.hvp)),
-        vjp_(std::move(r.rest.vjp)), jvp_(std::move(r.rest.jvp)),
-        lanes_(std::make_unique<Lanes>()),
-        latches_(std::make_unique<Latches>()), loaded_(true) {
+        derivative_(std::move(r.rest.jacobian)), loaded_(true) {
     // A function the file names and nobody supplied: nothing could call it.
     if (std::ranges::any_of(arena_->externs(),
                             [](const auto &e) { return !e.fn; })) {
-      bad_ = error{errc::unbound_extern};
-      arena_.reset();
-      roots_.clear();
-      return;
+      poison(error{errc::unbound_extern});
     }
-    first_order_ = first_order_only(*arena_, roots_);
-    const auto swept = [](std::once_flag &flag, bool carried) {
-      if (carried) {
-        std::call_once(flag, [] {});
+    settle();
+    if (!bad_) {
+      auto &rest = r.rest;
+      const std::size_t m = roots_.size();
+      if (rest.hessians.size() == m) {
+        sweeps_->hessians.settle(std::move(rest.hessians));
       }
-    };
-    swept(latches_->hessians, hessians_.size() == roots_.size());
-    swept(latches_->hvp, hvp_.value != no_node);
-    swept(latches_->vjp, vjp_.value.size() == roots_.size());
-    swept(latches_->jvp, jvp_.value.size() == roots_.size());
-    settle_device();
+      if (rest.hvp.value != no_node) {
+        sweeps_->hvp.settle(std::move(rest.hvp));
+      }
+      if (rest.vjp.value.size() == m) {
+        sweeps_->vjp.settle(std::move(rest.vjp));
+      }
+      if (rest.jvp.value.size() == m) {
+        sweeps_->jvp.settle(std::move(rest.jvp));
+      }
+    }
+    this->take_cache(std::move(memo));
+  }
+
+  // Refused: by the code it carries, with nothing left to read.  poisoned()
+  // <=> arena_ == nullptr from here.
+  constexpr void poison(error why) {
+    bad_ = why;
+    arena_.reset();
+    roots_.clear();
+  }
+  // Every equation's tail: what the gates read of the arena, and the lanes and
+  // sweeps, which constant evaluation never reaches.
+  constexpr void settle() {
+    if (arena_) {
+      first_order_ = first_order_only(*arena_, roots_);
+    }
+    if !consteval {
+      lanes_ = std::make_unique<Lanes>();
+      sweeps_ = std::make_unique<Sweeps>();
+      settle_device();
+    }
   }
 
   // Poison first, and by the code it carries: a clashing name or an absent
@@ -790,9 +801,7 @@ protected:
       return D{*why};
     }
     auto [arena, roots] = rooted(outputs, std::move(owned));
-    D eq{std::move(arena), std::move(roots)};
-    eq.take_cache(std::move(memo));
-    return eq;
+    return D{std::move(arena), std::move(roots), std::move(memo)};
   }
 
   // Build the model, then take the sweeps off disk if the file still describes
@@ -810,16 +819,14 @@ protected:
     if (auto snap = load_snapshot<T>(path);
         snap && describes(**snap, *arena, roots, arena->size())) {
       // The functions are the model's: same names, since the digest agreed.
-      auto rebuilt = std::move(*snap).rebuild();
-      for (const auto [i, e] : arena->externs() | std::views::enumerate) {
-        Externs::bind(*rebuilt.arena, static_cast<std::size_t>(i), e.fn);
-      }
-      D eq{std::move(rebuilt)};
-      eq.take_cache(std::move(memo));
-      return eq;
+      return D{std::move(*snap).rebuild([&arena](std::string_view name) {
+                 return std::ranges::find(arena->externs(), name,
+                                          &ExternEntry<T>::name)
+                     ->fn;
+               }),
+               std::move(memo)};
     }
-    D eq{std::move(arena), std::move(roots)};
-    eq.take_cache(std::move(memo));
+    D eq{std::move(arena), std::move(roots), std::move(memo)};
     // A file that cannot be written is still a working equation.
     (void)eq.save(path);
     return eq;
@@ -841,20 +848,14 @@ protected:
           if (outputs && snap->roots.size() != *outputs) {
             return fail(errc::archive_mismatch);
           }
-          auto rebuilt = std::move(snap).rebuild();
-          for (const auto [i, e] :
-               rebuilt.arena->externs() | std::views::enumerate) {
-            if (const auto it = fns.find(e.name); it != fns.end()) {
-              Externs::bind(*rebuilt.arena, static_cast<std::size_t>(i),
-                            std::make_shared<const ExternFn<T>>(it->second));
-            }
-          }
-          D eq{std::move(rebuilt)};
-          if (eq.poisoned()) {
-            return std::unexpected{*eq.status()};
-          }
-          eq.take_cache(std::move(memo));
-          return eq;
+          D eq{std::move(snap).rebuild([&fns](std::string_view name) {
+                 const auto it = fns.find(name);
+                 return it == fns.end()
+                            ? nullptr
+                            : std::make_shared<const ExternFn<T>>(it->second);
+               }),
+               std::move(memo)};
+          return eq.alive().transform([&] { return std::move(eq); });
         });
   }
 
@@ -877,7 +878,7 @@ protected:
   [[nodiscard]] Snapshot<T> snapshot() const {
     Snapshot<T> snap;
     snap.hessians = hessians();
-    if (roots_.size() == 1) {
+    if (!is_system()) {
       snap.hvp = hvp_sweep();
     }
     snap.vjp = vjp_sweep();
@@ -888,12 +889,7 @@ protected:
     snap.options = options_;
     snap.objects = objects();
     [[maybe_unused]] const auto held = reading();
-    snap.symbols = arena_->symbols();
-    snap.params = arena_->params();
-    snap.implicits = arena_->implicits();
-    snap.closures.assign(arena_->closures().begin(), arena_->closures().end());
-    snap.externs = records_of(*arena_);
-    snap.nodes.assign(arena_->nodes().begin(), arena_->nodes().end());
+    snap.model = arena_->model();
     return snap;
   }
 
@@ -944,25 +940,19 @@ protected:
   checked(Lanes &lanes, const Cells &cells, Want want,
           std::span<const T *const> xs, const Columns<T> &out,
           std::size_t n) const {
-    if (bad_) {
-      return std::unexpected{*bad_};
-    }
-    if (needs_single(want) && roots_.size() != 1) {
-      return fail(errc::not_single_output);
-    }
-    if (const auto ok = orders(want); !ok) {
-      return std::unexpected{ok.error()};
-    }
-    auto c = lane_in(lanes, cells, want, n);
-    if (xs.size() != c->graph->arity() ||
-        std::ranges::any_of(zip_blocks(out, c->graph->output_blocks()),
-                            [](const auto &pair) {
-                              const auto &[columns, block] = pair;
-                              return columns.size() != block.size();
-                            })) {
-      return fail(errc::wrong_column_count);
-    }
-    return c;
+    return ready(want).and_then(
+        [&]() -> result<std::shared_ptr<const Compiled>> {
+          auto c = lane_in(lanes, cells, want, n);
+          const bool fits =
+              xs.size() == c->graph->arity() &&
+              std::ranges::none_of(zip_blocks(out, c->graph->output_blocks()),
+                                   [](const auto &pair) {
+                                     const auto &[columns, block] = pair;
+                                     return columns.size() != block.size();
+                                   });
+          return fits ? result<std::shared_ptr<const Compiled>>{std::move(c)}
+                      : fail(errc::wrong_column_count);
+        });
   }
 
   // A system's Hessians, read off the arena a point at a time: a frozen graph
@@ -974,7 +964,7 @@ protected:
     // What the three blocks read -- values, partials and Hessian::at's
     // compressed cells -- settled on first ask, since it depends only on the
     // sweeps.
-    std::call_once(latches_->walk, [&] {
+    const auto &walk = sweeps_->walk.get([&] {
       auto wanted = blocks | std::views::transform(&Hessian::compressed) |
                     std::views::join | impl::to<std::vector<NodeId>>();
       impl::append(wanted, blocks | std::views::transform(&Hessian::partial) |
@@ -982,7 +972,7 @@ protected:
       impl::append(wanted, blocks | std::views::transform(&Hessian::zero));
       impl::append(wanted, roots_);
       [[maybe_unused]] const auto held = reading();
-      walk_ = schedule_of(*arena_, live_ids(reachable(*arena_, wanted)));
+      return schedule_of(*arena_, live_ids(reachable(*arena_, wanted)));
     });
     const std::size_t n = symbol_count();
     // The tape is thread-kept; every id read below is scheduled, so it is
@@ -990,7 +980,7 @@ protected:
     static thread_local std::vector<T> values;
     [[maybe_unused]] const auto held = sweeping();
     values.resize(arena_->size());
-    evaluate_into(*arena_, at, walk_, std::span<T>{values});
+    evaluate_into(*arena_, at, walk, std::span<T>{values});
     const impl::md::mdspan dense{
         h.data(), impl::md::dextents<std::size_t, 3>{roots_.size(), n, n}};
     const auto dims = std::views::iota(0uz, n);
@@ -1012,11 +1002,13 @@ protected:
     return std::span<Ptr const>{std::ranges::data(r), std::ranges::size(r)};
   }
 
-  // The point columns and the direction's, in one array: the named inputs
-  // first, then the seeds, which is the order the ABI takes and input_column()
-  // states.
+  // The point and the direction, in one array -- values or columns: the
+  // named inputs first, then the seeds, which is the order the ABI takes and
+  // input_column() states.
   [[nodiscard]] static auto widen(const auto &xs, const auto &seeds) {
-    boost::container::small_vector<const T *, 64> out;
+    boost::container::small_vector<std::ranges::range_value_t<decltype(xs)>,
+                                   64>
+        out;
     out.reserve(std::ranges::size(xs) + std::ranges::size(seeds));
     std::ranges::copy(xs, std::back_inserter(out));
     std::ranges::copy(seeds, std::back_inserter(out));
@@ -1033,33 +1025,31 @@ protected:
   // output's Hessian.
   [[nodiscard]] auto unless_system(auto &&value) const {
     using V = std::remove_cvref_t<std::invoke_result_t<decltype(value)>>;
-    return poisoned() || roots_.size() != 1 ? std::optional<V>{}
-                                            : std::optional<V>{value()};
+    return poisoned() || is_system() ? std::optional<V>{}
+                                     : std::optional<V>{value()};
   }
 
   // m long, always a vector: what System answers and Equation narrows.
   [[nodiscard]] constexpr result<std::vector<T>>
   values(const impl::rt_detail::CPointArg<T> auto &...args) const {
-    return point(args...).transform([this](const auto &at) {
+    return point(args...).and_then([this](const auto &at) {
       std::vector<T> f(roots_.size());
-      gather(Want::Value, at, f);
-      return f;
+      return gather(Want::Value, at, f).transform([&] { return std::move(f); });
     });
   }
 
 private:
   // Run `build` once, under the arena's write lock: every sweep appends.
   template <typename V>
-  const V &once(std::once_flag &flag, V &slot, auto &&build) const {
-    std::call_once(flag, [&] {
+  const V &sweep(Lazy<V> &slot, auto &&build) const {
+    return slot.get([&] {
       [[maybe_unused]] const auto held = writing();
-      slot = build();
+      return build();
     });
-    return slot;
   }
 
   [[nodiscard]] const std::vector<Hessian> &hessians() const {
-    return once(latches_->hessians, hessians_, [this] {
+    return sweep(sweeps_->hessians, [this] {
       return roots_ | std::views::transform([this](NodeId r) {
                return build_hessian_impl(*arena_, r);
              }) |
@@ -1068,37 +1058,40 @@ private:
   }
   // Root 0's only: a system refuses hvp before it gets here.
   [[nodiscard]] const HessianVector &hvp_sweep() const {
-    return once(latches_->hvp, hvp_,
-                [this] { return build_hvp_impl(*arena_, roots_.front()); });
+    return sweep(sweeps_->hvp,
+                 [this] { return build_hvp_impl(*arena_, roots_.front()); });
   }
   [[nodiscard]] const VectorJacobian &vjp_sweep() const {
-    return once(latches_->vjp, vjp_,
-                [this] { return build_vjp_impl(*arena_, roots_); });
+    return sweep(sweeps_->vjp,
+                 [this] { return build_vjp_impl(*arena_, roots_); });
   }
   [[nodiscard]] const Tangent &jvp_sweep() const {
-    return once(latches_->jvp, jvp_,
-                [this] { return build_jvp_impl(*arena_, roots_); });
+    return sweep(sweeps_->jvp,
+                 [this] { return build_jvp_impl(*arena_, roots_); });
   }
-  // Not saved: one forward sweep, re-derived on first ask.
   [[nodiscard]] const std::vector<NodeId> &tangent_sweep() const {
-    return once(latches_->tangent, jacobian_tangent_, [this] {
+    return sweep(sweeps_->tangent, [this] {
       return build_jacobian_tangent_impl(*arena_, derivative_);
     });
   }
 
+  // The symbol named `name`, by slot: a parameter or an implicit is an input,
+  // not a symbol.
+  [[nodiscard]] result<std::uint32_t> symbol(std::string_view name) const {
+    const auto input = arena_->lookup(name);
+    return input && input->op == OpCode::Var ? result<std::uint32_t>{input->slot}
+                                             : fail(errc::unknown_symbol);
+  }
   // e_j for a symbol named `along`, or unknown_symbol.
   [[nodiscard]] result<boost::container::small_vector<T, 64>>
   unit(std::string_view along) const {
-    if (bad_) {
-      return std::unexpected{*bad_};
-    }
-    const auto input = arena_->lookup(along);
-    if (!input || input->op != OpCode::Var) {
-      return fail(errc::unknown_symbol);
-    }
-    boost::container::small_vector<T, 64> e(symbol_count(), T{0});
-    e[input->slot] = T{1};
-    return e;
+    return alive()
+        .and_then([&] { return symbol(along); })
+        .transform([this](std::uint32_t slot) {
+          boost::container::small_vector<T, 64> e(symbol_count(), T{0});
+          e[slot] = T{1};
+          return e;
+        });
   }
 
   // The sweep `want`'s freeze reads, built before the freeze takes the lock.
@@ -1126,28 +1119,38 @@ private:
     }
   }
 
-  [[nodiscard]] static constexpr bool needs_single(Want want) noexcept {
-    return want == Want::Hessian || want == Want::Hvp;
+  // The gates, in the order a call meets them.  alive(): not poisoned.
+  // single(): one function's, which a system refuses.  orders(): second order
+  // is refused where a reachable extern supplies first partials only, rather
+  // than answered with the zeros a missing component would read.  ready() is
+  // the one gate every batch and point call passes, off the want's row.
+  [[nodiscard]] constexpr bool is_system() const noexcept {
+    return roots_.size() != 1;
   }
-  // Second order: refused where a reachable extern supplies first partials
-  // only, rather than answered with the zeros a missing component would read.
-  [[nodiscard]] result<void> orders(Want want) const {
-    const bool second = want == Want::Hessian || want == Want::Hvp ||
-                        want == Want::JacobianTangent;
-    return second && first_order_ ? fail(errc::extern_order) : result<void>{};
+  [[nodiscard]] constexpr result<void> alive() const {
+    return bad_ ? result<void>{std::unexpected{*bad_}} : result<void>{};
   }
-  [[nodiscard]] result<void> single() const {
-    if (bad_) {
-      return std::unexpected{*bad_};
-    }
-    return roots_.size() == 1 ? result<void>{} : fail(errc::not_single_output);
+  [[nodiscard]] constexpr result<void> single() const {
+    return alive().and_then([this] {
+      return is_system() ? fail(errc::not_single_output) : result<void>{};
+    });
+  }
+  [[nodiscard]] constexpr result<void> orders(Want want) const {
+    return want_info(want).second_order && first_order_
+               ? fail(errc::extern_order)
+               : result<void>{};
+  }
+  [[nodiscard]] constexpr result<void> ready(Want want) const {
+    return (want_info(want).single ? single() : alive()).and_then([&] {
+      return orders(want);
+    });
   }
 
   [[nodiscard]] auto reading() const {
-    return std::shared_lock{latches_->arena};
+    return std::shared_lock{sweeps_->arena};
   }
   [[nodiscard]] auto writing() const {
-    return std::unique_lock{latches_->arena};
+    return std::unique_lock{sweeps_->arena};
   }
   // What a sweep holds and gives up: Yield first, so the lock is never waited
   // for -- or held -- while reacquiring what Yield let go.
@@ -1166,36 +1169,43 @@ private:
     return arena_->size();
   }
 
-  // The three seeded products: the point widened by `along` -- the named
-  // inputs first, then the seeds, which is the order the ABI takes and
-  // input_column() states.
+  // The seeded products: the point widened by `along`.  A direction is one
+  // value per symbol, or per function where the want's seeds say so; the
+  // block that comes back is the want's own, dJ/dv read back through the
+  // Jacobian's pattern.
   template <Want W>
   [[nodiscard]] result<std::vector<T>>
   seeded(std::span<const T> along,
          const impl::rt_detail::CPointArg<T> auto &...args) const {
-    if (bad_) {
-      return std::unexpected{*bad_};
-    }
-    const std::size_t m = roots_.size();
-    if (along.size() != (W == Want::Vjp ? m : symbol_count())) {
-      return fail(errc::wrong_direction);
-    }
-    return point(args...).transform([this, along, m](const auto &at) {
-      boost::container::small_vector<T, 64> widened;
-      widened.reserve(at.size() + along.size());
-      impl::append(widened, at);
-      impl::append(widened, along);
-      std::vector<T> f(m);
-      boost::container::small_vector<T, 64> g(
-          W == Want::Hvp ? derivative_.partial.size() : 0);
-      std::vector<T> out(W == Want::Jvp ? m : symbol_count());
-      if constexpr (W == Want::Hvp) {
-        gather(W, widened, f, g, out);
-      } else {
-        gather(W, widened, f, out);
-      }
-      return out;
-    });
+    return point(args...).and_then(
+        [this, along](const auto &at) -> result<std::vector<T>> {
+          const std::size_t m = roots_.size();
+          const std::size_t n = symbol_count();
+          const std::size_t cells = derivative_.partial.size();
+          constexpr bool functions = want_info(W).seeds == Seeds::Functions;
+          constexpr bool jacobian = W == Want::JacobianTangent;
+          if (along.size() != (functions ? m : n)) {
+            return fail(errc::wrong_direction);
+          }
+          const auto widened = widen(at, along);
+          std::vector<T> f(m);
+          std::vector<T> out(jacobian ? cells : W == Want::Jvp ? m : n);
+          const auto swept = [&] {
+            if constexpr (W == Want::Hvp || jacobian) {
+              std::vector<T> g(cells);
+              return gather(W, widened, f, g, out);
+            } else {
+              return gather(W, widened, f, out);
+            }
+          }();
+          return swept.transform([&] {
+            if constexpr (jacobian) {
+              return dense(derivative_.pattern, out);
+            } else {
+              return std::move(out);
+            }
+          });
+        });
   }
 
   // Naming a point is not the same as giving one: a symbol no argument reaches
@@ -1261,21 +1271,22 @@ private:
                                                    addresses.end());
   }
 
-  // One point through the batch path at n = 1, not the arena walk.  Constant
-  // evaluation keeps it, having no lane.
-  constexpr void gather(Want want, std::span<const T> at, std::span<T> f,
-                        std::span<T> g = {}, std::span<T> h = {}) const {
+  // One point through the batch path at n = 1, not the arena walk, so the
+  // batch gate is the point gate.  Constant evaluation keeps it, having no
+  // lane and nothing to refuse.
+  [[nodiscard]] constexpr result<void>
+  gather(Want want, std::span<const T> at, std::span<T> f,
+         std::span<T> g = {}, std::span<T> h = {}) const {
     if !consteval {
       const auto xs = single_columns(at);
       const auto fs = single_columns(f);
       const auto gs = single_columns(g);
       const auto hs = single_columns(h);
-      (void)dispatch(want, as_columns(xs),
-                     {.values = as_columns(fs),
-                      .jacobian = as_columns(gs),
-                      .hessian = as_columns(hs)},
-                     1);
-      return;
+      return dispatch(want, as_columns(xs),
+                      {.values = as_columns(fs),
+                       .jacobian = as_columns(gs),
+                       .hessian = as_columns(hs)},
+                      1);
     }
     auto wanted = roots_;
     impl::append(wanted, derivative_.partial);
@@ -1286,6 +1297,7 @@ private:
     };
     pick(f, roots_);
     pick(g, derivative_.partial);
+    return {};
   }
 
   // Row-major rows x columns from the cells the pattern names, the zeros put
@@ -1370,15 +1382,17 @@ private:
     [[nodiscard]] std::span<const NodeId> roots() const { return ids; }
     [[nodiscard]] const Jacobian &jacobian() const { return partials; }
     [[nodiscard]] const Hessian &hessian() const {
-      return core.hessians_.front();
+      return core.sweeps_->hessians.peek().front();
     }
     [[nodiscard]] const HessianVector &hessian_vector() const {
-      return core.hvp_;
+      return core.sweeps_->hvp.peek();
     }
     [[nodiscard]] const VectorJacobian &vector_jacobian() const {
-      return core.vjp_;
+      return core.sweeps_->vjp.peek();
     }
-    [[nodiscard]] const Tangent &tangent() const { return core.jvp_; }
+    [[nodiscard]] const Tangent &tangent() const {
+      return core.sweeps_->jvp.peek();
+    }
     [[nodiscard]] std::span<const NodeId> jacobian_tangent() const {
       return product;
     }
@@ -1395,10 +1409,11 @@ private:
     // whole Jacobian has rebalanced roots to compile from.
     std::vector<NodeId> product;
     if (want == Want::JacobianTangent) {
+      const auto &tangent = sweeps_->tangent.peek();
       product = cells.kept.empty()
-                    ? jacobian_tangent_
-                    : cells.kept | std::views::transform([this](std::size_t k) {
-                        return jacobian_tangent_[k];
+                    ? tangent
+                    : cells.kept | std::views::transform([&tangent](std::size_t k) {
+                        return tangent[k];
                       }) | impl::to<std::vector<NodeId>>();
     }
     [[maybe_unused]] const bool rebalance =
@@ -1410,7 +1425,8 @@ private:
     auto compiled = swept;
 #ifdef DDX_HAS_JIT
     if (rebalance) {
-      Frozen rebalanced{*this, compile_roots_, compile_derivative_};
+      const Rebalanced &over = sweeps_->rebalanced.peek();
+      Frozen rebalanced{*this, over.roots, over.derivative};
       compiled = std::make_shared<const Graph<T>>(
           freeze_for(want, *arena_, rebalanced, contracts()));
     }
@@ -1426,10 +1442,11 @@ private:
       if (!rebalanceable(want) || setting().compiler == nullptr) {
         return false;
       }
-      std::call_once(latches_->rebalanced, [this] {
-        [[maybe_unused]] const auto held = writing();
-        compile_roots_ = detail::rebalance(*arena_, roots_);
-        compile_derivative_ = build_jacobian_impl(*arena_, compile_roots_);
+      (void)sweep(sweeps_->rebalanced, [this] {
+        Rebalanced over{.roots = detail::rebalance(*arena_, roots_),
+                        .derivative = {}};
+        over.derivative = build_jacobian_impl(*arena_, over.roots);
+        return over;
       });
       return true;
     }
@@ -1547,23 +1564,11 @@ private:
   const cl::Device *device_ = nullptr;
 #endif
   Jacobian derivative_;
-  // Each built once, on first ask, under the arena's write lock -- the sweeps
-  // append to it -- and never touched again.  Latches says which are built.
-  mutable std::vector<Hessian> hessians_;
-  mutable HessianVector hvp_;
-  mutable VectorJacobian vjp_;
-  mutable Tangent jvp_;
-  mutable std::vector<NodeId> jacobian_tangent_;
-  // A system's hessian() walk.
-  mutable std::vector<Step> walk_;
-#ifdef DDX_HAS_JIT
-  mutable std::vector<NodeId> compile_roots_;
-  mutable Jacobian compile_derivative_;
-#endif
   // unique_ptr, not shared: its destructor is constexpr, which is what keeps a
   // constant-evaluated equation destructible.  Null only there.
   std::unique_ptr<Lanes> lanes_;
-  std::unique_ptr<Latches> latches_;
+  // Every other sweep, built once on first ask under the arena's write lock.
+  std::unique_ptr<Sweeps> sweeps_;
   // Set exactly when why_not() refused, so poisoned() <=> arena_ == nullptr.
   std::optional<error> bad_{};
   bool loaded_ = false;
@@ -1638,10 +1643,7 @@ public:
       return fail(errc::wrong_direction);
     }
     return core_->point(args...).and_then([&](const auto &at) {
-      boost::container::small_vector<T, 64> widened;
-      widened.reserve(at.size() + direction.size());
-      impl::append(widened, at);
-      impl::append(widened, direction);
+      const auto widened = C::widen(at, direction);
       std::vector<T> f(core_->roots_.size());
       std::vector<T> g(kept_.size());
       std::vector<T> dg(kept_.size());

@@ -47,7 +47,7 @@ void g_of(std::span<const double> in, std::span<double> out) {
   });
 }
 
-[[nodiscard]] auto supplied(std::size_t order = 2) {
+[[nodiscard]] auto supplied(std::uint32_t order = 2) {
   return ddx::rt::equation([order] {
     const auto a = ddx::rt::var("a");
     const auto b = ddx::rt::var("b");

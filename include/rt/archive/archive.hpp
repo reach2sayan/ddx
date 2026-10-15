@@ -219,7 +219,7 @@ private:
   [[nodiscard]] static result<void> keyed(const FileHeader &head,
                                           const Snapshot<T> &snap) {
     const bool agrees = head.model_nodes == snap.model_nodes &&
-                        snap.model_nodes <= snap.nodes.size() &&
+                        snap.model_nodes <= snap.model.nodes.size() &&
                         digest(snap) == head.model_digest;
     return agrees ? result<void>{} : fail(errc::archive_corrupt);
   }

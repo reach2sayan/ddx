@@ -10,7 +10,8 @@
 
 #include <concepts> // std::equality_comparable, std::same_as
 #include <cstddef>
-#include <functional> // std::plus and friends, for the table's eval column
+#include <functional>
+#include <type_traits> // std::plus and friends, for the table's eval column
 #include <utility>
 
 namespace ddx::rt {
@@ -96,6 +97,13 @@ supported(const impl::Numeric auto &...args) noexcept {
   }
 }
 
+struct first_impl {
+  [[nodiscard]] constexpr auto operator()(const auto &a,
+                                          const auto &) const noexcept {
+    return a;
+  }
+};
+
 // One table row as a type: what to call, whether T can, and with how many
 // operands.  A leaf is the row with nothing to call.
 template <typename Fn, bool Ok, std::size_t Arity> struct Row {
@@ -133,11 +141,14 @@ dispatch(OpCode op, auto &&visit) {
     return visit(Row<void, true, 0>{});
     DDX_RT_LEAF_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
-    // Opaque to every scalar: the interpreter calls the function itself, and
-    // supports() saying no is what keeps a Taylor sweep away from one.
-#define DDX_RT_DISPATCH(fn, Op, label, arity, ...)                             \
+    // A call is opaque to every scalar: the interpreter calls the function
+    // itself, and supports() saying no is what keeps a Taylor sweep away from
+    // one.  A list's value is its first argument, at any scalar.
+#define DDX_RT_DISPATCH(fn, Op, label, arity, kind)                            \
   case OpCode::Op:                                                             \
-    return visit(Row<void, false, arity>{});
+    return visit(                                                              \
+        Row<std::conditional_t<Kind::kind == Kind::Args, first_impl, void>,    \
+            Kind::kind == Kind::Args, arity>{});
     DDX_RT_EXTERN_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
   }

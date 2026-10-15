@@ -47,7 +47,7 @@ TEST(RtSeed, WidensTheGraphArity) {
   const auto f = x + seed(b, 0);
   const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
 
-  EXPECT_EQ(graph.inputs().vars, 1u);
+  EXPECT_EQ(graph.inputs().count(ddx::rt::OpCode::Var), 1u);
   EXPECT_EQ(graph.arity(), 2u);
 }
 
@@ -59,7 +59,7 @@ TEST(RtSeed, AGraphWithoutSeedsIsUnchanged) {
   const auto f = x * y;
   const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
 
-  EXPECT_EQ(graph.arity(), graph.inputs().vars);
+  EXPECT_EQ(graph.arity(), graph.inputs().count(ddx::rt::OpCode::Var));
 }
 
 TEST(RtSeed, ADeadSeedDoesNotWiden) {

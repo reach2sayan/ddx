@@ -4,6 +4,8 @@
 #include "rt/builder.hpp"
 #include "util/config.hpp"
 
+#include <boost/container/small_vector.hpp>
+
 #include <array>
 #include <cmath> // std::fma
 #include <concepts>
@@ -128,14 +130,14 @@ template <std::size_t W, impl::Numeric U>
 // the component this node names is kept.  Opaque to every scalar but the
 // function's own, which computes_at() tells a sweep before it gets here.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
-constexpr void lanes_extern(const Builder<T> &b, const Node<T> &n, U *out,
+constexpr void lanes_extern(const Builder<T> &b, NodeId v, U *out,
                             auto &&lane) {
   if constexpr (std::same_as<U, T>) {
-    const auto [fn, component] = ExternSlot::of(n.slot);
+    const auto [fn, component] = ExternSlot::of(b[v].slot);
     const ExternEntry<T> &e = b.externs()[fn];
-    const auto args = extern_arguments(b, n.a, e.arity);
-    std::vector<T> in(args.size());
-    std::vector<T> answer(extern_components(e.arity, e.order));
+    const auto args = *extern_arguments(b, v);
+    boost::container::small_vector<T, 8> in(args.size());
+    boost::container::small_vector<T, 16> answer(e.size());
     for (std::size_t k = 0; k < W; ++k) {
       for (const auto [j, arg] : args | std::views::enumerate) {
         in[static_cast<std::size_t>(j)] = lane(arg)[k];
@@ -177,11 +179,9 @@ DDX_ALWAYS_INLINE constexpr void sweep_step(const Builder<T> &b,
     break;
   }
   case Kind::Extern:
-    detail::lanes_extern<W>(b, n, out, lane);
+    detail::lanes_extern<W>(b, i, out, lane);
     break;
-  case Kind::Args: // a list: nothing reads its value
-    std::ranges::fill_n(out, W, U{});
-    break;
+  case Kind::Args:
   case Kind::Unary:
   case Kind::Binary:
   case Kind::Ternary:

@@ -21,8 +21,6 @@
 #include <pybind11/stl/filesystem.h>
 
 #include <boost/algorithm/string/case_conv.hpp>
-#include <boost/describe/enum.hpp>
-#include <boost/mp11/algorithm.hpp>
 
 #include <algorithm>
 #include <array>
@@ -55,9 +53,7 @@ pyb::handle error_class;
   if (!current_arena) {
     fail_with(errc::no_arena);
   }
-  const auto e = kind == rt::OpCode::Var     ? rt::var(*current_arena, name)
-                 : kind == rt::OpCode::Param ? rt::param(*current_arena, name)
-                                             : rt::implicit(*current_arena, name);
+  const auto e = rt::named(*current_arena, kind, name);
   if (e.poisoned()) {
     fail_with(errc::name_clash);
   }
@@ -324,24 +320,15 @@ PYBIND11_MODULE(_ddx, m) {
         pyb::arg("cache") = pyb::none(), pyb::arg("remember") = false);
   m.def("load", &ddx::py::load_equation, pyb::arg("path"), pyb::kw_only(),
         pyb::arg("remember") = false);
-  m.def(
-      "var",
-      [](std::string_view name) {
-        return ddx::py::make_input(rt::OpCode::Var, name);
-      },
+#define DDX_PY_INPUT(fn, Op, label)                                            \
+  m.def(                                                                       \
+      #fn,                                                                     \
+      [](std::string_view name) {                                              \
+        return ddx::py::make_input(rt::OpCode::Op, name);                      \
+      },                                                                       \
       pyb::arg("name"));
-  m.def(
-      "param",
-      [](std::string_view name) {
-        return ddx::py::make_input(rt::OpCode::Param, name);
-      },
-      pyb::arg("name"));
-  m.def(
-      "implicit",
-      [](std::string_view name) {
-        return ddx::py::make_input(rt::OpCode::Implicit, name);
-      },
-      pyb::arg("name"));
+  DDX_RT_NAMED_TABLE(DDX_PY_INPUT)
+#undef DDX_PY_INPUT
   m.def(
       "closes",
       [](const PyExpression &z, const PyExpression &f) { closes(z, f); },
@@ -409,11 +396,11 @@ PYBIND11_MODULE(_ddx, m) {
 
   pyb::native_enum<PyEquation::Want> want{m, "Want", "enum.IntEnum",
                                           "Which blocks a bound call fills."};
-  boost::mp11::mp_for_each<
-      boost::describe::describe_enumerators<PyEquation::Want>>([&](auto D) {
-    const std::string name = boost::algorithm::to_upper_copy(std::string{D.name});
-    want.value(name.c_str(), D.value);
-  });
+  for (const rt::Want w : rt::want_values) {
+    const std::string name =
+        boost::algorithm::to_upper_copy(std::string{rt::name_of(w)});
+    want.value(name.c_str(), w);
+  }
   want.finalize();
 
   // Bound once, called repeatedly: `x` is written into and the blocks are read

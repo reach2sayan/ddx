@@ -75,18 +75,14 @@ public:
   PyEquation(const std::shared_ptr<rt::Builder<double>> &arena,
              std::vector<rt::NodeId> roots, bool remember = false)
       : PyCore{std::make_unique<rt::Builder<double>>(*arena),
-               std::move(roots)},
-        symbols_{*sound().symbols()}, inputs_{*inputs()} {
-    take_cache(PyCache{remember});
-  }
+               std::move(roots), PyCache{remember}},
+        symbols_{*sound().symbols()}, inputs_{*inputs()} {}
 
   // From a file: the sweeps it carries arrive built.  Binding an extern
   // function by name has no Python spelling, so a file naming one is refused.
   explicit PyEquation(rt::Verified<double> snap, bool remember = false)
-      : PyCore{std::move(snap).rebuild()}, symbols_{*sound().symbols()},
-        inputs_{*inputs()} {
-    take_cache(PyCache{remember});
-  }
+      : PyCore{std::move(snap).rebuild(), PyCache{remember}},
+        symbols_{*sound().symbols()}, inputs_{*inputs()} {}
 
   // The same struct the C++ equations fill: one serialiser, and what the cache
   // path in module.cpp writes and keys on.

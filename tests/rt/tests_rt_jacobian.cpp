@@ -767,9 +767,9 @@ TEST(RtJacobian, BothArmsOfASelectOverASharedSubexpression) {
 TEST(RtJacobian, SharedArmsThroughTheLoaderStillSum) {
   using ddx::rt::Node;
   ddx::rt::Snapshot<double> snap;
-  snap.symbols = {"x", "y"};
+  snap.model.names[*ddx::rt::named_index(ddx::rt::OpCode::Var)] = {"x", "y"};
   // select(x < y, x, x), which is x -- and which make() would never form.
-  snap.nodes = {
+  snap.model.nodes = {
       Node<double>{.op = ddx::rt::OpCode::Var, .slot = 0},
       Node<double>{.op = ddx::rt::OpCode::Var, .slot = 1},
       Node<double>{.op = ddx::rt::OpCode::Lt, .a = 0, .b = 1},
@@ -777,7 +777,7 @@ TEST(RtJacobian, SharedArmsThroughTheLoaderStillSum) {
   snap.roots = {3};
   snap.model_nodes = 4;
   // What a file carries beside the model: the loader admits nothing less.
-  snap.nodes.push_back(
+  snap.model.nodes.push_back(
       Node<double>{.op = ddx::rt::OpCode::Const, .value = 0.0});
   snap.jacobian = {.value = {3},
                    .partial = {},

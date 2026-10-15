@@ -7,8 +7,10 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -25,11 +27,16 @@ namespace ddx::rt {
 // is a named input present in every lane; an Implicit, one the caller solved
 // for; a Seed, a seeded product's direction.  The last cell is what the slot
 // is: nothing, a place among the named inputs of that kind, or a position.
+// The named kinds are their own table, in the order a point passes them: it
+// is what the Builder keeps one name list per and what var()'s spellings,
+// the Python factories and the column layout are generated from.
+#define DDX_RT_NAMED_TABLE(X, ...)                                             \
+  X(var, Var, "var" __VA_OPT__(, ) __VA_ARGS__)                                \
+  X(param, Param, "param" __VA_OPT__(, ) __VA_ARGS__)                          \
+  X(implicit, Implicit, "implicit" __VA_OPT__(, ) __VA_ARGS__)
 #define DDX_RT_LEAF_TABLE(X)                                                   \
   X(constant, Const, "const", Literal)                                         \
-  X(var, Var, "var", Named)                                                    \
-  X(param, Param, "param", Named)                                              \
-  X(implicit, Implicit, "implicit", Named)                                     \
+  DDX_RT_NAMED_TABLE(X, Named)                                                 \
   X(seed, Seed, "seed", Positional)
 
 // The last cell is the ops/adjoints.hpp descriptor carrying the reverse-mode
@@ -221,27 +228,23 @@ template <impl::Numeric T>
   return !is_leaf(op) && !is_extern(op);
 }
 
-// Which kind of named input a leaf is, in table order: what the Builder keeps
-// one name list per, and the column order the named inputs are passed in.
+// Which kind of named input a leaf is, in table order.
 [[nodiscard]] constexpr std::optional<std::size_t>
 named_index(OpCode op) noexcept {
   std::size_t i = 0;
-#define DDX_RT_NAMED(fn, Op, label, role)                                      \
-  if constexpr (detail::Role::role == detail::Role::Named) {                   \
-    if (op == OpCode::Op) {                                                    \
-      return i;                                                                \
-    }                                                                          \
-    ++i;                                                                       \
-  }
-  DDX_RT_LEAF_TABLE(DDX_RT_NAMED)
+#define DDX_RT_NAMED(fn, Op, label)                                            \
+  if (op == OpCode::Op) {                                                      \
+    return i;                                                                  \
+  }                                                                            \
+  ++i;
+  DDX_RT_NAMED_TABLE(DDX_RT_NAMED)
 #undef DDX_RT_NAMED
   return std::nullopt;
 }
 inline constexpr std::size_t named_count = [] {
   std::size_t n = 0;
-#define DDX_RT_NAMED(fn, Op, label, role)                                      \
-  n += detail::Role::role == detail::Role::Named;
-  DDX_RT_LEAF_TABLE(DDX_RT_NAMED)
+#define DDX_RT_NAMED(...) ++n;
+  DDX_RT_NAMED_TABLE(DDX_RT_NAMED)
 #undef DDX_RT_NAMED
   return n;
 }();
@@ -266,36 +269,18 @@ struct ExternSlot {
   }
 };
 
-// The answer's length for a function of `arity` arguments that fills `order`
-// orders of partials.
-[[nodiscard]] constexpr std::size_t extern_components(std::size_t arity,
-                                                      std::size_t order) {
-  return 1 + (order >= 1 ? arity : 0) +
-         (order >= 2 ? arity * (arity + 1) / 2 : 0);
-}
-// Where d/dx_l (component 1 + l) and d2/dx_l dx_m (l <= m) sit.
-[[nodiscard]] constexpr std::uint32_t first_partial(std::size_t l) {
-  return static_cast<std::uint32_t>(1 + l);
-}
-[[nodiscard]] constexpr std::uint32_t
-second_partial(std::size_t arity, std::size_t l, std::size_t m) {
-  if (m < l) {
-    std::swap(l, m);
-  }
-  return static_cast<std::uint32_t>(1 + arity + l * arity - l * (l - 1) / 2 +
-                                    (m - l));
-}
 
 // How many input columns of each kind a call passes, in the order it passes
-// them: symbols, parameters, implicits, then a seeded product's direction.
+// them: the named kinds in table order, then a seeded product's direction.
 struct Inputs {
-  std::size_t vars = 0;
-  std::size_t params = 0;
-  std::size_t implicits = 0;
+  std::array<std::size_t, named_count> by_kind{};
   std::size_t seeds = 0;
 
+  [[nodiscard]] constexpr std::size_t count(OpCode op) const noexcept {
+    return by_kind[*named_index(op)];
+  }
   [[nodiscard]] constexpr std::size_t named() const noexcept {
-    return vars + params + implicits;
+    return std::ranges::fold_left(by_kind, 0uz, std::plus<>{});
   }
   [[nodiscard]] constexpr std::size_t total() const noexcept {
     return named() + seeds;
@@ -303,20 +288,15 @@ struct Inputs {
   constexpr bool operator==(const Inputs &) const = default;
 };
 
-// Which column of `xs` a leaf reads.  Written once, because the interpreter,
-// codegen and the ABI have to agree.
+// Which column of `xs` a leaf reads: its kind's columns start after every
+// kind before it.  Written once, because the interpreter, codegen and the ABI
+// have to agree.
 [[nodiscard]] constexpr std::size_t input_column(const Inputs &in, OpCode op,
                                                  std::uint32_t slot) noexcept {
-  switch (op) {
-  case OpCode::Var:
-    return slot;
-  case OpCode::Param:
-    return in.vars + slot;
-  case OpCode::Implicit:
-    return in.vars + in.params + slot;
-  default:
-    return in.named() + slot;
-  }
+  const auto before = named_index(op).value_or(named_count);
+  return std::ranges::fold_left(std::span{in.by_kind}.first(before), 0uz,
+                                std::plus<>{}) +
+         slot;
 }
 
 } // namespace ddx::rt

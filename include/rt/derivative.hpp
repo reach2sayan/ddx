@@ -109,48 +109,36 @@ namespace detail {
 // through z, and kept on the Builder.
 struct Implicits {
   template <impl::Numeric T>
-  [[nodiscard]] static constexpr std::vector<NodeId>
+  [[nodiscard]] static constexpr const std::vector<NodeId> &
   row(Builder<T> &b, std::uint32_t slot) {
-    b.closure_rows_.resize(b.closures().size());
-    if (b.closure_rows_[slot].empty()) {
+    auto &row = b.closure_rows_[slot];
+    if (!row) {
       const auto f = build_reverse_jacobian(b, b.closures()[slot], false);
       const RTExpression<T> fz{b, f.implicit[slot]};
-      b.closure_rows_[slot] =
-          f.partial | std::views::transform([&](NodeId fs) {
-            return b.is_constant(fs, T{0})
-                       ? fs
-                       : (-(RTExpression<T>{b, fs} / fz)).id(b);
-          }) |
-          impl::to<std::vector<NodeId>>();
+      row = f.partial | std::views::transform([&](NodeId fs) {
+              return b.is_constant(fs, T{0})
+                         ? fs
+                         : (-(RTExpression<T>{b, fs} / fz)).id(b);
+            }) |
+            impl::to<std::vector<NodeId>>();
     }
-    return b.closure_rows_[slot];
+    return *row;
   }
 };
 
-// Which component of an extern's answer is the derivative of `component` in
-// argument `l`: a first partial off the value, a second off a first.  Nothing
-// past that: no call ddx answers asks for a third, and an order-1 function is
-// refused before a second-order sweep reaches it.
-template <impl::Numeric T>
-[[nodiscard]] constexpr std::optional<std::uint32_t>
-up_from(const ExternEntry<T> &e, std::uint32_t component, std::size_t l) {
-  if (component == 0) {
-    return first_partial(l);
+// The chain rule's one walk through a function that differentiated itself:
+// each argument of the extern node `v` with the component one order up, in
+// argument order, as far as the function's order reaches.  Both sweeps take
+// it, and differ only in what they do with the pair.
+template <impl::Numeric T, typename Sink>
+constexpr void extern_partials(Builder<T> &b, NodeId v, Sink &&sink) {
+  const auto [fn, at] = ExternSlot::of(b[v].slot);
+  const ExternRecord &e = b.externs()[fn];
+  for (const auto [l, arg] : *extern_arguments(b, v) | std::views::enumerate) {
+    if (const auto up = e.up(at, static_cast<std::size_t>(l))) {
+      sink(arg, RTExpression<T>{b, b.extern_component(v, *up)});
+    }
   }
-  if (component <= e.arity && e.order >= 2) {
-    return second_partial(e.arity, component - 1, l);
-  }
-  return std::nullopt;
-}
-
-// The extern node a component names: the same function, the same argument
-// list, another slot.
-template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T>
-component(Builder<T> &b, std::uint32_t fn, std::uint32_t c, NodeId args) {
-  return RTExpression<T>{
-      b, Externs::node(b, OpCode::ExternD, {.function = fn, .component = c},
-                       args)};
 }
 
 // Whether a function the roots -- or an implicit's residual -- reach supplies
@@ -269,19 +257,11 @@ template <impl::Numeric T>
     case Kind::Input:
     case Kind::Args: // never reached: a call hands adjoints to its arguments
       break;
-    case Kind::Extern: {
-      // The chain rule through a function that differentiated itself: each
-      // argument gets the adjoint times the component one order up.
-      const auto [fn, at] = ExternSlot::of(node.slot);
-      const ExternEntry<T> e = b.externs()[fn];
-      for (const auto [l, arg] :
-           extern_arguments(b, node.a, e.arity) | std::views::enumerate) {
-        if (const auto up = detail::up_from(e, at, static_cast<std::size_t>(l))) {
-          add_to(arg, g, a * detail::component(b, fn, *up, node.a));
-        }
-      }
+    case Kind::Extern:
+      detail::extern_partials(b, v, [&](NodeId arg, const RTExpression<T> &c) {
+        add_to(arg, g, a * c);
+      });
       break;
-    }
     case Kind::Unary:
       add_to(node.a, g,
              detail::contribution(node.op, a, expr(node.a), expr(v)));
@@ -305,7 +285,7 @@ template <impl::Numeric T>
     }
   }
 
-  const auto implicits = b.inputs().implicits;
+  const auto implicits = b.inputs().count(OpCode::Implicit);
   if (ift) {
     for (const auto slot : std::views::iota(0u, static_cast<std::uint32_t>(
                                                     implicits))) {
@@ -353,21 +333,17 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
     const auto node = b[v]; // by value: building below may reallocate
     switch (kind_of(node.op)) {
     case Kind::Extern: {
-      const auto [fn, at] = ExternSlot::of(node.slot);
-      const ExternEntry<T> e = b.externs()[fn];
       RTExpression<T> sum{0};
-      for (const auto [l, arg] :
-           extern_arguments(b, node.a, e.arity) | std::views::enumerate) {
-        if (const auto up = detail::up_from(e, at, static_cast<std::size_t>(l))) {
-          sum = sum + detail::component(b, fn, *up, node.a) *
-                          RTExpression<T>{b, d[arg]};
-        }
-      }
+      detail::extern_partials(b, v, [&](NodeId arg, const RTExpression<T> &c) {
+        sum = sum + c * RTExpression<T>{b, d[arg]};
+      });
       d[v] = sum.id(b);
       break;
     }
+    case Kind::Args: // a list's value is its first argument
+      d[v] = d[node.a];
+      break;
     case Kind::Const:
-    case Kind::Args: // a list has no value to move
       d[v] = b.constant(T{0});
       break;
     case Kind::Input:

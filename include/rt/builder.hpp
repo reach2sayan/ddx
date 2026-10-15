@@ -7,6 +7,7 @@
 #include "util/error.hpp"
 #include "util/ranges.hpp"
 
+#include <boost/container/small_vector.hpp>
 #include <boost/describe/class.hpp>
 
 #include <algorithm>
@@ -36,27 +37,20 @@ template <impl::Numeric T> class RTExpression;
 template <impl::Numeric T = double> class Builder;
 template <impl::Numeric T> class Verified;
 
-// Befriended by Builder: naming an input is var()'s and param()'s alone.
+// Befriended by Builder: naming an input is this one primitive's alone, and
+// var(), param() and implicit() are its spellings.
 template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> var(Builder<T> &b,
-                                            std::string_view name);
-template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> param(Builder<T> &b,
+[[nodiscard]] constexpr RTExpression<T> named(Builder<T> &b, OpCode op,
                                               std::string_view name);
-template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> implicit(Builder<T> &b,
-                                                 std::string_view name);
 template <impl::Numeric T>
 constexpr void closes(const RTExpression<T> &z, const RTExpression<T> &f);
 namespace detail {
 struct Implicits;
 }
 
-// A function the caller supplies: `fn(in, out)` reads `arity` arguments and
-// writes the value, then -- `order` deep -- the first partials and the upper
-// triangle of the second, row-major.  Shared, so a frozen graph and a compiled
-// kernel keep it alive as long as they can call it; null in an arena restored
-// from a file until the caller binds it by name.
+// A function the caller supplies: `fn(in, out)` reads the arguments and writes
+// the answer in ExternRecord's layout.  Shared, so a frozen graph and a
+// compiled kernel keep it alive as long as they can call it.
 template <impl::Numeric T>
 using ExternFn = std::function<void(std::span<const T>, std::span<T>)>;
 
@@ -64,30 +58,65 @@ using ExternFn = std::function<void(std::span<const T>, std::span<T>)>;
 template <impl::Numeric T>
 using ExternFns = std::map<std::string, ExternFn<T>, std::less<>>;
 
-template <impl::Numeric T> struct ExternEntry {
+// What extern_fn() registers and a file keeps: a name to bind by, how many
+// arguments, and how many orders of partials the function fills -- 1 or 2,
+// since no call ddx answers asks for a third.  The answer's layout is this
+// type's alone: 0 the value, 1..k the first partials, then the upper triangle
+// of the second, row-major.
+struct ExternRecord {
   std::string name;
-  std::uint32_t arity = 0;
-  std::uint32_t order = 0;
-  std::shared_ptr<const ExternFn<T>> fn;
+  std::uint32_t arity = 1;
+  std::uint32_t order = 2;
+
+  [[nodiscard]] constexpr bool valid() const noexcept {
+    return arity >= 1 && order >= 1 && order <= 2;
+  }
+  // The answer's length.
+  [[nodiscard]] constexpr std::size_t size() const noexcept {
+    return 1 + arity + (order >= 2 ? arity * (arity + 1) / 2 : 0);
+  }
+  [[nodiscard]] constexpr std::uint32_t first(std::size_t l) const noexcept {
+    return static_cast<std::uint32_t>(1 + l);
+  }
+  [[nodiscard]] constexpr std::uint32_t second(std::size_t l,
+                                               std::size_t m) const noexcept {
+    if (m < l) {
+      std::swap(l, m);
+    }
+    return static_cast<std::uint32_t>(1 + arity + l * arity - l * (l - 1) / 2 +
+                                      (m - l));
+  }
+  // Which component is d/dx_l of `component`: a first partial off the value,
+  // a second off a first.  Nothing past that: an order-1 function is refused
+  // before a second-order sweep reaches it.
+  [[nodiscard]] constexpr std::optional<std::uint32_t>
+  up(std::uint32_t component, std::size_t l) const noexcept {
+    if (component == 0) {
+      return first(l);
+    }
+    if (component <= arity && order >= 2) {
+      return second(component - 1, l);
+    }
+    return std::nullopt;
+  }
+  BOOST_DESCRIBE_CLASS(ExternRecord, (), (name, arity, order), (), ())
 };
 
-// An extern node's arguments, off any source that answers op_of and operands:
-// the list ExternArgs(first, rest) spells, `arity` long.
-[[nodiscard]] constexpr std::vector<NodeId>
-extern_arguments(const auto &source, NodeId args, std::size_t arity) {
-  std::vector<NodeId> out;
-  out.reserve(arity);
-  for (; arity > 1; --arity) {
-    const auto [first, rest, unused] = source.operands(args);
-    out.push_back(first);
-    args = rest;
-  }
-  out.push_back(args);
-  return out;
-}
+// The record and the function itself.  Null in an arena restored from a file
+// until the caller binds it by name.
+template <impl::Numeric T> struct ExternEntry : ExternRecord {
+  std::shared_ptr<const ExternFn<T>> fn;
+  // The record alone: the function is the one thing a file cannot carry.
+  BOOST_DESCRIBE_CLASS(ExternEntry, (ExternRecord), (), (), ())
+};
 
+template <impl::Numeric T> class ExternFunction;
+template <impl::Numeric T>
+[[nodiscard]] ExternFunction<T> extern_fn(Builder<T> &b, ExternRecord record,
+                                          std::type_identity_t<ExternFn<T>> fn);
 namespace detail {
-struct Externs;
+template <impl::Numeric T, typename Sink>
+constexpr void extern_partials(Builder<T> &b, NodeId v, Sink &&sink);
 }
 
 // A named input: which kind of leaf, and its place among that kind.
@@ -177,6 +206,61 @@ template <impl::Numeric T> struct TwoOperandNode {
 // node in every arena.
 static_assert(sizeof(Node<double>) == sizeof(detail::TwoOperandNode<double>));
 
+// Everything a model is: what the Builder holds, a file keeps, and the model
+// digest keys on -- one described list, so adding to it reaches all three.
+template <impl::Numeric T> struct Model {
+  // Each named kind's names in declaration order, which is slot order.
+  std::array<std::vector<std::string>, named_count> names;
+  std::vector<NodeId> closures; // the residual each implicit is a root of
+  std::vector<ExternEntry<T>> externs;
+  std::vector<Node<T>> nodes;
+  BOOST_DESCRIBE_CLASS(Model, (), (names, closures, externs, nodes), (), ())
+
+  // The CNodeSource half, which the Builder lends and the frozen Graph
+  // answers as well.
+  [[nodiscard]] constexpr const Node<T> &operator[](NodeId v) const {
+    return nodes[v];
+  }
+  [[nodiscard]] constexpr OpCode op_of(NodeId v) const { return nodes[v].op; }
+  [[nodiscard]] constexpr std::array<NodeId, 3> operands(NodeId v) const {
+    return {nodes[v].a, nodes[v].b, nodes[v].c};
+  }
+  [[nodiscard]] constexpr std::size_t size() const { return nodes.size(); }
+};
+
+// An extern node's arguments, off any source that answers operands and
+// externs: the list ExternArgs(first, rest) spells, the function's arity long,
+// a list of one being the argument itself.  Nothing where the slot names no
+// function or a hop is not a list -- what a file's checker asks, and what
+// every other caller dereferences.
+[[nodiscard]] std::optional<boost::container::small_vector<NodeId, 8>>
+extern_arguments(const auto &s, NodeId v) {
+  // The function table: the Model holds it, the Builder and the Graph lend it.
+  const auto externs = [&s] {
+    if constexpr (requires { s.externs(); }) {
+      return s.externs();
+    } else {
+      return std::span{s.externs};
+    }
+  }();
+  const auto [fn, component] = ExternSlot::of(s[v].slot);
+  if (fn >= externs.size()) {
+    return std::nullopt;
+  }
+  boost::container::small_vector<NodeId, 8> out;
+  NodeId args = s.operands(v)[0];
+  for (auto left = externs[fn].arity; left > 1; --left) {
+    if (kind_of(s.op_of(args)) != Kind::Args) {
+      return std::nullopt;
+    }
+    const auto [first, rest, unused] = s.operands(args);
+    out.push_back(first);
+    args = rest;
+  }
+  out.push_back(args);
+  return out;
+}
+
 // Nodes are interned as they are formed, so an id *is* the identity of a
 // subexpression -- where the compile-time side compares types.
 template <impl::Numeric T> class Builder {
@@ -218,52 +302,62 @@ public:
   }
 
   [[nodiscard]] constexpr const Node<T> &operator[](NodeId id) const {
-    return nodes_[id];
+    return model_[id];
   }
-
-  // The CNodeSource half, which the frozen Graph answers as well.
   [[nodiscard]] constexpr OpCode op_of(NodeId id) const {
-    return nodes_[id].op;
+    return model_.op_of(id);
   }
   [[nodiscard]] constexpr std::array<NodeId, 3> operands(NodeId id) const {
-    return {nodes_[id].a, nodes_[id].b, nodes_[id].c};
+    return model_.operands(id);
   }
-  [[nodiscard]] constexpr std::size_t size() const { return nodes_.size(); }
+  [[nodiscard]] constexpr std::size_t size() const { return model_.size(); }
   [[nodiscard]] constexpr std::span<const Node<T>> nodes() const {
-    return nodes_;
+    return model_.nodes;
   }
   // Each kind's names in declaration order, which is slot order: the order a
   // positional point is read in and every result is laid out in.
+  [[nodiscard]] constexpr const Model<T> &model() const { return model_; }
+  [[nodiscard]] constexpr const std::vector<std::string> &
+  names(OpCode op) const {
+    return model_.names[*named_index(op)];
+  }
   [[nodiscard]] constexpr const std::vector<std::string> &symbols() const {
-    return vars_.names;
+    return names(OpCode::Var);
   }
   [[nodiscard]] constexpr const std::vector<std::string> &params() const {
-    return params_.names;
+    return names(OpCode::Param);
   }
   [[nodiscard]] constexpr const std::vector<std::string> &implicits() const {
-    return implicits_.names;
+    return names(OpCode::Implicit);
+  }
+  // Every named input in column order: the kinds in table order, each in
+  // declaration order.
+  [[nodiscard]] constexpr std::vector<std::string> names() const {
+    return model_.names | std::views::join |
+           impl::to<std::vector<std::string>>();
   }
   // The residual whose root each implicit input is, by slot; no_node for one
   // nothing closed.  And the first misuse of closes(), which no expression
   // can carry, for the equation to refuse with.
   [[nodiscard]] constexpr std::span<const NodeId> closures() const {
-    return closures_;
+    return model_.closures;
   }
   [[nodiscard]] constexpr std::optional<errc> broken() const {
     return broken_;
   }
   [[nodiscard]] constexpr std::span<const ExternEntry<T>> externs() const {
-    return externs_;
+    return model_.externs;
   }
   [[nodiscard]] constexpr Inputs inputs() const {
-    return {.vars = vars_.names.size(),
-            .params = params_.names.size(),
-            .implicits = implicits_.names.size()};
+    Inputs in;
+    std::ranges::transform(model_.names, in.by_kind.begin(),
+                           &std::vector<std::string>::size);
+    return in;
   }
 
   // The leaf a named input is.
   [[nodiscard]] constexpr NodeId leaf(OpCode op, std::uint32_t slot) const {
-    return named(op).ids[slot];
+    return ids_[*named_index(op)][slot];
   }
 
   // Which input `name` is, if any.
@@ -276,41 +370,39 @@ public:
   }
 
   [[nodiscard]] constexpr bool is_constant(NodeId id, const T &v) const {
-    if (nodes_[id].op != OpCode::Const) {
+    if (model_.nodes[id].op != OpCode::Const) {
       return false;
     }
     if constexpr (std::equality_comparable<T>) {
-      return nodes_[id].value == v;
+      return model_.nodes[id].value == v;
     } else {
       return false;
     }
   }
 
 private:
-  // One namespace for every named input: a name is a symbol or a parameter,
-  // never both, and naming it again hands back the same leaf.  A new name takes
-  // the next slot of its kind and moves nothing already built.  no_node is a
-  // name already taken by the other kind, which var() and param() poison.
+  // One namespace for every named input: a name is one kind of input, never
+  // two, and naming it again hands back the same leaf.  A new name takes the
+  // next slot of its kind and moves nothing already built.  no_node is a name
+  // already taken by another kind, which named() poisons.
   template <impl::Numeric U>
-  friend constexpr RTExpression<U> var(Builder<U> &, std::string_view);
-  template <impl::Numeric U>
-  friend constexpr RTExpression<U> param(Builder<U> &, std::string_view);
-  template <impl::Numeric U>
-  friend constexpr RTExpression<U> implicit(Builder<U> &, std::string_view);
+  friend constexpr RTExpression<U> named(Builder<U> &, OpCode,
+                                         std::string_view);
   [[nodiscard]] constexpr NodeId input(OpCode op, std::string_view name) {
     const auto at = std::ranges::lower_bound(by_name_, name, {}, name_of());
     if (at != by_name_.end() && name_of()(*at) == name) {
-      return at->op == op ? named(op).ids[at->slot] : no_node;
+      return at->op == op ? leaf(op, at->slot) : no_node;
     }
-    Named &kind = named(op);
-    const auto slot = static_cast<std::uint32_t>(kind.names.size());
-    kind.names.emplace_back(name);
-    kind.ids.push_back(intern({.op = op, .slot = slot}));
+    const auto k = *named_index(op);
+    const auto slot = static_cast<std::uint32_t>(model_.names[k].size());
+    model_.names[k].emplace_back(name);
+    ids_[k].push_back(intern({.op = op, .slot = slot}));
     by_name_.insert(at, {.op = op, .slot = slot});
     if (op == OpCode::Implicit) {
-      closures_.push_back(no_node);
+      model_.closures.push_back(no_node);
+      closure_rows_.emplace_back();
     }
-    return kind.ids.back();
+    return ids_[k].back();
   }
 
   // Implicit `z` is a root of `f`.  A misuse is kept rather than thrown: the
@@ -318,39 +410,59 @@ private:
   template <impl::Numeric U>
   friend constexpr void closes(const RTExpression<U> &, const RTExpression<U> &);
   constexpr void close(NodeId z, NodeId f) {
-    if (z == no_node || nodes_[z].op != OpCode::Implicit) {
+    if (z == no_node || model_.nodes[z].op != OpCode::Implicit) {
       broken_ = broken_.value_or(errc::not_implicit);
-    } else if (closures_[nodes_[z].slot] != no_node) {
+    } else if (model_.closures[model_.nodes[z].slot] != no_node) {
       broken_ = broken_.value_or(errc::closed_twice);
     } else {
-      closures_[nodes_[z].slot] = f;
+      model_.closures[model_.nodes[z].slot] = f;
     }
   }
 
-  // Registering an extern, forming its nodes and binding a restored one's
-  // function: the extern factory's and the sweeps' alone.
-  friend struct detail::Externs;
+  // Registering an extern is extern_fn()'s alone; its index is what the call
+  // names.
+  template <impl::Numeric U>
+  friend ExternFunction<U> extern_fn(Builder<U> &, ExternRecord,
+                                     std::type_identity_t<ExternFn<U>>);
   constexpr std::optional<std::uint32_t> add_extern(ExternEntry<T> e) {
-    if (!ExternSlot::fits(externs_.size(), extern_components(e.arity, e.order))) {
+    if (!ExternSlot::fits(model_.externs.size(), e.size())) {
       return std::nullopt;
     }
-    externs_.push_back(std::move(e));
-    return static_cast<std::uint32_t>(externs_.size() - 1);
+    model_.externs.push_back(std::move(e));
+    return static_cast<std::uint32_t>(model_.externs.size() - 1);
   }
-  constexpr NodeId extern_node(OpCode op, ExternSlot slot, NodeId args) {
-    return intern({.op = op, .a = args, .slot = slot.packed()});
+
+  // The call: the one place the list is formed, from the back, a list of one
+  // being the argument itself.  The function's value; the sweeps ask for the
+  // other components.
+  template <impl::Numeric U> friend class ExternFunction;
+  constexpr NodeId extern_call(std::uint32_t function,
+                               std::span<const NodeId> args) {
+    NodeId list = args.back();
+    for (const NodeId a : args | std::views::reverse | std::views::drop(1)) {
+      list = intern({.op = OpCode::ExternArgs, .a = a, .b = list});
+    }
+    return intern({.op = OpCode::Extern,
+                   .a = list,
+                   .slot = ExternSlot{.function = function}.packed()});
   }
-  constexpr NodeId extern_args(NodeId first, NodeId rest) {
-    return intern({.op = OpCode::ExternArgs, .a = first, .b = rest});
-  }
-  constexpr void bind(std::size_t i, std::shared_ptr<const ExternFn<T>> fn) {
-    externs_[i].fn = std::move(fn);
+  // Another component of the call `v` is: the same function and list,
+  // another slot.
+  template <impl::Numeric U, typename Sink>
+  friend constexpr void detail::extern_partials(Builder<U> &, NodeId, Sink &&);
+  constexpr NodeId extern_component(NodeId v, std::uint32_t component) {
+    const Node<T> n = model_[v]; // by value: intern() may reallocate
+    return intern({.op = OpCode::ExternD,
+                   .a = n.a,
+                   .slot = ExternSlot{.function = ExternSlot::of(n.slot).function,
+                                      .component = component}
+                               .packed()});
   }
 
   // dz/ds for each implicit, by the implicit-function theorem, built the first
   // time a sweep reaches the leaf and kept: derivative.hpp's alone.
   friend struct detail::Implicits;
-  std::vector<std::vector<NodeId>> closure_rows_;
+  std::vector<std::optional<std::vector<NodeId>>> closure_rows_;
 
   // A seed slot is given rather than looked up.  Interning leaves one node per
   // slot.
@@ -365,32 +477,30 @@ private:
   // The one caller holds a snapshot Sound has passed, which is what checks
   // what this cannot.
   friend class Verified<T>;
-  constexpr void restore(std::vector<Node<T>> nodes,
-                         std::vector<std::string> symbols,
-                         std::vector<std::string> params,
-                         std::vector<std::string> implicits,
-                         std::vector<NodeId> closures,
-                         std::vector<ExternEntry<T>> externs) {
-    nodes_ = std::move(nodes);
-    closures_ = std::move(closures);
-    externs_ = std::move(externs);
-    vars_.names = std::move(symbols);
-    params_.names = std::move(params);
-    implicits_.names = std::move(implicits);
+  constexpr void restore(Model<T> model) {
+    model_ = std::move(model);
+    reindex();
+  }
+  // The functions a file could not carry, by name; one the lookup lacks stays
+  // null, for the equation to refuse.
+  constexpr void bind(auto &&lookup) {
+    for (ExternEntry<T> &e : model_.externs) {
+      e.fn = lookup(std::string_view{e.name});
+    }
+  }
+
+  // The leaf ids and the name index, off the names and the nodes.  Interning
+  // leaves exactly one leaf per name, so one walk fills every entry.
+  constexpr void reindex() {
     by_name_.clear();
-    for (const OpCode op : {OpCode::Var, OpCode::Param, OpCode::Implicit}) {
-      Named &kind = named(op);
-      // Interning leaves exactly one leaf per name, so this walk fills every
-      // entry.
-      kind.ids.assign(kind.names.size(), no_node);
-      for (const auto [id, n] : nodes_ | std::views::enumerate) {
-        if (n.op == op) {
-          kind.ids[n.slot] = static_cast<NodeId>(id);
-        }
-      }
-      for (const std::uint32_t slot :
-           std::views::iota(0u, static_cast<std::uint32_t>(kind.ids.size()))) {
-        by_name_.push_back({.op = op, .slot = slot});
+    closure_rows_.assign(model_.closures.size(), std::nullopt);
+    for (const auto [names, ids] : std::views::zip(model_.names, ids_)) {
+      ids.assign(names.size(), no_node);
+    }
+    for (const auto [id, n] : model_.nodes | std::views::enumerate) {
+      if (const auto k = named_index(n.op)) {
+        ids_[*k][n.slot] = static_cast<NodeId>(id);
+        by_name_.push_back({.op = n.op, .slot = n.slot});
       }
     }
     std::ranges::sort(by_name_, {}, name_of());
@@ -452,9 +562,9 @@ private:
     // bit_ceil, not doubling: the size is the invariant the mask needs, and
     // half full is where linear probing starts to degrade.
     table_.assign(
-        std::bit_ceil(std::max<std::size_t>(64, 2 * (nodes_.size() + 1))),
+        std::bit_ceil(std::max<std::size_t>(64, 2 * (model_.nodes.size() + 1))),
         no_node);
-    for (const auto [id, n] : nodes_ | std::views::enumerate) {
+    for (const auto [id, n] : model_.nodes | std::views::enumerate) {
       auto run = probe(hash_of(n));
       table_[*std::ranges::find_if(run, [this](std::size_t i) {
         return table_[i] == no_node;
@@ -463,20 +573,20 @@ private:
   }
 
   constexpr NodeId intern(const Node<T> &n) {
-    if ((nodes_.size() + 1) * 2 > table_.size()) {
+    if ((model_.nodes.size() + 1) * 2 > table_.size()) {
       rehash();
     }
     // The run stops at whichever comes first, the node itself or the empty
     // slot it would take.
     auto run = probe(hash_of(n));
     const std::size_t i = *std::ranges::find_if(run, [this, &n](std::size_t k) {
-      return table_[k] == no_node || same(nodes_[table_[k]], n);
+      return table_[k] == no_node || same(model_.nodes[table_[k]], n);
     });
     if (table_[i] != no_node) {
       return table_[i];
     }
-    const auto id = static_cast<NodeId>(nodes_.size());
-    nodes_.push_back(n);
+    const auto id = static_cast<NodeId>(model_.nodes.size());
+    model_.nodes.push_back(n);
     table_[i] = id;
     return id;
   }
@@ -529,7 +639,7 @@ private:
     case Pred::BOverA:
       return cancel_quotient(b, a).has_value();
     case Pred::NegatedA:
-      return a != no_node && nodes_[a].op == OpCode::Neg;
+      return a != no_node && model_.nodes[a].op == OpCode::Neg;
     }
     std::unreachable();
   }
@@ -551,7 +661,7 @@ private:
     case Take::NumeratorOfB:
       return cancel_quotient(b, a);
     case Take::OperandOfA:
-      return nodes_[a].a;
+      return model_.nodes[a].a;
     case Take::SquareOfA:
       // No recursion back into this rule: Mul carries no Same identity.
       return make(OpCode::Mul, a, a);
@@ -560,16 +670,16 @@ private:
   }
 
   constexpr std::optional<NodeId> fold(OpCode op, NodeId a, NodeId b) {
-    const bool ca = a != no_node && nodes_[a].op == OpCode::Const;
-    const bool cb = b != no_node && nodes_[b].op == OpCode::Const;
+    const bool ca = a != no_node && model_.nodes[a].op == OpCode::Const;
+    const bool cb = b != no_node && model_.nodes[b].op == OpCode::Const;
     const bool unary = arity_of(op) == 1;
 
     // Constant arithmetic first, through the same *_impl functor the
     // compile-time evaluator uses.
     if (unary && ca) {
-      return constant(apply<T>(op, nodes_[a].value));
+      return constant(apply<T>(op, model_.nodes[a].value));
     } else if (!unary && ca && cb) {
-      return constant(apply<T>(op, nodes_[a].value, nodes_[b].value));
+      return constant(apply<T>(op, model_.nodes[a].value, model_.nodes[b].value));
     }
 
     const auto kind = rule_op_of(op);
@@ -598,9 +708,9 @@ private:
     if (t == f) {
       return t;
     }
-    if (nodes_[cond].op == OpCode::Const) {
+    if (model_.nodes[cond].op == OpCode::Const) {
       if constexpr (std::equality_comparable<T>) {
-        return nodes_[cond].value != T{0} ? t : f;
+        return model_.nodes[cond].value != T{0} ? t : f;
       }
     }
     return std::nullopt;
@@ -609,42 +719,28 @@ private:
   // (n/d) * d -> n.  On a DAG the denominator match is an id compare.
   constexpr std::optional<NodeId> cancel_quotient(NodeId quotient,
                                                   NodeId factor) const {
-    const Node<T> &q = nodes_[quotient];
+    const Node<T> &q = model_.nodes[quotient];
     return q.op == OpCode::Div && q.b == factor ? std::optional{q.a}
                                                 : std::nullopt;
   }
 
-  std::vector<Node<T>> nodes_;
+  Model<T> model_;
+  // Everything below is an index over model_, rebuilt by reindex().
   // Open-addressed by hand: interning runs inside constant evaluation and no
   // library hash container is constexpr.
   std::vector<NodeId> table_; // power-of-two capacity; no_node == free slot
-  // One per kind of named input, slot-addressed: names[slot] and the leaf
-  // ids[slot] interning made for it.
-  struct Named {
-    std::vector<std::string> names;
-    std::vector<NodeId> ids;
-  };
-  Named vars_;
-  Named params_;
-  Named implicits_;
+  // Per named kind, the leaf interning made for each slot.
+  std::array<std::vector<NodeId>, named_count> ids_;
   // Every named input, sorted by name: a flat map by hand, since interning runs
   // inside constant evaluation and no library flat container is constexpr
   // before C++26.
   std::vector<Input> by_name_;
-  std::vector<NodeId> closures_; // by implicit slot
   std::optional<errc> broken_;
-  std::vector<ExternEntry<T>> externs_;
 
-  [[nodiscard]] constexpr Named &named(OpCode op) {
-    return op == OpCode::Var ? vars_ : op == OpCode::Param ? params_ : implicits_;
-  }
-  [[nodiscard]] constexpr const Named &named(OpCode op) const {
-    return op == OpCode::Var ? vars_ : op == OpCode::Param ? params_ : implicits_;
-  }
   // The key by_name_ is sorted on.
   [[nodiscard]] constexpr auto name_of() const {
     return [this](const Input &in) -> std::string_view {
-      return named(in.op).names[in.slot];
+      return names(in.op)[in.slot];
     };
   }
 };

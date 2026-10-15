@@ -17,6 +17,7 @@
 #include <cstring>
 #include <iterator>
 #include <span>
+#include <tuple>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -55,6 +56,16 @@ template <typename U>
 template <typename V> constexpr bool is_vector_v = false;
 template <typename U, typename A>
 constexpr bool is_vector_v<std::vector<U, A>> = true;
+// A fixed count travels in the schema, not the payload.
+template <typename V> constexpr bool is_array_v = false;
+template <typename U, std::size_t N>
+constexpr bool is_array_v<std::array<U, N>> = true;
+
+// Every member, a base class's included: ExternEntry carries its record as a
+// base and its function -- which no file holds -- beside it.
+template <typename U>
+using described_members = boost::describe::describe_members<
+    U, boost::describe::mod_any_access | boost::describe::mod_inherited>;
 
 // Whether a vector moves in one memcpy, which the colouring's colours * n
 // tables are what make worth having.  A wire scalar is exactly its unsigned's
@@ -287,16 +298,21 @@ template <typename Sink, typename V> void wire(Sink &s, V &v) {
         }
       }
     }
+  } else if constexpr (is_array_v<U>) {
+    for (auto &e : v) {
+      wire(s, e);
+      if (!s.ok()) {
+        return;
+      }
+    }
   } else {
     static_assert(boost::describe::has_describe_members<U>::value,
                   "rt::archive: no described field list for this type");
-    boost::mp11::mp_for_each<
-        boost::describe::describe_members<U, boost::describe::mod_any_access>>(
-        [&](auto D) {
-          if (s.ok()) {
-            wire(s, v.*D.pointer);
-          }
-        });
+    boost::mp11::mp_for_each<described_members<U>>([&](auto D) {
+      if (s.ok()) {
+        wire(s, v.*D.pointer);
+      }
+    });
   }
 }
 
@@ -330,11 +346,16 @@ template <typename V> constexpr void fold_schema(boost::hash2::fnv1a_32 &h) {
     text("vec<");
     fold_schema<typename U::value_type>(h);
     text(">");
+  } else if constexpr (is_array_v<U>) {
+    text("arr<");
+    boost::hash2::hash_append(h, wire_flavor{},
+                              static_cast<std::uint32_t>(std::tuple_size_v<U>));
+    fold_schema<typename U::value_type>(h);
+    text(">");
   } else {
     static_assert(boost::describe::has_describe_members<U>::value);
     text("{");
-    boost::mp11::mp_for_each<boost::describe::describe_members<
-        U, boost::describe::mod_any_access>>([&](auto D) {
+    boost::mp11::mp_for_each<described_members<U>>([&](auto D) {
       text(D.name);
       text(":");
       fold_schema<
@@ -362,8 +383,7 @@ template <typename V> [[nodiscard]] constexpr std::size_t wire_bytes() {
   } else {
     static_assert(boost::describe::has_describe_members<U>::value);
     std::size_t n = 0;
-    boost::mp11::mp_for_each<boost::describe::describe_members<
-        U, boost::describe::mod_any_access>>([&](auto D) {
+    boost::mp11::mp_for_each<described_members<U>>([&](auto D) {
       n += wire_bytes<
           std::remove_reference_t<decltype(std::declval<U &>().*D.pointer)>>();
     });

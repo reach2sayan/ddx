@@ -179,7 +179,7 @@ public:
     llvm::Type *const f64 = b_.getDoubleTy();
     llvm::Type *const i64 = b_.getInt64Ty();
     llvm::PointerType *const ptr = b_.getPtrTy();
-    const auto components = rt::extern_components(e.arity, e.order);
+    const auto components = e.size();
     llvm::Value *const in = entry.CreateAlloca(
         f64, llvm::ConstantInt::get(i64, e.arity), "extern.in");
     llvm::Value *const answer = entry.CreateAlloca(
@@ -369,18 +369,17 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
           cols.inputs[rt::input_column(g.inputs(), p.op, p.slot)], index, mask,
           "");
       break;
-    case rt::Kind::Args:
-      value[v] = emit.constant(0.0); // a list: nothing reads its value
+    case rt::Kind::Args: // a list's value is its first argument
+      value[v] = value[operands[0]];
       break;
     case rt::Kind::Extern: {
       const auto [fn, component] = rt::ExternSlot::of(p.slot);
-      const auto &e = g.externs()[fn];
-      const auto args = rt::extern_arguments(g, operands[0], e.arity) |
+      const auto args = *rt::extern_arguments(g, v) |
                         std::views::transform([&value](rt::NodeId a) {
                           return value[a];
                         }) |
                         impl::to<std::vector<llvm::Value *>>();
-      value[v] = emit.extern_call(e, component, args);
+      value[v] = emit.extern_call(g.externs()[fn], component, args);
       break;
     }
     case rt::Kind::Unary:

@@ -7,10 +7,7 @@
 #include "util/ranges.hpp"
 
 #include <boost/describe/class.hpp>
-#include <boost/describe/enum.hpp>
-#include <boost/describe/enum_to_string.hpp>
 #include <boost/graph/compressed_sparse_row_graph.hpp>
-#include <boost/mp11/list.hpp>
 
 #include <algorithm>
 #include <array>
@@ -19,6 +16,7 @@
 #include <ranges>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -36,61 +34,70 @@ using Vertex = boost::graph_traits<Adjacency>::vertex_descriptor;
 
 // What a lane's graph carries; each level is the one below plus a block.
 // Appended rather than inserted, so a saved Object's `want` byte still names
-// the same lane it did.
-enum class Want : std::uint8_t {
-  Value,
-  Jacobian,
-  Hessian,
-  Hvp,
-  Vjp,
-  Jvp,
-  Gradient,
-  JacobianTangent
-};
-BOOST_DESCRIBE_ENUM(Want, Value, Jacobian, Hessian, Hvp, Vjp, Jvp, Gradient,
-                    JacobianTangent)
-inline constexpr std::size_t want_count =
-    boost::mp11::mp_size<boost::describe::describe_enumerators<Want>>::value;
-
-// The lanes in Cache order, off the same described list `want_count` counts, so
-// a lane zipped against the cache needs no cast back from an index.
-inline constexpr auto want_values = [] {
-  std::array<Want, want_count> out{};
-  std::size_t i = 0;
-  boost::mp11::mp_for_each<boost::describe::describe_enumerators<Want>>(
-      [&out, &i](auto D) { out[i++] = D.value; });
-  return out;
-}();
-// Which is only true while the enumerators are unnumbered and in order; a Want
-// given an explicit value would put the cache and this list out of step.
-static_assert(std::ranges::all_of(std::views::iota(0uz, want_count),
-                                  [](std::size_t i) {
-                                    return std::to_underlying(want_values[i]) ==
-                                           i;
-                                  }));
-
-[[nodiscard]] constexpr std::string_view name_of(Want w) noexcept {
-  return boost::describe::enum_to_string(w, "?");
-}
-
-// Whether the lane's kernel may be built over the rebalanced graph.  The
-// seeded and second-order lanes may not: their block is swept from the
+// the same lane it did.  The columns: whether the lane is one function's (a
+// system refuses it), whether it is second order (a function supplying first
+// partials only refuses it), whether its kernel may be built over the
+// rebalanced graph, and what its seeds are counted in.  The seeded and
+// second-order lanes may not rebalance: their block is swept from the
 // unblocked roots, so a rebalanced copy would answer in different last bits
 // than the sweep it is checked against.
-[[nodiscard]] constexpr bool rebalanceable(Want w) noexcept {
-  switch (w) {
-  case Want::Value:
-  case Want::Jacobian:
-  case Want::Gradient:
-    return true;
-  case Want::Hessian:
-  case Want::Hvp:
-  case Want::Vjp:
-  case Want::Jvp:
-  case Want::JacobianTangent:
-    return false;
+#define DDX_RT_WANT_TABLE(X)                                                   \
+  X(Value, false, false, true, None)                                           \
+  X(Jacobian, false, false, true, None)                                        \
+  X(Hessian, true, true, false, None)                                          \
+  X(Hvp, true, true, false, Symbols)                                           \
+  X(Vjp, false, false, false, Functions)                                       \
+  X(Jvp, false, false, false, Symbols)                                         \
+  X(Gradient, false, false, true, None)                                        \
+  X(JacobianTangent, false, true, false, Symbols)
+
+enum class Want : std::uint8_t {
+#define DDX_RT_WANT(Name, ...) Name,
+  DDX_RT_WANT_TABLE(DDX_RT_WANT)
+#undef DDX_RT_WANT
+};
+enum class Seeds : std::uint8_t { None, Symbols, Functions };
+struct WantInfo {
+  std::string_view name;
+  bool single;
+  bool second_order;
+  bool rebalanceable;
+  Seeds seeds;
+};
+inline constexpr auto want_table = [] {
+  std::array<WantInfo, 0
+#define DDX_RT_WANT(...) +1
+                               DDX_RT_WANT_TABLE(DDX_RT_WANT)
+#undef DDX_RT_WANT
+             >
+      t{};
+  std::size_t i = 0;
+#define DDX_RT_WANT(Name, single, second, rebalance, seeds)                    \
+  t[i++] = {#Name, single, second, rebalance, Seeds::seeds};
+  DDX_RT_WANT_TABLE(DDX_RT_WANT)
+#undef DDX_RT_WANT
+  return t;
+}();
+inline constexpr std::size_t want_count = want_table.size();
+
+// The lanes in Cache order, so a lane zipped against the cache needs no cast
+// back from an index.
+inline constexpr auto want_values = [] {
+  std::array<Want, want_count> out{};
+  for (const std::size_t i : std::views::iota(0uz, want_count)) {
+    out[i] = static_cast<Want>(i);
   }
-  return false;
+  return out;
+}();
+
+[[nodiscard]] constexpr const WantInfo &want_info(Want w) noexcept {
+  return want_table[std::to_underlying(w)];
+}
+[[nodiscard]] constexpr std::string_view name_of(Want w) noexcept {
+  return want_info(w).name;
+}
+[[nodiscard]] constexpr bool rebalanceable(Want w) noexcept {
+  return want_info(w).rebalanceable;
 }
 
 // One of a thing per output block, in the order the kernel writes them.  The
@@ -173,9 +180,7 @@ public:
     g.jacobian_ = std::move(jacobian);
     g.inputs_ = b.inputs();
     g.externs_.assign(b.externs().begin(), b.externs().end());
-    g.names_ = b.symbols();
-    impl::append(g.names_, b.params());
-    impl::append(g.names_, b.implicits());
+    g.names_ = b.names();
     g.properties_.reserve(b.size());
 
     std::vector<std::pair<std::size_t, std::size_t>> edges;
