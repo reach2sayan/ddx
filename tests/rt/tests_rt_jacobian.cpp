@@ -507,6 +507,51 @@ TEST(RtJacobian, SelectDifferentiatesTheArmTheConditionTakes) {
   }
 }
 
+// The unchosen arm's adjoint is a runtime zero, and log' and sqrt' are infinite
+// at 0: without the guard the arm's contribution is 0 * inf = NaN.
+TEST(RtJacobian, SelectDiscardsTheUnchosenArmsPartials) {
+  const auto clamp = [](auto arm) {
+    return ddx::rt::equation([arm] {
+      const auto x = ddx::rt::var("x");
+      return select(x > 0.0, arm(x), ddx::rt::RTExpression<double>{0.0});
+    });
+  };
+  const auto log_arm = clamp([](const auto &x) { return log(x); });
+  const auto sqrt_arm = clamp([](const auto &x) { return sqrt(x); });
+  const auto nested = clamp([](const auto &x) { return log(sqrt(x)); });
+
+  for (const auto *eq : {&log_arm, &sqrt_arm, &nested}) {
+    EXPECT_EQ((*eq->jacobian(0.0))[0], 0.0);
+    EXPECT_EQ((*eq->hessian(0.0))[0], 0.0);
+    EXPECT_EQ((*eq->hvp("x", 0.0))[0], 0.0);
+    EXPECT_EQ((*eq->jacobian(-1.0))[0], 0.0);
+  }
+  EXPECT_DOUBLE_EQ((*log_arm.jacobian(2.0))[0], 0.5);
+  EXPECT_DOUBLE_EQ((*log_arm.hessian(2.0))[0], -0.25);
+
+  // Both arms chosen inside one batch.
+  const std::array<double, 3> xs{-1.0, 0.0, 1.0};
+  std::array<double, 3> f{};
+  std::array<double, 3> g{};
+  const std::array<const double *, 1> in{xs.data()};
+  const std::array<double *, 1> fv{f.data()};
+  const std::array<double *, 1> gv{g.data()};
+  ASSERT_TRUE(log_arm.jacobian(in, fv, gv, xs.size()).has_value());
+  EXPECT_EQ(g, (std::array{0.0, 0.0, 1.0}));
+}
+
+// The guard hides the arm that was not taken, never a singularity on the arm
+// that was: u is reached both ways, and at 0 the chosen arm is u itself.
+TEST(RtJacobian, SelectKeepsTheChosenArmsSingularity) {
+  const auto eq = ddx::rt::equation([] {
+    const auto x = ddx::rt::var("x");
+    const auto u = sqrt(x);
+    return select(x > 0.0, log(u), u);
+  });
+  EXPECT_EQ((*eq.jacobian(0.0))[0], std::numeric_limits<double>::infinity());
+  EXPECT_DOUBLE_EQ((*eq.jacobian(4.0))[0], 0.125);
+}
+
 // A condition is any nonzero value, as in C -- there is no separate boolean.
 TEST(RtJacobian, SelectReadsAnyNonzeroConditionAsTrue) {
   const auto eq = ddx::rt::equation([] {

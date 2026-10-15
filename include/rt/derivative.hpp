@@ -108,24 +108,52 @@ struct JacobianRow {
 
 // reverse_sweep, accumulating *nodes*.  It appends to the builder it reads: new
 // nodes land above the snapshot, so reverse id order stays topological.
+//
+// Beside each adjoint rides a guard: the condition under which the node lies on
+// a chosen path (no_node: always).  Below a select's unchosen arm the adjoint
+// is a runtime zero, and 0 * f'(u) is NaN wherever f' is infinite -- log or
+// sqrt at 0 -- so every contribution out of a guarded node is itself chosen by
+// the guard.  Guards are selects, read as select_impl reads a condition, and an
+// unguarded graph builds exactly the nodes it did without them.
 template <impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow build_reverse_jacobian(Builder<T> &b,
                                                            NodeId root) {
   detail::Sealing::seal(b);
   const auto n = static_cast<NodeId>(b.size());
   std::vector<NodeId> adj(n, no_node);
+  std::vector<NodeId> guard(n, no_node);
   adj[root] = b.constant(T{1});
 
-  const auto add_to = [&](NodeId child, const RTExpression<T> &contribution) {
-    const NodeId c = contribution.id(b);
+  const RTExpression<T> zero{0};
+  const RTExpression<T> one{1};
+  const auto expr = [&b](NodeId id) { return RTExpression<T>{b, id}; };
+  const auto both = [&](NodeId g, const RTExpression<T> &cond) {
+    return g == no_node ? cond : select(expr(g), cond, zero);
+  };
+
+  // `g` is the edge's guard; a child reached by an unguarded edge is always
+  // on a chosen path, by any number of guarded ones on the OR of theirs.
+  const auto add_to = [&](NodeId child, NodeId g,
+                          const RTExpression<T> &contribution) {
+    const NodeId c =
+        (g == no_node ? contribution : select(expr(g), contribution, zero))
+            .id(b);
     // What sign(), and so abs(), hands back.  Storing it would mark the child
     // live and carry a zero adjoint down its whole cone.
     if (b.is_constant(c, T{0})) {
       return;
     }
-    adj[child] = adj[child] == no_node
-                     ? c
-                     : (RTExpression{b, adj[child]} + RTExpression{b, c}).id(b);
+    if (adj[child] == no_node) {
+      adj[child] = c;
+      guard[child] = g;
+      return;
+    }
+    adj[child] = (expr(adj[child]) + expr(c)).id(b);
+    if (guard[child] != no_node) {
+      guard[child] = g == no_node
+                         ? no_node
+                         : select(expr(guard[child]), one, expr(g)).id(b);
+    }
   };
 
   for (NodeId v = n; v-- > 0;) {
@@ -138,24 +166,23 @@ template <impl::Numeric T>
     if (is_leaf(node.op)) {
       continue;
     }
-    const RTExpression<T> a{b, adj[v]};
+    const RTExpression<T> a = expr(adj[v]);
+    const NodeId g = guard[v];
     if (arity_of(node.op) == 1) {
-      const RTExpression<T> u{b, node.a};
-      const RTExpression<T> self{b, v};
-      add_to(node.a, detail::contribution(node.op, a, u, self));
+      add_to(node.a, g,
+             detail::contribution(node.op, a, expr(node.a), expr(v)));
     } else if (arity_of(node.op) == 3) {
       // Here rather than in ops/adjoints.hpp: two arms of different types is
       // what a type-encoded tree cannot hold, so there is no compile-time rule
       // to share with.  Nothing reaches the condition -- it chooses.
-      const RTExpression<T> cond{b, node.a};
-      add_to(node.b, select(cond, a, RTExpression<T>{0}));
-      add_to(node.c, select(cond, RTExpression<T>{0}, a));
+      const RTExpression<T> cond = expr(node.a);
+      add_to(node.b, both(g, cond).id(b), a);
+      add_to(node.c, both(g, select(cond, zero, one)).id(b), a);
     } else {
-      const RTExpression<T> l{b, node.a};
-      const RTExpression<T> r{b, node.b};
-      const auto [cl, cr] = detail::contributions(node.op, a, l, r);
-      add_to(node.a, cl);
-      add_to(node.b, cr);
+      const auto [cl, cr] =
+          detail::contributions(node.op, a, expr(node.a), expr(node.b));
+      add_to(node.a, g, cl);
+      add_to(node.b, g, cr);
     }
   }
 

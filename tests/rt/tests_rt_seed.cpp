@@ -46,9 +46,7 @@ TEST(RtSeed, AskingTwiceInternsOnce) {
 TEST(RtSeed, ASealedArenaStillTakesOne) {
   ddx::rt::Builder<> b;
   const auto x = var(b, "x");
-  const auto eq = ddx::rt::equation(x * x); // seals the arena
-  ASSERT_EQ(eq.arity(), 1u);
-
+  (void)ddx::rt::build_jacobian_impl(b, (x * x).id(b)); // every sweep seals
   EXPECT_TRUE(var(b, "late").poisoned()) << "symbols stay sealed";
   EXPECT_FALSE(seed(b, 0).poisoned());
 }

@@ -247,8 +247,9 @@ template <impl::Numeric T> struct NoCache {
   constexpr void clear() const noexcept {}
 };
 
-// Every single-point call in both equations comes through here.  Derived
-// supplies arena() and unlocked() -- the GIL, on the Python side.
+// Every single-point call comes through here.  Derived supplies arena() and
+// sweeping(): what a sweep holds -- the arena's read lock -- and gives up --
+// the GIL, on the Python side.
 template <typename Derived, impl::Numeric T, CValueCache<T> Cache>
 class Caching {
 protected:
@@ -293,7 +294,7 @@ private:
   void serve(Want want, const Graph<T> &graph, Answered how,
              std::span<const T *const> xs, const Columns<T> &out,
              auto &&run) const {
-    const Extent extent = Extent::of(graph, how, self().arena().size());
+    const Extent extent = Extent::of(graph, how, self().arena_size());
 
     // The point, once, in the order a sweep reads it.
     std::vector<T> &at = point_scratch();
@@ -356,15 +357,15 @@ private:
   // all, and its slot still has to be written once.
   void sweep(Want, const Graph<T> &graph, const std::vector<T> &at, Fill,
              const Recorded<T> &slot) const {
-    [[maybe_unused]] const auto held = self().unlocked();
+    [[maybe_unused]] const auto held = self().sweeping();
     evaluate_into(self().arena(), at, graph.schedule(), slot.tape);
   }
 
   void sweep(Want want, const Graph<T> &graph, const std::vector<T> &at,
              const Amend &plan, const Recorded<T> &slot) const {
-    const Cone &cone = cone_for(want, graph);
     // Given up around the sweep and nothing else: the GIL, on the Python side.
-    [[maybe_unused]] const auto held = self().unlocked();
+    [[maybe_unused]] const auto held = self().sweeping();
+    const Cone &cone = cone_for(want, graph);
     evaluate_reached(self().arena(), at, graph.schedule(), cone, plan.changed,
                      reach_scratch(), stack_scratch(), slot.tape);
   }

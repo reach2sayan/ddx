@@ -12,15 +12,26 @@
 #include <type_traits> // std::remove_cvref_t
 #include <utility>     // std::move
 
-namespace ddx::impl {
-// Befriended below: an Equation is the one thing that takes an expression's
-// arena over, and the only reader of the poison an absent arena leaves.
-template <typename... Ts> class Equation;
-} // namespace ddx::impl
-
 namespace ddx::rt {
 
 template <impl::Numeric T = double> class RTExpression;
+
+namespace detail {
+// Befriended below: an equation is the one thing that takes an expression's
+// arena over, and the only reader of the poison an absent arena leaves.
+struct Rooting {
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr Builder<T> *
+  builder(const RTExpression<T> &e) noexcept {
+    return e.builder();
+  }
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr std::optional<errc>
+  why(const RTExpression<T> &e) noexcept {
+    return e.why();
+  }
+};
+} // namespace detail
 
 // Declared ahead of RTExpression, which befriends it: `var` is where a missing
 // arena turns into a poisoned expression.
@@ -205,7 +216,7 @@ public:
 private:
   // What an Equation needs of an expression: which arena it names, and --
   // through poison() -- that it names none.
-  template <typename... Ts> friend class impl::Equation;
+  friend struct detail::Rooting;
   template <impl::Numeric U>
   friend RTExpression<U> var(std::string_view) noexcept;
   template <impl::Numeric U>

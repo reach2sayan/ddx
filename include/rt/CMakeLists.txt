@@ -9,7 +9,9 @@ target_sources(ddx_rt INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/bridge.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/graph.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/dot.hpp>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/core.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/equation.hpp>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/system.hpp>
 )
 
 add_subdirectory(archive)

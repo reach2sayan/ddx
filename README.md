@@ -644,10 +644,8 @@ for (const rt::Cell &c : pattern.entries()) {   // every cell that exists
   use(c.row, c.column, j[c.slot * n + point]);  // ∂f(row)/∂x(column)
 }
 
-const double dfi_dxj =                 // at() is nullopt off the pattern
-    pattern.at(i, j)
-        .transform([&](std::size_t cell) { return j[cell * n + point]; })
-        .value_or(0.0);
+const auto cell = pattern.at(i, j);    // nullopt off the pattern
+const double dfi_dxj = cell ? j[*cell * n + point] : 0.0;
 ```
 
 For a system whose functions each touch a few symbols that is most of the

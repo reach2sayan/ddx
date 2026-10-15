@@ -25,6 +25,7 @@ namespace ddx {
   X(no_graph,         "the expression has no graph (a bare literal names none)")              \
   X(sealed_arena,     "the arena already backs an equation, so its symbols are final")        \
   X(not_univariate,   "needs exactly one symbol")                                             \
+  X(not_single_output, "needs exactly one output, and this is a system")                      \
   X(unsupported_scalar, "an operation the sweep's scalar type does not define")               \
                                                                                               \
   /* Saved graphs. */                                                                         \

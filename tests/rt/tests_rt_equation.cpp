@@ -512,21 +512,20 @@ TEST(RtEquation, TheArenaIsInvisible) {
   EXPECT_FALSE(poisoned.hessian_colors().has_value());
 }
 
-// A symbol named into a borrowed arena after an Equation has it would move
-// slots under a graph already built, so the arena refuses.
-TEST(RtEquation, AnArenaStopsTakingSymbolsOnceAnEquationHasIt) {
+// An equation copies the arena it is lent, so the caller goes on building in
+// theirs -- a symbol that moves x's slot there moves nothing the equation reads.
+TEST(RtEquation, ALentArenaIsCopiedAndStaysOpen) {
   ddx::rt::Builder<> b;
   const auto x = var(b, "x");
   const auto eq = ddx::rt::equation(x * x);
   ASSERT_EQ(eq.arity(), 1u);
   EXPECT_NEAR(*eq.evaluate(3.0), 9.0, 1e-12);
 
-  const auto a = var(b, "a"); // would have moved x from slot 0 to slot 1
-  EXPECT_TRUE(a.poisoned());
-
+  const auto a = var(b, "a"); // moves x from slot 0 to slot 1 in `b`
+  ASSERT_FALSE(a.poisoned());
   const auto second = ddx::rt::equation(a + x);
-  ASSERT_TRUE(second.status().has_value());
-  EXPECT_EQ(second.status()->code, ddx::errc::sealed_arena);
+  ASSERT_FALSE(second.poisoned());
+  EXPECT_NEAR(*second.evaluate(2.0, 3.0), 5.0, 1e-12);
 
   // The first equation is untouched: same symbol set, same slot, same answers.
   ASSERT_EQ(eq.arity(), 1u);
