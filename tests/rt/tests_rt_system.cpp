@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <format>
 #include <filesystem>
 #include <latch>
 #include <random>
@@ -178,9 +179,7 @@ TEST(RtSystem, BuildingSweepsOnlyTheJacobian) {
   const auto eq = ddx::rt::equation([] {
     std::vector<RE> x;
     for (const std::size_t i : std::views::iota(0uz, species)) {
-      char name[8];
-      std::snprintf(name, sizeof name, "x%03zu", i);
-      x.push_back(ddx::rt::var(name));
+      x.push_back(ddx::rt::var(std::format("x{:03}", i)));
     }
     return models::mse(x);
   });

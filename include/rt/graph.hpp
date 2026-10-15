@@ -44,9 +44,11 @@ enum class Want : std::uint8_t {
   Hvp,
   Vjp,
   Jvp,
-  Gradient
+  Gradient,
+  JacobianTangent
 };
-BOOST_DESCRIBE_ENUM(Want, Value, Jacobian, Hessian, Hvp, Vjp, Jvp, Gradient)
+BOOST_DESCRIBE_ENUM(Want, Value, Jacobian, Hessian, Hvp, Vjp, Jvp, Gradient,
+                    JacobianTangent)
 inline constexpr std::size_t want_count =
     boost::mp11::mp_size<boost::describe::describe_enumerators<Want>>::value;
 
@@ -85,6 +87,7 @@ static_assert(std::ranges::all_of(std::views::iota(0uz, want_count),
   case Want::Hvp:
   case Want::Vjp:
   case Want::Jvp:
+  case Want::JacobianTangent:
     return false;
   }
   return false;
@@ -351,6 +354,7 @@ concept CSweeps = requires(S &s) {
   { s.hessian_vector() } -> std::convertible_to<const HessianVector &>;
   { s.vector_jacobian() } -> std::convertible_to<const VectorJacobian &>;
   { s.tangent() } -> std::convertible_to<const Tangent &>;
+  { s.jacobian_tangent() } -> std::convertible_to<std::span<const NodeId>>;
 };
 
 // Defined below GraphBuilder, which befriends it: the only caller of the
@@ -439,6 +443,12 @@ private:
   constexpr GraphBuilder &tangent_from(const Tangent &t) {
     return block(&OutputBlocks::jacobian, t.product);
   }
+  // dJ/dv has the Jacobian's layout: one column per cell, read with its
+  // pattern.
+  constexpr GraphBuilder &
+  jacobian_tangent_from(std::span<const NodeId> product) {
+    return block(&OutputBlocks::hessian, product);
+  }
   // w'J is a first-order block of n columns and dense, so jacobian_pattern()
   // stays empty.
   constexpr GraphBuilder &vector_jacobian_from(const VectorJacobian &j) {
@@ -487,6 +497,10 @@ template <impl::Numeric T>
   case Want::Hvp:
     gb.jacobian_from(sweeps.jacobian())
         .hessian_vector_from(sweeps.hessian_vector());
+    break;
+  case Want::JacobianTangent:
+    gb.jacobian_from(sweeps.jacobian())
+        .jacobian_tangent_from(sweeps.jacobian_tangent());
     break;
   }
   return gb.finish(contract);

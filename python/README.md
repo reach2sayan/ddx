@@ -166,6 +166,12 @@ a sequence, a dict, or a `(symbols, points)` batch alongside a batched point.
 `wᵀJ` takes one weight per *function*, so it is positional only. `hvp` needs a
 single-output model, and raises `errc.not_single_output` on a system.
 
+`jacobian_jvp(v, x)` answers `(f, J, dJ/dv)`: the Jacobian and its derivative
+along `v`, from one forward sweep, for a system as for one function.
+`restrict(names)` is a view with only those symbols' Jacobian columns, in
+symbol order — `view.jacobian(x)` and `view.jacobian_jvp(v, x)` answer the same
+tuples with `J` narrowed, and the dropped columns are never computed.
+
 ## Calling in a loop
 
 The calls above allocate their answers. `buffer(x)` binds the point and the
@@ -318,6 +324,8 @@ values, and only the code says which.
 | `jacobian(x)` | `(f, J)` |
 | `gradient(x)` | `J` alone |
 | `jvp(v, x)`, `vjp(w, x)`, `hvp(v, x)` | `(f, J·v)`, `(f, wᵀJ)`, `(f, ∇f, H·v)` |
+| `jacobian_jvp(v, x)` | `(f, J, dJ/dv)` |
+| `restrict(names)` | a `Restricted` view: `jacobian`, `jacobian_jvp`, `symbols`, `jacobian_columns` |
 | `hessian(x)` | `(f, J, H)`, dense |
 | `options` | property — read or assign an `Options` |
 | `compile(**fields)` | set `Options`, block for the kernel, return self |

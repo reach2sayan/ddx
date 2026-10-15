@@ -235,3 +235,39 @@ def test_a_name_is_one_kind_of_input() -> None:
     with pytest.raises(ddx.Error) as caught:
         ddx.equation(model)
     assert caught.value.code is ddx.errc.name_clash
+
+
+def test_jacobian_jvp_moves_the_whole_jacobian_along_v() -> None:
+    def model():
+        x = ddx.var("x")
+        y = ddx.var("y")
+        return x * x * y, ddx.sin(x * y)
+
+    eq = ddx.equation(model)
+    px, py = 0.7, 1.3
+    _, jacobian, moved = eq.jacobian_jvp([1.0, 0.0], [px, py])
+    s, c = math.sin(px * py), math.cos(px * py)
+    assert jacobian.shape == (2, 2)
+    assert np.allclose(moved, [[2 * py, 2 * px], [-py * py * s, c - px * py * s]])
+
+
+def test_restrict_keeps_the_chosen_columns() -> None:
+    def model():
+        t = ddx.var("T")
+        x = ddx.var("x")
+        p = ddx.var("P")
+        return ddx.exp(t * x) + ddx.log(p) * x
+
+    eq = ddx.equation(model)
+    view = eq.restrict(["P", "T"])
+    assert view.symbols == ["T", "P"]  # symbol order
+    at = [1.5, 0.3, 2.0]
+    _, full = eq.jacobian(at)
+    _, part = view.jacobian(at)
+    assert part.tolist() == [full[0], full[2]]
+    _, _, moved = view.jacobian_jvp([1.0, 0.0, 0.0], at)
+    _, _, full_moved = eq.jacobian_jvp([1.0, 0.0, 0.0], at)
+    assert moved.tolist() == [full_moved[0], full_moved[2]]
+    with pytest.raises(ddx.Error) as caught:
+        eq.restrict(["nope"])
+    assert caught.value.code is ddx.errc.unknown_symbol

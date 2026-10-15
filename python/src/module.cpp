@@ -190,6 +190,7 @@ PYBIND11_MODULE(_ddx, m) {
   using namespace ddx;
   using ddx::py::PyCall;
   using ddx::py::PyEquation;
+  using ddx::py::PyRestricted;
   using ddx::py::PyExpression;
 
   m.doc() = "ddx's runtime expression graph, LLVM JIT and OpenCL device";
@@ -453,6 +454,14 @@ PYBIND11_MODULE(_ddx, m) {
   codegen("veclib", &jit::Codegen::veclib);
   codegen("contract", &jit::Codegen::contract);
 
+  pyb::class_<PyRestricted>(m, "Restricted")
+      .def("jacobian", &PyRestricted::jacobian, pyb::arg("x"))
+      .def("jacobian_jvp", &PyRestricted::jacobian_jvp, pyb::arg("v"),
+           pyb::arg("x"))
+      .def_property_readonly("symbols", &PyRestricted::symbols)
+      .def_property_readonly("jacobian_columns",
+                             &PyRestricted::jacobian_columns);
+
   pyb::class_<PyEquation>(m, "Equation", pyb::dynamic_attr())
       .def("__repr__", &PyEquation::repr)
       .def("__call__", &PyEquation::evaluate, pyb::arg("x"))
@@ -465,6 +474,14 @@ PYBIND11_MODULE(_ddx, m) {
       .def("jvp", &PyEquation::jvp, pyb::arg("v"), pyb::arg("x"))
       .def("vjp", &PyEquation::vjp, pyb::arg("w"), pyb::arg("x"))
       .def("hvp", &PyEquation::hvp, pyb::arg("v"), pyb::arg("x"))
+      .def("jacobian_jvp", &PyEquation::jacobian_jvp, pyb::arg("v"),
+           pyb::arg("x"))
+      .def(
+          "restrict",
+          [](const PyEquation &self, const std::vector<std::string> &names) {
+            return PyRestricted{self, py::unwrap(self.restrict(names))};
+          },
+          pyb::arg("names"), pyb::keep_alive<0, 1>())
       .def(
           "buffer",
           [](PyEquation &self, const pyb::handle &x, PyEquation::Want want) {

@@ -438,15 +438,32 @@ struct Tangent {
   BOOST_DESCRIBE_CLASS(Tangent, (), (value, product), (), ())
 };
 
+namespace detail {
+// One seed per symbol: the direction a forward sweep carries.
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::vector<NodeId> seeds_along(Builder<T> &b) {
+  return std::views::iota(0u, static_cast<std::uint32_t>(b.symbols().size())) |
+         std::views::transform(
+             [&b](std::uint32_t j) { return seed(b, j).id(b); }) |
+         impl::to<std::vector<NodeId>>();
+}
+} // namespace detail
+
 template <impl::Numeric T>
 [[nodiscard]] constexpr Tangent build_jvp_impl(Builder<T> &b,
                                                std::span<const NodeId> roots) {
-  std::vector<NodeId> along(b.symbols().size());
-  for (const auto [j, node] : along | std::views::enumerate) {
-    node = seed(b, static_cast<std::uint32_t>(j)).id(b);
-  }
   return {.value = {roots.begin(), roots.end()},
-          .product = tangent_sweep(b, roots, along)};
+          .product = tangent_sweep(b, roots, detail::seeds_along(b))};
+}
+
+// The Jacobian's derivative along v, dJ/dv: its own cells carried forward
+// along the seeds in one pass over their cone.  One node per Jacobian cell, so
+// the block has the Jacobian's layout and reads with its Sparsity -- for m
+// functions, every d2 f_i / dx_j dv in a single forward sweep.
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::vector<NodeId>
+build_jacobian_tangent_impl(Builder<T> &b, const Jacobian &j) {
+  return tangent_sweep(b, j.partial, detail::seeds_along(b));
 }
 
 } // namespace ddx::rt

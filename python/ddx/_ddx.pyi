@@ -50,6 +50,8 @@ class Equation:
     def hessian(self, x: typing.Any) -> tuple: pass
     def hvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
     def jacobian(self, x: typing.Any) -> tuple: pass
+    def jacobian_jvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
+    def restrict(self, names: list[str]) -> Restricted: pass
     def jvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
     def nodes(self, *, want: Want = ...) -> int: pass
     def save(self, path: str | os.PathLike) -> None: pass
@@ -171,6 +173,14 @@ class VecLib(enum.IntEnum):
     @classmethod
     def __new__(cls, value): pass
     def __format__(self, format_spec): pass
+class Restricted:
+    def jacobian(self, x: typing.Any) -> tuple: pass
+    def jacobian_jvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
+    @property
+    def jacobian_columns(self) -> int: pass
+    @property
+    def symbols(self) -> list[str]: pass
+    
 class Want(enum.IntEnum):
     """
     Which blocks a bound call fills.
@@ -179,6 +189,7 @@ class Want(enum.IntEnum):
     HESSIAN: typing.ClassVar[Want]  # value = <Want.HESSIAN: 2>
     HVP: typing.ClassVar[Want]  # value = <Want.HVP: 3>
     JACOBIAN: typing.ClassVar[Want]  # value = <Want.JACOBIAN: 1>
+    JACOBIANTANGENT: typing.ClassVar[Want]  # value = <Want.JACOBIANTANGENT: 7>
     JVP: typing.ClassVar[Want]  # value = <Want.JVP: 5>
     VALUE: typing.ClassVar[Want]  # value = <Want.VALUE: 0>
     VJP: typing.ClassVar[Want]  # value = <Want.VJP: 4>

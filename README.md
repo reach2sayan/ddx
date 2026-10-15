@@ -538,6 +538,7 @@ symbols in `symbols()` order and $m$ = `output_dim` functions:
 | `jvp(v, x)` | $J(x)\,v$, so $(Jv)_i = \sum_j \dfrac{\partial f_i}{\partial x_j} v_j$ — the directional derivative of $f$ along $v$ | $m$ |
 | `vjp(w, x)` | $w^{\top} J(x)$, so $(w^{\top}J)_j = \sum_i w_i \dfrac{\partial f_i}{\partial x_j}$ — the gradient of $w \cdot f$ | $n$ |
 | `hvp(v, x)` | $H(x)\,v$, so $(Hv)_i = \sum_j \dfrac{\partial^2 f}{\partial x_i \, \partial x_j} v_j$ — the directional derivative of $\nabla f$ along $v$ | $n$ |
+| `jacobian_jvp(v, x)` | $\dfrac{\partial J}{\partial v}$, so $\left(\dfrac{\partial J}{\partial v}\right)_{ij} = \sum_k \dfrac{\partial^2 f_i}{\partial x_j \, \partial x_k} v_k$ — the directional derivative of the whole Jacobian along $v$ | $m \times n$ |
 
 The last three are the matrix-free products. Each is one number per output, and
 none of them ever forms the matrix it is named after.
@@ -556,6 +557,17 @@ const std::vector<double> v{1.0, 0.0};
 
 ```cpp
 *eq.hvp("a", 2.0, 0.5);    // {∂²f/∂a², ∂²f/∂b∂a}
+```
+
+`jacobian_jvp` is the one second-order call a system has: one forward sweep
+over the Jacobian gives $\partial^2 f_i / \partial x_j \, \partial v$ for
+every function at once, where `hvp` needs one output and a coloured Hessian is
+one per output. With a name it is along that symbol — `eq.jacobian_jvp("T", x)`
+is every Jacobian cell's derivative in `T` — and for one function it is the
+Hessian column `hvp` gives, laid out as a row.
+
+```cpp
+*sys.jacobian_jvp("T", point);   // m × n: ∂²fᵢ/∂xⱼ∂T
 ```
 
 **Why they are worth asking for, and when they are not.** Each answers in one
@@ -687,6 +699,26 @@ more than one that does not, and compiles to a single blend.
 
 A column count that does not match answers `errc::wrong_column_count`, and
 nothing is written.
+
+### Restricting the Jacobian
+
+`restrict(names)` is a view with only those symbols' Jacobian columns, in
+symbol order. Its lanes are frozen over the kept cells alone, so the partials a
+caller would discard are never computed — a fixed-composition flash that wants
+d/dT and d/dP does not pay for n composition columns.
+
+```cpp
+const auto tp = *eq.restrict({"T", "P"});
+
+*tp.jacobian(point);                 // m × 2
+*tp.jacobian_jvp("T", point);        // m × 2: ∂/∂T of those columns
+tp.jacobian_columns();               // the cells in T's and P's columns
+(void)tp.jacobian(xs, f, g, n);      // the batch, g sized by the line above
+```
+
+Points and directions are the equation's — every input, every symbol. The view
+reads the equation's arena and must not outlive it. A name that is not a symbol
+answers `errc::unknown_symbol`.
 
 ### The two compressed blocks
 
@@ -1196,6 +1228,8 @@ thread-safe except `options()`.
 | `vjp(w, point)` | `result<std::vector<T>>`, $n$ long — $w^{\top}J$ |
 | `hvp(v, point)` | `result<std::vector<T>>`, $n$ long — $Hv$, one output only |
 | `hvp(name, point)` | the same, along the basis vector for that symbol |
+| `jacobian_jvp(v, point)`, `jacobian_jvp(name, point)` | `result<std::vector<T>>`, dense m × n — $\partial J / \partial v$ |
+| `restrict(names)` | `result<rt::Restricted<…>>` — a view with those symbols' Jacobian columns only |
 | `evaluate(xs, f, n)` | `result<void>` — a batch of `n` |
 | `jacobian(xs, f, g, n)` | `result<void>` |
 | `gradient(xs, g, n)` | `result<void>` |
@@ -1203,6 +1237,7 @@ thread-safe except `options()`.
 | `jvp(xs, vs, f, p, n)` | `result<void>` |
 | `vjp(xs, ws, f, p, n)` | `result<void>` |
 | `hvp(xs, vs, f, g, p, n)` | `result<void>`, one output only — `g` gets $\nabla f$ |
+| `jacobian_jvp(xs, vs, f, g, dg, n)` | `result<void>` — `g` and `dg` both `jacobian_columns()` wide, read with `jacobian_pattern()` |
 | `value_columns()`, `jacobian_columns()`, `hessian_columns()` | `std::optional<std::size_t>` — what sizes the batch buffers |
 | `jvp_columns()`, `vjp_columns()`, `hvp_columns()` | the same, for the seeded products — `m`, `n`, `n` |
 | `jacobian_pattern()` | `std::optional<std::reference_wrapper<const rt::Sparsity>>` — which (function, symbol) cell each Jacobian column is |

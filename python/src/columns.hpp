@@ -24,6 +24,7 @@ namespace pyb = pybind11;
 
 class PyEquation;
 class PyCall;
+class PyRestricted;
 
 using Array = pyb::array_t<double, pyb::array::c_style | pyb::array::forcecast>;
 
@@ -94,6 +95,7 @@ public:
 private:
   friend class PyEquation;
   friend class PyCall;
+  friend class PyRestricted;
 
   // A direction, by position only: a covector is indexed by function, and
   // functions have no names for a dict to key on.

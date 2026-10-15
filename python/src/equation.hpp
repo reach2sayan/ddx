@@ -201,6 +201,30 @@ public:
                            std::move(out).array());
   }
 
+  // (value, J, dJ/dv): the Jacobian and its derivative along `v`, both dense,
+  // from one forward sweep.
+  [[nodiscard]] pyb::tuple jacobian_jvp(const pyb::handle &v,
+                                        const pyb::handle &x) const {
+    const Point at{x, inputs_};
+    const Point dir{v, symbols_};
+    const auto l = lane(Want::JacobianTangent);
+    const auto shape = shape_of({ssize(height()), ssize(width())}, at);
+    Scratch cells{count(*l, &rt::OutputSpans::jacobian), at.size()};
+    Scratch moved{count(*l, &rt::OutputSpans::hessian), at.size()};
+    Dense g{shape, at.size()};
+    Dense dg{shape, at.size()};
+    Cell cell;
+    auto f = values_block(*l, at);
+    run_seeded(Want::JacobianTangent, at, dir,
+               {.values = f ? f->rows() : cell.rows(),
+                .jacobian = cells.rows(),
+                .hessian = moved.rows()});
+    scatter_jacobian(cells, g, at.size());
+    scatter_jacobian(moved, dg, at.size());
+    return pyb::make_tuple(value_of(f, cell), std::move(g).array(),
+                           std::move(dg).array());
+  }
+
   // Under Backend.DEVICE the device answering, None under any other backend.
   // Raises with the reason where no device answers or its compiler refused.
   [[nodiscard]] std::optional<std::string> device() const {
@@ -236,6 +260,7 @@ public:
 
 private:
   friend class PyCall;
+  friend class PyRestricted;
 
   using BlockMember = std::span<const rt::NodeId> rt::OutputSpans::*;
   [[nodiscard]] static std::size_t count(const Compiled &c,
@@ -264,14 +289,18 @@ private:
   // here: one fill, then one copy per cell the pattern names.
   void scatter_jacobian(Scratch &cells, Dense &dense,
                         std::size_t points) const {
-    const std::size_t n = width();
-    const std::size_t wide = height() * n;
+    scatter(derivative().pattern, cells, dense, points);
+  }
+  static void scatter(const rt::Sparsity &pattern, Scratch &cells,
+                      Dense &dense, std::size_t points) {
+    const std::size_t n = pattern.columns;
+    const std::size_t wide = pattern.size() * n;
     if (wide == 0) {
       return;
     }
     std::ranges::fill_n(dense.at(0), static_cast<std::ptrdiff_t>(wide * points),
                         0.0);
-    for (const auto [i, j, src] : derivative().pattern.cells(cells.rows())) {
+    for (const auto [i, j, src] : pattern.cells(cells.rows())) {
       std::ranges::copy_n(src, static_cast<std::ptrdiff_t>(points),
                           dense.at(i * n + j));
     }
@@ -387,6 +416,78 @@ private:
   // A direction is over the symbols; a point over every input.
   Symbols symbols_;
   Symbols inputs_;
+};
+
+// Equation.restrict(names): the Jacobian narrowed to those symbols' columns,
+// in symbol order, with lanes of its own.  Spelled as the equation is, and kept
+// alive past it by pyb::keep_alive on the factory.
+class PyRestricted {
+public:
+  using Want = rt::Want;
+
+  PyRestricted(const PyEquation &eq, rt::Restricted<PyCore> view)
+      : eq_(&eq), view_(std::move(view)) {}
+
+  [[nodiscard]] pyb::list symbols() const {
+    return pyb::cast(std::vector<std::string>(view_.symbols().begin(),
+                                              view_.symbols().end()));
+  }
+  [[nodiscard]] std::size_t jacobian_columns() const {
+    return view_.jacobian_columns();
+  }
+
+  // (value, J): J is outputs x the kept symbols.
+  [[nodiscard]] pyb::tuple jacobian(const pyb::handle &x) const {
+    const Point at{x, eq_->inputs_};
+    Scratch cells{view_.jacobian_columns(), at.size()};
+    Dense g{shape(at), at.size()};
+    PyEquation::Cell cell;
+    auto f = values(at);
+    unwrap(view_.jacobian(at.columns(), f ? f->rows() : cell.rows(),
+                          cells.rows(), at.size()));
+    PyEquation::scatter(view_.jacobian_pattern(), cells, g, at.size());
+    return pyb::make_tuple(PyEquation::value_of(f, cell),
+                           std::move(g).array());
+  }
+
+  // (value, J, dJ/dv) over the kept columns; `v` is over every symbol.
+  [[nodiscard]] pyb::tuple jacobian_jvp(const pyb::handle &v,
+                                        const pyb::handle &x) const {
+    const Point at{x, eq_->inputs_};
+    const Point dir{v, eq_->symbols_};
+    if (dir.size() != at.size()) {
+      fail_with(errc::wrong_direction);
+    }
+    Scratch cells{view_.jacobian_columns(), at.size()};
+    Scratch moved{view_.jacobian_columns(), at.size()};
+    Dense g{shape(at), at.size()};
+    Dense dg{shape(at), at.size()};
+    PyEquation::Cell cell;
+    auto f = values(at);
+    unwrap(view_.jacobian_jvp(at.columns(), dir.columns(),
+                              f ? f->rows() : cell.rows(), cells.rows(),
+                              moved.rows(), at.size()));
+    PyEquation::scatter(view_.jacobian_pattern(), cells, g, at.size());
+    PyEquation::scatter(view_.jacobian_pattern(), moved, dg, at.size());
+    return pyb::make_tuple(PyEquation::value_of(f, cell), std::move(g).array(),
+                           std::move(dg).array());
+  }
+
+private:
+  [[nodiscard]] Shape shape(const Point &at) const {
+    return eq_->shape_of(
+        {ssize(eq_->height()), ssize(view_.symbols().size())}, at);
+  }
+  [[nodiscard]] std::optional<Block> values(const Point &at) const {
+    return eq_->scalar(at) ? std::nullopt
+                           : std::optional<Block>{
+                                 std::in_place,
+                                 eq_->shape_of({ssize(eq_->height())}, at),
+                                 eq_->height(), at.size()};
+  }
+
+  const PyEquation *eq_; // outlived by the equation: keep_alive on the factory
+  rt::Restricted<PyCore> view_;
 };
 
 // A call bound to its buffers: the point's columns, the output arrays and the

@@ -91,6 +91,8 @@ namespace ddx::rt::detail {
 // What a sweep gives up around itself where the caller holds nothing.
 struct Nothing {};
 
+template <typename C> class Restricted;
+
 // The arena's lock and one flag per sweep built on first ask.  On the heap:
 // neither moves, and constant evaluation never reaches them.
 //
@@ -99,7 +101,7 @@ struct Nothing {};
 // lane, and nothing under either reacquires what a Yield gave up.
 struct Latches {
   std::shared_mutex arena;
-  std::once_flag hessians, hvp, vjp, jvp, rebalanced, walk;
+  std::once_flag hessians, hvp, vjp, jvp, tangent, rebalanced, walk;
 };
 
 // An equation: an arena of its own, its roots, the Jacobian swept up front and
@@ -112,6 +114,8 @@ class Core : public Caching<Core<T, Cache, Yield>, T, Cache> {
   using Memo = Caching<Core, T, Cache>;
   // Reaches arena(), arena_size() and sweeping().
   friend Memo;
+  // Freezes its own lanes through checked(), over cells of this Jacobian.
+  friend class Restricted<Core>;
 
 public:
   using value_type = T;
@@ -200,7 +204,7 @@ public:
       std::vector<T> f(roots_.size());
       std::vector<T> cells(derivative_.partial.size());
       gather(Want::Jacobian, at, f, cells);
-      return dense(cells);
+      return dense(derivative_.pattern, cells);
     });
   }
 
@@ -212,7 +216,7 @@ public:
     return point(args...).transform([&](const auto &at) {
       std::vector<T> cells(derivative_.partial.size());
       gather(Want::Gradient, at, {}, cells);
-      return dense(cells);
+      return dense(derivative_.pattern, cells);
     });
   }
 
@@ -230,16 +234,8 @@ public:
   [[nodiscard]] result<std::vector<T>>
   hvp(std::string_view along,
       const impl::rt_detail::CPointArg<T> auto &...args) const {
-    if (bad_) {
-      return std::unexpected{*bad_};
-    }
-    const auto input = arena_->lookup(along);
-    if (!input || input->op != OpCode::Var) {
-      return fail(errc::unknown_symbol);
-    }
-    boost::container::small_vector<T, 64> unit(symbol_count(), T{0});
-    unit[input->slot] = T{1};
-    return hvp(std::span<const T>{unit}, args...);
+    return unit(along).and_then(
+        [&](const auto &e) { return hvp(std::span<const T>{e}, args...); });
   }
 
   // w'J, n long: one weight per function.
@@ -254,6 +250,63 @@ public:
   jvp(std::span<const T> direction,
       const impl::rt_detail::CPointArg<T> auto &...args) const {
     return seeded<Want::Jvp>(direction, args...);
+  }
+
+  // dJ/dv, dense row-major m x n: the derivative of every Jacobian cell along
+  // `direction`, one forward sweep however many functions there are.
+  [[nodiscard]] result<std::vector<T>>
+  jacobian_jvp(std::span<const T> direction,
+               const impl::rt_detail::CPointArg<T> auto &...args) const {
+    if (bad_) {
+      return std::unexpected{*bad_};
+    }
+    if (direction.size() != symbol_count()) {
+      return fail(errc::wrong_direction);
+    }
+    return point(args...).transform([&](const auto &at) {
+      boost::container::small_vector<T, 64> widened;
+      widened.reserve(at.size() + direction.size());
+      impl::append(widened, at);
+      impl::append(widened, direction);
+      std::vector<T> f(roots_.size());
+      std::vector<T> g(derivative_.partial.size());
+      std::vector<T> dg(derivative_.partial.size());
+      gather(Want::JacobianTangent, widened, f, g, dg);
+      return dense(derivative_.pattern, dg);
+    });
+  }
+  // Along one symbol's basis vector: d/dx_j of the whole Jacobian.
+  [[nodiscard]] result<std::vector<T>>
+  jacobian_jvp(std::string_view along,
+               const impl::rt_detail::CPointArg<T> auto &...args) const {
+    return unit(along).and_then([&](const auto &e) {
+      return jacobian_jvp(std::span<const T>{e}, args...);
+    });
+  }
+
+  // A view with only the named symbols' Jacobian columns, in symbol order: the
+  // cells of the others are neither frozen nor swept.  It reads this
+  // equation's arena and sweeps, so it must not outlive it.
+  template <std::ranges::input_range R>
+    requires std::convertible_to<std::ranges::range_reference_t<R>,
+                                 std::string_view>
+  [[nodiscard]] result<Restricted<Core>> restrict(const R &names) const {
+    if (bad_) {
+      return std::unexpected{*bad_};
+    }
+    std::vector<bool> chosen(symbol_count(), false);
+    for (const std::string_view name : names) {
+      const auto input = arena_->lookup(name);
+      if (!input || input->op != OpCode::Var) {
+        return fail(errc::unknown_symbol);
+      }
+      chosen[input->slot] = true;
+    }
+    return Restricted<Core>{*this, chosen};
+  }
+  [[nodiscard]] result<Restricted<Core>>
+  restrict(std::initializer_list<std::string_view> names) const {
+    return restrict(std::span{names});
   }
 
   // Dense row-major m x n x n; the graph holds it compressed by colour.
@@ -506,6 +559,22 @@ public:
       const impl::rt_detail::CColumns<T *> auto &out, std::size_t n) const {
     return dispatch(Want::Jvp, as_columns(widen(xs, v)),
                     {.values = as_columns(f), .jacobian = as_columns(out)}, n);
+  }
+
+  // `g` and `dg` both have jacobian_columns() columns and read with
+  // jacobian_pattern(): the Jacobian, and its derivative along `v`.
+  [[nodiscard]] result<void>
+  jacobian_jvp(const impl::rt_detail::CColumns<const T *> auto &xs,
+               const impl::rt_detail::CColumns<const T *> auto &v,
+               const impl::rt_detail::CColumns<T *> auto &f,
+               const impl::rt_detail::CColumns<T *> auto &g,
+               const impl::rt_detail::CColumns<T *> auto &dg,
+               std::size_t n) const {
+    return dispatch(Want::JacobianTangent, as_columns(widen(xs, v)),
+                    {.values = as_columns(f),
+                     .jacobian = as_columns(g),
+                     .hessian = as_columns(dg)},
+                    n);
   }
 
   // What a caller sizes buffers by.  None builds a lane, and only the
@@ -769,24 +838,48 @@ protected:
     return derivative_;
   }
 
+  // Which Jacobian cells a set of lanes is frozen over: every one, for the
+  // equation's own, or the cells a restrict() kept, as indices into them.
+  struct Cells {
+    const Jacobian &jacobian;
+    std::span<const std::size_t> kept{}; // empty: all of them
+  };
+  [[nodiscard]] Cells every_cell() const { return {.jacobian = derivative_}; }
+
   // The lane for `want`, frozen on first ask.  `n` is the batch about to run
   // and is what Adapt counts; an observer asks without buying anything.
   [[nodiscard]] std::shared_ptr<const Compiled> lane(Want want,
                                                      std::size_t n = 0) const {
-    return lane_for(want).snapshot(want, n, setting(),
-                                   [&] { return frozen_for(want); });
+    return lane_in(*lanes_, every_cell(), want, n);
+  }
+  [[nodiscard]] std::shared_ptr<const Compiled>
+  lane_in(Lanes &lanes, const Cells &cells, Want want, std::size_t n) const {
+    return lanes[std::to_underlying(want)].snapshot(
+        want, n, setting(), [&] { return frozen_for(want, cells); });
   }
 
   [[nodiscard]] result<void> dispatch(Want want, std::span<const T *const> xs,
                                       const Columns<T> &out,
                                       std::size_t n) const {
+    return checked(*lanes_, every_cell(), want, xs, out, n)
+        .transform([&](const std::shared_ptr<const Compiled> &c) {
+          this->through(want, *c->graph, answered(*c), xs, out, n,
+                        [&] { run(*c, xs, out, n); });
+        });
+  }
+
+  // The lane a call runs on, once the call is known to fit it.
+  [[nodiscard]] result<std::shared_ptr<const Compiled>>
+  checked(Lanes &lanes, const Cells &cells, Want want,
+          std::span<const T *const> xs, const Columns<T> &out,
+          std::size_t n) const {
     if (bad_) {
       return std::unexpected{*bad_};
     }
     if (needs_single(want) && roots_.size() != 1) {
       return fail(errc::not_single_output);
     }
-    const auto c = lane(want, n);
+    auto c = lane_in(lanes, cells, want, n);
     if (xs.size() != c->graph->arity() ||
         std::ranges::any_of(zip_blocks(out, c->graph->output_blocks()),
                             [](const auto &pair) {
@@ -795,9 +888,7 @@ protected:
                             })) {
       return fail(errc::wrong_column_count);
     }
-    this->through(want, *c->graph, answered(*c), xs, out, n,
-                  [&] { run(*c, xs, out, n); });
-    return {};
+    return c;
   }
 
   // A system's Hessians, read off the arena a point at a time: a frozen graph
@@ -914,6 +1005,27 @@ private:
     return once(latches_->jvp, jvp_,
                 [this] { return build_jvp_impl(*arena_, roots_); });
   }
+  // Not saved: one forward sweep, re-derived on first ask.
+  [[nodiscard]] const std::vector<NodeId> &tangent_sweep() const {
+    return once(latches_->tangent, jacobian_tangent_, [this] {
+      return build_jacobian_tangent_impl(*arena_, derivative_);
+    });
+  }
+
+  // e_j for a symbol named `along`, or unknown_symbol.
+  [[nodiscard]] result<boost::container::small_vector<T, 64>>
+  unit(std::string_view along) const {
+    if (bad_) {
+      return std::unexpected{*bad_};
+    }
+    const auto input = arena_->lookup(along);
+    if (!input || input->op != OpCode::Var) {
+      return fail(errc::unknown_symbol);
+    }
+    boost::container::small_vector<T, 64> e(symbol_count(), T{0});
+    e[input->slot] = T{1};
+    return e;
+  }
 
   // The sweep `want`'s freeze reads, built before the freeze takes the lock.
   void ensure(Want want) const {
@@ -929,6 +1041,9 @@ private:
       break;
     case Want::Jvp:
       (void)jvp_sweep();
+      break;
+    case Want::JacobianTangent:
+      (void)tangent_sweep();
       break;
     case Want::Value:
     case Want::Jacobian:
@@ -1092,11 +1207,13 @@ private:
     pick(g, derivative_.partial);
   }
 
-  // Row-major m x n from the cells the pattern names, the zeros put back.
-  [[nodiscard]] constexpr std::vector<T> dense(std::span<const T> cells) const {
-    const std::size_t n = symbol_count();
-    std::vector<T> out(roots_.size() * n, T{0});
-    for (const auto [i, j, v] : derivative_.pattern.cells(cells)) {
+  // Row-major rows x columns from the cells the pattern names, the zeros put
+  // back.
+  [[nodiscard]] static constexpr std::vector<T>
+  dense(const Sparsity &pattern, std::span<const T> cells) {
+    const std::size_t n = pattern.columns;
+    std::vector<T> out(pattern.size() * n, T{0});
+    for (const auto [i, j, v] : pattern.cells(cells)) {
       out[i * n + j] = v;
     }
     return out;
@@ -1167,6 +1284,7 @@ private:
     const Core &core;
     std::span<const NodeId> ids;
     const Jacobian &partials;
+    std::span<const NodeId> product{}; // dJ/dv over `partials`' cells
 
     [[nodiscard]] std::span<const NodeId> roots() const { return ids; }
     [[nodiscard]] const Jacobian &jacobian() const { return partials; }
@@ -1180,18 +1298,32 @@ private:
       return core.vjp_;
     }
     [[nodiscard]] const Tangent &tangent() const { return core.jvp_; }
+    [[nodiscard]] std::span<const NodeId> jacobian_tangent() const {
+      return product;
+    }
   };
 
   // The graphs a lane computes.  A poisoned equation freezes an empty one:
   // every accessor short-circuits before it, and dispatch() refuses on `bad_`.
-  [[nodiscard]] Compiled frozen_for(Want want) const {
+  [[nodiscard]] Compiled frozen_for(Want want, const Cells &cells) const {
     if (bad_) {
       return {.graph = std::make_shared<const Graph<T>>()};
     }
     ensure(want);
-    [[maybe_unused]] const bool rebalance = rebalances(want);
+    // A restriction keeps the cells it chose, of the product too; only the
+    // whole Jacobian has rebalanced roots to compile from.
+    std::vector<NodeId> product;
+    if (want == Want::JacobianTangent) {
+      product = cells.kept.empty()
+                    ? jacobian_tangent_
+                    : cells.kept | std::views::transform([this](std::size_t k) {
+                        return jacobian_tangent_[k];
+                      }) | impl::to<std::vector<NodeId>>();
+    }
+    [[maybe_unused]] const bool rebalance =
+        cells.kept.empty() && rebalances(want);
     [[maybe_unused]] const auto held = reading();
-    Frozen from{*this, roots_, derivative_};
+    Frozen from{*this, roots_, cells.jacobian, product};
     auto swept = std::make_shared<const Graph<T>>(
         freeze_for(want, *arena_, from, contracts()));
     auto compiled = swept;
@@ -1340,6 +1472,7 @@ private:
   mutable HessianVector hvp_;
   mutable VectorJacobian vjp_;
   mutable Tangent jvp_;
+  mutable std::vector<NodeId> jacobian_tangent_;
   // A system's hessian() walk.
   mutable std::vector<Step> walk_;
 #ifdef DDX_HAS_JIT
@@ -1355,4 +1488,156 @@ private:
   bool loaded_ = false;
 };
 
+// restrict()'s answer: the equation's Jacobian narrowed to some symbols'
+// columns, in symbol order, with lanes of its own -- frozen over the kept cells
+// alone, so the partials of the others are never computed.  It reads the
+// equation it came from and must not outlive it.
+template <typename C> class Restricted {
+  using T = typename C::value_type;
+  using Want = rt::Want;
+
+public:
+  Restricted(const C &core, const std::vector<bool> &chosen)
+      : core_(&core), lanes_(std::make_unique<typename C::Lanes>()) {
+    const Jacobian &full = core.derivative_;
+    std::vector<std::uint32_t> column(chosen.size());
+    std::uint32_t next = 0;
+    for (const auto [j, keep] : chosen | std::views::enumerate) {
+      column[static_cast<std::size_t>(j)] = next;
+      if (keep) {
+        names_.push_back(core.arena_->symbols()[static_cast<std::size_t>(j)]);
+        ++next;
+      }
+    }
+    jacobian_ = {.value = full.value,
+                 .partial = {},
+                 .pattern = {.rowptr = {0}, .col = {}, .columns = next},
+                 .zero = full.zero};
+    for (const Sparsity::Row &row : full.pattern) {
+      for (const auto [i, j] : row.cols | std::views::enumerate) {
+        if (chosen[j]) {
+          const std::size_t k = row.offset + static_cast<std::size_t>(i);
+          kept_.push_back(k);
+          jacobian_.partial.push_back(full.partial[k]);
+          jacobian_.pattern.col.push_back(column[j]);
+        }
+      }
+      jacobian_.pattern.rowptr.push_back(jacobian_.pattern.col.size());
+    }
+  }
+
+  // The symbols kept, in the order their columns are.
+  [[nodiscard]] std::span<const std::string> symbols() const {
+    return names_;
+  }
+  [[nodiscard]] std::size_t jacobian_columns() const { return kept_.size(); }
+  [[nodiscard]] const Sparsity &jacobian_pattern() const {
+    return jacobian_.pattern;
+  }
+
+  // Dense row-major m x k.
+  [[nodiscard]] result<std::vector<T>>
+  jacobian(const impl::rt_detail::CPointArg<T> auto &...args) const {
+    return core_->point(args...).and_then([&](const auto &at) {
+      std::vector<T> f(core_->roots_.size());
+      std::vector<T> g(kept_.size());
+      return gather(Want::Jacobian, at, f, g).transform(
+          [&] { return C::dense(jacobian_.pattern, g); });
+    });
+  }
+
+  // dJ/dv over the kept cells, dense row-major m x k; `direction` is still one
+  // value per symbol of the equation.
+  [[nodiscard]] result<std::vector<T>>
+  jacobian_jvp(std::span<const T> direction,
+               const impl::rt_detail::CPointArg<T> auto &...args) const {
+    if (direction.size() != core_->arity().value_or(0)) {
+      return fail(errc::wrong_direction);
+    }
+    return core_->point(args...).and_then([&](const auto &at) {
+      boost::container::small_vector<T, 64> widened;
+      widened.reserve(at.size() + direction.size());
+      impl::append(widened, at);
+      impl::append(widened, direction);
+      std::vector<T> f(core_->roots_.size());
+      std::vector<T> g(kept_.size());
+      std::vector<T> dg(kept_.size());
+      return gather(Want::JacobianTangent, widened, f, g, dg).transform(
+          [&] { return C::dense(jacobian_.pattern, dg); });
+    });
+  }
+  [[nodiscard]] result<std::vector<T>>
+  jacobian_jvp(std::string_view along,
+               const impl::rt_detail::CPointArg<T> auto &...args) const {
+    return core_->unit(along).and_then([&](const auto &e) {
+      return jacobian_jvp(std::span<const T>{e}, args...);
+    });
+  }
+
+  // The batch calls, laid out as the equation's are with `g` and `dg` sized
+  // by jacobian_columns().
+  [[nodiscard]] result<void>
+  jacobian(const impl::rt_detail::CColumns<const T *> auto &xs,
+           const impl::rt_detail::CColumns<T *> auto &f,
+           const impl::rt_detail::CColumns<T *> auto &g, std::size_t n) const {
+    return dispatch(Want::Jacobian, C::as_columns(xs),
+                    {.values = C::as_columns(f), .jacobian = C::as_columns(g)},
+                    n);
+  }
+  [[nodiscard]] result<void>
+  gradient(const impl::rt_detail::CColumns<const T *> auto &xs,
+           const impl::rt_detail::CColumns<T *> auto &g, std::size_t n) const {
+    return dispatch(Want::Gradient, C::as_columns(xs),
+                    {.jacobian = C::as_columns(g)}, n);
+  }
+  [[nodiscard]] result<void>
+  jacobian_jvp(const impl::rt_detail::CColumns<const T *> auto &xs,
+               const impl::rt_detail::CColumns<const T *> auto &v,
+               const impl::rt_detail::CColumns<T *> auto &f,
+               const impl::rt_detail::CColumns<T *> auto &g,
+               const impl::rt_detail::CColumns<T *> auto &dg,
+               std::size_t n) const {
+    return dispatch(Want::JacobianTangent, C::as_columns(C::widen(xs, v)),
+                    {.values = C::as_columns(f),
+                     .jacobian = C::as_columns(g),
+                     .hessian = C::as_columns(dg)},
+                    n);
+  }
+
+private:
+  [[nodiscard]] result<void> dispatch(Want want, std::span<const T *const> xs,
+                                      const Columns<T> &out,
+                                      std::size_t n) const {
+    return core_
+        ->checked(*lanes_, {.jacobian = jacobian_, .kept = kept_}, want, xs,
+                  out, n)
+        .transform([&](const auto &c) { core_->run(*c, xs, out, n); });
+  }
+
+  [[nodiscard]] result<void> gather(Want want, std::span<const T> at,
+                                    std::span<T> f, std::span<T> g,
+                                    std::span<T> dg = {}) const {
+    const auto xs = C::single_columns(at);
+    const auto fs = C::single_columns(f);
+    const auto gs = C::single_columns(g);
+    const auto dgs = C::single_columns(dg);
+    return dispatch(want, C::as_columns(xs),
+                    {.values = C::as_columns(fs),
+                     .jacobian = C::as_columns(gs),
+                     .hessian = C::as_columns(dgs)},
+                    1);
+  }
+
+  const C *core_;
+  std::vector<std::string> names_;
+  Jacobian jacobian_;
+  std::vector<std::size_t> kept_; // indices into the equation's cells
+  std::unique_ptr<typename C::Lanes> lanes_;
+};
+
 } // namespace ddx::rt::detail
+
+namespace ddx::rt {
+// What Equation::restrict() and System::restrict() answer.
+template <typename C> using Restricted = detail::Restricted<C>;
+} // namespace ddx::rt
