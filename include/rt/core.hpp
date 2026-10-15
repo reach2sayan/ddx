@@ -1276,6 +1276,16 @@ private:
   // One point through the batch path at n = 1, not the arena walk, so the
   // batch gate is the point gate.  Constant evaluation keeps it, having no
   // lane and nothing to refuse.
+  //
+  // The arena walk is the tail, not an `else` on the `if !consteval`: that
+  // branch would be an immediate function context, and what GCC then escalates
+  // under P2564 is not what either path says.  MSVC sees the tail as dead code
+  // instead -- it is, at run time -- hence the pragma, which has to sit outside
+  // the body: a code-generation warning takes the state at the opening brace.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4702) // unreachable code
+#endif
   [[nodiscard]] constexpr result<void>
   gather(Want want, std::span<const T> at, std::span<T> f,
          std::span<T> g = {}, std::span<T> h = {}) const {
@@ -1289,20 +1299,21 @@ private:
                        .jacobian = as_columns(gs),
                        .hessian = as_columns(hs)},
                       1);
-    } else {
-      auto wanted = roots_;
-      impl::append(wanted, derivative_.partial);
-      const auto values = evaluate_reachable(*arena_, wanted, at);
-      const auto pick = [&values](std::span<T> out, const auto &nodes) {
-        std::ranges::transform(nodes | std::views::take(out.size()),
-                               out.begin(),
-                               [&values](NodeId v) { return values[v]; });
-      };
-      pick(f, roots_);
-      pick(g, derivative_.partial);
-      return {};
     }
+    auto wanted = roots_;
+    impl::append(wanted, derivative_.partial);
+    const auto values = evaluate_reachable(*arena_, wanted, at);
+    const auto pick = [&values](std::span<T> out, const auto &nodes) {
+      std::ranges::transform(nodes | std::views::take(out.size()), out.begin(),
+                             [&values](NodeId v) { return values[v]; });
+    };
+    pick(f, roots_);
+    pick(g, derivative_.partial);
+    return {};
   }
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
   // Row-major rows x columns from the cells the pattern names, the zeros put
   // back.
