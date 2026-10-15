@@ -15,6 +15,9 @@
 #include <concepts>
 #include <cstdint>
 #include <iterator>
+#include <map>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -46,6 +49,44 @@ template <impl::Numeric T>
 constexpr void closes(const RTExpression<T> &z, const RTExpression<T> &f);
 namespace detail {
 struct Implicits;
+}
+
+// A function the caller supplies: `fn(in, out)` reads `arity` arguments and
+// writes the value, then -- `order` deep -- the first partials and the upper
+// triangle of the second, row-major.  Shared, so a frozen graph and a compiled
+// kernel keep it alive as long as they can call it; null in an arena restored
+// from a file until the caller binds it by name.
+template <impl::Numeric T>
+using ExternFn = std::function<void(std::span<const T>, std::span<T>)>;
+
+// Functions to bind by name when a saved equation is read back.
+template <impl::Numeric T>
+using ExternFns = std::map<std::string, ExternFn<T>, std::less<>>;
+
+template <impl::Numeric T> struct ExternEntry {
+  std::string name;
+  std::uint32_t arity = 0;
+  std::uint32_t order = 0;
+  std::shared_ptr<const ExternFn<T>> fn;
+};
+
+// An extern node's arguments, off any source that answers op_of and operands:
+// the list ExternArgs(first, rest) spells, `arity` long.
+[[nodiscard]] constexpr std::vector<NodeId>
+extern_arguments(const auto &source, NodeId args, std::size_t arity) {
+  std::vector<NodeId> out;
+  out.reserve(arity);
+  for (; arity > 1; --arity) {
+    const auto [first, rest, unused] = source.operands(args);
+    out.push_back(first);
+    args = rest;
+  }
+  out.push_back(args);
+  return out;
+}
+
+namespace detail {
+struct Externs;
 }
 
 // A named input: which kind of leaf, and its place among that kind.
@@ -148,6 +189,10 @@ public:
 
   [[nodiscard]] constexpr NodeId make(OpCode op, NodeId a, NodeId b = no_node,
                                       NodeId c = no_node) {
+    // Opaque: no rule folds a function the program supplies.
+    if (is_extern(op)) {
+      return intern({.op = op, .a = a, .b = b, .c = c});
+    }
     // fold() and the commutative swap are both binary questions; a third
     // operand means neither applies, and asking would hand a binary functor
     // three arguments.
@@ -198,6 +243,9 @@ public:
   }
   [[nodiscard]] constexpr std::optional<errc> broken() const {
     return broken_;
+  }
+  [[nodiscard]] constexpr std::span<const ExternEntry<T>> externs() const {
+    return externs_;
   }
   [[nodiscard]] constexpr Inputs inputs() const {
     return {.vars = vars_.names.size(),
@@ -271,6 +319,23 @@ private:
     }
   }
 
+  // Registering an extern, forming its nodes and binding a restored one's
+  // function: the extern factory's and the sweeps' alone.
+  friend struct detail::Externs;
+  constexpr std::uint32_t add_extern(ExternEntry<T> e) {
+    externs_.push_back(std::move(e));
+    return static_cast<std::uint32_t>(externs_.size() - 1);
+  }
+  constexpr NodeId extern_node(OpCode op, ExternSlot slot, NodeId args) {
+    return intern({.op = op, .a = args, .slot = slot.packed()});
+  }
+  constexpr NodeId extern_args(NodeId first, NodeId rest) {
+    return intern({.op = OpCode::ExternArgs, .a = first, .b = rest});
+  }
+  constexpr void bind(std::size_t i, std::shared_ptr<const ExternFn<T>> fn) {
+    externs_[i].fn = std::move(fn);
+  }
+
   // dz/ds for each implicit, by the implicit-function theorem, built the first
   // time a sweep reaches the leaf and kept: derivative.hpp's alone.
   friend struct detail::Implicits;
@@ -293,9 +358,11 @@ private:
                          std::vector<std::string> symbols,
                          std::vector<std::string> params,
                          std::vector<std::string> implicits,
-                         std::vector<NodeId> closures) {
+                         std::vector<NodeId> closures,
+                         std::vector<ExternEntry<T>> externs) {
     nodes_ = std::move(nodes);
     closures_ = std::move(closures);
+    externs_ = std::move(externs);
     vars_.names = std::move(symbols);
     params_.names = std::move(params);
     implicits_.names = std::move(implicits);
@@ -555,6 +622,7 @@ private:
   std::vector<Input> by_name_;
   std::vector<NodeId> closures_; // by implicit slot
   std::optional<errc> broken_;
+  std::vector<ExternEntry<T>> externs_;
 
   [[nodiscard]] constexpr Named &named(OpCode op) {
     return op == OpCode::Var ? vars_ : op == OpCode::Param ? params_ : implicits_;

@@ -6,8 +6,13 @@
 #include "util/error.hpp"
 #include "util/scope_guard.hpp"
 
+#include <array>
 #include <concepts> // std::same_as
+#include <memory>
 #include <optional>
+#include <ranges>
+#include <span>
+#include <string>
 #include <string_view>
 #include <type_traits> // std::remove_cvref_t
 #include <utility>     // std::move
@@ -29,6 +34,32 @@ struct Rooting {
   [[nodiscard]] static constexpr std::optional<errc>
   why(const RTExpression<T> &e) noexcept {
     return e.why();
+  }
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr RTExpression<T> poisoned(errc why) noexcept {
+    return RTExpression<T>::poison(why);
+  }
+};
+
+// The Builder's extern half, for the factory below and the sweeps.
+struct Externs {
+  template <impl::Numeric T>
+  static constexpr std::uint32_t add(Builder<T> &b, ExternEntry<T> e) {
+    return b.add_extern(std::move(e));
+  }
+  template <impl::Numeric T>
+  static constexpr NodeId node(Builder<T> &b, OpCode op, ExternSlot slot,
+                               NodeId args) {
+    return b.extern_node(op, slot, args);
+  }
+  template <impl::Numeric T>
+  static constexpr NodeId args(Builder<T> &b, NodeId first, NodeId rest) {
+    return b.extern_args(first, rest);
+  }
+  template <impl::Numeric T>
+  static constexpr void bind(Builder<T> &b, std::size_t i,
+                             std::shared_ptr<const ExternFn<T>> fn) {
+    b.bind(i, std::move(fn));
   }
 };
 } // namespace detail
@@ -310,6 +341,85 @@ template <impl::Numeric T>
   return RTExpression<T>{b, b.constant(v)};
 }
 
+// What extern_fn() registers: a name for files and errors, how many
+// arguments, and how many orders of partials the function fills -- 1 or 2,
+// since no call ddx answers asks for a third.
+struct ExternSpec {
+  std::string_view name;
+  std::size_t arity = 1;
+  std::size_t order = 2;
+};
+
+// extern_fn()'s answer: called on expressions, it puts the function into their
+// graph, and every derivative through it reads the partials it supplies.
+template <impl::Numeric T> class ExternFunction {
+public:
+  constexpr ExternFunction(Builder<T> *b, std::uint32_t index,
+                           std::size_t arity) noexcept
+      : b_{b}, index_{index}, arity_{arity} {}
+  constexpr explicit ExternFunction(errc why) noexcept : why_{why} {}
+
+  [[nodiscard]] constexpr RTExpression<T>
+  operator()(std::span<const RTExpression<T>> args) const {
+    if (why_) {
+      return detail::Rooting::poisoned<T>(*why_);
+    }
+    if (args.size() != arity_) {
+      return detail::Rooting::poisoned<T>(errc::wrong_argument_count);
+    }
+    for (const auto &a : args) {
+      if (const auto why = detail::Rooting::why(a)) {
+        return detail::Rooting::poisoned<T>(*why);
+      }
+    }
+    // The list from the back: a list of one is the argument itself.
+    NodeId list = args.back().id(*b_);
+    for (const auto &a : args | std::views::reverse | std::views::drop(1)) {
+      list = detail::Externs::args(*b_, a.id(*b_), list);
+    }
+    return RTExpression<T>{
+        *b_, detail::Externs::node(*b_, OpCode::Extern,
+                                   {.function = index_, .component = 0}, list)};
+  }
+  template <typename... A>
+    requires(std::convertible_to<A, RTExpression<T>> && ...)
+  [[nodiscard]] constexpr RTExpression<T> operator()(const A &...args) const {
+    const std::array<RTExpression<T>, sizeof...(A)> all{
+        RTExpression<T>{args}...};
+    return (*this)(std::span<const RTExpression<T>>{all});
+  }
+
+private:
+  Builder<T> *b_ = nullptr;
+  std::uint32_t index_ = 0;
+  std::size_t arity_ = 0;
+  std::optional<errc> why_;
+};
+
+// A function of `spec.arity` arguments the caller computes, with its partials:
+// `fn(in, out)` writes the value, then the first partials, then -- at order 2
+// -- the upper triangle of the second, row-major.  ddx calls it from any
+// thread that sweeps, as often as it needs, so it must be re-entrant and must
+// not throw.
+template <impl::Numeric T>
+[[nodiscard]] ExternFunction<T>
+extern_fn(Builder<T> &b, ExternSpec spec,
+          std::type_identity_t<ExternFn<T>> fn) {
+  if (spec.arity == 0) {
+    return ExternFunction<T>{errc::wrong_argument_count};
+  }
+  if (spec.order < 1 || spec.order > 2 || !fn) {
+    return ExternFunction<T>{errc::extern_order};
+  }
+  const auto index = detail::Externs::add(
+      b, ExternEntry<T>{.name = std::string{spec.name},
+                        .arity = static_cast<std::uint32_t>(spec.arity),
+                        .order = static_cast<std::uint32_t>(spec.order),
+                        .fn = std::make_shared<const ExternFn<T>>(
+                            std::move(fn))});
+  return ExternFunction<T>{&b, index, spec.arity};
+}
+
 // The arena var() registers into while an equation() callback runs.  Thread-
 // local, and held by the same guard the drivers seed derivatives with.
 namespace detail {
@@ -342,6 +452,14 @@ template <impl::Numeric T>
   return (detail::current_arena<T> == nullptr)
              ? RTExpression<T>::poison(errc::no_arena)
              : param(*detail::current_arena<T>, name);
+}
+// The spelling a model uses: registered in the arena its callback runs in.
+template <impl::Numeric T = double>
+[[nodiscard]] ExternFunction<T>
+extern_fn(ExternSpec spec, std::type_identity_t<ExternFn<T>> fn) {
+  return detail::current_arena<T> == nullptr
+             ? ExternFunction<T>{errc::no_arena}
+             : extern_fn(*detail::current_arena<T>, spec, std::move(fn));
 }
 template <impl::Numeric T>
 [[nodiscard]] RTExpression<T> implicit(std::string_view name) noexcept {

@@ -124,6 +124,33 @@ template <std::size_t W, impl::Numeric U>
   return [tape](NodeId v) { return tape.data() + std::size_t{v} * W; };
 }
 
+// An extern node, W lanes of it: the function is called once per lane and
+// the component this node names is kept.  An argument list's own value is
+// never read.  Opaque to every scalar but the function's own, which
+// computes_at() tells a sweep before it gets here.
+template <std::size_t W, impl::Numeric T, impl::Numeric U>
+constexpr void lanes_extern(const Builder<T> &b, const Node<T> &n, U *out,
+                            auto &&lane) {
+  if constexpr (std::same_as<U, T>) {
+    if (n.op != OpCode::ExternArgs) {
+      const auto [fn, component] = ExternSlot::of(n.slot);
+      const ExternEntry<T> &e = b.externs()[fn];
+      const auto args = extern_arguments(b, n.a, e.arity);
+      std::vector<T> in(args.size());
+      std::vector<T> answer(extern_components(e.arity, e.order));
+      for (std::size_t k = 0; k < W; ++k) {
+        for (const auto [j, arg] : args | std::views::enumerate) {
+          in[static_cast<std::size_t>(j)] = lane(arg)[k];
+        }
+        (*e.fn)(in, answer);
+        out[k] = answer[component];
+      }
+      return;
+    }
+  }
+  std::ranges::fill_n(out, W, U{});
+}
+
 // The only place that turns a Step into numbers.
 template <std::size_t W, impl::Numeric T>
 DDX_ALWAYS_INLINE constexpr void sweep_step(const Builder<T> &b,
@@ -148,6 +175,8 @@ DDX_ALWAYS_INLINE constexpr void sweep_step(const Builder<T> &b,
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }
+  } else if (is_extern(n.op)) {
+    detail::lanes_extern<W>(b, n, out, lane);
   } else {
     detail::lanes_apply<W>(n, out, lane);
   }

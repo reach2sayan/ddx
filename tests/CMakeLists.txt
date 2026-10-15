@@ -78,6 +78,17 @@ endif ()
 
 # --- packaging ---------------------------------------------------------------
 # tests/package consumed out of tree, against the build tree and an install prefix.
+# rt/eigen.hpp against real Eigen, which is fetched only when this is on.
+option(DDX_TEST_EIGEN "Build the Eigen interop test, fetching Eigen's headers" OFF)
+if (DDX_TEST_EIGEN)
+    ddx_use_eigen()
+    add_executable(tests_eigen eigen/tests_eigen.cpp)
+    target_link_libraries(tests_eigen PRIVATE gtest_main ddx::rt ddx_eigen)
+    ddx_target_flags(tests_eigen)
+    ddx_runtime_deps(tests_eigen)
+    gtest_discover_tests(tests_eigen ${DDX_TEST_ENV})
+endif ()
+
 option(DDX_TEST_PACKAGE "Build the out-of-tree consumer tests" ${PROJECT_IS_TOP_LEVEL})
 if (DDX_TEST_PACKAGE AND DDX_INSTALL AND DDX_SANITIZE STREQUAL "off")
     set(DDX_PACKAGE_COMPONENTS rt dual)

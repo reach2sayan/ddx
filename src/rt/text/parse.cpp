@@ -159,7 +159,8 @@ constexpr auto signed_operand = [](auto &ctx) {
 
 // The whole of the function table is opcode_of and arity_of, so a
 // transcendental added to the opcode tables becomes callable from text with no
-// edit here.  Both leaves answer to opcode_of too, and neither is callable.
+// edit here.  The leaves and the extern rows answer to opcode_of too, and none
+// is callable: an extern is a function the program registered, not a name.
 //
 // Its own two codes rather than unknown_symbol and wrong_arity: those speak
 // about a *point* -- its symbols and how many values it carries -- and reading
@@ -172,7 +173,7 @@ constexpr auto apply = [](auto &ctx) {
     building.why = why;
     _pass(ctx) = false;
   };
-  if (!op || is_leaf(*op)) {
+  if (!op || is_leaf(*op) || is_extern(*op)) {
     refuse(errc::unknown_function);
   } else if (arity_of(*op) != invocation.args.size()) {
     refuse(errc::wrong_argument_count);

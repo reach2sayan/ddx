@@ -49,6 +49,15 @@ struct Object {
   return it == objects.end() ? nullptr : &*it;
 }
 
+// An extern function as a file records it: what to bind it by, and its
+// shape.  The function itself is the caller's to supply on load.
+struct ExternRecord {
+  std::string name;
+  std::uint32_t arity = 0;
+  std::uint32_t order = 0;
+  BOOST_DESCRIBE_CLASS(ExternRecord, (), (name, arity, order), (), ())
+};
+
 // All the C++ facade and PyEquation share, and so the only thing serialised.
 template <impl::Numeric T> struct Snapshot {
   // Each kind of named input in declaration order, which is slot order.
@@ -56,6 +65,7 @@ template <impl::Numeric T> struct Snapshot {
   std::vector<std::string> params;
   std::vector<std::string> implicits;
   std::vector<NodeId> closures; // the residual each implicit is a root of
+  std::vector<ExternRecord> externs;
   std::vector<Node<T>> nodes;
   std::vector<NodeId> roots;
   Jacobian jacobian;
@@ -70,7 +80,8 @@ template <impl::Numeric T> struct Snapshot {
   std::uint32_t model_nodes = 0;
   std::vector<Object> objects;
   BOOST_DESCRIBE_CLASS(Snapshot, (),
-                       (symbols, params, implicits, closures, nodes, roots,
+                       (symbols, params, implicits, closures, externs, nodes,
+                        roots,
                         jacobian,
                         hessians, hvp, vjp,
                         jvp, options, model_nodes, objects),

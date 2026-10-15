@@ -49,10 +49,12 @@ public:
 
   // Nothing built and nothing swept: any output count the file holds.
   [[nodiscard]] static result<System> load(const std::filesystem::path &path,
-                                           Cache memo = {})
+                                           Cache memo = {},
+                                           const ExternFns<T> &fns = {})
     requires std::floating_point<T>
   {
-    return Base::template load<System>(path, std::move(memo), std::nullopt);
+    return Base::template load<System>(path, std::move(memo), std::nullopt,
+                                       fns);
   }
 
   // m long, always a vector.
@@ -74,8 +76,9 @@ template <impl::Numeric T = double, CValueCache<T> C = detail::NoCache<T>>
 template <impl::Numeric T = double, CValueCache<T> C = detail::NoCache<T>>
   requires std::floating_point<T>
 [[nodiscard]] result<System<T, C>>
-load_system(const std::filesystem::path &path, C memo = {}) {
-  return System<T, C>::load(path, std::move(memo));
+load_system(const std::filesystem::path &path, C memo = {},
+            const ExternFns<T> &fns = {}) {
+  return System<T, C>::load(path, std::move(memo), fns);
 }
 
 } // namespace ddx::rt

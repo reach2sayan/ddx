@@ -11,6 +11,7 @@
 #include <ranges>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // The runtime mirror of the compile-time operation set.  Rows are (factory
@@ -59,13 +60,25 @@ namespace ddx::rt {
 #define DDX_RT_TERNARY_TABLE(X)                                                \
   X(select, Select, "select", impl::detail::select_impl)
 
+// A function the caller supplies with its own partials, of any number of
+// arguments.  Extern (the value) and ExternD (one partial -- which, and of
+// which function, packed into the slot) take one operand: the argument list.
+// A list of one is the argument itself; a longer one is ExternArgs(first,
+// rest), the same rule all the way down, so every node holds only real
+// operands.  The last cell is the arity.
+#define DDX_RT_EXTERN_TABLE(X)                                                 \
+  X(extern_call, Extern, "extern", 1)                                          \
+  X(extern_partial, ExternD, "extern_d", 1)                                    \
+  X(extern_args, ExternArgs, "extern_args", 2)
+
 #define DDX_RT_OP_TABLE(X)                                                     \
   DDX_RT_LEAF_TABLE(X)                                                         \
   DDX_RT_UNARY_TABLE(X)                                                        \
   DDX_UNARY_MATH_TABLE(X)                                                      \
   DDX_RT_BINARY_TABLE(X)                                                       \
   DDX_RT_COMPARE_TABLE(X)                                                      \
-  DDX_RT_TERNARY_TABLE(X)
+  DDX_RT_TERNARY_TABLE(X)                                                      \
+  DDX_RT_EXTERN_TABLE(X)
 
 enum class OpCode : std::uint8_t {
 #define DDX_RT_ENUMERATOR(fn, Op, label, ...) Op,
@@ -111,6 +124,10 @@ inline constexpr std::array op_info = [] {
 #define DDX_RT_ROW(fn, Op, label, ...)                                         \
   t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 3};
   DDX_RT_TERNARY_TABLE(DDX_RT_ROW)
+#undef DDX_RT_ROW
+#define DDX_RT_ROW(fn, Op, label, arity)                                       \
+  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, arity};
+  DDX_RT_EXTERN_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
   return t;
 }();
@@ -171,6 +188,46 @@ template <impl::Numeric T>
 
 [[nodiscard]] constexpr bool is_leaf(OpCode op) noexcept {
   return arity_of(op) == 0;
+}
+
+[[nodiscard]] constexpr bool is_extern(OpCode op) noexcept {
+  return op == OpCode::Extern || op == OpCode::ExternD ||
+         op == OpCode::ExternArgs;
+}
+
+// An extern node's slot: which registered function, and which component of
+// its answer -- 0 the value, 1..k the first partials, then the upper triangle
+// of the second, row-major.
+struct ExternSlot {
+  std::uint32_t function = 0;
+  std::uint32_t component = 0;
+
+  [[nodiscard]] static constexpr ExternSlot of(std::uint32_t slot) noexcept {
+    return {.function = slot >> 8, .component = slot & 0xFFu};
+  }
+  [[nodiscard]] constexpr std::uint32_t packed() const noexcept {
+    return (function << 8) | component;
+  }
+};
+
+// The answer's length for a function of `arity` arguments that fills `order`
+// orders of partials.
+[[nodiscard]] constexpr std::size_t extern_components(std::size_t arity,
+                                                      std::size_t order) {
+  return 1 + (order >= 1 ? arity : 0) +
+         (order >= 2 ? arity * (arity + 1) / 2 : 0);
+}
+// Where d/dx_l (component 1 + l) and d2/dx_l dx_m (l <= m) sit.
+[[nodiscard]] constexpr std::uint32_t first_partial(std::size_t l) {
+  return static_cast<std::uint32_t>(1 + l);
+}
+[[nodiscard]] constexpr std::uint32_t
+second_partial(std::size_t arity, std::size_t l, std::size_t m) {
+  if (m < l) {
+    std::swap(l, m);
+  }
+  return static_cast<std::uint32_t>(1 + arity + l * arity - l * (l - 1) / 2 +
+                                    (m - l));
 }
 
 // How many input columns of each kind a call passes, in the order it passes

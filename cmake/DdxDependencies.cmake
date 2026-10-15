@@ -23,6 +23,23 @@ FetchContent_Declare(googletest
         SYSTEM
 )
 
+# --- Eigen, for the interop test only ------------------------------------------
+# Headers only, never built, and never a dependency of ddx itself.
+set(DDX_EIGEN_VERSION "3.4.0" CACHE STRING "Eigen release the interop test fetches")
+FetchContent_Declare(eigen
+        URL https://gitlab.com/libeigen/eigen/-/archive/${DDX_EIGEN_VERSION}/eigen-${DDX_EIGEN_VERSION}.tar.gz
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SOURCE_SUBDIR ddx-does-not-build-eigen
+)
+
+macro(ddx_use_eigen)
+    if (NOT TARGET ddx_eigen)
+        FetchContent_MakeAvailable(eigen)
+        add_library(ddx_eigen INTERFACE)
+        target_include_directories(ddx_eigen SYSTEM INTERFACE "${eigen_SOURCE_DIR}")
+    endif ()
+endmacro()
+
 # --- Boost -------------------------------------------------------------------
 # Fetched and pinned, never found; DDX_BOOST_INCLUDEDIR is the only override.
 set(DDX_BOOST_INCLUDEDIR "" CACHE PATH "A Boost include root to use instead of the pinned fetch; must hold boost/version.hpp")

@@ -35,7 +35,8 @@ public:
   // Every refusal is the same one: the file parsed, and does not hold.  The
   // order is load-bearing -- each check is what the next one indexes with.
   [[nodiscard]] result<Verified<T>> operator()() && {
-    return symbols() && nodes() && vars() && reachable() && jacobian() &&
+    return symbols() && nodes() && vars() && externs() && reachable() &&
+                   jacobian() &&
                    hessians() && seeded() && objects()
                ? result<Verified<T>>{Verified<T>{std::move(s_)}}
                : fail(errc::archive_corrupt);
@@ -104,6 +105,35 @@ private:
     return one_each(OpCode::Var, s_.symbols.size()) &&
            one_each(OpCode::Param, s_.params.size()) &&
            one_each(OpCode::Implicit, s_.implicits.size());
+  }
+
+  // Every extern node names a registered function and one of its components,
+  // and its argument list is as long as the function's arity: the interpreter
+  // and the sweeps walk it without a bound.
+  [[nodiscard]] bool externs() const {
+    return std::ranges::all_of(s_.externs,
+                               [](const ExternRecord &e) {
+                                 return e.arity >= 1 && e.order >= 1 &&
+                                        e.order <= 2;
+                               }) &&
+           std::ranges::all_of(s_.nodes, [this](const Node<T> &node) {
+             if (node.op != OpCode::Extern && node.op != OpCode::ExternD) {
+               return true;
+             }
+             const auto [fn, component] = ExternSlot::of(node.slot);
+             if (fn >= s_.externs.size()) {
+               return false;
+             }
+             const ExternRecord &e = s_.externs[fn];
+             NodeId args = node.a;
+             for (auto left = e.arity; left > 1; --left) {
+               if (s_.nodes[args].op != OpCode::ExternArgs) {
+                 return false;
+               }
+               args = s_.nodes[args].b;
+             }
+             return component < extern_components(e.arity, e.order);
+           });
   }
 
   [[nodiscard]] bool reachable() const {
@@ -240,7 +270,12 @@ public:
   [[nodiscard]] Rebuilt<T> rebuild() && {
     auto arena = std::make_unique<Builder<T>>();
     arena->restore(std::move(s_.nodes), s_.symbols, s_.params, s_.implicits,
-                   s_.closures);
+                   s_.closures,
+                   s_.externs | std::views::transform([](const ExternRecord &e) {
+                     return ExternEntry<T>{
+                         .name = e.name, .arity = e.arity, .order = e.order,
+                         .fn = nullptr};
+                   }) | impl::to<std::vector<ExternEntry<T>>>());
     return {.arena = std::move(arena), .rest = std::move(s_)};
   }
   [[nodiscard]] Snapshot<T> release() && noexcept { return std::move(s_); }

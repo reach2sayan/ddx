@@ -353,6 +353,10 @@ PYBIND11_MODULE(_ddx, m) {
   for (const auto i : std::views::iota(0uz, rt::op_count)) {
     const auto op = static_cast<rt::OpCode>(i);
     const std::string name{rt::name_of(op)};
+    // An extern is a function the program registers, not one to call by name.
+    if (rt::is_extern(op)) {
+      continue;
+    }
     if (rt::arity_of(op) == 1) {
       m.def(
           name.c_str(), [op](const PyExpression &u) { return unary(op, u); },

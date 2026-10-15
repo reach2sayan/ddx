@@ -95,11 +95,13 @@ public:
                                            std::move(owned));
   }
 
-  [[nodiscard]] static result<Equation> load(const std::filesystem::path &path,
-                                             Cache memo = {})
+  [[nodiscard]] static result<Equation>
+  load(const std::filesystem::path &path, Cache memo = {},
+       const rt::ExternFns<T> &fns = {})
     requires std::floating_point<T>
   {
-    return Base::template load<Equation>(path, std::move(memo), output_dim);
+    return Base::template load<Equation>(path, std::move(memo), output_dim,
+                                         fns);
   }
 
   [[nodiscard]] constexpr auto
@@ -202,17 +204,19 @@ template <impl::Numeric T = double, CValueCache<T> C = detail::NoCache<T>>
 // An equation from a file and nothing else: symbols, arena, Jacobian and
 // colouring all come off disk, and no sweep runs.  The output count is part of
 // the type, so a file holding some other number is refused, not adapted to.
+// An extern function the file names is bound from `fns` by name.
 //
 //   const auto eq = ddx::rt::load("f.ddx");        // one function
 //   const auto eq = ddx::rt::load<double, 3>("f.ddx");
 template <impl::Numeric T = double, std::size_t Outputs = 1,
           CValueCache<T> C = detail::NoCache<T>>
   requires std::floating_point<T>
-[[nodiscard]] auto load(const std::filesystem::path &path, C memo = {}) {
+[[nodiscard]] auto load(const std::filesystem::path &path, C memo = {},
+                        const ExternFns<T> &fns = {}) {
   static_assert(Outputs > 0, "load: a system needs at least one function");
   return impl::index_apply<Outputs - 1>([&]<std::size_t... Rest>() {
     return impl::Equation<RTExpression<T>, detail::Repeat<Rest, T>..., C>::load(
-        path, std::move(memo));
+        path, std::move(memo), fns);
   });
 }
 

@@ -133,6 +133,13 @@ dispatch(OpCode op, auto &&visit) {
     return visit(Row<void, true, 0>{});
     DDX_RT_LEAF_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
+    // Opaque to every scalar: the interpreter calls the function itself, and
+    // supports() saying no is what keeps a Taylor sweep away from one.
+#define DDX_RT_DISPATCH(fn, Op, label, arity)                                  \
+  case OpCode::Op:                                                             \
+    return visit(Row<void, false, arity>{});
+    DDX_RT_EXTERN_TABLE(DDX_RT_DISPATCH)
+#undef DDX_RT_DISPATCH
   }
   std::unreachable();
 }

@@ -202,6 +202,12 @@ result<Kernel> Device::compile(const rt::Graph<double> &g,
   using clock = std::chrono::steady_clock;
   CompileReport discard;
   CompileReport &rep = report != nullptr ? *report : discard;
+  // Device code cannot call into the host, so a graph holding a function the
+  // program supplies is the sweep's: refused, and the lane interprets.
+  if (!g.externs().empty()) {
+    return refused(errc::device_compile,
+                   "an extern function runs on the host only");
+  }
   const auto start = clock::now();
   const std::string source = detail::emit_source(g);
   const auto emitted = clock::now();

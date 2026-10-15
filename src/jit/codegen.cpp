@@ -16,6 +16,7 @@
 #include <llvm/Support/Alignment.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <array>
 #include <ranges>
 #include <span>
@@ -65,6 +66,16 @@ llvm::Function *libm_decl(llvm::Module &m, std::string_view name,
   fn->setWillReturn();
   fn->setDoesNotFreeMemory();
   return fn;
+}
+
+// The one way out of a kernel into a function the program supplied: the
+// function's address and this one's are compiled in as constants, so the
+// kernel calls through the graph that owns the function.
+void call_extern(const void *fn, const double *in, std::uint64_t arity,
+                 double *answer, std::uint64_t components) {
+  (*static_cast<const rt::ExternFn<double> *>(fn))(
+      {in, static_cast<std::size_t>(arity)},
+      {answer, static_cast<std::size_t>(components)});
 }
 
 // W points per iteration, as a double at W == 1 and <W x double> otherwise.
@@ -154,6 +165,54 @@ public:
     default:
       return call(op, {l, r});
     }
+  }
+
+  // One call per lane: the function has a scalar entry point only, as a libm
+  // call does.  Inactive lanes call it too, at the 1.0 a masked load reads, and
+  // their answers are never stored.
+  llvm::Value *extern_call(const rt::ExternEntry<double> &e,
+                           std::uint32_t component,
+                           std::span<llvm::Value *const> args) const {
+    llvm::Function *const kernel = b_.GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entry(&kernel->getEntryBlock(),
+                            kernel->getEntryBlock().getFirstInsertionPt());
+    llvm::Type *const f64 = b_.getDoubleTy();
+    llvm::Type *const i64 = b_.getInt64Ty();
+    llvm::PointerType *const ptr = b_.getPtrTy();
+    const auto components = rt::extern_components(e.arity, e.order);
+    llvm::Value *const in = entry.CreateAlloca(
+        f64, llvm::ConstantInt::get(i64, e.arity), "extern.in");
+    llvm::Value *const answer = entry.CreateAlloca(
+        f64, llvm::ConstantInt::get(i64, components), "extern.out");
+    const auto address = [&](const void *p) {
+      return llvm::ConstantExpr::getIntToPtr(
+          llvm::ConstantInt::get(i64, reinterpret_cast<std::uintptr_t>(p)),
+          ptr);
+    };
+    auto *const fty = llvm::FunctionType::get(b_.getVoidTy(),
+                                              {ptr, ptr, i64, ptr, i64}, false);
+    llvm::Value *const callee =
+        address(reinterpret_cast<const void *>(&call_extern));
+    llvm::Value *const fn = address(e.fn.get());
+
+    llvm::Value *out = lanes_.vector()
+                           ? static_cast<llvm::Value *>(
+                                 llvm::PoisonValue::get(lanes_.ty))
+                           : nullptr;
+    for (const unsigned lane : std::views::iota(0u, lanes_.width)) {
+      for (const auto [j, a] : args | std::views::enumerate) {
+        b_.CreateStore(lanes_.vector() ? b_.CreateExtractElement(a, lane) : a,
+                       b_.CreateConstInBoundsGEP1_64(
+                           f64, in, static_cast<std::uint64_t>(j)));
+      }
+      b_.CreateCall(fty, callee,
+                    {fn, in, llvm::ConstantInt::get(i64, e.arity), answer,
+                     llvm::ConstantInt::get(i64, components)});
+      llvm::Value *const v = b_.CreateLoad(
+          f64, b_.CreateConstInBoundsGEP1_64(f64, answer, component));
+      out = lanes_.vector() ? b_.CreateInsertElement(out, v, lane) : v;
+    }
+    return out;
   }
 
   // Both arms are already computed, so this is one blend: no branch and no
@@ -301,6 +360,21 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
       continue;
     }
     const auto operands = g.operands(v);
+    if (p.op == rt::OpCode::ExternArgs) {
+      value[v] = emit.constant(0.0); // a list: nothing reads its value
+      continue;
+    }
+    if (rt::is_extern(p.op)) {
+      const auto [fn, component] = rt::ExternSlot::of(p.slot);
+      const auto &e = g.externs()[fn];
+      const auto args = rt::extern_arguments(g, operands[0], e.arity) |
+                        std::views::transform([&value](rt::NodeId a) {
+                          return value[a];
+                        }) |
+                        impl::to<std::vector<llvm::Value *>>();
+      value[v] = emit.extern_call(e, component, args);
+      continue;
+    }
     switch (rt::arity_of(p.op)) {
     case 0:
       value[v] = p.op == rt::OpCode::Const

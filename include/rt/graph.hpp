@@ -172,6 +172,7 @@ public:
     g.coloring_ = std::move(coloring);
     g.jacobian_ = std::move(jacobian);
     g.inputs_ = b.inputs();
+    g.externs_.assign(b.externs().begin(), b.externs().end());
     g.names_ = b.symbols();
     impl::append(g.names_, b.params());
     impl::append(g.names_, b.implicits());
@@ -232,6 +233,12 @@ public:
   [[nodiscard]] const Inputs &inputs() const { return inputs_; }
   [[nodiscard]] const std::vector<std::string> &names() const {
     return names_;
+  }
+
+  // The functions extern nodes call, shared with the arena: a kernel lowered
+  // from this graph calls them through the pointers held here.
+  [[nodiscard]] std::span<const ExternEntry<T>> externs() const {
+    return externs_;
   }
 
   // How many input columns `xs` carries: the symbol count is not the width.
@@ -331,6 +338,7 @@ private:
   Sparsity jacobian_;
   Inputs inputs_;
   std::vector<std::string> names_;
+  std::vector<ExternEntry<T>> externs_;
   std::vector<bool> live_;
   std::vector<NodeId> live_order_;
   std::vector<Step> schedule_;

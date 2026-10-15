@@ -127,6 +127,53 @@ struct Implicits {
   }
 };
 
+// Which component of an extern's answer is the derivative of `component` in
+// argument `l`: a first partial off the value, a second off a first.  Nothing
+// past that: no call ddx answers asks for a third, and an order-1 function is
+// refused before a second-order sweep reaches it.
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::optional<std::uint32_t>
+up_from(const ExternEntry<T> &e, std::uint32_t component, std::size_t l) {
+  if (component == 0) {
+    return first_partial(l);
+  }
+  if (component <= e.arity && e.order >= 2) {
+    return second_partial(e.arity, component - 1, l);
+  }
+  return std::nullopt;
+}
+
+// The extern node a component names: the same function, the same argument
+// list, another slot.
+template <impl::Numeric T>
+[[nodiscard]] constexpr RTExpression<T>
+component(Builder<T> &b, std::uint32_t fn, std::uint32_t c, NodeId args) {
+  return RTExpression<T>{
+      b, Externs::node(b, OpCode::ExternD, {.function = fn, .component = c},
+                       args)};
+}
+
+// Whether a function the roots -- or an implicit's residual -- reach supplies
+// first partials only, so a second-order call has nothing to read.
+template <impl::Numeric T>
+[[nodiscard]] constexpr bool first_order_only(const Builder<T> &b,
+                                              std::span<const NodeId> roots) {
+  if (std::ranges::all_of(b.externs(), [](const ExternEntry<T> &e) {
+        return e.order >= 2;
+      })) {
+    return false;
+  }
+  std::vector<NodeId> wanted(roots.begin(), roots.end());
+  impl::append(wanted, b.closures());
+  const auto live = reachable(b, wanted);
+  return std::ranges::any_of(
+      std::views::iota(NodeId{0}, static_cast<NodeId>(b.size())),
+      [&](NodeId v) {
+        return live[v] && b[v].op == OpCode::Extern &&
+               b.externs()[ExternSlot::of(b[v].slot).function].order < 2;
+      });
+}
+
 // Why the implicits cannot be differentiated, if they cannot: a misuse of
 // closes(), an implicit nothing closed, or a residual reaching another
 // implicit -- which would need a linear solve, not a quotient.
@@ -220,7 +267,18 @@ template <impl::Numeric T>
     }
     const RTExpression<T> a = expr(adj[v]);
     const NodeId g = guard[v];
-    if (arity_of(node.op) == 1) {
+    if (node.op == OpCode::Extern || node.op == OpCode::ExternD) {
+      // The chain rule through a function that differentiated itself: each
+      // argument gets the adjoint times the component one order up.
+      const auto [fn, at] = ExternSlot::of(node.slot);
+      const ExternEntry<T> e = b.externs()[fn];
+      for (const auto [l, arg] :
+           extern_arguments(b, node.a, e.arity) | std::views::enumerate) {
+        if (const auto up = detail::up_from(e, at, static_cast<std::size_t>(l))) {
+          add_to(arg, g, a * detail::component(b, fn, *up, node.a));
+        }
+      }
+    } else if (arity_of(node.op) == 1) {
       add_to(node.a, g,
              detail::contribution(node.op, a, expr(node.a), expr(v)));
     } else if (arity_of(node.op) == 3) {
@@ -284,6 +342,20 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
 
   for (const NodeId v : detail::live_ids(live)) {
     const auto node = b[v]; // by value: building below may reallocate
+    if (node.op == OpCode::Extern || node.op == OpCode::ExternD) {
+      const auto [fn, at] = ExternSlot::of(node.slot);
+      const ExternEntry<T> e = b.externs()[fn];
+      RTExpression<T> sum{0};
+      for (const auto [l, arg] :
+           extern_arguments(b, node.a, e.arity) | std::views::enumerate) {
+        if (const auto up = detail::up_from(e, at, static_cast<std::size_t>(l))) {
+          sum = sum + detail::component(b, fn, *up, node.a) *
+                          RTExpression<T>{b, d[arg]};
+        }
+      }
+      d[v] = sum.id(b);
+      continue;
+    }
     if (node.op == OpCode::Implicit) {
       // dz = sum_s dz/dx_s dx_s: z moves with every symbol its residual does.
       const auto dz = detail::Implicits::row(b, node.slot);

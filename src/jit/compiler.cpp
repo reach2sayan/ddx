@@ -749,7 +749,11 @@ struct Compiler::Impl {
                                           const Options &opt,
                                           CompileReport &rep) {
     Host host = host_of(self);
-    const bool caching = !opt.cache_dir.empty();
+    // A kernel calling an extern function has that function's address -- and
+    // the trampoline's -- compiled in, which no other process shares: it is
+    // neither cached on disk nor kept for a file.
+    const bool portable = g.externs().empty();
+    const bool caching = !opt.cache_dir.empty() && portable;
     Codegen emitted = opt.codegen;
     emitted.lanes = *Lanes::exactly(host.lanes_for(opt));
     const std::uint64_t key =
@@ -772,7 +776,7 @@ struct Compiler::Impl {
 
     Options effective = opt;
     // A compile whose object will be stored has to keep it, whatever was asked.
-    effective.retain_object = effective.retain_object || caching;
+    effective.retain_object = (effective.retain_object || caching) && portable;
 
     Compilation work{std::move(host), g, effective,
                      "ddx_kernel_" + std::to_string(self->counter++), rep};

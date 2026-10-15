@@ -199,6 +199,7 @@ cmake --preset release_jit -DLLVM_DIR=/opt/llvm-20/lib/cmake/llvm
 | `DDX_BUILD_PYTHON` | `OFF` | build the pybind11 extension module |
 | `DDX_BUILD_TESTS` | `ON` | build the GoogleTest tests |
 | `DDX_SANITIZE` | `off` | `thread`, `address` or `undefined` — instrument the build |
+| `DDX_TEST_EIGEN` | `off` | fetch Eigen's headers and build the `rt/eigen.hpp` interop test |
 | `DDX_INSTALL` | on if top-level | generate the install and `find_package` rules |
 | `ENABLE_NATIVE_ARCH` | `ON` | `-march=native`, else `x86-64-v3`; x86 only, arm64 takes the compiler's default |
 | `DDX_FP_FLAGS` | `ON` | `-ffp-contract=fast -fno-math-errno` |
@@ -335,6 +336,40 @@ implicit inputs below, by position or by name. `inputs()` lists them in that
 order and `input_count()` counts them, and a batch passes one column for each.
 A name is one kind of input, so naming `"k"` as both a symbol and a parameter
 poisons the equation with `errc::name_clash`.
+
+### Functions you supply
+
+`rt::extern_fn(spec, fn)` puts a function of your own into the graph — a
+correlation with published derivatives, an iteration ddx has no business
+re-tracing. `fn(in, out)` reads the arguments and writes the value, then the
+first partials, then (at `order = 2`) the upper triangle of the second, row
+by row. The chain rule runs around it like any other operation:
+
+```cpp
+// eps(T, P) and its partials, from wherever they come.
+void eps_tp(std::span<const double> in, std::span<double> out);
+
+const auto eq = rt::equation([] {
+  const auto t = rt::var("T");
+  const auto p = rt::var("P");
+  const auto eps = rt::extern_fn({.name = "eps", .arity = 2, .order = 2}, eps_tp);
+  return log(1.0 + eps(t, p)) * t;
+});
+```
+
+Any number of arguments, and the same expression may be passed twice. `order`
+is 1 or 2 — no call ddx answers asks for a third derivative — and with first
+partials only, `hessian`, `hvp` and `jacobian_jvp` answer
+`errc::extern_order` rather than zeros. ddx calls `fn` as often as it needs,
+from any thread that sweeps, so it must be re-entrant and must not throw.
+
+A compiled kernel calls the function back once per point. Such a kernel holds
+the function's address, so it is neither written to `cache_dir` nor saved with
+the equation; under `Backend::Device` the lane is interpreted, since device
+code cannot call into the host. Saving keeps the graph and the function's name:
+`rt::equation(path, model)` binds it again by running the model, and
+`rt::load(path, memo, fns)` takes it from `fns`, a map from name to function —
+a file whose function is missing answers `errc::unbound_extern`.
 
 ### Implicit inputs
 
@@ -802,6 +837,36 @@ const double d2 = cell ? h[*cell * n + point] : 0.0;
 `evaluate` is not the Jacobian call with the partials thrown away: columns
 nobody asks for are work nobody does.
 
+### Zero-copy, allocation-free batches
+
+The batch calls neither copy their columns nor allocate: inputs are read and
+outputs written through the pointers given. The per-point spellings allocate
+their answer and, for the Jacobian, undo the compression into a dense matrix; a
+hot loop calls the batch spelling at `n = 1` into buffers of its own instead.
+Each thread pays one tape allocation on its first call, sized by the
+equation's graph, and none after.
+
+A column-major matrix is a set of columns, so it passes without a copy. With
+Eigen, `rt/eigen.hpp` — a header ddx itself never includes — names the columns
+of a matrix and lays one point's compressed block out dense:
+
+```cpp
+#include "rt/eigen.hpp"
+
+Eigen::MatrixXd X(n, *eq.input_count());                     // one column per input
+Eigen::MatrixXd F(n, *eq.value_columns());
+Eigen::MatrixXd G(n, static_cast<Eigen::Index>(*eq.jacobian_columns()));
+(void)eq.jacobian(rt::eigen::columns_of(X), rt::eigen::columns_of(F),
+                  rt::eigen::columns_of(G), n);
+
+Eigen::MatrixXd J;                                           // m × n at point i
+rt::eigen::scatter(eq.jacobian_pattern()->get(), G, i, J);
+// and rt::eigen::scatter(eq.hessian_pattern()->get(), H, i, dense) for H
+```
+
+A row-major matrix's columns are strided, which no column pointer can say, so
+`columns_of` refuses one at compile time.
+
 ## Errors
 
 `rt::equation` always hands back an `Equation`. When the callback or the string
@@ -845,6 +910,8 @@ if (!j) {
 | `closed_twice` | an implicit input closed by two residuals |
 | `nested_implicit` | a residual that reads another implicit input |
 | `not_implicit` | `rt::closes` on something that is not an implicit input |
+| `extern_order` | a second-order call through an `rt::extern_fn` that supplies first partials only, or an `order` other than 1 or 2 |
+| `unbound_extern` | a loaded file names an extern function `fns` did not supply |
 | `not_univariate` | `univariate_derivative` on more than one symbol |
 | `not_single_output` | a member about one function's Hessian, asked of a system |
 | `unsupported_scalar` | `univariate_derivative` over an operation its Taylor arithmetic does not define |
@@ -1280,6 +1347,7 @@ thread-safe except `options()`.
 | `value_columns()`, `jacobian_columns()`, `hessian_columns()` | `std::optional<std::size_t>` — what sizes the batch buffers |
 | `jvp_columns()`, `vjp_columns()`, `hvp_columns()` | the same, for the seeded products — `m`, `n`, `n` |
 | `jacobian_pattern()` | `std::optional<std::reference_wrapper<const rt::Sparsity>>` — which (function, symbol) cell each Jacobian column is |
+| `hessian_pattern()` | `std::optional<std::reference_wrapper<const rt::Coloring>>` — which (row, column) cell each Hessian column holds; one output only |
 | `hessian_cell(i, j)` | `std::optional<std::size_t>` — which Hessian column holds H(i, j), or none |
 | `hessian_colors()` | `std::optional<std::size_t>` — groups in the Hessian's compression |
 | `prepare({wants…})` | `result<void>` — build those lanes now, so the calls that follow never wait on one |
@@ -1289,7 +1357,7 @@ thread-safe except `options()`.
 | `wait_for_kernel(want)` | block until the compile in flight for a lane has landed — the Jacobian's unless `want` names another |
 | `device_status()` | under `Device`, the device answering or why none is; empty under any other backend |
 | `save(path)`, `verify(path)` | write this equation; ask whether a file holds it |
-| `load(path)`, `loaded()` | read one; whether this one was read — `rt::load_system(path)` for a `System` |
+| `load(path, memo, fns)`, `loaded()` | read one, binding its extern functions from `fns` by name; whether this one was read — `rt::load_system(path, …)` for a `System` |
 
 ---
 

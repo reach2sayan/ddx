@@ -225,8 +225,9 @@ public:
   [[nodiscard]] result<std::vector<T>>
   hvp(std::span<const T> direction,
       const impl::rt_detail::CPointArg<T> auto &...args) const {
-    return single().and_then(
-        [&] { return seeded<Want::Hvp>(direction, args...); });
+    return single()
+        .and_then([this] { return orders(Want::Hvp); })
+        .and_then([&] { return seeded<Want::Hvp>(direction, args...); });
   }
 
   // The j-th Hessian column, named and not indexed: the symbol list exists
@@ -262,6 +263,9 @@ public:
     }
     if (direction.size() != symbol_count()) {
       return fail(errc::wrong_direction);
+    }
+    if (const auto ok = orders(Want::JacobianTangent); !ok) {
+      return std::unexpected{ok.error()};
     }
     return point(args...).transform([&](const auto &at) {
       boost::container::small_vector<T, 64> widened;
@@ -326,6 +330,9 @@ public:
   // Dense row-major m x n x n; the graph holds it compressed by colour.
   [[nodiscard]] result<std::vector<T>>
   hessian(const impl::rt_detail::CPointArg<T> auto &...args) const {
+    if (const auto ok = orders(Want::Hessian); !ok) {
+      return std::unexpected{ok.error()};
+    }
     return point(args...).transform([this](const auto &at) {
       const std::size_t m = roots_.size();
       const std::size_t n = symbol_count();
@@ -382,6 +389,9 @@ public:
     for (const Want want : wants) {
       if (needs_single(want) && roots_.size() != 1) {
         return fail(errc::not_single_output);
+      }
+      if (const auto ok = orders(want); !ok) {
+        return ok;
       }
       (void)lane(want);
     }
@@ -626,6 +636,14 @@ public:
     return unless_poisoned([this] { return std::cref(derivative_.pattern); });
   }
 
+  // Which (row, column) cell each Hessian column holds: Coloring::entries().
+  // One output only, and it sweeps the Hessian on first ask.
+  [[nodiscard]] std::optional<std::reference_wrapper<const Coloring>>
+  hessian_pattern() const {
+    return unless_system(
+        [this] { return std::cref(hessians().front().coloring); });
+  }
+
   // Where H(i, j) sits, or nullopt for a cell the colouring calls zero.
   [[nodiscard]] std::optional<std::size_t> hessian_cell(std::size_t i,
                                                         std::size_t j) const {
@@ -691,6 +709,7 @@ protected:
       // One reverse sweep per output is cheap, and it is what the column
       // counts, the pattern and constant evaluation read.
       derivative_ = build_jacobian_impl(*arena_, roots_);
+      first_order_ = first_order_only(*arena_, roots_);
     }
     if !consteval {
       lanes_ = std::make_unique<Lanes>();
@@ -710,6 +729,15 @@ protected:
         vjp_(std::move(r.rest.vjp)), jvp_(std::move(r.rest.jvp)),
         lanes_(std::make_unique<Lanes>()),
         latches_(std::make_unique<Latches>()), loaded_(true) {
+    // A function the file names and nobody supplied: nothing could call it.
+    if (std::ranges::any_of(arena_->externs(),
+                            [](const auto &e) { return !e.fn; })) {
+      bad_ = error{errc::unbound_extern};
+      arena_.reset();
+      roots_.clear();
+      return;
+    }
+    first_order_ = first_order_only(*arena_, roots_);
     const auto swept = [](std::once_flag &flag, bool carried) {
       if (carried) {
         std::call_once(flag, [] {});
@@ -781,7 +809,12 @@ protected:
     auto [arena, roots] = rooted(outputs, std::move(owned));
     if (auto snap = load_snapshot<T>(path);
         snap && describes(**snap, *arena, roots, arena->size())) {
-      D eq{std::move(*snap).rebuild()};
+      // The functions are the model's: same names, since the digest agreed.
+      auto rebuilt = std::move(*snap).rebuild();
+      for (const auto [i, e] : arena->externs() | std::views::enumerate) {
+        Externs::bind(*rebuilt.arena, static_cast<std::size_t>(i), e.fn);
+      }
+      D eq{std::move(rebuilt)};
       eq.take_cache(std::move(memo));
       return eq;
     }
@@ -794,10 +827,13 @@ protected:
 
   // Nothing built and nothing swept; the model need not exist in this program.
   // `outputs`, where the caller's type fixes the count, refuses any other.
+  // The file's extern functions are bound from `fns` by name; one it names and
+  // `fns` lacks is errc::unbound_extern.
   template <typename D>
   [[nodiscard]] static result<D> load(const std::filesystem::path &path,
                                       Cache memo,
-                                      std::optional<std::size_t> outputs)
+                                      std::optional<std::size_t> outputs,
+                                      const ExternFns<T> &fns)
     requires std::floating_point<T>
   {
     return load_snapshot<T>(path).and_then(
@@ -805,7 +841,18 @@ protected:
           if (outputs && snap->roots.size() != *outputs) {
             return fail(errc::archive_mismatch);
           }
-          D eq{std::move(snap).rebuild()};
+          auto rebuilt = std::move(snap).rebuild();
+          for (const auto [i, e] :
+               rebuilt.arena->externs() | std::views::enumerate) {
+            if (const auto it = fns.find(e.name); it != fns.end()) {
+              Externs::bind(*rebuilt.arena, static_cast<std::size_t>(i),
+                            std::make_shared<const ExternFn<T>>(it->second));
+            }
+          }
+          D eq{std::move(rebuilt)};
+          if (eq.poisoned()) {
+            return std::unexpected{*eq.status()};
+          }
           eq.take_cache(std::move(memo));
           return eq;
         });
@@ -845,6 +892,7 @@ protected:
     snap.params = arena_->params();
     snap.implicits = arena_->implicits();
     snap.closures.assign(arena_->closures().begin(), arena_->closures().end());
+    snap.externs = records_of(*arena_);
     snap.nodes.assign(arena_->nodes().begin(), arena_->nodes().end());
     return snap;
   }
@@ -901,6 +949,9 @@ protected:
     }
     if (needs_single(want) && roots_.size() != 1) {
       return fail(errc::not_single_output);
+    }
+    if (const auto ok = orders(want); !ok) {
+      return std::unexpected{ok.error()};
     }
     auto c = lane_in(lanes, cells, want, n);
     if (xs.size() != c->graph->arity() ||
@@ -1077,6 +1128,13 @@ private:
 
   [[nodiscard]] static constexpr bool needs_single(Want want) noexcept {
     return want == Want::Hessian || want == Want::Hvp;
+  }
+  // Second order: refused where a reachable extern supplies first partials
+  // only, rather than answered with the zeros a missing component would read.
+  [[nodiscard]] result<void> orders(Want want) const {
+    const bool second = want == Want::Hessian || want == Want::Hvp ||
+                        want == Want::JacobianTangent;
+    return second && first_order_ ? fail(errc::extern_order) : result<void>{};
   }
   [[nodiscard]] result<void> single() const {
     if (bad_) {
@@ -1509,6 +1567,8 @@ private:
   // Set exactly when why_not() refused, so poisoned() <=> arena_ == nullptr.
   std::optional<error> bad_{};
   bool loaded_ = false;
+  // A reachable extern supplies first partials only; see orders().
+  bool first_order_ = false;
 };
 
 // restrict()'s answer: the equation's Jacobian narrowed to some symbols'
