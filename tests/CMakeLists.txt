@@ -78,8 +78,8 @@ endif ()
 
 # --- packaging ---------------------------------------------------------------
 # tests/package consumed out of tree, against the build tree and an install prefix.
-# rt/eigen.hpp against real Eigen, which is fetched only when this is on.
-option(DDX_TEST_EIGEN "Build the Eigen interop test, fetching Eigen's headers" OFF)
+# rt/eigen.hpp against real Eigen, which is found or fetched only when this is on.
+option(DDX_TEST_EIGEN "Build the Eigen interop test (uses a supplied Eigen, else fetches one)" OFF)
 if (DDX_TEST_EIGEN)
     ddx_use_eigen()
     add_executable(tests_eigen eigen/tests_eigen.cpp)

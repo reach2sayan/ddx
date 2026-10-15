@@ -17,9 +17,9 @@ install(DIRECTORY "${PROJECT_SOURCE_DIR}/include/" DESTINATION ${CMAKE_INSTALL_I
 install(FILES "${PROJECT_BINARY_DIR}/include/util/version.hpp"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/util")
 
-# The Boost subset the installed headers reach, as whole directories -- only
-# for the fetched Boost; a DDX_BOOST_INCLUDEDIR build keeps its own.
-if (NOT DDX_BOOST_INCLUDEDIR)
+# The Boost subset the installed headers reach -- only when ddx fetched it.  A
+# supplied Boost is the consumer's; the config below asks for it again.
+if (DDX_BOOST_VENDORED)
     foreach (dir IN LISTS DDX_BOOST_HEADER_DIRS)
         file(GLOB headers LIST_DIRECTORIES false "${DDX_BOOST_ROOT}/${dir}/*")
         if (NOT headers)
@@ -41,14 +41,21 @@ install(FILES "${PROJECT_SOURCE_DIR}/LICENSE.txt" "${PROJECT_SOURCE_DIR}/THIRD-P
         DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
 # Two configs from one template: the build tree and the prefix hold Boost in
-# different places.
+# different places.  A supplied Boost is asked for again with find_dependency
+# rather than baked in as a build-machine path.
+if (DDX_BOOST_VENDORED)
+    set(DDX_BOOST_FIND_DEPENDENCY FALSE)
+else ()
+    set(DDX_BOOST_FIND_DEPENDENCY TRUE)
+endif ()
+
 set(DDX_BOOST_CONFIG_ROOT "${DDX_BOOST_ROOT}")
 configure_package_config_file(
         "${PROJECT_SOURCE_DIR}/cmake/ddx-config.cmake.in"
         "${PROJECT_BINARY_DIR}/ddx-config.cmake"
         INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ddx)
 
-if (NOT DDX_BOOST_INCLUDEDIR)
+if (DDX_BOOST_VENDORED)
     set(DDX_BOOST_CONFIG_ROOT "\${PACKAGE_PREFIX_DIR}/${CMAKE_INSTALL_INCLUDEDIR}")
 endif ()
 configure_package_config_file(

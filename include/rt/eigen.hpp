@@ -7,6 +7,18 @@
 // column-major n x inputs matrix holds; its output blocks are the same, so an
 // n x columns matrix takes a whole block.  A row-major matrix's columns are
 // strided, which no column pointer can say -- refused at compile time.
+//
+// "Optional" is enforced, not just stated: this header is installed with the
+// rest, and tests/package compiles every installed header in one translation
+// unit.  Without Eigen it is inert rather than a hard error.
+
+#if defined(__has_include) && __has_include(<Eigen/Core>)
+#define DDX_HAS_EIGEN 1
+#else
+#define DDX_HAS_EIGEN 0
+#endif
+
+#if DDX_HAS_EIGEN
 
 #include "rt/coupling.hpp"
 #include "util/ranges.hpp"
@@ -70,3 +82,5 @@ void scatter(const Coloring &coloring, const Eigen::MatrixBase<B> &block,
 }
 
 } // namespace ddx::rt::eigen
+
+#endif // DDX_HAS_EIGEN

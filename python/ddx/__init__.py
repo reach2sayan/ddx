@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 from ._ddx import (Backend, Call, Expression, Level, Restricted, VecLib, Want, abs,  # noqa: A004  -- the opcode is spelled `abs`, as it is in C++
                    acos, acosh, add, asin, asinh, atan, atan2, atanh,
                    cbrt, cos, cosh, div, erf, errc, exp,
-                   has_jit, has_opencl, hypot,
+                   has_jit, has_opencl, hypot, le, lt,
                    log, log10, max,  # noqa: A004
                    min,  # noqa: A004
                    mul, neg,
@@ -109,7 +109,7 @@ __all__ = ["Backend", "Call", "Equation", "Error", "Expression", "Level", "Restr
            "Options", "VecLib", "Want", "__version__",	"abs", "acos", "acosh",	"add",
            "asin", "asinh",	"atan", "atan2", "atanh", "cbrt", "cos",
            "cosh", "div", "equation", "erf", "errc", "exp",
-           "has_jit", "has_opencl", "hypot", "load", "log", "log10", "max",
+           "has_jit", "has_opencl", "hypot", "le", "load", "log", "log10", "lt", "max",
            "min", "mul", "neg", "param", "pow", "select", "sign", "sin", "sinh", "sqrt",
            "closes", "implicit",
            "tan", "tanh", "var",]

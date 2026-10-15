@@ -110,10 +110,15 @@ def test_a_system_binds_its_jacobian(system: ddx.Equation) -> None:
 
 
 def test_a_system_has_no_hessian_lane_to_bind(system: ddx.Equation) -> None:
-    """A frozen graph carries one colouring, so m of them are read off the arena."""
+    """A frozen graph carries one colouring, so m of them are read off the arena.
+
+    The refusal comes from `ready(want)`, the single gate every point and batch
+    call passes: the Want row says a Hessian needs one output, so a system is
+    turned away as `not_single_output` and says so.
+    """
     with pytest.raises(ddx.Error) as raised:
         system.buffer(np.array([1.5, 1.0]), want=ddx.Want.HESSIAN)
-    assert raised.value.code == ddx.errc.wrong_column_count
+    assert raised.value.code == ddx.errc.not_single_output
 
 
 def test_a_list_point_is_bound_as_an_array(scalar: ddx.Equation) -> None:

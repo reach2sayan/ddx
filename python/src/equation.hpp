@@ -447,7 +447,7 @@ public:
     auto f = values(at);
     unwrap(view_.jacobian(at.columns(), f ? f->rows() : cell.rows(),
                           cells.rows(), at.size()));
-    PyEquation::scatter(view_.jacobian_pattern(), cells, g, at.size());
+    scatter_jacobian(cells, g, at.size());
     return pyb::make_tuple(PyEquation::value_of(f, cell),
                            std::move(g).array());
   }
@@ -469,13 +469,24 @@ public:
     unwrap(view_.jacobian_jvp(at.columns(), dir.columns(),
                               f ? f->rows() : cell.rows(), cells.rows(),
                               moved.rows(), at.size()));
-    PyEquation::scatter(view_.jacobian_pattern(), cells, g, at.size());
-    PyEquation::scatter(view_.jacobian_pattern(), moved, dg, at.size());
+    scatter_jacobian(cells, g, at.size());
+    scatter_jacobian(moved, dg, at.size());
     return pyb::make_tuple(PyEquation::value_of(f, cell), std::move(g).array(),
                            std::move(dg).array());
   }
 
 private:
+  // PyEquation::scatter_jacobian, over this view's own pattern.  It cannot be
+  // shared with the equation's: a restricted view keeps a subset of the
+  // columns, so its Sparsity is a different one and is the only thing that
+  // describes the block `view_.jacobian` just filled.
+  void scatter_jacobian(Scratch &cells, Dense &dense,
+                        std::size_t points) const {
+    const rt::Sparsity &pattern = view_.jacobian_pattern();
+    py::scatter(pattern, cells, dense, pattern.columns, pattern.size(),
+                points);
+  }
+
   [[nodiscard]] Shape shape(const Point &at) const {
     return eq_->shape_of(
         {ssize(eq_->height()), ssize(view_.symbols().size())}, at);

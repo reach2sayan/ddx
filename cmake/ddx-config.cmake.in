@@ -6,10 +6,18 @@ include(CMakeFindDependencyMacro)
 set(DDX_BUILD_JIT @DDX_BUILD_JIT@)
 set(DDX_BUILD_OPENCL @DDX_OPENCL@)
 
+# ddx's installed headers include Boost's.  Built against a supplied Boost, ask
+# for it the same way; built against a fetched one, point at the subset shipped
+# beside us.  CONFIG is required: a bare find_dependency(Boost) falls back to the
+# FindBoost module CMake 4 removed (CMP0167).
 if (NOT TARGET Boost::headers)
-    add_library(Boost::headers INTERFACE IMPORTED)
-    set_target_properties(Boost::headers PROPERTIES
-            INTERFACE_INCLUDE_DIRECTORIES "@DDX_BOOST_CONFIG_ROOT@")
+    if (@DDX_BOOST_FIND_DEPENDENCY@)
+        find_dependency(Boost CONFIG)
+    else ()
+        add_library(Boost::headers INTERFACE IMPORTED)
+        set_target_properties(Boost::headers PROPERTIES
+                INTERFACE_INCLUDE_DIRECTORIES "@DDX_BOOST_CONFIG_ROOT@")
+    endif ()
 endif ()
 
 find_dependency(Threads)

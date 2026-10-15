@@ -102,8 +102,9 @@ private:
   Point(const pyb::handle &x, std::size_t count) : columns_(count, nullptr) {
     from_array(x, count);
   }
+  // Not constexpr: boost::container::small_vector is not a constexpr container.
 
-  [[nodiscard]] constexpr std::span<const double *const> columns() const {
+  [[nodiscard]] std::span<const double *const> columns() const {
     return {columns_.data(), columns_.size()};
   }
   [[nodiscard]] constexpr std::size_t size() const noexcept { return n_; }
@@ -237,10 +238,10 @@ private:
 // harmless.
 class Columns {
 public:
-  [[nodiscard]] constexpr std::span<double *const> rows() {
+  [[nodiscard]] std::span<double *const> rows() {
     return {rows_.data(), rows_.size()};
   }
-  [[nodiscard]] constexpr double *at(std::size_t column) {
+  [[nodiscard]] double *at(std::size_t column) {
     return rows_[column];
   }
 
