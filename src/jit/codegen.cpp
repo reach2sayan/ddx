@@ -1,5 +1,6 @@
 #include "codegen.hpp"
 
+#include "rt/lowering.hpp"
 #include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>
@@ -16,7 +17,9 @@
 #include <llvm/Support/Alignment.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <array>
+#include <map>
 #include <ranges>
 #include <span>
 #include <string_view>
@@ -26,29 +29,24 @@
 namespace ddx::jit::detail {
 namespace {
 
-// Which intrinsic covers an op; the rest go out as libm calls.  Derived from
-// the label except three: llvm.abs is the *integer* one, and maximum/minimum
-// are the NaN-propagating pair the interpreter matches where maxnum/minnum are
-// not.
-//
-// One array indexed by the enumerator, filled once, the shape rt::op_info
-// already has: lookupIntrinsicID binary-searches a name table off a Twine that
-// has to be flattened into a heap string, and the emitter asks per node.
+// Which intrinsic covers a Call row; the rest go out as libm calls by the
+// same name.  One array indexed by the enumerator, filled once, the shape
+// rt::op_info already has: lookupIntrinsicID binary-searches a name table off
+// a Twine that has to be flattened into a heap string, and the emitter asks
+// per node.
 llvm::Intrinsic::ID intrinsic_for(rt::OpCode op) {
   static const std::array<llvm::Intrinsic::ID, rt::op_count> table = [] {
     std::array<llvm::Intrinsic::ID, rt::op_count> t{};
     for (const auto i : std::views::iota(0uz, rt::op_count)) {
-      llvm::SmallString<32> name{"llvm."};
-      name += rt::label_of(static_cast<rt::OpCode>(i));
-      t[i] = llvm::Intrinsic::lookupIntrinsicID(name);
+      const auto &[how, name] = rt::lowering_of(static_cast<rt::OpCode>(i));
+      llvm::SmallString<32> spelled{"llvm."};
+      spelled += name;
+      t[i] = how == rt::Lower::Call ? llvm::Intrinsic::lookupIntrinsicID(spelled)
+                                    : llvm::Intrinsic::not_intrinsic;
     }
-    t[std::to_underlying(rt::OpCode::Abs)] = llvm::Intrinsic::fabs;
-    t[std::to_underlying(rt::OpCode::Max)] = llvm::Intrinsic::maximum;
-    t[std::to_underlying(rt::OpCode::Min)] = llvm::Intrinsic::minimum;
     return t;
   }();
-  const auto i = std::to_underlying(op);
-  return i < table.size() ? table[i] : llvm::Intrinsic::not_intrinsic;
+  return table[std::to_underlying(op)];
 }
 
 // The IR spelling of -fno-math-errno: without it a call is assumed to write
@@ -67,6 +65,24 @@ llvm::Function *libm_decl(llvm::Module &m, std::string_view name,
   return fn;
 }
 
+// The one way out of a kernel into a function the program supplied, defined
+// by the runtime beside libm: `ddx_call_extern(fn, in, arity, answer,
+// components)`.  The function itself comes off the kernel's extern table, so
+// the object holds no address.
+llvm::Function *trampoline_decl(llvm::Module &m) {
+  llvm::LLVMContext &ctx = m.getContext();
+  llvm::PointerType *const ptr = llvm::PointerType::getUnqual(ctx);
+  llvm::Type *const i64 = llvm::Type::getInt64Ty(ctx);
+  llvm::FunctionCallee c = m.getOrInsertFunction(
+      trampoline_symbol, llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+                                                 {ptr, ptr, i64, ptr, i64},
+                                                 false));
+  auto *fn = llvm::cast<llvm::Function>(c.getCallee());
+  fn->setDoesNotThrow();
+  fn->setWillReturn();
+  return fn;
+}
+
 // W points per iteration, as a double at W == 1 and <W x double> otherwise.
 // Every IRBuilder operation is typed on `ty`, so only the memory accesses and
 // the calls with no vector intrinsic tell the two apart.
@@ -78,8 +94,9 @@ struct LaneType {
 
 class Emitter {
 public:
-  Emitter(llvm::Module &m, llvm::IRBuilder<> &b, LaneType lanes)
-      : m_{m}, b_{b}, lanes_{lanes} {}
+  Emitter(llvm::Module &m, llvm::IRBuilder<> &b, LaneType lanes,
+          llvm::Value *externs)
+      : m_{m}, b_{b}, lanes_{lanes}, externs_{externs} {}
 
   // A splat where the lane type is a vector.
   [[nodiscard]] llvm::Value *constant(double v) const {
@@ -113,18 +130,19 @@ public:
   }
 
   llvm::Value *unary(rt::OpCode op, llvm::Value *u) const {
+    if (rt::lowering_of(op).how == rt::Lower::Call) {
+      return call(op, {u});
+    }
     if (op == rt::OpCode::Neg) {
       return b_.CreateFNeg(u);
     }
-    if (op == rt::OpCode::Sign) {
-      // u > 0 ? 1 : u < 0 ? -1 : u - u -- the last arm reaches only ±0 and NaN.
-      llvm::Value *const zero = constant(0.0);
-      return b_.CreateSelect(b_.CreateFCmpOGT(u, zero), constant(1.0),
-                             b_.CreateSelect(b_.CreateFCmpOLT(u, zero),
-                                             constant(-1.0),
-                                             b_.CreateFSub(u, u)));
-    }
-    return call(op, {u});
+    // Sign: u > 0 ? 1 : u < 0 ? -1 : u - u -- the last arm reaches only ±0
+    // and NaN.
+    llvm::Value *const zero = constant(0.0);
+    return b_.CreateSelect(
+        b_.CreateFCmpOGT(u, zero), constant(1.0),
+        b_.CreateSelect(b_.CreateFCmpOLT(u, zero), constant(-1.0),
+                        b_.CreateFSub(u, u)));
   }
 
   // Not llvm.fmuladd, which is only *permission* to fuse
@@ -135,25 +153,78 @@ public:
   }
 
   llvm::Value *binary(rt::OpCode op, llvm::Value *l, llvm::Value *r) const {
-    switch (op) {
-    case rt::OpCode::Add:
-      return b_.CreateFAdd(l, r);
-    case rt::OpCode::Mul:
-      return b_.CreateFMul(l, r);
-    case rt::OpCode::Div:
-      return b_.CreateFDiv(l, r);
+    switch (rt::lowering_of(op).how) {
+    case rt::Lower::Infix:
+      return op == rt::OpCode::Add   ? b_.CreateFAdd(l, r)
+             : op == rt::OpCode::Mul ? b_.CreateFMul(l, r)
+                                     : b_.CreateFDiv(l, r);
     // 1.0 or 0.0 in the lane type, as compare_impl computes.  Ordered, so a
     // NaN operand compares false.
-    case rt::OpCode::Lt:
-    case rt::OpCode::Le:
+    case rt::Lower::Compare:
       return b_.CreateUIToFP(b_.CreateFCmp(op == rt::OpCode::Lt
                                                ? llvm::CmpInst::FCMP_OLT
                                                : llvm::CmpInst::FCMP_OLE,
                                            l, r),
                              lanes_.ty);
-    default:
+    case rt::Lower::Call:
       return call(op, {l, r});
+    // Max and Min: the NaN-propagating pair the interpreter matches, where
+    // maxnum/minnum are not.
+    case rt::Lower::Special:
+    case rt::Lower::None:
+      return b_.CreateBinaryIntrinsic(op == rt::OpCode::Max
+                                          ? llvm::Intrinsic::maximum
+                                          : llvm::Intrinsic::minimum,
+                                      l, r);
     }
+    std::unreachable();
+  }
+
+  // Every component of one call, lane by lane: [component * width + lane].
+  using Answers = std::vector<llvm::Value *>;
+
+  // One call per lane, the function having a scalar entry point only, as a
+  // libm call does; inactive lanes call it too, at the 1.0 a masked load
+  // reads, and their answers are never stored.  Every component is read back
+  // from the one call, so a value and its partials cost one call per lane.
+  Answers extern_call(const rt::ExternRecord &e, std::uint32_t index,
+                      std::span<llvm::Value *const> args) const {
+    llvm::Function *const kernel = b_.GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entry(&kernel->getEntryBlock(),
+                            kernel->getEntryBlock().getFirstInsertionPt());
+    llvm::Type *const f64 = b_.getDoubleTy();
+    llvm::Type *const i64 = b_.getInt64Ty();
+    const auto components = e.size();
+    llvm::Value *const in = entry.CreateAlloca(
+        f64, llvm::ConstantInt::get(i64, e.arity), "extern.in");
+    llvm::Value *const answer = entry.CreateAlloca(
+        f64, llvm::ConstantInt::get(i64, components), "extern.out");
+    llvm::Value *const fn = b_.CreateLoad(
+        b_.getPtrTy(),
+        b_.CreateConstInBoundsGEP1_64(b_.getPtrTy(), externs_, index),
+        "extern.fn");
+    llvm::Function *const trampoline = trampoline_decl(m_);
+
+    Answers out(components * lanes_.width);
+    per_lane(args, [&](unsigned lane, llvm::ArrayRef<llvm::Value *> scalars) {
+      for (const auto [j, a] : scalars | std::views::enumerate) {
+        b_.CreateStore(a, b_.CreateConstInBoundsGEP1_64(
+                              f64, in, static_cast<std::uint64_t>(j)));
+      }
+      b_.CreateCall(trampoline,
+                    {fn, in, llvm::ConstantInt::get(i64, e.arity), answer,
+                     llvm::ConstantInt::get(i64, components)});
+      for (const std::size_t c : std::views::iota(0uz, components)) {
+        out[c * lanes_.width + lane] =
+            b_.CreateLoad(f64, b_.CreateConstInBoundsGEP1_64(f64, answer, c));
+      }
+    });
+    return out;
+  }
+  // One component of a call's answers, back in the lane type.
+  llvm::Value *component(const Answers &answers, std::uint32_t c) const {
+    return gathered(
+        [&](unsigned lane) { return answers[c * lanes_.width + lane]; });
   }
 
   // Both arms are already computed, so this is one blend: no branch and no
@@ -190,13 +261,34 @@ private:
 
   llvm::Value *scalarised(llvm::Function *fn,
                           llvm::ArrayRef<llvm::Value *> args) const {
+    std::vector<llvm::Value *> answers(lanes_.width);
+    per_lane(std::span{args.data(), args.size()},
+             [&](unsigned lane, llvm::ArrayRef<llvm::Value *> scalars) {
+               answers[lane] = b_.CreateCall(fn, scalars);
+             });
+    return gathered([&](unsigned lane) { return answers[lane]; });
+  }
+
+  // Lane by lane, each argument as a scalar: what a function with a scalar
+  // entry point only -- libm's, or the program's -- is handed.
+  void per_lane(std::span<llvm::Value *const> args, auto &&scalar) const {
+    for (const unsigned lane : std::views::iota(0u, lanes_.width)) {
+      llvm::SmallVector<llvm::Value *, 4> scalars;
+      for (llvm::Value *const a : args) {
+        scalars.push_back(lanes_.vector() ? b_.CreateExtractElement(a, lane)
+                                          : a);
+      }
+      scalar(lane, scalars);
+    }
+  }
+  // Each lane's scalar, back in the lane type.
+  llvm::Value *gathered(auto &&of_lane) const {
+    if (!lanes_.vector()) {
+      return of_lane(0u);
+    }
     llvm::Value *out = llvm::PoisonValue::get(lanes_.ty);
     for (const unsigned lane : std::views::iota(0u, lanes_.width)) {
-      llvm::SmallVector<llvm::Value *, 2> scalar;
-      for (llvm::Value *const a : args) {
-        scalar.push_back(b_.CreateExtractElement(a, lane));
-      }
-      out = b_.CreateInsertElement(out, b_.CreateCall(fn, scalar), lane);
+      out = b_.CreateInsertElement(out, of_lane(lane), lane);
     }
     return out;
   }
@@ -204,6 +296,7 @@ private:
   llvm::Module &m_;
   llvm::IRBuilder<> &b_;
   LaneType lanes_;
+  llvm::Value *externs_;
   struct Callee {
     llvm::Function *fn = nullptr;
     bool scalarise = false;
@@ -216,13 +309,14 @@ llvm::Function *declare_kernel(llvm::Module &m, llvm::StringRef name,
   llvm::LLVMContext &ctx = m.getContext();
   llvm::Type *const i64 = llvm::Type::getInt64Ty(ctx);
   llvm::PointerType *const ptr = llvm::PointerType::getUnqual(ctx);
-  // xs, f, g, h, n -- four column arrays and the batch length.
-  auto *const fty = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
-                                            {ptr, ptr, ptr, ptr, i64}, false);
+  // xs, f, g, h, n, externs -- four column arrays, the batch length, and the
+  // table of functions the program supplied.
+  auto *const fty = llvm::FunctionType::get(
+      llvm::Type::getVoidTy(ctx), {ptr, ptr, ptr, ptr, i64, ptr}, false);
   auto *const fn =
       llvm::Function::Create(fty, llvm::Function::ExternalLinkage, name, m);
 
-  static constexpr std::array names{"xs", "f", "g", "h", "n"};
+  static constexpr std::array names{"xs", "f", "g", "h", "n", "externs"};
   for (const auto [i, arg_name] : names | std::views::enumerate) {
     fn->getArg(static_cast<unsigned>(i))->setName(arg_name);
   }
@@ -235,9 +329,12 @@ llvm::Function *declare_kernel(llvm::Module &m, llvm::StringRef name,
   // gets neither nonnull nor a size.
   const auto &layout = g.layout();
   const std::array counts{g.arity(), layout.values, layout.jacobian,
-                          layout.hessian};
+                          layout.hessian, std::size_t{0}, g.externs().size()};
   for (const auto [i, count] : counts | std::views::enumerate) {
     const auto arg = static_cast<unsigned>(i);
+    if (arg == 4) {
+      continue; // n: a value, below
+    }
     fn->addParamAttr(arg, llvm::Attribute::NoAlias);
     fn->addParamAttr(arg, llvm::Attribute::NoCapture);
     fn->addParamAttr(arg, llvm::Attribute::ReadOnly);
@@ -294,6 +391,7 @@ HoistedColumns hoist_columns(llvm::IRBuilder<> &b, llvm::Function &fn,
 emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
            const HoistedColumns &cols, llvm::Value *index, llvm::Value *mask) {
   std::vector<llvm::Value *> value(g.size(), nullptr);
+  std::map<std::pair<std::uint32_t, rt::NodeId>, Emitter::Answers> called;
   for (const auto &[v, c] : g.schedule()) {
     const auto &p = g[v];
     if (c) {
@@ -301,22 +399,42 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
       continue;
     }
     const auto operands = g.operands(v);
-    switch (rt::arity_of(p.op)) {
-    case 0:
-      value[v] = p.op == rt::OpCode::Const
-                     ? emit.constant(p.value)
-                     : emit.load(cols.inputs[rt::input_column(
-                                     g.symbols().size(), p.op, p.slot)],
-                                 index, mask, "");
+    switch (rt::kind_of(p.op)) {
+    case rt::Kind::Const:
+      value[v] = emit.constant(p.value);
       break;
-    case 1:
+    case rt::Kind::Input:
+      value[v] = emit.load(
+          cols.inputs[rt::input_column(g.inputs(), p.op, p.slot)], index, mask,
+          "");
+      break;
+    case rt::Kind::Args: // a list's value is its first argument
+      value[v] = value[operands[0]];
+      break;
+    case rt::Kind::Extern: {
+      // One call per (function, argument list), whichever component asked
+      // first; the rest are loads off the same answer.
+      const auto [fn, component] = rt::ExternSlot::of(p.slot);
+      auto [answers, fresh] = called.try_emplace({fn, operands[0]});
+      if (fresh) {
+        const auto args = *rt::extern_arguments(g, v) |
+                          std::views::transform([&value](rt::NodeId a) {
+                            return value[a];
+                          }) |
+                          impl::to<std::vector<llvm::Value *>>();
+        answers->second = emit.extern_call(g.externs()[fn], fn, args);
+      }
+      value[v] = emit.component(answers->second, component);
+      break;
+    }
+    case rt::Kind::Unary:
       value[v] = emit.unary(p.op, value[operands[0]]);
       break;
-    case 3:
+    case rt::Kind::Ternary:
       value[v] = emit.ternary(p.op, value[operands[0]], value[operands[1]],
                               value[operands[2]]);
       break;
-    default:
+    case rt::Kind::Binary:
       value[v] = emit.binary(p.op, value[operands[0]], value[operands[1]]);
       break;
     }
@@ -390,7 +508,7 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<double> &g,
     mask = b.CreateICmpSLT(step, b.CreateVectorSplat(width, remaining), "mask");
   }
 
-  const Emitter emit(*m, b, lanes);
+  const Emitter emit(*m, b, lanes, fn->getArg(5));
   const std::vector<llvm::Value *> value =
       emit_nodes(emit, g, cols, index, mask);
   emit_stores(emit, g, cols, value, index, mask);

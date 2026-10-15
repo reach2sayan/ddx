@@ -87,6 +87,16 @@ def test_a_batched_hessian_needs_one_function(system: ddx.Equation) -> None:
     assert caught.value.code is ddx.errc.wrong_column_count
 
 
+def test_one_function_members_refuse_a_system(system: ddx.Equation) -> None:
+    """H·v and the colour count are about one function's Hessian."""
+    with pytest.raises(ddx.Error) as caught:
+        system.hvp([1.0, 0.0], [1.0, 2.0])
+    assert caught.value.code is ddx.errc.not_single_output
+    with pytest.raises(ddx.Error) as colors:
+        _ = system.hessian_colors
+    assert colors.value.code is ddx.errc.not_single_output
+
+
 def test_shapes_drop_the_axes_that_are_not_there(scalar: ddx.Equation) -> None:
     batch = np.array([[2.0, 2.5, 3.0], [3.0, 3.5, 4.0]])
 
@@ -183,3 +193,104 @@ def test_a_sparse_coupling_scatters_to_the_right_cells() -> None:
             ]
         )
     )
+
+
+def test_symbols_take_the_order_they_are_named_in() -> None:
+    def model():
+        b = ddx.var("b")
+        a = ddx.var("a")
+        return a * a * b
+
+    eq = ddx.equation(model)
+    assert eq.symbols == ["b", "a"]
+    assert eq([1.0, 2.0]) == 4.0  # b = 1, a = 2
+    assert eq({"a": 2.0, "b": 1.0}) == 4.0
+
+
+def test_a_param_is_an_input_with_no_column() -> None:
+    def model():
+        x = ddx.var("x")
+        return ddx.param("a") * x * x
+
+    eq = ddx.equation(model)
+    assert eq.symbols == ["x"]
+    assert eq.params == ["a"]
+    assert eq.inputs == ["x", "a"]
+    assert eq.arity == 1
+    assert eq([3.0, 2.0]) == 18.0
+    _, gradient = eq.jacobian({"x": 3.0, "a": 5.0})
+    assert gradient.tolist() == [30.0]
+    _, _, hv = eq.hvp([1.0], [3.0, 5.0])  # a direction is over the symbols only
+    assert hv.tolist() == [10.0]
+    with pytest.raises(ddx.Error) as missing:
+        eq({"x": 3.0})
+    assert missing.value.code is ddx.errc.wrong_arity
+
+
+def test_a_name_is_one_kind_of_input() -> None:
+    def model():
+        x = ddx.var("x")
+        return x * ddx.param("x")
+
+    with pytest.raises(ddx.Error) as caught:
+        ddx.equation(model)
+    assert caught.value.code is ddx.errc.name_clash
+
+
+def test_jacobian_jvp_moves_the_whole_jacobian_along_v() -> None:
+    def model():
+        x = ddx.var("x")
+        y = ddx.var("y")
+        return x * x * y, ddx.sin(x * y)
+
+    eq = ddx.equation(model)
+    px, py = 0.7, 1.3
+    _, jacobian, moved = eq.jacobian_jvp([1.0, 0.0], [px, py])
+    s, c = math.sin(px * py), math.cos(px * py)
+    assert jacobian.shape == (2, 2)
+    assert np.allclose(moved, [[2 * py, 2 * px], [-py * py * s, c - px * py * s]])
+
+
+def test_restrict_keeps_the_chosen_columns() -> None:
+    def model():
+        t = ddx.var("T")
+        x = ddx.var("x")
+        p = ddx.var("P")
+        return ddx.exp(t * x) + ddx.log(p) * x
+
+    eq = ddx.equation(model)
+    view = eq.restrict(["P", "T"])
+    assert view.symbols == ["T", "P"]  # symbol order
+    at = [1.5, 0.3, 2.0]
+    _, full = eq.jacobian(at)
+    _, part = view.jacobian(at)
+    assert part.tolist() == [full[0], full[2]]
+    _, _, moved = view.jacobian_jvp([1.0, 0.0, 0.0], at)
+    _, _, full_moved = eq.jacobian_jvp([1.0, 0.0, 0.0], at)
+    assert moved.tolist() == [full_moved[0], full_moved[2]]
+    with pytest.raises(ddx.Error) as caught:
+        eq.restrict(["nope"])
+    assert caught.value.code is ddx.errc.unknown_symbol
+
+
+def test_an_implicit_input_carries_dz_dx() -> None:
+    def model():
+        a = ddx.var("a")
+        z = ddx.implicit("z")
+        ddx.closes(z, z * z - a)
+        return z
+
+    eq = ddx.equation(model)
+    assert eq.symbols == ["a"]
+    assert eq.inputs == ["a", "z"]
+    _, gradient = eq.jacobian([4.0, 2.0])
+    assert gradient.tolist() == [0.25]
+    _, _, hessian = eq.hessian({"a": 4.0, "z": 2.0})
+    assert hessian.tolist() == [[-0.03125]]
+    assert eq.residual([4.0, 3.0]) == [5.0]
+
+
+def test_an_unclosed_implicit_is_refused() -> None:
+    with pytest.raises(ddx.Error) as caught:
+        ddx.equation(lambda: ddx.var("a") * ddx.implicit("z"))
+    assert caught.value.code is ddx.errc.unclosed_implicit

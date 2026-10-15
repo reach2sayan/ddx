@@ -21,8 +21,6 @@
 #include <pybind11/stl/filesystem.h>
 
 #include <boost/algorithm/string/case_conv.hpp>
-#include <boost/describe/enum.hpp>
-#include <boost/mp11/algorithm.hpp>
 
 #include <algorithm>
 #include <array>
@@ -48,13 +46,18 @@ thread_local std::shared_ptr<rt::Builder<double>> current_arena;
 // pointer, so it cannot capture.
 pyb::handle error_class;
 
-[[nodiscard]] PyExpression make_var(std::string_view name) {
+// A symbol or a parameter of the model running now.  C++ carries a poison
+// instead, unable to afford a branch per input; Python already pays more per
+// call than the branch costs.
+[[nodiscard]] PyExpression make_input(rt::OpCode kind, std::string_view name) {
   if (!current_arena) {
-    // C++ carries a poison instead, unable to afford a branch per symbol.
-    // Python already pays more per call than the branch costs.
     fail_with(errc::no_arena);
   }
-  return {rt::var(*current_arena, name), current_arena};
+  const auto e = rt::named(*current_arena, kind, name);
+  if (e.poisoned()) {
+    fail_with(errc::name_clash);
+  }
+  return {e, current_arena};
 }
 
 // One root, or m of them from a tuple or list.  The count is a runtime value
@@ -92,11 +95,8 @@ built_or_loaded(const std::optional<std::filesystem::path> &cache,
                 std::vector<rt::NodeId> roots, bool remember) {
   if (cache) {
     if (auto snap = rt::load_snapshot<double>(*cache);
-        snap && std::ranges::equal((*snap)->roots, roots) &&
-        rt::digest<double>((*snap)->symbols, (*snap)->nodes,
-                           (*snap)->model_nodes) ==
-            rt::digest<double>(arena->symbols(), arena->nodes(),
-                               arena->size())) {
+        snap &&
+        PyEquation::describes(**snap, *arena, roots, arena->size())) {
       return pyb::cast(PyEquation{std::move(*snap), remember});
     }
   }
@@ -104,7 +104,7 @@ built_or_loaded(const std::optional<std::filesystem::path> &cache,
       pyb::cast(PyEquation{std::move(arena), std::move(roots), remember});
   if (cache) {
     // A cache that cannot be written is still a working equation.
-    (void)rt::save(eq.cast<PyEquation &>().snapshot(), *cache);
+    (void)eq.cast<PyEquation &>().save(*cache);
   }
   return eq;
 }
@@ -187,6 +187,7 @@ PYBIND11_MODULE(_ddx, m) {
   using namespace ddx;
   using ddx::py::PyCall;
   using ddx::py::PyEquation;
+  using ddx::py::PyRestricted;
   using ddx::py::PyExpression;
 
   m.doc() = "ddx's runtime expression graph, LLVM JIT and OpenCL device";
@@ -319,26 +320,42 @@ PYBIND11_MODULE(_ddx, m) {
         pyb::arg("cache") = pyb::none(), pyb::arg("remember") = false);
   m.def("load", &ddx::py::load_equation, pyb::arg("path"), pyb::kw_only(),
         pyb::arg("remember") = false);
-  m.def("var", &ddx::py::make_var, pyb::arg("name"));
+#define DDX_PY_INPUT(fn, Op, ...)                                              \
+  m.def(                                                                       \
+      #fn,                                                                     \
+      [](std::string_view name) {                                              \
+        return ddx::py::make_input(rt::OpCode::Op, name);                      \
+      },                                                                       \
+      pyb::arg("name"));
+  DDX_RT_NAMED_TABLE(DDX_PY_INPUT)
+#undef DDX_PY_INPUT
+  m.def(
+      "closes",
+      [](const PyExpression &z, const PyExpression &f) { closes(z, f); },
+      pyb::arg("z"), pyb::arg("f"));
 
   // Off the opcode table, by each row's factory spelling, so an opcode added
-  // there reaches Python without this file changing.  The comparisons are
-  // operators here, and select is the one ternary, below.
+  // there reaches Python without this file changing; select, the one ternary,
+  // is below.
   for (const auto i : std::views::iota(0uz, rt::op_count)) {
     const auto op = static_cast<rt::OpCode>(i);
     const std::string name{rt::name_of(op)};
-    if (rt::arity_of(op) == 1) {
+    switch (rt::kind_of(op)) {
+    case rt::Kind::Unary:
       m.def(
           name.c_str(), [op](const PyExpression &u) { return unary(op, u); },
           pyb::arg("x"));
-    } else if (rt::arity_of(op) == 2 && op != rt::OpCode::Lt &&
-               op != rt::OpCode::Le) {
+      break;
+    case rt::Kind::Binary:
       m.def(
           name.c_str(),
           [op](const PyExpression &l, const PyExpression &r) {
             return binary(op, l, r);
           },
           pyb::arg("x"), pyb::arg("y"));
+      break;
+    default:
+      break;
     }
   }
 
@@ -377,11 +394,11 @@ PYBIND11_MODULE(_ddx, m) {
 
   pyb::native_enum<PyEquation::Want> want{m, "Want", "enum.IntEnum",
                                           "Which blocks a bound call fills."};
-  boost::mp11::mp_for_each<
-      boost::describe::describe_enumerators<PyEquation::Want>>([&](auto D) {
-    const std::string name = boost::algorithm::to_upper_copy(std::string{D.name});
-    want.value(name.c_str(), D.value);
-  });
+  for (const rt::Want w : rt::want_values) {
+    const std::string name =
+        boost::algorithm::to_upper_copy(std::string{rt::name_of(w)});
+    want.value(name.c_str(), w);
+  }
   want.finalize();
 
   // Bound once, called repeatedly: `x` is written into and the blocks are read
@@ -439,6 +456,14 @@ PYBIND11_MODULE(_ddx, m) {
   codegen("veclib", &jit::Codegen::veclib);
   codegen("contract", &jit::Codegen::contract);
 
+  pyb::class_<PyRestricted>(m, "Restricted")
+      .def("jacobian", &PyRestricted::jacobian, pyb::arg("x"))
+      .def("jacobian_jvp", &PyRestricted::jacobian_jvp, pyb::arg("v"),
+           pyb::arg("x"))
+      .def_property_readonly("symbols", &PyRestricted::symbols)
+      .def_property_readonly("jacobian_columns",
+                             &PyRestricted::jacobian_columns);
+
   pyb::class_<PyEquation>(m, "Equation", pyb::dynamic_attr())
       .def("__repr__", &PyEquation::repr)
       .def("__call__", &PyEquation::evaluate, pyb::arg("x"))
@@ -451,6 +476,15 @@ PYBIND11_MODULE(_ddx, m) {
       .def("jvp", &PyEquation::jvp, pyb::arg("v"), pyb::arg("x"))
       .def("vjp", &PyEquation::vjp, pyb::arg("w"), pyb::arg("x"))
       .def("hvp", &PyEquation::hvp, pyb::arg("v"), pyb::arg("x"))
+      .def("jacobian_jvp", &PyEquation::jacobian_jvp, pyb::arg("v"),
+           pyb::arg("x"))
+      .def("residual", &PyEquation::residual_at, pyb::arg("x"))
+      .def(
+          "restrict",
+          [](const PyEquation &self, const std::vector<std::string> &names) {
+            return PyRestricted{self, py::unwrap(self.restrict(names))};
+          },
+          pyb::arg("names"), pyb::keep_alive<0, 1>())
       .def(
           "buffer",
           [](PyEquation &self, const pyb::handle &x, PyEquation::Want want) {
@@ -463,16 +497,45 @@ PYBIND11_MODULE(_ddx, m) {
            pyb::arg("all") = false)
       .def("nodes", &PyEquation::nodes, pyb::kw_only(),
            pyb::arg("want") = PyEquation::Want::Jacobian)
-      .def("save", &PyEquation::save, pyb::arg("path"))
-      .def("verify", &PyEquation::verify, pyb::arg("path"))
+      .def(
+          "save",
+          [](const PyEquation &self, const std::filesystem::path &path) {
+            py::unwrap(self.save(path));
+          },
+          pyb::arg("path"))
+      // Raises rather than answering false: "no" has three reasons --
+      // unreadable, unloadable, a different equation -- and only the errc
+      // says which.
+      .def(
+          "verify",
+          [](const PyEquation &self, const std::filesystem::path &path) {
+            py::unwrap(self.verify(path));
+          },
+          pyb::arg("path"))
       .def_property_readonly("loaded", &PyEquation::loaded)
       .def_property_readonly("symbols", &PyEquation::symbols_list)
-      .def_property_readonly("arity", &PyEquation::arity)
-      .def_property_readonly("outputs", &PyEquation::outputs)
+      .def_property_readonly("params", &PyEquation::params_list)
+      .def_property_readonly("inputs", &PyEquation::inputs_list)
+      .def_property_readonly("arity", &PyEquation::width)
+      .def_property_readonly("outputs", &PyEquation::height)
       .def_property_readonly("uses_kernel", &PyEquation::uses_kernel)
-      .def_property_readonly("device_status", &PyEquation::device_status)
-      .def_property_readonly("hessian_colors", &PyEquation::hessian_colors)
+      .def_property_readonly("device_status", &PyEquation::device)
+      // Colours, not n: the Hessian is stored compressed and scattered on
+      // read, so this is what the compiled lane actually computes per point.
+      .def_property_readonly("hessian_colors",
+                             [](const PyEquation &self) {
+                               const auto colors = self.hessian_colors();
+                               if (!colors) {
+                                 py::fail_with(errc::not_single_output);
+                               }
+                               return *colors;
+                             })
       .def("wait_for_kernel", &PyEquation::wait_for_kernel, pyb::kw_only(),
            pyb::arg("want") = PyEquation::Want::Jacobian)
-      .def_property("_options", &PyEquation::options, &PyEquation::set_options);
+      .def_property(
+          "_options",
+          [](const PyEquation &self) { return self.options(); },
+          [](PyEquation &self, const jit::Options &opt) {
+            (void)self.options(opt);
+          });
 }

@@ -304,27 +304,52 @@ template <impl::Numeric T>
   std::vector<SymbolSet> support(b.size());
   for (const NodeId v : detail::live_ids(live)) {
     const auto &node = b[v];
-    switch (arity_of(node.op)) {
-    case 0:
+    switch (kind_of(node.op)) {
+    case Kind::Const:
+      support[v] = SymbolSet(n);
+      break;
+    case Kind::Input:
       support[v] = SymbolSet(n);
       if (node.op == OpCode::Var) {
         support[v].set(node.slot);
+      } else if (node.op == OpCode::Implicit) {
+        // Whatever its residual reads, and nonlinearly: z is a root, not a
+        // sum.  The sweep's dz/dx nodes are not in the arena yet, so the
+        // closure is read here rather than discovered.
+        const NodeId f = b.closures()[node.slot];
+        const auto through = detail::reachable(b, std::span{&f, 1});
+        for (const auto [u, leaf] : b.nodes() | std::views::enumerate) {
+          if (leaf.op == OpCode::Var && through[static_cast<NodeId>(u)]) {
+            support[v].set(leaf.slot);
+          }
+        }
+        detail::couple(rows, support[v], support[v]);
       }
       break;
-    case 1:
+    case Kind::Unary:
       support[v] = support[node.a];
       // Negation is linear; anything else couples its argument with itself.
       if (node.op != OpCode::Neg) {
         detail::couple(rows, support[v], support[v]);
       }
       break;
-    case 3:
+    case Kind::Extern:
+      // Nonlinear in every argument the list carries.
+      support[v] = support[node.a];
+      detail::couple(rows, support[v], support[v]);
+      break;
+    case Kind::Args:
+      // A list carries its arguments' support; the call couples it.
+      support[v] = support[node.a];
+      support[v] |= support[node.b];
+      break;
+    case Kind::Ternary:
       // As linear as an Add: it chooses between two derivatives rather than
       // combining them.
       support[v] = support[node.b];
       support[v] |= support[node.c];
       break;
-    default:
+    case Kind::Binary:
       // Zero derivative everywhere it exists, so no support and no coupling --
       // the conservative arm below cost a colour or two per tested quantity.
       if (node.op == OpCode::Lt || node.op == OpCode::Le) {
@@ -347,6 +372,19 @@ template <impl::Numeric T>
     }
   }
   return rows;
+}
+
+// The cells a layout stores -- a Sparsity's or a Coloring's, each answering
+// entries() -- into a dense row-major block n wide, each cell `points` long:
+// cell(slot) is where a stored cell's values start, dense(i * n + j) where
+// they go.  The zeros are the caller's fill.  The one scatter the point calls
+// and the Python arrays share.
+constexpr void scatter(const auto &layout, auto &&cell, auto &&dense,
+                       std::size_t n, std::size_t points) {
+  for (const Cell &c : layout.entries()) {
+    std::ranges::copy_n(cell(c.slot), static_cast<std::ptrdiff_t>(points),
+                        dense(c.row * n + c.column));
+  }
 }
 
 // Columns j and k conflict iff their coupling rows overlap -- the CPR colouring

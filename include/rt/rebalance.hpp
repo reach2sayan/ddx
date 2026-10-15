@@ -131,20 +131,7 @@ rebalance(Builder<T> &b, std::span<const NodeId> roots, std::size_t blocks = 16,
         continue;
       }
     }
-    // Every operand the node has, not the two a binary one has: rebuilding a
-    // select as a pair leaves its third `no_node`, which the next walker
-    // dereferences.
-    switch (arity_of(node.op)) {
-    case 1:
-      remap[v] = b.make(node.op, remap[node.a]);
-      break;
-    case 3:
-      remap[v] = b.make(node.op, remap[node.a], remap[node.b], remap[node.c]);
-      break;
-    default:
-      remap[v] = b.make(node.op, remap[node.a], remap[node.b]);
-      break;
-    }
+    remap[v] = b.rebuild(node, [&remap](NodeId u) { return remap[u]; });
   }
 
   return roots |

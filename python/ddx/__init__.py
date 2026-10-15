@@ -26,15 +26,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ._ddx import (Backend, Call, Expression, Level, VecLib, Want, abs,  # noqa: A004  -- the opcode is spelled `abs`, as it is in C++
+from ._ddx import (Backend, Call, Expression, Level, Restricted, VecLib, Want, abs,  # noqa: A004  -- the opcode is spelled `abs`, as it is in C++
                    acos, acosh, add, asin, asinh, atan, atan2, atanh,
                    cbrt, cos, cosh, div, erf, errc, exp,
-                   has_jit, has_opencl, hypot,
+                   has_jit, has_opencl, hypot, le, lt,
                    log, log10, max,  # noqa: A004
                    min,  # noqa: A004
                    mul, neg,
                    pow,  # noqa: A004
-                   select, sign, sin, sinh, sqrt, tan, tanh,
+                   closes, implicit, param, select, sign, sin, sinh, sqrt, tan, tanh,
                    var, )
 from ._options import Options
 
@@ -105,10 +105,11 @@ def _compile(self: Equation, **kwargs: Any) -> Equation:  # noqa: ANN401
 Equation.options = property(_get_options, _set_options)  # type: ignore[assignment]
 Equation.compile = _compile  # type: ignore[method-assign]
 
-__all__ = ["Backend", "Call", "Equation", "Error", "Expression", "Level",
+__all__ = ["Backend", "Call", "Equation", "Error", "Expression", "Level", "Restricted",
            "Options", "VecLib", "Want", "__version__",	"abs", "acos", "acosh",	"add",
            "asin", "asinh",	"atan", "atan2", "atanh", "cbrt", "cos",
            "cosh", "div", "equation", "erf", "errc", "exp",
-           "has_jit", "has_opencl", "hypot", "load", "log", "log10", "max",
-           "min", "mul", "neg", "pow", "select", "sign", "sin", "sinh", "sqrt",
+           "has_jit", "has_opencl", "hypot", "le", "load", "log", "log10", "lt", "max",
+           "min", "mul", "neg", "param", "pow", "select", "sign", "sin", "sinh", "sqrt",
+           "closes", "implicit",
            "tan", "tanh", "var",]

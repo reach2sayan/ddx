@@ -9,7 +9,8 @@ __all__: list[str] = ['Backend', 'Call', 'Equation', 'Error', 'Expression',
                       'VecLib', 'Want', 'abs', 'acos', 'acosh', 'add', 'asin',
                       'asinh', 'atan', 'atan2', 'atanh', 'cbrt', 'cos',
                       'cosh', 'div', 'equation', 'erf', 'errc', 'exp',
-                      'has_jit', 'has_opencl', 'hypot', 'Level', 'load', 'log', 'log10',
+                      'has_jit', 'has_opencl', 'hypot', 'le', 'Level', 'load', 'log', 'log10',
+                      'lt',
                       'max', 'min', 'mul', 'neg', 'pow', 'select', 'sign',
                       'sin', 'sinh', 'sqrt', 'tan', 'tanh', 'var']
 class Backend(enum.IntEnum):
@@ -50,6 +51,9 @@ class Equation:
     def hessian(self, x: typing.Any) -> tuple: pass
     def hvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
     def jacobian(self, x: typing.Any) -> tuple: pass
+    def jacobian_jvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
+    def residual(self, x: typing.Any) -> list[float]: pass
+    def restrict(self, names: list[str]) -> Restricted: pass
     def jvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
     def nodes(self, *, want: Want = ...) -> int: pass
     def save(self, path: str | os.PathLike) -> None: pass
@@ -64,9 +68,13 @@ class Equation:
     @property
     def hessian_colors(self) -> int: pass
     @property
+    def inputs(self) -> list[str]: pass
+    @property
     def loaded(self) -> bool: pass
     @property
     def outputs(self) -> int: pass
+    @property
+    def params(self) -> list[str]: pass
     @property
     def symbols(self) -> list[str]: pass
     @property
@@ -167,6 +175,14 @@ class VecLib(enum.IntEnum):
     @classmethod
     def __new__(cls, value): pass
     def __format__(self, format_spec): pass
+class Restricted:
+    def jacobian(self, x: typing.Any) -> tuple: pass
+    def jacobian_jvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
+    @property
+    def jacobian_columns(self) -> int: pass
+    @property
+    def symbols(self) -> list[str]: pass
+    
 class Want(enum.IntEnum):
     """
     Which blocks a bound call fills.
@@ -175,6 +191,7 @@ class Want(enum.IntEnum):
     HESSIAN: typing.ClassVar[Want]  # value = <Want.HESSIAN: 2>
     HVP: typing.ClassVar[Want]  # value = <Want.HVP: 3>
     JACOBIAN: typing.ClassVar[Want]  # value = <Want.JACOBIAN: 1>
+    JACOBIANTANGENT: typing.ClassVar[Want]  # value = <Want.JACOBIANTANGENT: 7>
     JVP: typing.ClassVar[Want]  # value = <Want.JVP: 5>
     VALUE: typing.ClassVar[Want]  # value = <Want.VALUE: 0>
     VJP: typing.ClassVar[Want]  # value = <Want.VJP: 4>
@@ -224,29 +241,34 @@ class errc(enum.IntEnum):
     """
     Why ddx refused; Error.code carries one.
     """
-    archive_corrupt: typing.ClassVar[errc]  # value = <errc.archive_corrupt: 13>
-    archive_io: typing.ClassVar[errc]  # value = <errc.archive_io: 11>
-    archive_mismatch: typing.ClassVar[errc]  # value = <errc.archive_mismatch: 14>
-    bad_archive: typing.ClassVar[errc]  # value = <errc.bad_archive: 12>
-    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 20>
-    device_compile: typing.ClassVar[errc]  # value = <errc.device_compile: 24>
-    device_launch: typing.ClassVar[errc]  # value = <errc.device_launch: 25>
+    archive_corrupt: typing.ClassVar[errc]  # value = <errc.archive_corrupt: 18>
+    archive_io: typing.ClassVar[errc]  # value = <errc.archive_io: 16>
+    archive_mismatch: typing.ClassVar[errc]  # value = <errc.archive_mismatch: 19>
+    bad_archive: typing.ClassVar[errc]  # value = <errc.bad_archive: 17>
+    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 25>
+    device_compile: typing.ClassVar[errc]  # value = <errc.device_compile: 29>
+    device_launch: typing.ClassVar[errc]  # value = <errc.device_launch: 30>
     index_out_of_range: typing.ClassVar[errc]  # value = <errc.index_out_of_range: 4>
-    jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 19>
-    jit_module: typing.ClassVar[errc]  # value = <errc.jit_module: 16>
-    jit_object: typing.ClassVar[errc]  # value = <errc.jit_object: 17>
-    jit_target: typing.ClassVar[errc]  # value = <errc.jit_target: 15>
-    jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 18>
+    jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 24>
+    jit_module: typing.ClassVar[errc]  # value = <errc.jit_module: 21>
+    jit_object: typing.ClassVar[errc]  # value = <errc.jit_object: 22>
+    jit_target: typing.ClassVar[errc]  # value = <errc.jit_target: 20>
+    jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 23>
     no_arena: typing.ClassVar[errc]  # value = <errc.no_arena: 6>
-    no_device: typing.ClassVar[errc]  # value = <errc.no_device: 23>
+    no_device: typing.ClassVar[errc]  # value = <errc.no_device: 28>
+    closed_twice: typing.ClassVar[errc]  # value = <errc.closed_twice: 10>
+    name_clash: typing.ClassVar[errc]  # value = <errc.name_clash: 8>
+    nested_implicit: typing.ClassVar[errc]  # value = <errc.nested_implicit: 11>
+    not_implicit: typing.ClassVar[errc]  # value = <errc.not_implicit: 12>
+    unclosed_implicit: typing.ClassVar[errc]  # value = <errc.unclosed_implicit: 9>
     no_graph: typing.ClassVar[errc]  # value = <errc.no_graph: 7>
-    not_univariate: typing.ClassVar[errc]  # value = <errc.not_univariate: 9>
-    sealed_arena: typing.ClassVar[errc]  # value = <errc.sealed_arena: 8>
+    not_univariate: typing.ClassVar[errc]  # value = <errc.not_univariate: 13>
+    not_single_output: typing.ClassVar[errc]  # value = <errc.not_single_output: 14>
     short_point: typing.ClassVar[errc]  # value = <errc.short_point: 0>
-    unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 21>
+    unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 26>
     unknown_symbol: typing.ClassVar[errc]  # value = <errc.unknown_symbol: 3>
-    unsupported_scalar: typing.ClassVar[errc]  # value = <errc.unsupported_scalar: 10>
-    wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 22>
+    unsupported_scalar: typing.ClassVar[errc]  # value = <errc.unsupported_scalar: 15>
+    wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 27>
     wrong_arity: typing.ClassVar[errc]  # value = <errc.wrong_arity: 1>
     wrong_column_count: typing.ClassVar[errc]  # value = <errc.wrong_column_count: 5>
     wrong_direction: typing.ClassVar[errc]  # value = <errc.wrong_direction: 2>
@@ -298,9 +320,13 @@ def exp(x: Expression) -> Expression:
     ...
 def hypot(x: Expression, y: Expression) -> Expression:
     ...
+def le(x: Expression, y: Expression) -> Expression:
+    ...
 def log(x: Expression) -> Expression:
     ...
 def log10(x: Expression) -> Expression:
+    ...
+def lt(x: Expression, y: Expression) -> Expression:
     ...
 def max(x: Expression, y: Expression) -> Expression:
     ...
@@ -325,6 +351,12 @@ def sqrt(x: Expression) -> Expression:
 def tan(x: Expression) -> Expression:
     ...
 def tanh(x: Expression) -> Expression:
+    ...
+def closes(z: Expression, f: Expression) -> None:
+    ...
+def implicit(name: str) -> Expression:
+    ...
+def param(name: str) -> Expression:
     ...
 def var(name: str) -> Expression:
     ...

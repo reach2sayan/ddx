@@ -1,14 +1,21 @@
-# Every third-party dependency.  LLVM and pybind11 are found; the rest are
-# fetched against a pin, and nothing downloads until its macro asks.
+# Every third-party dependency.  Nothing downloads until its macro asks.
 #
-#   ddx_use_boost()            Boost, header-only, fetched         always
-#   ddx_use_llvm()             LLVM 20, found                      DDX_BUILD_JIT
-#   ddx_use_opencl()           OpenCL headers + ICD loader, fetched DDX_BUILD_OPENCL
-#   ddx_use_googletest()       GoogleTest, fetched                 top-level only
-#   ddx_use_pybind11()         pybind11, found in the build env    DDX_BUILD_PYTHON
+#   ddx_use_boost()            Boost, header-only, found or fetched  always
+#   ddx_use_eigen()            Eigen, header-only, found or fetched  tests_eigen
+#   ddx_use_llvm()             LLVM 20, found                        DDX_BUILD_JIT
+#   ddx_use_opencl()           OpenCL headers + ICD loader, fetched  DDX_BUILD_OPENCL
+#   ddx_use_googletest()       GoogleTest, fetched                   top-level only
+#   ddx_use_pybind11()         pybind11, found in the build env      DDX_BUILD_PYTHON
+#
+# Found or fetched: use the Boost or Eigen you were given, download one only if
+# you were not.  -DBoost_ROOT=, CMAKE_PREFIX_PATH and toolchain files all work.
 include_guard(GLOBAL)
 
 include(FetchContent)
+
+# Skip CMake's user package registry: it records build trees, so a bare configure
+# once found C:/vcpkg/buildtrees/eigen3/x64-windows-rel instead of fetching.
+set(DDX_FIND_NO_REGISTRY NO_CMAKE_PACKAGE_REGISTRY NO_CMAKE_SYSTEM_PACKAGE_REGISTRY)
 
 # --- versions ---------------------------------------------------------------
 set(DDX_GOOGLETEST_VERSION "1.18.0" CACHE STRING "GoogleTest release to fetch")
@@ -23,10 +30,54 @@ FetchContent_Declare(googletest
         SYSTEM
 )
 
+# --- Eigen, for the interop test only ------------------------------------------
+# Headers only, never built, never a dependency of ddx itself.
+set(DDX_EIGEN_INCLUDEDIR "" CACHE PATH "A raw Eigen header tree to use (must hold Eigen/Core); overrides both find_package and the fetch")
+set(DDX_EIGEN_VERSION "3.4.0" CACHE STRING "Eigen release to fetch when none is supplied")
+FetchContent_Declare(eigen
+        URL https://gitlab.com/libeigen/eigen/-/archive/${DDX_EIGEN_VERSION}/eigen-${DDX_EIGEN_VERSION}.tar.gz
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SOURCE_SUBDIR ddx-does-not-build-eigen
+)
+
+macro(ddx_use_eigen)
+    if (NOT TARGET ddx_eigen)
+        add_library(ddx_eigen INTERFACE)
+        if (DDX_EIGEN_INCLUDEDIR)
+            _ddx_adopt_eigen("${DDX_EIGEN_INCLUDEDIR}")
+        else ()
+            find_package(Eigen3 QUIET CONFIG ${DDX_FIND_NO_REGISTRY})
+            if (Eigen3_FOUND AND TARGET Eigen3::Eigen)
+                target_link_libraries(ddx_eigen INTERFACE Eigen3::Eigen)
+                message(STATUS "Eigen ${Eigen3_VERSION} (found: ${Eigen3_DIR})")
+            else ()
+                FetchContent_MakeAvailable(eigen)
+                _ddx_adopt_eigen("${eigen_SOURCE_DIR}")
+            endif ()
+        endif ()
+    endif ()
+endmacro()
+
+macro(_ddx_adopt_eigen root)
+    if (NOT EXISTS "${root}/Eigen/Core")
+        message(FATAL_ERROR
+                "No Eigen at ${root}: it has no Eigen/Core.  DDX_EIGEN_INCLUDEDIR "
+                "must name the directory *containing* Eigen/, and setting it turns "
+                "off both find_package and the pinned fetch.")
+    endif ()
+    target_include_directories(ddx_eigen SYSTEM INTERFACE "${root}")
+    message(STATUS "Eigen (${root})")
+endmacro()
+
 # --- Boost -------------------------------------------------------------------
-# Fetched and pinned, never found; DDX_BOOST_INCLUDEDIR is the only override.
-set(DDX_BOOST_INCLUDEDIR "" CACHE PATH "A Boost include root to use instead of the pinned fetch; must hold boost/version.hpp")
-set(DDX_BOOST_VERSION "1.92.0" CACHE STRING "Boost release to fetch")
+# In order: a Boost::headers a parent already defined, find_package, the fetch.
+# DDX_BOOST_INCLUDEDIR covers what find_package cannot -- an unpacked tarball,
+# which carries no CMake config until it is built.
+set(DDX_BOOST_INCLUDEDIR "" CACHE PATH "A raw Boost header tree to use (must hold boost/version.hpp); overrides both find_package and the fetch")
+set(DDX_BOOST_VERSION "1.92.0" CACHE STRING "Boost release to fetch when none is supplied")
+# A floor on what find_package may accept, so a distro Boost too old for ddx
+# falls through to the fetch instead of silently replacing it.
+set(DDX_BOOST_MINIMUM "1.88" CACHE STRING "Oldest Boost a supplied one may be")
 set(DDX_BOOST_SHA256 "ea7b982002cc9dfbe59b0b217b206f470dc75f3de0bb2973d844118934d82411"
         CACHE STRING "SHA256 of the archive DDX_BOOST_VERSION names")
 cmake_path(SET _ddx_deps_default NORMALIZE "${CMAKE_CURRENT_LIST_DIR}/../.deps")
@@ -34,23 +85,39 @@ set(DDX_DEPS_DIR "${_ddx_deps_default}" CACHE PATH "Where fetched Boost is unpac
 unset(_ddx_deps_default)
 
 # SOURCE_SUBDIR names nothing, so MakeAvailable unpacks and stops.
+# SOURCE_DIR is shared between trees (one download); SUBBUILD_DIR and BINARY_DIR
+# cannot be -- a subbuild caches its generator, so sharing it fails the moment
+# two trees use different ones.
 FetchContent_Declare(boost
         URL https://github.com/boostorg/boost/releases/download/boost-${DDX_BOOST_VERSION}/boost-${DDX_BOOST_VERSION}-b2-nodocs.tar.xz
         URL_HASH SHA256=${DDX_BOOST_SHA256}
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SOURCE_SUBDIR ddx-does-not-build-boost
         SOURCE_DIR "${DDX_DEPS_DIR}/boost-${DDX_BOOST_VERSION}"
-        SUBBUILD_DIR "${DDX_DEPS_DIR}/boost-${DDX_BOOST_VERSION}-subbuild"
-        BINARY_DIR "${DDX_DEPS_DIR}/boost-${DDX_BOOST_VERSION}-build"
+        SUBBUILD_DIR "${CMAKE_BINARY_DIR}/_deps/boost-${DDX_BOOST_VERSION}-subbuild"
+        BINARY_DIR "${CMAKE_BINARY_DIR}/_deps/boost-${DDX_BOOST_VERSION}-build"
 )
 
+# DDX_BOOST_VENDORED is read by DdxInstall: only a Boost ddx fetched is carried
+# into the package.
 macro(ddx_use_boost)
     if (NOT TARGET Boost::headers)
         if (DDX_BOOST_INCLUDEDIR)
             _ddx_adopt_boost("${DDX_BOOST_INCLUDEDIR}")
+            set(DDX_BOOST_VENDORED FALSE CACHE INTERNAL "ddx fetched Boost itself")
         else ()
-            FetchContent_MakeAvailable(boost)
-            _ddx_adopt_boost("${boost_SOURCE_DIR}")
+            find_package(Boost ${DDX_BOOST_MINIMUM} QUIET CONFIG ${DDX_FIND_NO_REGISTRY})
+            if (Boost_FOUND AND TARGET Boost::headers)
+                set(DDX_BOOST_VENDORED FALSE CACHE INTERNAL "ddx fetched Boost itself")
+                get_target_property(_ddx_boost_inc Boost::headers INTERFACE_INCLUDE_DIRECTORIES)
+                list(GET _ddx_boost_inc 0 DDX_BOOST_ROOT)
+                unset(_ddx_boost_inc)
+                message(STATUS "Boost ${Boost_VERSION} (found: ${Boost_DIR})")
+            else ()
+                FetchContent_MakeAvailable(boost)
+                _ddx_adopt_boost("${boost_SOURCE_DIR}")
+                set(DDX_BOOST_VENDORED TRUE CACHE INTERNAL "ddx fetched Boost itself")
+            endif ()
         endif ()
     endif ()
 endmacro()
@@ -60,8 +127,9 @@ macro(_ddx_adopt_boost root)
         message(FATAL_ERROR
                 "No Boost at ${root}: it has no boost/version.hpp.  "
                 "DDX_BOOST_INCLUDEDIR must name the directory *containing* boost/, "
-                "and setting it turns the pinned fetch off entirely.  Unset it to "
-                "build against the fetched Boost ${DDX_BOOST_VERSION} instead.")
+                "and setting it turns off both find_package and the pinned fetch.  "
+                "Unset it to let ddx find an installed Boost, or to fall back to "
+                "fetching ${DDX_BOOST_VERSION}.")
     endif ()
     add_library(Boost::headers INTERFACE IMPORTED GLOBAL)
     set_target_properties(Boost::headers PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${root}")
@@ -166,9 +234,10 @@ foreach (_ddx_cl IN ITEMS Headers ICD-Loader)
             URL_HASH SHA256=${_ddx_cl_hash}
             DOWNLOAD_EXTRACT_TIMESTAMP TRUE
             SOURCE_SUBDIR ddx-does-not-build-this
+            # Shared source, per-tree subbuild: see the note on the Boost declare.
             SOURCE_DIR "${DDX_DEPS_DIR}/${_ddx_cl_dir}-${DDX_OPENCL_VERSION}"
-            SUBBUILD_DIR "${DDX_DEPS_DIR}/${_ddx_cl_dir}-${DDX_OPENCL_VERSION}-subbuild"
-            BINARY_DIR "${DDX_DEPS_DIR}/${_ddx_cl_dir}-${DDX_OPENCL_VERSION}-build")
+            SUBBUILD_DIR "${CMAKE_BINARY_DIR}/_deps/${_ddx_cl_dir}-${DDX_OPENCL_VERSION}-subbuild"
+            BINARY_DIR "${CMAKE_BINARY_DIR}/_deps/${_ddx_cl_dir}-${DDX_OPENCL_VERSION}-build")
 endforeach ()
 unset(_ddx_cl)
 unset(_ddx_cl_dir)
@@ -233,7 +302,9 @@ function(_ddx_silence_dependency)
     endif ()
     foreach (target IN LISTS ARGV)
         if (TARGET ${target})
-            target_compile_options(${target} PRIVATE /W0 /wd4668)
+            # Not /W0: GoogleTest puts /W4 in its own CXX flags, and cl reports
+            # the override as D9025.  Its sources are clean at the level it
+            # picked, so take that level and only drop the warning-as-error.
             set_target_properties(${target} PROPERTIES COMPILE_WARNING_AS_ERROR OFF)
         endif ()
     endforeach ()

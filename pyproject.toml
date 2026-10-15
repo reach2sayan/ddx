@@ -108,6 +108,10 @@ regex = 'project\(ddx VERSION (?P<value>[0-9]+\.[0-9]+\.[0-9]+)'
 [tool.scikit-build]
 cmake.version = ">=3.26"
 cmake.build-type = "Release"
+# Ninja everywhere.  On Windows scikit-build-core would pick the Visual Studio
+# generator, which compiles serially and is a second generator against the same
+# shared .deps.
+cmake.args = ["-GNinja"]
 wheel.packages = ["python/ddx"]
 # Kept between builds, so an edit to one binding recompiles one file rather than
 # reconfiguring LLVM from scratch.

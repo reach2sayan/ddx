@@ -7,24 +7,37 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // The runtime mirror of the compile-time operation set.  Rows are (factory
 // spelling, enumerator, label), the shape DDX_UNARY_MATH_TABLE already has.
 namespace ddx::rt {
 
-// A Seed is a symbol's opposite: an input column that is never differentiated.
-// Being a leaf that is not a Var is what keeps it out of symbols(), out of the
-// reverse sweep's harvest and out of the coupling pattern, with no slot-range
-// convention for any of them to agree on.
+// Every leaf but Const reads an input column.  Only a Var is differentiated:
+// being a leaf that is not a Var is what keeps a Param, an Implicit or a Seed
+// out of symbols(), out of the reverse sweep's harvest and out of the coupling
+// pattern, with no slot-range convention for any of them to agree on.  A Param
+// is a named input present in every lane; an Implicit, one the caller solved
+// for; a Seed, a seeded product's direction.  The last cell is what the slot
+// is: nothing, a place among the named inputs of that kind, or a position.
+// The named kinds are their own table, in the order a point passes them: it
+// is what the Builder keeps one name list per and what var()'s spellings,
+// the Python factories and the column layout are generated from.
+#define DDX_RT_NAMED_TABLE(X)                                                  \
+  X(var, Var, "var", Named)                                                    \
+  X(param, Param, "param", Named)                                              \
+  X(implicit, Implicit, "implicit", Named)
 #define DDX_RT_LEAF_TABLE(X)                                                   \
-  X(constant, Const, "const")                                                  \
-  X(var, Var, "var")                                                           \
-  X(seed, Seed, "seed")
+  X(constant, Const, "const", Literal)                                         \
+  DDX_RT_NAMED_TABLE(X)                                                        \
+  X(seed, Seed, "seed", Positional)
 
 // The last cell is the ops/adjoints.hpp descriptor carrying the reverse-mode
 // rule, which the compile-time ops call too -- the rule is written once, there.
@@ -55,13 +68,25 @@ namespace ddx::rt {
 #define DDX_RT_TERNARY_TABLE(X)                                                \
   X(select, Select, "select", impl::detail::select_impl)
 
+// A function the caller supplies with its own partials, of any number of
+// arguments.  Extern (the value) and ExternD (one partial -- which, and of
+// which function, packed into the slot) take one operand: the argument list.
+// A list of one is the argument itself; a longer one is ExternArgs(first,
+// rest), the same rule all the way down, so every node holds only real
+// operands.  The last cells are the arity and the Kind.
+#define DDX_RT_EXTERN_TABLE(X)                                                 \
+  X(extern_call, Extern, "extern", 1, Extern)                                  \
+  X(extern_partial, ExternD, "extern_d", 1, Extern)                            \
+  X(extern_args, ExternArgs, "extern_args", 2, Args)
+
 #define DDX_RT_OP_TABLE(X)                                                     \
   DDX_RT_LEAF_TABLE(X)                                                         \
   DDX_RT_UNARY_TABLE(X)                                                        \
   DDX_UNARY_MATH_TABLE(X)                                                      \
   DDX_RT_BINARY_TABLE(X)                                                       \
   DDX_RT_COMPARE_TABLE(X)                                                      \
-  DDX_RT_TERNARY_TABLE(X)
+  DDX_RT_TERNARY_TABLE(X)                                                      \
+  DDX_RT_EXTERN_TABLE(X)
 
 enum class OpCode : std::uint8_t {
 #define DDX_RT_ENUMERATOR(fn, Op, label, ...) Op,
@@ -77,36 +102,59 @@ inline constexpr std::size_t op_count = [] {
   return n;
 }();
 
+// What a walker does with a node: the one classification every sweep, emitter
+// and checker switches on, so none tests an opcode ahead of its arity.  A
+// Const is a literal, an Input reads a column, an Extern calls the program's
+// function (its value or one partial), an Args node is an argument list.
+enum class Kind : std::uint8_t {
+  Const,
+  Input,
+  Unary,
+  Binary,
+  Ternary,
+  Extern,
+  Args
+};
+
 namespace detail {
+
+enum class Role : std::uint8_t { Literal, Named, Positional };
 
 struct OpInfo {
   std::string_view name; // the factory spelling, and the Python name
   std::string_view label;
   std::uint8_t arity;
+  Kind kind;
 };
 
-// Arity is which sub-table a row sits in, so the three groups fill one array in
-// three passes.  Each row lands at its own enumerator, so nothing depends on
-// the table order matching the enum's.
+// Arity and kind are which sub-table a row sits in, so the groups fill one
+// array in one pass each.  Each row lands at its own enumerator, so nothing
+// depends on the table order matching the enum's.
 inline constexpr std::array op_info = [] {
   std::array<OpInfo, op_count> t{};
-#define DDX_RT_ROW(fn, Op, label, ...)                                         \
-  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 0};
+#define DDX_RT_ROW(fn, Op, label, role, ...)                                   \
+  t[static_cast<std::size_t>(OpCode::Op)] = {                                  \
+      #fn, label, 0,                                                           \
+      Role::role == Role::Literal ? Kind::Const : Kind::Input};
   DDX_RT_LEAF_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
 #define DDX_RT_ROW(fn, Op, label, ...)                                         \
-  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 1};
+  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 1, Kind::Unary};
   DDX_RT_UNARY_TABLE(DDX_RT_ROW)
   DDX_UNARY_MATH_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
 #define DDX_RT_ROW(fn, Op, label, ...)                                         \
-  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 2};
+  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 2, Kind::Binary};
   DDX_RT_BINARY_TABLE(DDX_RT_ROW)
   DDX_RT_COMPARE_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
 #define DDX_RT_ROW(fn, Op, label, ...)                                         \
-  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 3};
+  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 3, Kind::Ternary};
   DDX_RT_TERNARY_TABLE(DDX_RT_ROW)
+#undef DDX_RT_ROW
+#define DDX_RT_ROW(fn, Op, label, arity, kind)                                 \
+  t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, arity, Kind::kind};
+  DDX_RT_EXTERN_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
   return t;
 }();
@@ -140,6 +188,9 @@ namespace detail {
 [[nodiscard]] constexpr std::uint8_t arity_of(OpCode op) noexcept {
   return detail::info(op).arity;
 }
+[[nodiscard]] constexpr Kind kind_of(OpCode op) noexcept {
+  return detail::info(op).kind;
+}
 
 // By label, at compile time for the bridge and at run time for a loader: byte
 // values are table-order, so appending a transcendental shifts every enumerator
@@ -166,14 +217,143 @@ template <impl::Numeric T>
 }
 
 [[nodiscard]] constexpr bool is_leaf(OpCode op) noexcept {
-  return arity_of(op) == 0;
+  return kind_of(op) == Kind::Const || kind_of(op) == Kind::Input;
+}
+[[nodiscard]] constexpr bool is_extern(OpCode op) noexcept {
+  return kind_of(op) == Kind::Extern || kind_of(op) == Kind::Args;
+}
+// What text and Python may call by name: an operation on operands, not a
+// leaf and not a function the program registered.
+[[nodiscard]] constexpr bool callable(OpCode op) noexcept {
+  return !is_leaf(op) && !is_extern(op);
 }
 
-// Which column of `xs` a leaf reads: the symbols first, then the seeds.
-// Written once, because the interpreter, codegen and the ABI have to agree.
-[[nodiscard]] constexpr std::size_t input_column(std::size_t symbols, OpCode op,
+// Which kind of named input a leaf is, in table order.
+[[nodiscard]] constexpr std::optional<std::size_t>
+named_index(OpCode op) noexcept {
+  std::size_t i = 0;
+#define DDX_RT_NAMED(fn, Op, ...)                                              \
+  if (op == OpCode::Op) {                                                      \
+    return i;                                                                  \
+  }                                                                            \
+  ++i;
+  DDX_RT_NAMED_TABLE(DDX_RT_NAMED)
+#undef DDX_RT_NAMED
+  return std::nullopt;
+}
+inline constexpr std::size_t named_count = [] {
+  std::size_t n = 0;
+#define DDX_RT_NAMED(...) ++n;
+  DDX_RT_NAMED_TABLE(DDX_RT_NAMED)
+#undef DDX_RT_NAMED
+  return n;
+}();
+
+// One T per named kind: a std::array, and on every compiler but one nothing
+// besides.  GCC before 15 deallocates twice when constant evaluation copies an
+// array whose elements allocate, so there the copies are spelled element by
+// element -- the one spelling it gets right.  An equation copies the arena it
+// was lent, which is what makes a consteval equation reach this at all; the
+// run-time copy is the array's own either way.
+template <typename T> struct PerKind : std::array<T, named_count> {
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 15
+  using Array = std::array<T, named_count>;
+  constexpr PerKind() = default;
+  constexpr PerKind(const PerKind &other) : Array(other.copied()) {
+    if consteval {
+      std::ranges::copy(other, this->begin());
+    }
+  }
+  constexpr PerKind(PerKind &&other) noexcept : Array(std::move(other).taken()) {
+    if consteval {
+      std::ranges::move(other, this->begin());
+    }
+  }
+  constexpr PerKind &operator=(const PerKind &other) {
+    if consteval {
+      std::ranges::copy(other, this->begin());
+    } else {
+      static_cast<Array &>(*this) = other;
+    }
+    return *this;
+  }
+  constexpr PerKind &operator=(PerKind &&other) noexcept {
+    if consteval {
+      std::ranges::move(other, this->begin());
+    } else {
+      static_cast<Array &>(*this) = std::move(other);
+    }
+    return *this;
+  }
+
+private:
+  // What the base is built from: its own copy, which is the whole of this at
+  // run time, and an empty array during constant evaluation -- the elements
+  // the constructor's body then assigns are what the bug is dodged by.  A
+  // prvalue, so the run-time copy lands in the base and no second one exists.
+  [[nodiscard]] constexpr Array copied() const {
+    if consteval {
+      return Array{};
+    }
+    return *this;
+  }
+  [[nodiscard]] constexpr Array taken() && {
+    if consteval {
+      return Array{};
+    }
+    return std::move(*this);
+  }
+#endif
+};
+
+// An extern node's slot: which registered function, and which component of
+// its answer -- 0 the value, 1..k the first partials, then the upper triangle
+// of the second, row-major.  A half-word each; fits() is the one bound.
+struct ExternSlot {
+  std::uint32_t function = 0;
+  std::uint32_t component = 0;
+  static constexpr std::uint32_t limit = 1u << 16;
+
+  [[nodiscard]] static constexpr ExternSlot of(std::uint32_t slot) noexcept {
+    return {.function = slot >> 16, .component = slot & (limit - 1)};
+  }
+  [[nodiscard]] constexpr std::uint32_t packed() const noexcept {
+    return (function << 16) | component;
+  }
+  [[nodiscard]] static constexpr bool fits(std::size_t function,
+                                           std::size_t components) noexcept {
+    return function < limit && components <= limit;
+  }
+};
+
+
+// How many input columns of each kind a call passes, in the order it passes
+// them: the named kinds in table order, then a seeded product's direction.
+struct Inputs {
+  std::array<std::size_t, named_count> by_kind{};
+  std::size_t seeds = 0;
+
+  [[nodiscard]] constexpr std::size_t count(OpCode op) const noexcept {
+    return by_kind[*named_index(op)];
+  }
+  [[nodiscard]] constexpr std::size_t named() const noexcept {
+    return std::ranges::fold_left(by_kind, 0uz, std::plus<>{});
+  }
+  [[nodiscard]] constexpr std::size_t total() const noexcept {
+    return named() + seeds;
+  }
+  constexpr bool operator==(const Inputs &) const = default;
+};
+
+// Which column of `xs` a leaf reads: its kind's columns start after every
+// kind before it.  Written once, because the interpreter, codegen and the ABI
+// have to agree.
+[[nodiscard]] constexpr std::size_t input_column(const Inputs &in, OpCode op,
                                                  std::uint32_t slot) noexcept {
-  return op == OpCode::Var ? slot : symbols + slot;
+  const auto before = named_index(op).value_or(named_count);
+  return std::ranges::fold_left(std::span{in.by_kind}.first(before), 0uz,
+                                std::plus<>{}) +
+         slot;
 }
 
 } // namespace ddx::rt

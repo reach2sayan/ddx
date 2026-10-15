@@ -49,10 +49,10 @@ struct Object {
   return it == objects.end() ? nullptr : &*it;
 }
 
+
 // All the C++ facade and PyEquation share, and so the only thing serialised.
 template <impl::Numeric T> struct Snapshot {
-  std::vector<std::string> symbols;
-  std::vector<Node<T>> nodes;
+  Model<T> model;
   std::vector<NodeId> roots;
   Jacobian jacobian;
   std::vector<Hessian> hessians;
@@ -66,8 +66,8 @@ template <impl::Numeric T> struct Snapshot {
   std::uint32_t model_nodes = 0;
   std::vector<Object> objects;
   BOOST_DESCRIBE_CLASS(Snapshot, (),
-                       (symbols, nodes, roots, jacobian, hessians, hvp, vjp,
-                        jvp, options, model_nodes, objects),
+                       (model, roots, jacobian, hessians, hvp, vjp, jvp,
+                        options, model_nodes, objects),
                        (), ())
 };
 

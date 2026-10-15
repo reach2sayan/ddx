@@ -522,7 +522,7 @@ TEST(JitValue, AnObjectAdoptsBackIntoTheSameKernel) {
   // stores the symbol beside them.
   ASSERT_FALSE(compiled.symbol().empty());
   const auto adopted =
-      compiler().adopt(compiled.object(), compiled.symbol(), compiled.shape());
+      compiler().adopt(compiled.object(), compiled.symbol(), graph);
   ASSERT_TRUE(adopted.has_value()) << adopted.error().detail;
 
   const std::array cx{0.4, 0.9}, cy{1.3, 0.7};
@@ -865,7 +865,7 @@ TEST(JitValue, AForgedSymbolCannotReachThroughTheLinkOrder) {
 
   // Its own symbol links, so the negatives below are not vacuous.
   EXPECT_TRUE(compiler()
-                  .adopt(compiled.object(), compiled.symbol(), compiled.shape())
+                  .adopt(compiled.object(), compiled.symbol(), graph)
                   .has_value());
 
   // Every one resolves in the main dylib -- libm through define_libm, memcpy
@@ -873,7 +873,7 @@ TEST(JitValue, AForgedSymbolCannotReachThroughTheLinkOrder) {
   for (const std::string_view forged :
        {"sin", "exp", "log", "memcpy", "ddx_kernel_999"}) {
     EXPECT_FALSE(compiler()
-                     .adopt(compiled.object(), forged, compiled.shape())
+                     .adopt(compiled.object(), forged, graph)
                      .has_value())
         << forged << " resolved through the link order";
   }
@@ -884,9 +884,10 @@ TEST(JitValue, AdoptingRubbishIsAnErrorNotACrash) {
   const std::array<std::byte, 8> rubbish{
       std::byte{0x7f}, std::byte{'E'}, std::byte{'L'}, std::byte{'F'},
       std::byte{0},    std::byte{0},   std::byte{0},   std::byte{0}};
-  const auto k =
-      compiler().adopt(rubbish, "ddx_kernel_0",
-                       {.arity = 1, .values = 1, .jacobian = 0, .hessian = 0});
+  Builder<> b;
+  const auto x = var(b, "x");
+  const auto graph = Graph<>::freeze(b, std::array{(x * x).id(b)});
+  const auto k = compiler().adopt(rubbish, "ddx_kernel_0", graph);
   EXPECT_FALSE(k.has_value()) << "a truncated object linked";
 }
 

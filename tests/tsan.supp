@@ -5,3 +5,7 @@
 # it from the instrumented module around it; these name it by frame instead.
 race:llvm::
 deadlock:llvm::
+
+# ROCm's OpenCL runtime starts a thread when the ICD loader enumerates it and
+# never joins it, so every device test ends with a leak in the driver.
+thread:libhsa-runtime64

@@ -239,6 +239,13 @@ TEST(RtArchive, RefusesForeignAndFutureFiles) {
   file.write(future);
   EXPECT_EQ(ddx::rt::load(file.path()).error().code, ddx::errc::bad_archive);
 
+  // Format 3 numbered symbols alphabetically, so its positional points would
+  // mean something else here: refused, not reinterpreted.
+  auto older = whole;
+  older[ddx::rt::detail::Container::magic_bytes] = std::byte{3};
+  file.write(older);
+  EXPECT_EQ(ddx::rt::load(file.path()).error().code, ddx::errc::bad_archive);
+
   // Letting a reserved byte through would make claiming it later a silent
   // format change.  Named, not a literal: the described field list decides
   // where the tail starts, and a field added to it moves this.
@@ -479,7 +486,7 @@ TEST(RtArchive, RefusesAForgedColouringCount) {
   ASSERT_TRUE(sound.has_value());
   auto snap = std::move(*sound).release();
   auto &coloring = snap.hessians.front().coloring;
-  const std::size_t nsym = snap.symbols.size();
+  const std::size_t nsym = snap.model.names.front().size();
 
   // There is no `count` field to forge: the colour count is scatter.size() /
   // nsym, so a count that disagrees with its own table cannot be written down.
@@ -502,13 +509,15 @@ TEST(RtArchive, RefusesAForgedColouringCount) {
 // digest() routes every field through to_bits for exactly this reason.
 TEST(RtArchive, DigestSeparatesTheSignedZeroes) {
   using ddx::rt::Node;
-  const std::array<std::string, 1> symbols{"x"};
-  const std::array<Node<double>, 1> plus{Node<double>{.value = +0.0}};
-  const std::array<Node<double>, 1> minus{Node<double>{.value = -0.0}};
+  ddx::rt::Model<double> plus;
+  plus.names.front() = {"x"};
+  plus.nodes = {Node<double>{.value = +0.0}};
+  auto minus = plus;
+  minus.nodes.front().value = -0.0;
 
-  ASSERT_TRUE(plus[0].value == minus[0].value) << "the two must compare equal";
-  EXPECT_NE(ddx::rt::digest<double>(symbols, plus, 1),
-            ddx::rt::digest<double>(symbols, minus, 1));
+  ASSERT_TRUE(plus.nodes[0].value == minus.nodes[0].value)
+      << "the two must compare equal";
+  EXPECT_NE(ddx::rt::digest(plus, 1), ddx::rt::digest(minus, 1));
 }
 
 // The opcode table is what every opcode byte in the payload *means*, so it is
@@ -622,7 +631,7 @@ TEST(RtArchive, LoadedIdsAreTheSavedIds) {
   ASSERT_TRUE(snap.has_value()) << snap.error().code;
 
   // rebuild() consumes the node array, so the comparison keeps its own copy.
-  const auto saved = (*snap)->nodes;
+  const auto saved = (*snap)->model.nodes;
   const auto arena = std::move(*snap).rebuild().arena;
   ASSERT_EQ(arena->size(), saved.size());
   for (const auto [i, node] : saved | std::views::enumerate) {

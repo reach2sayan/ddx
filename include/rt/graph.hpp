@@ -7,10 +7,7 @@
 #include "util/ranges.hpp"
 
 #include <boost/describe/class.hpp>
-#include <boost/describe/enum.hpp>
-#include <boost/describe/enum_to_string.hpp>
 #include <boost/graph/compressed_sparse_row_graph.hpp>
-#include <boost/mp11/list.hpp>
 
 #include <algorithm>
 #include <array>
@@ -19,20 +16,9 @@
 #include <ranges>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
-
-namespace ddx::impl {
-// Redeclared rather than relied on through rt/expressions.hpp: GraphBuilder
-// befriends it below.
-template <typename... Ts> class Equation;
-} // namespace ddx::impl
-
-namespace ddx::py {
-// The Python equation freezes three lanes off one sweep as the facade does, so
-// it hands over a Hessian for the same reason.
-class PyEquation;
-} // namespace ddx::py
 
 namespace ddx::rt {
 
@@ -48,58 +34,70 @@ using Vertex = boost::graph_traits<Adjacency>::vertex_descriptor;
 
 // What a lane's graph carries; each level is the one below plus a block.
 // Appended rather than inserted, so a saved Object's `want` byte still names
-// the same lane it did.
-enum class Want : std::uint8_t {
-  Value,
-  Jacobian,
-  Hessian,
-  Hvp,
-  Vjp,
-  Jvp,
-  Gradient
-};
-BOOST_DESCRIBE_ENUM(Want, Value, Jacobian, Hessian, Hvp, Vjp, Jvp, Gradient)
-inline constexpr std::size_t want_count =
-    boost::mp11::mp_size<boost::describe::describe_enumerators<Want>>::value;
-
-// The lanes in Cache order, off the same described list `want_count` counts, so
-// a lane zipped against the cache needs no cast back from an index.
-inline constexpr auto want_values = [] {
-  std::array<Want, want_count> out{};
-  std::size_t i = 0;
-  boost::mp11::mp_for_each<boost::describe::describe_enumerators<Want>>(
-      [&out, &i](auto D) { out[i++] = D.value; });
-  return out;
-}();
-// Which is only true while the enumerators are unnumbered and in order; a Want
-// given an explicit value would put the cache and this list out of step.
-static_assert(std::ranges::all_of(std::views::iota(0uz, want_count),
-                                  [](std::size_t i) {
-                                    return std::to_underlying(want_values[i]) ==
-                                           i;
-                                  }));
-
-[[nodiscard]] constexpr std::string_view name_of(Want w) noexcept {
-  return boost::describe::enum_to_string(w, "?");
-}
-
-// Whether the lane's kernel may be built over the rebalanced graph.  The
-// seeded and second-order lanes may not: their block is swept from the
+// the same lane it did.  The columns: whether the lane is one function's (a
+// system refuses it), whether it is second order (a function supplying first
+// partials only refuses it), whether its kernel may be built over the
+// rebalanced graph, and what its seeds are counted in.  The seeded and
+// second-order lanes may not rebalance: their block is swept from the
 // unblocked roots, so a rebalanced copy would answer in different last bits
 // than the sweep it is checked against.
-[[nodiscard]] constexpr bool rebalanceable(Want w) noexcept {
-  switch (w) {
-  case Want::Value:
-  case Want::Jacobian:
-  case Want::Gradient:
-    return true;
-  case Want::Hessian:
-  case Want::Hvp:
-  case Want::Vjp:
-  case Want::Jvp:
-    return false;
+#define DDX_RT_WANT_TABLE(X)                                                   \
+  X(Value, false, false, true, None)                                           \
+  X(Jacobian, false, false, true, None)                                        \
+  X(Hessian, true, true, false, None)                                          \
+  X(Hvp, true, true, false, Symbols)                                           \
+  X(Vjp, false, false, false, Functions)                                       \
+  X(Jvp, false, false, false, Symbols)                                         \
+  X(Gradient, false, false, true, None)                                        \
+  X(JacobianTangent, false, true, false, Symbols)
+
+enum class Want : std::uint8_t {
+#define DDX_RT_WANT(Name, ...) Name,
+  DDX_RT_WANT_TABLE(DDX_RT_WANT)
+#undef DDX_RT_WANT
+};
+enum class Seeds : std::uint8_t { None, Symbols, Functions };
+struct WantInfo {
+  std::string_view name;
+  bool single;
+  bool second_order;
+  bool rebalanceable;
+  Seeds seeds;
+};
+inline constexpr auto want_table = [] {
+  std::array<WantInfo, 0
+#define DDX_RT_WANT(...) +1
+                               DDX_RT_WANT_TABLE(DDX_RT_WANT)
+#undef DDX_RT_WANT
+             >
+      t{};
+  std::size_t i = 0;
+#define DDX_RT_WANT(Name, single, second, rebalance, seeds)                    \
+  t[i++] = {#Name, single, second, rebalance, Seeds::seeds};
+  DDX_RT_WANT_TABLE(DDX_RT_WANT)
+#undef DDX_RT_WANT
+  return t;
+}();
+inline constexpr std::size_t want_count = want_table.size();
+
+// The lanes in Cache order, so a lane zipped against the cache needs no cast
+// back from an index.
+inline constexpr auto want_values = [] {
+  std::array<Want, want_count> out{};
+  for (const std::size_t i : std::views::iota(0uz, want_count)) {
+    out[i] = static_cast<Want>(i);
   }
-  return false;
+  return out;
+}();
+
+[[nodiscard]] constexpr const WantInfo &want_info(Want w) noexcept {
+  return want_table[std::to_underlying(w)];
+}
+[[nodiscard]] constexpr std::string_view name_of(Want w) noexcept {
+  return want_info(w).name;
+}
+[[nodiscard]] constexpr bool rebalanceable(Want w) noexcept {
+  return want_info(w).rebalanceable;
 }
 
 // One of a thing per output block, in the order the kernel writes them.  The
@@ -180,7 +178,9 @@ public:
     impl::append(g.outputs_, blocks.hessian);
     g.coloring_ = std::move(coloring);
     g.jacobian_ = std::move(jacobian);
-    g.symbols_.assign(b.symbols().begin(), b.symbols().end());
+    g.inputs_ = b.inputs();
+    g.externs_.assign(b.externs().begin(), b.externs().end());
+    g.names_ = b.names();
     g.properties_.reserve(b.size());
 
     std::vector<std::pair<std::size_t, std::size_t>> edges;
@@ -208,8 +208,10 @@ public:
     // that kept no seed keeps the kernel and the digest it had.
     for (const auto &[v, fma] : g.schedule_) {
       if (g.properties_[v].op == OpCode::Seed) {
-        g.seeds_ = std::max(g.seeds_, std::size_t{g.properties_[v].slot} + 1);
+        g.inputs_.seeds =
+            std::max(g.inputs_.seeds, std::size_t{g.properties_[v].slot} + 1);
       }
+      g.calls_extern_ |= kind_of(g.properties_[v].op) == Kind::Extern;
     }
     return g;
   }
@@ -232,12 +234,24 @@ public:
   [[nodiscard]] const Coloring &coloring() const { return coloring_; }
   // Which (function, symbol) cells the jacobian block holds, in its order.
   [[nodiscard]] const Sparsity &jacobian_pattern() const { return jacobian_; }
-  [[nodiscard]] const std::vector<std::string> &symbols() const {
-    return symbols_;
+  // How many input columns of each kind `xs` carries, and the names of all
+  // but the seeds, in column order.
+  [[nodiscard]] const Inputs &inputs() const { return inputs_; }
+  [[nodiscard]] const std::vector<std::string> &names() const {
+    return names_;
   }
 
-  // How many input columns `xs` carries: symbols().size() is not the width.
-  [[nodiscard]] std::size_t arity() const { return symbols_.size() + seeds_; }
+  // The functions extern nodes call, shared with the arena: a kernel lowered
+  // from this graph calls them by index into this table.
+  [[nodiscard]] std::span<const ExternEntry<T>> externs() const {
+    return externs_;
+  }
+  // Whether a live node calls one: what a device, which cannot call the host,
+  // refuses -- a function the arena registered and nothing reaches is not.
+  [[nodiscard]] bool calls_extern() const noexcept { return calls_extern_; }
+
+  // How many input columns `xs` carries: the symbol count is not the width.
+  [[nodiscard]] std::size_t arity() const { return inputs_.total(); }
 
   [[nodiscard]] bool live(NodeId v) const { return live_[v]; }
 
@@ -331,8 +345,10 @@ private:
   Layout layout_;
   Coloring coloring_;
   Sparsity jacobian_;
-  std::vector<std::string> symbols_;
-  std::size_t seeds_ = 0;
+  Inputs inputs_;
+  std::vector<std::string> names_;
+  std::vector<ExternEntry<T>> externs_;
+  bool calls_extern_ = false;
   std::vector<bool> live_;
   std::vector<NodeId> live_order_;
   std::vector<Step> schedule_;
@@ -356,6 +372,7 @@ concept CSweeps = requires(S &s) {
   { s.hessian_vector() } -> std::convertible_to<const HessianVector &>;
   { s.vector_jacobian() } -> std::convertible_to<const VectorJacobian &>;
   { s.tangent() } -> std::convertible_to<const Tangent &>;
+  { s.jacobian_tangent() } -> std::convertible_to<std::span<const NodeId>>;
 };
 
 // Defined below GraphBuilder, which befriends it: the only caller of the
@@ -366,9 +383,7 @@ template <impl::Numeric T>
 
 template <impl::Numeric T = double> class GraphBuilder {
 public:
-  explicit constexpr GraphBuilder(Builder<T> &b) noexcept : builder_{&b} {
-    detail::Sealing::seal(b);
-  }
+  explicit constexpr GraphBuilder(Builder<T> &b) noexcept : builder_{&b} {}
 
   // The function the kernel computes.
   constexpr GraphBuilder &value(const RTExpression<T> &root) {
@@ -446,6 +461,12 @@ private:
   constexpr GraphBuilder &tangent_from(const Tangent &t) {
     return block(&OutputBlocks::jacobian, t.product);
   }
+  // dJ/dv has the Jacobian's layout: one column per cell, read with its
+  // pattern.
+  constexpr GraphBuilder &
+  jacobian_tangent_from(std::span<const NodeId> product) {
+    return block(&OutputBlocks::hessian, product);
+  }
   // w'J is a first-order block of n columns and dense, so jacobian_pattern()
   // stays empty.
   constexpr GraphBuilder &vector_jacobian_from(const VectorJacobian &j) {
@@ -494,6 +515,10 @@ template <impl::Numeric T>
   case Want::Hvp:
     gb.jacobian_from(sweeps.jacobian())
         .hessian_vector_from(sweeps.hessian_vector());
+    break;
+  case Want::JacobianTangent:
+    gb.jacobian_from(sweeps.jacobian())
+        .jacobian_tangent_from(sweeps.jacobian_tangent());
     break;
   }
   return gb.finish(contract);

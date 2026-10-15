@@ -83,6 +83,10 @@ private:
     return {Base::form(op, l.expression_, r.expression_),
             l.arena_ ? l.arena_ : r.arena_};
   }
+  // `z` is a root of `f`; a misuse is kept on the arena for the equation.
+  friend void closes(const PyExpression &z, const PyExpression &f) {
+    rt::closes(z.expression_, f.expression_);
+  }
   // The base's own composition of two handles, with the arena put back.
   friend PyExpression combine(const PyExpression &l, const PyExpression &r,
                               auto &&fn) {

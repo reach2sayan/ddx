@@ -27,20 +27,40 @@ struct CompileReport {
   std::chrono::nanoseconds codegen{};
 };
 
+// The functions a kernel calls back into, by the index its extern nodes
+// carry: held, so a kernel outlives the graph it was lowered from, and tabled,
+// so the object holds no address and any process may run it.
+struct Externs {
+  std::vector<std::shared_ptr<const void>> held;
+  std::vector<const void *> table;
+
+  template <impl::Numeric T>
+  [[nodiscard]] static Externs of(const rt::Graph<T> &g) {
+    Externs out;
+    for (const auto &e : g.externs()) {
+      out.held.push_back(e.fn);
+      out.table.push_back(e.fn.get());
+    }
+    return out;
+  }
+};
+
 // A copy is one atomic increment; the last Kernel to go frees the code.
 class Kernel {
 public:
   using function_type = void (*)(const double *const *, double *const *,
-                                 double *const *, double *const *, std::size_t);
+                                 double *const *, double *const *, std::size_t,
+                                 const void *const *);
 
   using object_type = std::shared_ptr<const std::vector<std::byte>>;
   using symbol_type = std::shared_ptr<const std::string>;
 
   Kernel() = default;
-  Kernel(function_type fn, KernelShape shape, std::shared_ptr<void> code,
-         symbol_type symbol = {}, object_type object = {}) noexcept
-      : fn_{fn}, code_{std::move(code)}, symbol_{std::move(symbol)},
-        object_{std::move(object)}, shape_{shape} {}
+  Kernel(function_type fn, KernelShape shape, Externs externs,
+         std::shared_ptr<void> code, symbol_type symbol = {},
+         object_type object = {}) noexcept
+      : fn_{fn}, code_{std::move(code)}, externs_{std::move(externs)},
+        symbol_{std::move(symbol)}, object_{std::move(object)}, shape_{shape} {}
 
   // xs[j] is the column for symbol j, g[j] the partial in it, each n long; an
   // unrequested block is `{}`.  noexcept: codegen marks the kernel nounwind.
@@ -50,7 +70,7 @@ public:
     // A mismatch past here is silent memory corruption.
     assert(xs.size() == shape_.arity && f.size() == shape_.values &&
            g.size() == shape_.jacobian && h.size() == shape_.hessian);
-    fn_(xs.data(), f.data(), g.data(), h.data(), n);
+    fn_(xs.data(), f.data(), g.data(), h.data(), n, externs_.table.data());
   }
 
   [[nodiscard]] explicit operator bool() const noexcept {
@@ -72,6 +92,7 @@ public:
 private:
   function_type fn_ = nullptr;
   std::shared_ptr<void> code_; // Held, never read
+  Externs externs_;
   symbol_type symbol_;
   object_type object_;
   KernelShape shape_{};
@@ -100,11 +121,12 @@ public:
 
   // Links an object compiled earlier.  Nothing beyond the link is verified --
   // rt::Object carries the host, Options and graph digest for that -- and a
-  // corrupt object is an error, not an abort.  The shape is stated because
-  // the object has no graph to read it off.
+  // corrupt object is an error, not an abort.  The graph is what the object
+  // was lowered from: its shape and its extern functions are read off it, never
+  // claimed by the bytes.
   [[nodiscard]] DDX_JIT_API result<Kernel>
   adopt(std::span<const std::byte> object, std::string_view symbol,
-        KernelShape shape);
+        const rt::Graph<double> &g);
 
 private:
   struct Impl;

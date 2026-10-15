@@ -247,8 +247,9 @@ template <impl::Numeric T> struct NoCache {
   constexpr void clear() const noexcept {}
 };
 
-// Every single-point call in both equations comes through here.  Derived
-// supplies arena() and unlocked() -- the GIL, on the Python side.
+// Every single-point call comes through here.  Derived supplies arena() and
+// sweeping(): what a sweep holds -- the arena's read lock -- and gives up --
+// the GIL, on the Python side.
 template <typename Derived, impl::Numeric T, CValueCache<T> Cache>
 class Caching {
 protected:
@@ -257,9 +258,12 @@ protected:
   [[nodiscard]] constexpr const Cache &cache() const noexcept { return cache_; }
 
   // `run` is what the call would have done with no cache at all.
-  void through(Want want, const Graph<T> &graph, Answered how,
-               std::span<const T *const> xs, const Columns<T> &out,
-               std::size_t n, auto &&run) const {
+  void through([[maybe_unused]] Want want,
+               [[maybe_unused]] const Graph<T> &graph,
+               [[maybe_unused]] Answered how,
+               [[maybe_unused]] std::span<const T *const> xs,
+               [[maybe_unused]] const Columns<T> &out,
+               [[maybe_unused]] std::size_t n, auto &&run) const {
     if constexpr (std::same_as<Cache, NoCache<T>>) {
       run();
     } else {
@@ -293,7 +297,7 @@ private:
   void serve(Want want, const Graph<T> &graph, Answered how,
              std::span<const T *const> xs, const Columns<T> &out,
              auto &&run) const {
-    const Extent extent = Extent::of(graph, how, self().arena().size());
+    const Extent extent = Extent::of(graph, how, self().arena_size());
 
     // The point, once, in the order a sweep reads it.
     std::vector<T> &at = point_scratch();
@@ -315,18 +319,21 @@ private:
     const Recorded<T> slot = lease.entry();
     std::visit(
         [&]<typename P>(const P &plan) {
+          // Served alone leaves `remember` out: the entry it answered from is
+          // the one already there.
           if constexpr (std::same_as<P, Served>) {
             spread(plan.values, out);
-            return;
-          } else if constexpr (std::same_as<P, Relay>) {
-            run();
-            collect(out, slot.values);
-          } else { // Fill or Amend: whichever sweep the overload names
-            sweep(want, graph, at, plan, slot);
-            keep(graph.output_blocks(), slot.tape, slot.values);
-            spread(slot.values, out);
+          } else {
+            if constexpr (std::same_as<P, Relay>) {
+              run();
+              collect(out, slot.values);
+            } else { // Fill or Amend: whichever sweep the overload names
+              sweep(want, graph, at, plan, slot);
+              keep(graph.output_blocks(), slot.tape, slot.values);
+              spread(slot.values, out);
+            }
+            remember(at, slot, lease);
           }
-          remember(at, slot, lease);
         },
         decide(lease.filled(), at, slot));
   }
@@ -356,15 +363,15 @@ private:
   // all, and its slot still has to be written once.
   void sweep(Want, const Graph<T> &graph, const std::vector<T> &at, Fill,
              const Recorded<T> &slot) const {
-    [[maybe_unused]] const auto held = self().unlocked();
+    [[maybe_unused]] const auto held = self().sweeping();
     evaluate_into(self().arena(), at, graph.schedule(), slot.tape);
   }
 
   void sweep(Want want, const Graph<T> &graph, const std::vector<T> &at,
              const Amend &plan, const Recorded<T> &slot) const {
-    const Cone &cone = cone_for(want, graph);
     // Given up around the sweep and nothing else: the GIL, on the Python side.
-    [[maybe_unused]] const auto held = self().unlocked();
+    [[maybe_unused]] const auto held = self().sweeping();
+    const Cone &cone = cone_for(want, graph);
     evaluate_reached(self().arena(), at, graph.schedule(), cone, plan.changed,
                      reach_scratch(), stack_scratch(), slot.tape);
   }

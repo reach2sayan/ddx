@@ -199,6 +199,7 @@ cmake --preset release_jit -DLLVM_DIR=/opt/llvm-20/lib/cmake/llvm
 | `DDX_BUILD_PYTHON` | `OFF` | build the pybind11 extension module |
 | `DDX_BUILD_TESTS` | `ON` | build the GoogleTest tests |
 | `DDX_SANITIZE` | `off` | `thread`, `address` or `undefined` — instrument the build |
+| `DDX_TEST_EIGEN` | `off` | fetch Eigen's headers and build the `rt/eigen.hpp` interop test |
 | `DDX_INSTALL` | on if top-level | generate the install and `find_package` rules |
 | `ENABLE_NATIVE_ARCH` | `ON` | `-march=native`, else `x86-64-v3`; x86 only, arm64 takes the compiler's default |
 | `DDX_FP_FLAGS` | `ON` | `-ffp-contract=fast -fno-math-errno` |
@@ -246,6 +247,32 @@ const auto sys = rt::equation([] {
 *sys.jacobian(1.3, 0.7);      // row-major, m × n
 ```
 
+When the number of functions is only known at run time — one per species read
+from a database — return a `std::vector` (any range that is not an array) and
+the result is an `rt::System`: the same equation with the count outside its
+type, and `outputs()` says how many it held:
+
+```cpp
+const auto sys = rt::equation([&] {
+  std::vector<rt::RTExpression<>> out;
+  for (const auto &s : species) {
+    out.push_back(log_gamma(s, rt::var(s.name)));
+  }
+  return out;
+});
+
+*sys.outputs();               // species.size()
+*sys.evaluate(point);         // always a std::vector, m long
+```
+
+A `System` answers everything an `Equation` does, with the same signatures.
+The members that are about a single function's Hessian — `hvp`,
+`univariate_derivative`, the batch `hessian`, `hessian_columns`,
+`hessian_colors`, `hessian_cell` — refuse a system with
+`errc::not_single_output` (or answer `nullopt`); the per-point `hessian(point)`
+answers every function's block, m × n × n. An empty range is a poisoned system
+carrying `errc::no_graph`.
+
 Another scalar type is a template argument on both: `rt::var<T>(name)` inside
 `rt::equation<T>(...)`.
 
@@ -263,20 +290,122 @@ const auto eq = rt::equation([&] {
   return acc;
 });
 
-*eq.symbols();                // whatever the file named, alphabetically
+*eq.symbols();                // whatever the file named, in the order it named them
 ```
 
 Naming the same string twice inside one callback gives the same symbol, so a
 name that recurs across the data is one variable and not several.
 
-Symbols are ordered canonically — **alphabetically by name** — which is the
-order positional points are read in and the order every result is laid out in.
-`symbols()` lists them in that order, `arity()` counts them:
+Symbols are ordered **as the callback names them**: the first `rt::var` is
+symbol 0, the next new name symbol 1. That is the order positional points are
+read in and the order every result is laid out in. `symbols()` lists them in
+that order, `arity()` counts them:
 
 ```cpp
 *eq.arity();                  // 2
 *eq.symbols();                // {"x", "y"}
 ```
+
+Name each symbol in a statement of its own when the order matters. The
+arguments of one call — `f(rt::var("x"), rt::var("y"))`, or both sides of
+`rt::var("x") * rt::var("y")` — are evaluated in an order C++ leaves
+unspecified, and GCC takes them right to left.
+
+### Parameters
+
+`rt::param(name)` is an input that is read and never differentiated: no
+Jacobian or Hessian column, no place in `symbols()`, and a value in every call.
+A model built once with its coefficients as parameters is evaluated for any
+coefficients without being rebuilt:
+
+```cpp
+const auto eq = rt::equation([] {
+  const auto x = rt::var("x");
+  const auto k = rt::param("k");
+  return k * x * x;
+});
+
+*eq.symbols();                // {"x"}
+*eq.params();                 // {"k"}
+*eq.gradient(3.0, 2.0);       // {12} — x = 3, k = 2
+*eq.gradient("k"_s = 5.0, "x"_s = 3.0);   // {30}
+```
+
+A point supplies every input: the symbols, then the parameters, then the
+implicit inputs below, by position or by name. `inputs()` lists them in that
+order and `input_count()` counts them, and a batch passes one column for each.
+A name is one kind of input, so naming `"k"` as both a symbol and a parameter
+poisons the equation with `errc::name_clash`.
+
+### Functions you supply
+
+`rt::extern_fn(spec, fn)` puts a function of your own into the graph — a
+correlation with published derivatives, an iteration ddx has no business
+re-tracing. `fn(in, out)` reads the arguments and writes the value, then the
+first partials, then (at `order = 2`) the upper triangle of the second, row
+by row. The chain rule runs around it like any other operation:
+
+```cpp
+// eps(T, P) and its partials, from wherever they come.
+void eps_tp(std::span<const double> in, std::span<double> out);
+
+const auto eq = rt::equation([] {
+  const auto t = rt::var("T");
+  const auto p = rt::var("P");
+  const auto eps = rt::extern_fn({.name = "eps", .arity = 2, .order = 2}, eps_tp);
+  return log(1.0 + eps(t, p)) * t;
+});
+```
+
+Any number of arguments, and the same expression may be passed twice. `order`
+is 1 or 2 — no call ddx answers asks for a third derivative; anything else
+registers as `errc::extern_shape` — and with first partials only, `hessian`,
+`hvp` and `jacobian_jvp` answer `errc::extern_order` rather than zeros. ddx
+calls `fn` as often as it needs,
+from any thread that sweeps, so it must be re-entrant and must not throw.
+
+A compiled kernel calls the function back once per point, through a table the
+equation hands it, so the kernel holds no address of its own and is cached and
+saved like any other; under `Backend::Device` the lane is interpreted, since
+device code cannot call into the host. Saving keeps the graph and the
+function's name:
+`rt::equation(path, model)` binds it again by running the model, and
+`rt::load(path, memo, fns)` takes it from `fns`, a map from name to function —
+a file whose function is missing answers `errc::unbound_extern`.
+
+### Implicit inputs
+
+Some quantities are roots: a cubic equation of state's compressibility `Z`, a
+density solved from a pressure. Solving is the caller's — root selection is
+control flow — but every derivative downstream has to see that `Z` moves with
+the symbols. `rt::implicit(name)` is such an input, and `rt::closes(z, F)` names
+the residual it is a root of:
+
+```cpp
+const auto eq = rt::equation([] {
+  const auto a = rt::var("a");
+  const auto z = rt::implicit("z");
+  rt::closes(z, z * z - a);          // z is a root of z² − a
+  return z;
+});
+
+*eq.gradient(4.0, 2.0);              // {0.25}     — a = 4, z = 2: dz/da = −F_a / F_z
+*eq.hessian(4.0, 2.0);               // {−0.03125} — second order by the same rule
+*eq.residual(4.0, 2.0);              // {0}        — F at the point, a check on the root
+```
+
+`z` is supplied with every point, like a parameter, and has no Jacobian column.
+Every derivative — Jacobian, Hessian, `hvp`, `jvp`, `jacobian_jvp` — carries
+$\partial z / \partial x = -F_x / F_z$, and second order applies the same rule
+again, so a heat capacity through an equation of state needs nothing extra.
+ddx never solves $F = 0$ and never checks it: the derivatives are those of the
+root the caller supplied. `residual(point)` evaluates $F$ when you want to know.
+
+Each implicit needs exactly one `closes`, and its residual may read symbols,
+parameters and itself but no other implicit — a coupled set of them would need a
+linear solve, not a quotient. The equation is refused otherwise:
+`errc::unclosed_implicit`, `errc::closed_twice`, `errc::nested_implicit`, and
+`errc::not_implicit` for a `closes` on something that is not an implicit input.
 
 ### Written down instead
 
@@ -295,8 +424,8 @@ These answer `result<Equation>` rather than an `Equation`, since a string can
 fail to parse where a callback cannot — the `*` above is that check skipped.
 
 Everything after that is the same — the same points, the same derivatives, the
-same batch calls. Free identifiers become the symbols, still ordered
-alphabetically, so `eq.symbols()` here is `{"x", "y"}`, and a
+same batch calls. Free identifiers become the symbols, in the order they first
+appear, so `eq.symbols()` here is `{"x", "y"}`, and a
 [varmap](#points-by-name-at-run-time) is the natural point for one.
 
 The grammar is Python's arithmetic: `+ - * /`, `**` for exponentiation (`^` is
@@ -375,6 +504,12 @@ partial through that node. At the switch the function is whatever the two arms
 make it: `select` does not smooth anything, and a discontinuous pair gives a
 discontinuous derivative.
 
+The arm not taken contributes nothing to any derivative, first or second order —
+not even `0 × ∞`. So a clamp is written as the clamp:
+`select(x > 0.0, log(x), 0.0)` has derivative `0` at `x = 0`, although `log′`
+is infinite there. A singularity on the arm that *is* taken is reported as it
+is: `select(x > 0.0, log(sqrt(x)), sqrt(x))` at `x = 0` has derivative `∞`.
+
 A condition is any nonzero value, as in C, and comparisons are ordinary
 expressions rather than a separate boolean type — which is why they answer
 `1.0` and `0.0` and why `select(x, …)` is legal. Two consequences follow from
@@ -401,8 +536,8 @@ Every call that needs numbers takes them in five interchangeable spellings:
 *eq.jacobian(std::map<std::string, double>{{"y", 0.7}, {"x", 1.3}});   // a varmap
 ```
 
-**Positional order is alphabetical by symbol name**, not the order the symbols
-appear in the expression.
+**Positional order is declaration order**: the symbols in the order the model
+named them, then the parameters, then the implicit inputs.
 
 ### Points by name at run time
 
@@ -431,7 +566,7 @@ does not matter; each value lands in the slot its name names.
 nothing named would otherwise be read as zero, which is a value rather than a
 refusal. A name matching no symbol is `errc::unknown_symbol`.
 
-`point(args…)` builds the point vector on its own, in canonical order, so a
+`point(args…)` builds the point vector on its own, in positional order, so a
 point assembled once can be reused:
 
 ```cpp
@@ -474,6 +609,7 @@ symbols in `symbols()` order and $m$ = `output_dim` functions:
 | `jvp(v, x)` | $J(x)\,v$, so $(Jv)_i = \sum_j \dfrac{\partial f_i}{\partial x_j} v_j$ — the directional derivative of $f$ along $v$ | $m$ |
 | `vjp(w, x)` | $w^{\top} J(x)$, so $(w^{\top}J)_j = \sum_i w_i \dfrac{\partial f_i}{\partial x_j}$ — the gradient of $w \cdot f$ | $n$ |
 | `hvp(v, x)` | $H(x)\,v$, so $(Hv)_i = \sum_j \dfrac{\partial^2 f}{\partial x_i \, \partial x_j} v_j$ — the directional derivative of $\nabla f$ along $v$ | $n$ |
+| `jacobian_jvp(v, x)` | $\dfrac{\partial J}{\partial v}$, so $\left(\dfrac{\partial J}{\partial v}\right)_{ij} = \sum_k \dfrac{\partial^2 f_i}{\partial x_j \, \partial x_k} v_k$ — the directional derivative of the whole Jacobian along $v$ | $m \times n$ |
 
 The last three are the matrix-free products. Each is one number per output, and
 none of them ever forms the matrix it is named after.
@@ -492,6 +628,17 @@ const std::vector<double> v{1.0, 0.0};
 
 ```cpp
 *eq.hvp("a", 2.0, 0.5);    // {∂²f/∂a², ∂²f/∂b∂a}
+```
+
+`jacobian_jvp` is the one second-order call a system has: one forward sweep
+over the Jacobian gives $\partial^2 f_i / \partial x_j \, \partial v$ for
+every function at once, where `hvp` needs one output and a coloured Hessian is
+one per output. With a name it is along that symbol — `eq.jacobian_jvp("T", x)`
+is every Jacobian cell's derivative in `T` — and for one function it is the
+Hessian column `hvp` gives, laid out as a row.
+
+```cpp
+*sys.jacobian_jvp("T", point);   // m × n: ∂²fᵢ/∂xⱼ∂T
 ```
 
 **Why they are worth asking for, and when they are not.** Each answers in one
@@ -624,11 +771,32 @@ more than one that does not, and compiles to a single blend.
 A column count that does not match answers `errc::wrong_column_count`, and
 nothing is written.
 
+### Restricting the Jacobian
+
+`restrict(names)` is a view with only those symbols' Jacobian columns, in
+symbol order. Its lanes are frozen over the kept cells alone, so the partials a
+caller would discard are never computed — a fixed-composition flash that wants
+d/dT and d/dP does not pay for n composition columns.
+
+```cpp
+const auto tp = *eq.restrict({"T", "P"});
+
+*tp.jacobian(point);                 // m × 2
+*tp.jacobian_jvp("T", point);        // m × 2: ∂/∂T of those columns
+tp.jacobian_columns();               // the cells in T's and P's columns
+(void)tp.jacobian(xs, f, g, n);      // the batch, g sized by the line above
+```
+
+Points and directions are the equation's — every input, every symbol. The view
+reads the equation's arena and must not outlive it. A name that is not a symbol
+answers `errc::unknown_symbol`.
+
 ### The two compressed blocks
 
 Both derivative blocks are **sparse**, so `jacobian_columns()` and
-`hessian_columns()` are what size them — asking costs nothing — and a pattern
-says which cell each column is. A caller who wants the dense matrix uses the
+`hessian_columns()` are what size them — the Jacobian's count is free, the
+Hessian's sweeps the Hessian on first ask, since its colouring is what fixes it —
+and a pattern says which cell each column is. A caller who wants the dense matrix uses the
 per-point calls above, which undo both compressions on the way out.
 
 The Jacobian keeps only the cells that structurally exist. `∂fᵢ/∂xⱼ` gets a
@@ -644,10 +812,8 @@ for (const rt::Cell &c : pattern.entries()) {   // every cell that exists
   use(c.row, c.column, j[c.slot * n + point]);  // ∂f(row)/∂x(column)
 }
 
-const double dfi_dxj =                 // at() is nullopt off the pattern
-    pattern.at(i, j)
-        .transform([&](std::size_t cell) { return j[cell * n + point]; })
-        .value_or(0.0);
+const auto cell = pattern.at(i, j);    // nullopt off the pattern
+const double dfi_dxj = cell ? j[*cell * n + point] : 0.0;
 ```
 
 For a system whose functions each touch a few symbols that is most of the
@@ -672,6 +838,36 @@ const double d2 = cell ? h[*cell * n + point] : 0.0;
 
 `evaluate` is not the Jacobian call with the partials thrown away: columns
 nobody asks for are work nobody does.
+
+### Zero-copy, allocation-free batches
+
+The batch calls neither copy their columns nor allocate: inputs are read and
+outputs written through the pointers given. The per-point spellings allocate
+their answer and, for the Jacobian, undo the compression into a dense matrix; a
+hot loop calls the batch spelling at `n = 1` into buffers of its own instead.
+Each thread pays one tape allocation on its first call, sized by the
+equation's graph, and none after.
+
+A column-major matrix is a set of columns, so it passes without a copy. With
+Eigen, `rt/eigen.hpp` — a header ddx itself never includes — names the columns
+of a matrix and lays one point's compressed block out dense:
+
+```cpp
+#include "rt/eigen.hpp"
+
+Eigen::MatrixXd X(n, *eq.input_count());                     // one column per input
+Eigen::MatrixXd F(n, *eq.value_columns());
+Eigen::MatrixXd G(n, static_cast<Eigen::Index>(*eq.jacobian_columns()));
+(void)eq.jacobian(rt::eigen::columns_of(X), rt::eigen::columns_of(F),
+                  rt::eigen::columns_of(G), n);
+
+Eigen::MatrixXd J;                                           // m × n at point i
+rt::eigen::scatter(eq.jacobian_pattern()->get(), G, i, J);
+// and rt::eigen::scatter(eq.hessian_pattern()->get(), H, i, dense) for H
+```
+
+A row-major matrix's columns are strided, which no column pointer can say, so
+`columns_of` refuses one at compile time.
 
 ## Errors
 
@@ -711,8 +907,16 @@ if (!j) {
 | `wrong_column_count` | a batch block has the wrong number of columns |
 | `no_arena` | a symbol was named outside an `rt::equation` callback |
 | `no_graph` | the expression is a bare literal, naming no function |
-| `sealed_arena` | the symbols already back an equation, so they are final |
+| `name_clash` | a name used for two kinds of input, a symbol and a parameter |
+| `unclosed_implicit` | an `rt::implicit` input with no `rt::closes` |
+| `closed_twice` | an implicit input closed by two residuals |
+| `nested_implicit` | a residual that reads another implicit input |
+| `not_implicit` | `rt::closes` on something that is not an implicit input |
+| `extern_order` | a second-order call through an `rt::extern_fn` that supplies first partials only |
+| `extern_shape` | an `rt::extern_fn` registration ddx cannot hold: `arity` 0, an `order` other than 1 or 2, no function, or past 65536 functions or components |
+| `unbound_extern` | a loaded file names an extern function `fns` did not supply |
 | `not_univariate` | `univariate_derivative` on more than one symbol |
+| `not_single_output` | a member about one function's Hessian, asked of a system |
 | `unsupported_scalar` | `univariate_derivative` over an operation its Taylor arithmetic does not define |
 | `bad_syntax` | a text equation the grammar does not accept |
 | `unknown_function` | a text equation calls a function that does not exist |
@@ -728,7 +932,7 @@ An `errc` and an `error` both format and stream as their text, so
 throws.
 
 The accessors that answer no `result` answer `std::optional` instead —
-`arity()`, `symbols()`, `value_columns()`, `jacobian_columns()`,
+`arity()`, `outputs()`, `symbols()`, `value_columns()`, `jacobian_columns()`,
 `hessian_columns()`, `hessian_colors()` and `jacobian_pattern()` are `nullopt`
 on a poisoned equation.
 A bare count could not say it: an equation over a literal-only expression
@@ -765,11 +969,23 @@ poisoned equation carrying `errc::no_arena`.
 it and keeps none of them; every buffer must be alive for the duration of the
 call, and each column must hold at least `n` elements.
 
+**An expression's arena is copied.** `rt::equation(expr…)` over expressions
+built in a `Builder` of your own takes a copy, so you can go on building in yours
+afterwards without touching the equation.
+
 Building is independent per thread: two threads may run `rt::equation` callbacks
-at the same time. An equation prepares itself on the first call of each kind —
-make that first call before handing one to several threads, or give each thread
-its own. A batch call splits across threads by slicing the columns, each thread
-getting its own offset pointers and its own `n`:
+at the same time. Building sweeps the Jacobian and nothing else; every other
+derivative is prepared the first time it is asked for, under the equation's own
+lock, so a first call from several threads at once is safe — it is only not
+lock-free. `prepare` does that work up front, after which the calls it named
+never wait on a writer:
+
+```cpp
+(void)eq.prepare({rt::Want::Jacobian, rt::Want::Hessian});
+```
+
+A batch call splits across threads by slicing the columns, each thread getting
+its own offset pointers and its own `n`:
 
 ```cpp
 const std::size_t chunk = (n + threads - 1) / threads;
@@ -977,12 +1193,15 @@ to a file, and `load` reads it back without a model:
 const auto eq = rt::equation([] { return exp(rt::var("x")) * rt::var("y"); });
 eq.save("f.ddx");
 
-const auto same = *rt::load("f.ddx");            // no model, nothing rebuilt
-const auto sys  = *rt::load<double, 3>("s.ddx"); // three functions
+const auto same = *rt::load("f.ddx");                     // no model, nothing rebuilt
+const auto sys  = *rt::load<double, 3>("s.ddx");          // three functions
+const auto any  = *rt::load<double, rt::dynamic>("s.ddx"); // a System: any count
 ```
 
 The output count is a template parameter because it is part of the type, and a
-file holding some other number is refused rather than adapted to.
+file holding some other number is refused rather than adapted to. A `System`
+has no count in its type, so `rt::load<double, rt::dynamic>` takes whatever the
+file holds.
 
 Pair a model with a file and it becomes a cache — the lambda is the model as you
 would write it anyway, and the path is only where the result is kept:
@@ -1096,15 +1315,20 @@ behind `--trend` that the interpreter is tuned against.
 
 ## Reference
 
-`ddx::rt::equation(callback)` → `Equation`. All of it is `const` and
-thread-safe except `options()`.
+`ddx::rt::equation(callback)` → `Equation`, or `System` — the same type with
+the output count outside it — when the callback returns a vector. All of it is
+`const` and thread-safe except `options()`.
 
 | Member | Answers |
 |---|---|
 | `poisoned()`, `status()` | whether the build failed, and with what |
 | `arity()` | `std::optional<std::size_t>` — symbol count, `n` |
-| `symbols()` | `std::optional<std::span<const std::string>>` — canonical order |
-| `point(args…)` | `result<std::vector<T>>` — a point in canonical order, from any of the five spellings |
+| `outputs()` | `std::optional<std::size_t>` — function count, `m` |
+| `symbols()` | `std::optional<std::span<const std::string>>` — declaration order |
+| `params()` | `std::optional<std::span<const std::string>>` — the parameters, declaration order |
+| `inputs()`, `input_count()` | every input a point supplies — symbols, parameters, implicits — and how many |
+| `residual(point)` | `result<std::vector<T>>` — each implicit's residual $F$ at the point |
+| `point(args…)` | `result<std::vector<T>>` — a point in positional order, from any of the five spellings |
 | `evaluate(point)` | `result<T>`, or `result<std::vector<T>>` for a system |
 | `jacobian(point)` | `result<std::vector<T>>`, dense row-major m × n |
 | `gradient(point)` | the same, from a graph with no value block |
@@ -1114,6 +1338,8 @@ thread-safe except `options()`.
 | `vjp(w, point)` | `result<std::vector<T>>`, $n$ long — $w^{\top}J$ |
 | `hvp(v, point)` | `result<std::vector<T>>`, $n$ long — $Hv$, one output only |
 | `hvp(name, point)` | the same, along the basis vector for that symbol |
+| `jacobian_jvp(v, point)`, `jacobian_jvp(name, point)` | `result<std::vector<T>>`, dense m × n — $\partial J / \partial v$ |
+| `restrict(names)` | `result<rt::Restricted<…>>` — a view with those symbols' Jacobian columns only |
 | `evaluate(xs, f, n)` | `result<void>` — a batch of `n` |
 | `jacobian(xs, f, g, n)` | `result<void>` |
 | `gradient(xs, g, n)` | `result<void>` |
@@ -1121,18 +1347,21 @@ thread-safe except `options()`.
 | `jvp(xs, vs, f, p, n)` | `result<void>` |
 | `vjp(xs, ws, f, p, n)` | `result<void>` |
 | `hvp(xs, vs, f, g, p, n)` | `result<void>`, one output only — `g` gets $\nabla f$ |
+| `jacobian_jvp(xs, vs, f, g, dg, n)` | `result<void>` — `g` and `dg` both `jacobian_columns()` wide, read with `jacobian_pattern()` |
 | `value_columns()`, `jacobian_columns()`, `hessian_columns()` | `std::optional<std::size_t>` — what sizes the batch buffers |
 | `jvp_columns()`, `vjp_columns()`, `hvp_columns()` | the same, for the seeded products — `m`, `n`, `n` |
 | `jacobian_pattern()` | `std::optional<std::reference_wrapper<const rt::Sparsity>>` — which (function, symbol) cell each Jacobian column is |
+| `hessian_pattern()` | `std::optional<std::reference_wrapper<const rt::Coloring>>` — which (row, column) cell each Hessian column holds; one output only |
 | `hessian_cell(i, j)` | `std::optional<std::size_t>` — which Hessian column holds H(i, j), or none |
 | `hessian_colors()` | `std::optional<std::size_t>` — groups in the Hessian's compression |
+| `prepare({wants…})` | `result<void>` — build those lanes now, so the calls that follow never wait on one |
 | `options(opts)`, `options()` | set or read the compile options; setting returns `*this` |
 | `uses_kernel()`, `kernel_level()` | whether a batch call runs compiled code, and at which level |
 | `warming()` | under `Adapt`, points seen against the next threshold |
 | `wait_for_kernel(want)` | block until the compile in flight for a lane has landed — the Jacobian's unless `want` names another |
 | `device_status()` | under `Device`, the device answering or why none is; empty under any other backend |
 | `save(path)`, `verify(path)` | write this equation; ask whether a file holds it |
-| `load(path)`, `loaded()` | read one; whether this one was read |
+| `load(path, memo, fns)`, `loaded()` | read one, binding its extern functions from `fns` by name; whether this one was read — `rt::load<double, rt::dynamic>(path, …)` for a `System` |
 
 ---
 

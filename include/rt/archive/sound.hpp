@@ -4,11 +4,13 @@
 #include "rt/coupling.hpp"
 #include "rt/opcode.hpp"
 #include "util/error.hpp"
+#include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>
 
 #include <algorithm>
 #include <span>
+#include <string_view>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -33,7 +35,8 @@ public:
   // Every refusal is the same one: the file parsed, and does not hold.  The
   // order is load-bearing -- each check is what the next one indexes with.
   [[nodiscard]] result<Verified<T>> operator()() && {
-    return symbols() && nodes() && vars() && reachable() && jacobian() &&
+    return symbols() && nodes() && vars() && externs() && reachable() &&
+                   jacobian() &&
                    hessians() && seeded() && objects()
                ? result<Verified<T>>{Verified<T>{std::move(s_)}}
                : fail(errc::archive_corrupt);
@@ -41,57 +44,92 @@ public:
 
 private:
   [[nodiscard]] constexpr auto within() const noexcept {
-    return [n = s_.nodes.size()](NodeId v) { return v < n; };
+    return [n = s_.model.nodes.size()](NodeId v) { return v < n; };
   }
 
-  // var() keeps them sorted and unique.
+  // One namespace for every named input, as Builder::input keeps it: no name
+  // twice, within a kind or across two.
   [[nodiscard]] bool symbols() const {
-    return std::ranges::is_sorted(s_.symbols) &&
-           std::ranges::adjacent_find(s_.symbols) == s_.symbols.end();
+    auto names = s_.model.names | std::views::join |
+                 impl::to<std::vector<std::string_view>>();
+    std::ranges::sort(names);
+    return std::ranges::adjacent_find(names) == names.end();
+  }
+  [[nodiscard]] std::size_t count(OpCode op) const {
+    return s_.model.names[*named_index(op)].size();
   }
 
   // Topological: every operand strictly below its reader, which is what the
-  // runtime single-passes on.  Also what puts every Var's slot in range, which
-  // vars() then indexes by.
+  // runtime single-passes on.  Also what puts every named leaf's slot in range,
+  // which vars() then indexes by.
   [[nodiscard]] bool nodes() const {
-    const auto nsym = s_.symbols.size();
     // A seed slot is an xs column the kernel loads, and the widest block any
     // lane can carry is one per symbol or one per function.
-    const auto nseed = std::max(nsym, s_.roots.size());
+    const auto nseed = std::max(count(OpCode::Var), s_.roots.size());
     return std::ranges::all_of(
-        s_.nodes | std::views::enumerate, [nsym, nseed](const auto &at) {
+        s_.model.nodes | std::views::enumerate, [this, nseed](const auto &at) {
           const auto &[i, node] = at;
           const auto arity = arity_of(node.op);
+          const auto k = named_index(node.op);
           return (arity >= 1 ? node.a < static_cast<NodeId>(i)
                              : node.a == no_node) &&
                  (arity >= 2 ? node.b < static_cast<NodeId>(i)
                              : node.b == no_node) &&
                  (arity == 3 ? node.c < static_cast<NodeId>(i)
                              : node.c == no_node) &&
-                 (node.op != OpCode::Var || node.slot < nsym) &&
+                 (!k || node.slot < s_.model.names[*k].size()) &&
                  (node.op != OpCode::Seed || node.slot < nseed) &&
                  // As make() sorts them: contraction_at's tie-break reads it.
                  (!is_commutative<T>(node.op) || node.a <= node.b);
         });
   }
 
-  // Exactly one Var per symbol: Builder::restore walks for them, so a symbol
-  // named by none would leave a no_node for var() to hand back.  Interning is
-  // what makes it exactly one rather than at least one.
+  // Exactly one leaf per named input: Builder::restore walks for them, so a
+  // name no leaf carries would leave a no_node for var() to hand back.
+  // Interning is what makes it exactly one rather than at least one.
   [[nodiscard]] bool vars() const {
-    boost::container::small_vector<std::uint32_t, 32> named(s_.symbols.size(),
-                                                            0);
-    for (const auto &node : s_.nodes) {
-      if (node.op == OpCode::Var) {
-        ++named[node.slot]; // nodes() pinned the slot
+    std::array<boost::container::small_vector<std::uint32_t, 32>, named_count>
+        seen;
+    for (const auto [names, counts] : std::views::zip(s_.model.names, seen)) {
+      counts.assign(names.size(), 0);
+    }
+    for (const auto &node : s_.model.nodes) {
+      if (const auto k = named_index(node.op)) {
+        ++seen[*k][node.slot]; // nodes() pinned the slot
       }
     }
-    return std::ranges::all_of(named, [](std::uint32_t k) { return k == 1; });
+    return std::ranges::all_of(seen | std::views::join,
+                               [](std::uint32_t k) { return k == 1; });
+  }
+
+  // Every extern node names a registered function and one of its components,
+  // and its argument list is as long as the function's arity: the interpreter
+  // and the sweeps walk it without a bound.
+  [[nodiscard]] bool externs() const {
+    const auto &m = s_.model;
+    return std::ranges::all_of(
+               m.externs | std::views::enumerate,
+               [](const auto &at) {
+                 const auto &[i, e] = at;
+                 return e.valid() &&
+                        ExternSlot::fits(static_cast<std::size_t>(i), e.size());
+               }) &&
+           std::ranges::all_of(
+               std::views::iota(NodeId{0}, static_cast<NodeId>(m.size())),
+               [&m](NodeId v) {
+                 return kind_of(m.op_of(v)) != Kind::Extern ||
+                        (extern_arguments(m, v).has_value() &&
+                         ExternSlot::of(m[v].slot).component <
+                             m.externs[ExternSlot::of(m[v].slot).function]
+                                 .size());
+               });
   }
 
   [[nodiscard]] bool reachable() const {
     const auto in = within();
-    return std::ranges::all_of(s_.roots, in) &&
+    return s_.model.closures.size() == count(OpCode::Implicit) &&
+           std::ranges::all_of(s_.model.closures, in) &&
+           std::ranges::all_of(s_.roots, in) &&
            std::ranges::all_of(s_.jacobian.value, in) &&
            std::ranges::all_of(s_.jacobian.partial, in) && in(s_.jacobian.zero);
   }
@@ -115,7 +153,7 @@ private:
     // The row count is `rowptr.size() - 1` rather than a field of its own, so
     // a file cannot claim one thing and carry another.
     return !p.rowptr.empty() && p.size() == s_.roots.size() &&
-           p.columns == s_.symbols.size() && p.col.size() == j.partial.size() &&
+           p.columns == count(OpCode::Var) && p.col.size() == j.partial.size() &&
            p.rowptr.front() == 0 && p.rowptr.back() == p.col.size() &&
            std::ranges::is_sorted(p.rowptr) &&
            std::ranges::all_of(p, sound_row);
@@ -132,7 +170,7 @@ private:
   // swept none, and a half-written one is corrupt.
   [[nodiscard]] bool seeded() const {
     const auto in = within();
-    const auto nsym = s_.symbols.size();
+    const auto nsym = count(OpCode::Var);
     const auto &h = s_.hvp;
     const auto &j = s_.vjp;
     const auto &t = s_.jvp;
@@ -156,7 +194,7 @@ private:
 
   [[nodiscard]] bool coloured(const Hessian &h) const {
     const auto &c = h.coloring;
-    const auto nsym = s_.symbols.size();
+    const auto nsym = count(OpCode::Var);
     const auto in = within();
     // The colour count is `scatter.size() / nsym`, not a field, so the only
     // thing left to check is that the division is exact and that both tables
@@ -217,11 +255,18 @@ public:
   [[nodiscard]] const Snapshot<T> &operator*() const noexcept { return s_; }
   [[nodiscard]] const Snapshot<T> *operator->() const noexcept { return &s_; }
 
-  // Owning, and it consumes the node array: it *is* the arena's.
-  [[nodiscard]] Rebuilt<T> rebuild() && {
+  // Owning, and it consumes the model: it *is* the arena's.  `lookup` is the
+  // one way a file's extern functions are bound: by name, a function it lacks
+  // staying unbound for the equation to refuse.
+  [[nodiscard]] Rebuilt<T> rebuild(auto &&lookup) && {
     auto arena = std::make_unique<Builder<T>>();
-    arena->restore(std::move(s_.nodes), std::move(s_.symbols));
+    arena->restore(std::move(s_.model));
+    arena->bind(DDX_FWD(lookup));
     return {.arena = std::move(arena), .rest = std::move(s_)};
+  }
+  [[nodiscard]] Rebuilt<T> rebuild() && {
+    return std::move(*this).rebuild(
+        [](std::string_view) { return std::shared_ptr<const ExternFn<T>>{}; });
   }
   [[nodiscard]] Snapshot<T> release() && noexcept { return std::move(s_); }
 

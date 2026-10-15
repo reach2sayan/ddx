@@ -10,10 +10,13 @@
 #include <boost/mp11/algorithm.hpp>
 
 #include <algorithm>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <ranges>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 
 // Two keys over a graph: what a file is stale against, and what a compiled
@@ -24,35 +27,50 @@ namespace detail {
 // to_bits, never the member itself: hash2 appends a float as
 // bit_cast<uint64_t>(v + 0), which maps -0.0 onto +0.0.  These digests key the
 // object cache, and a graph holding -0.0 must not load +0.0's kernel.  A
-// described type folds member by member, so its field list is its coverage.
+// described type folds member by member, so its field list is its coverage; a
+// range its length then its elements, field by field, never a memcpy --
+// Node<double> has interior padding.
 constexpr void fold(boost::hash2::fnv1a_64 &h, const auto &v) {
   using U = std::remove_cvref_t<decltype(v)>;
-  if constexpr (boost::describe::has_describe_members<U>::value) {
-    boost::mp11::mp_for_each<
-        boost::describe::describe_members<U, boost::describe::mod_any_access>>(
+  if constexpr (std::same_as<U, std::string>) {
+    boost::hash2::hash_append(h, wire_flavor{}, v);
+  } else if constexpr (boost::describe::has_describe_members<U>::value) {
+    boost::mp11::mp_for_each<described_members<U>>(
         [&](auto D) { fold(h, v.*D.pointer); });
+  } else if constexpr (std::ranges::range<U>) {
+    boost::hash2::hash_append(h, wire_flavor{},
+                              static_cast<std::uint64_t>(std::ranges::size(v)));
+    std::ranges::for_each(v, [&h](const auto &e) { fold(h, e); });
   } else {
     boost::hash2::hash_append(h, wire_flavor{}, to_bits(v));
   }
 }
 } // namespace detail
 
-// The model as the file keys on it: symbols, then the arena up to `upto`.
-// Field by field, never a memcpy -- Node<double> has interior padding.
+// The model as a file keys on it: every described field, with the arena cut
+// at `upto`.  Off the one list, so a field added to Model is keyed on.
 template <impl::Numeric T>
-[[nodiscard]] std::uint64_t digest(std::span<const std::string> symbols,
-                                   std::span<const Node<T>> nodes,
-                                   std::size_t upto) {
+[[nodiscard]] std::uint64_t digest(const Model<T> &m, std::size_t upto) {
   boost::hash2::fnv1a_64 h;
-  // Length-framed by hash_append itself, for the symbols and each of them.
-  boost::hash2::hash_append(h, detail::wire_flavor{}, symbols);
-  detail::fold(h, upto);
-  for (const auto &n : nodes.first(std::min(upto, nodes.size()))) {
-    boost::mp11::mp_for_each<boost::describe::describe_members<
-        Node<T>, boost::describe::mod_public>>(
-        [&](auto D) { detail::fold(h, n.*D.pointer); });
-  }
+  boost::mp11::mp_for_each<detail::described_members<Model<T>>>([&](auto D) {
+    if constexpr (std::string_view{decltype(D)::name} == "nodes") {
+      detail::fold(h, upto);
+      detail::fold(h, std::span{m.nodes}.first(std::min(upto, m.nodes.size())));
+    } else {
+      detail::fold(h, m.*D.pointer);
+    }
+  });
   return h.result();
+}
+
+// The same key off a saved snapshot and off a live arena.
+template <impl::Numeric T>
+[[nodiscard]] std::uint64_t digest(const Snapshot<T> &s) {
+  return digest(s.model, s.model_nodes);
+}
+template <impl::Numeric T>
+[[nodiscard]] std::uint64_t digest(const Builder<T> &b, std::size_t upto) {
+  return digest(b.model(), upto);
 }
 
 // Keyed on what codegen reads of a lane, so a consumer sees a compile is done
@@ -63,8 +81,11 @@ template <impl::Numeric T>
 template <impl::Numeric T>
 [[nodiscard]] std::uint64_t digest(const Graph<T> &g) {
   boost::hash2::fnv1a_64 h;
-  detail::fold(h, g.symbols().size());
-  detail::fold(h, g.arity());
+  const Inputs &in = g.inputs();
+  for (const std::size_t count : in.by_kind) {
+    detail::fold(h, count);
+  }
+  detail::fold(h, in.seeds);
   detail::fold(h, g.layout());
   const auto schedule = g.schedule();
   detail::fold(h, schedule.size());

@@ -6,32 +6,46 @@
 #include "util/error.hpp"
 #include "util/scope_guard.hpp"
 
+#include <array>
 #include <concepts> // std::same_as
+#include <memory>
 #include <optional>
+#include <ranges>
+#include <span>
+#include <string>
 #include <string_view>
 #include <type_traits> // std::remove_cvref_t
 #include <utility>     // std::move
-
-namespace ddx::impl {
-// Befriended below: an Equation is the one thing that takes an expression's
-// arena over, and the only reader of the poison an absent arena leaves.
-template <typename... Ts> class Equation;
-} // namespace ddx::impl
 
 namespace ddx::rt {
 
 template <impl::Numeric T = double> class RTExpression;
 
-// Declared ahead of RTExpression, which befriends it: `var` is where a missing
-// arena turns into a poisoned expression.
-template <impl::Numeric T = double>
-[[nodiscard]] RTExpression<T> var(std::string_view name) noexcept;
+namespace detail {
+// Befriended below: an equation is the one thing that takes an expression's
+// arena over, and the only reader of the poison an absent arena leaves.
+struct Rooting {
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr Builder<T> *
+  builder(const RTExpression<T> &e) noexcept {
+    return e.builder();
+  }
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr std::optional<errc>
+  why(const RTExpression<T> &e) noexcept {
+    return e.why();
+  }
+};
+} // namespace detail
 
-// The primitive the one above reaches: it makes poison as well, for the arena
-// that has stopped taking symbols.
+// Declared ahead of RTExpression, which befriends it: `named` is where a
+// missing arena, or a name another kind of input holds, turns into a poisoned
+// expression.
+template <impl::Numeric T = double>
+[[nodiscard]] RTExpression<T> named(OpCode op, std::string_view name) noexcept;
 template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> var(Builder<T> &b,
-                                            std::string_view name);
+[[nodiscard]] constexpr RTExpression<T> named(Builder<T> &b, OpCode op,
+                                              std::string_view name);
 
 // A handle onto one node, plus the arithmetic surface that builds more.  A null
 // builder is a literal not yet given to a graph, which is what lets
@@ -58,8 +72,9 @@ public:
     return builder_ == nullptr;
   }
 
-  // Whether the symbol named no slot -- no arena current, or a sealed one --
-  // which surfaces as an errc out of equation() rather than as a zero.
+  // Whether the input named no leaf -- no arena current, or a name another
+  // kind of input has -- which surfaces as an errc out of equation() rather
+  // than as a zero.
   [[nodiscard]] constexpr bool poisoned() const noexcept {
     return why_.has_value();
   }
@@ -205,11 +220,16 @@ public:
 private:
   // What an Equation needs of an expression: which arena it names, and --
   // through poison() -- that it names none.
-  template <typename... Ts> friend class impl::Equation;
+  friend struct detail::Rooting;
+  template <impl::Numeric U> friend class ExternFunction;
   template <impl::Numeric U>
-  friend RTExpression<U> var(std::string_view) noexcept;
+  friend RTExpression<U> named(OpCode, std::string_view) noexcept;
   template <impl::Numeric U>
-  friend constexpr RTExpression<U> var(Builder<U> &, std::string_view);
+  friend constexpr RTExpression<U> named(Builder<U> &, OpCode,
+                                         std::string_view);
+  template <impl::Numeric U>
+  friend constexpr void closes(const RTExpression<U> &,
+                               const RTExpression<U> &);
 
   [[nodiscard]] constexpr Builder<T> *builder() const noexcept {
     return builder_;
@@ -233,12 +253,30 @@ private:
   std::optional<errc> why_;
 };
 
+// The one way a named input enters a graph.  A Var is differentiated; a Param
+// is read and never differentiated, no Jacobian column and a value in every
+// call; an Implicit is one the caller solved for -- a value in every call,
+// like a parameter, and a root of the residual closes() names, so no
+// derivative treats it as fixed and every one carries dz/dx = -F_x / F_z.
 template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> var(Builder<T> &b,
-                                            std::string_view name) {
-  const NodeId id = b.variable(name);
-  return id == no_node ? RTExpression<T>::poison(errc::sealed_arena)
+[[nodiscard]] constexpr RTExpression<T> named(Builder<T> &b, OpCode op,
+                                              std::string_view name) {
+  const NodeId id = b.input(op, name);
+  return id == no_node ? RTExpression<T>::poison(errc::name_clash)
                        : RTExpression<T>{b, id};
+}
+// `z` is a root of `f`: F(z, x) = 0 at every point the caller supplies.  ddx
+// never solves it; it differentiates as though it held.
+template <impl::Numeric T>
+constexpr void closes(const RTExpression<T> &z, const RTExpression<T> &f) {
+  if (z.why_ || f.why_) {
+    return; // the poison reaches the equation through its outputs
+  }
+  Builder<T> *const b = z.builder_ ? z.builder_ : f.builder_;
+  if (b == nullptr) {
+    return; // two literals: nothing names an arena to refuse in
+  }
+  b->close(z.builder_ ? z.id_ : no_node, f.id(*b));
 }
 // The direction a seeded product is taken along
 template <impl::Numeric T>
@@ -249,6 +287,65 @@ template <impl::Numeric T>
 template <impl::Numeric T>
 [[nodiscard]] constexpr RTExpression<T> lit(Builder<T> &b, const T &v) {
   return RTExpression<T>{b, b.constant(v)};
+}
+
+// extern_fn()'s answer: called on expressions, it puts the function into their
+// graph, and every derivative through it reads the partials it supplies.
+template <impl::Numeric T> class ExternFunction {
+public:
+  constexpr ExternFunction(Builder<T> *b, std::uint32_t index) noexcept
+      : b_{b}, index_{index} {}
+  constexpr explicit ExternFunction(errc why) noexcept : why_{why} {}
+
+  [[nodiscard]] constexpr RTExpression<T>
+  operator()(std::span<const RTExpression<T>> args) const {
+    if (why_) {
+      return RTExpression<T>::poison(*why_);
+    }
+    if (args.size() != b_->externs()[index_].arity) {
+      return RTExpression<T>::poison(errc::wrong_argument_count);
+    }
+    for (const auto &a : args) {
+      if (a.why_) {
+        return RTExpression<T>::poison(*a.why_);
+      }
+    }
+    const auto ids = args | std::views::transform([this](const auto &a) {
+                       return a.id(*b_);
+                     }) |
+                     impl::to<boost::container::small_vector<NodeId, 8>>();
+    return RTExpression<T>{*b_, b_->extern_call(index_, ids)};
+  }
+  template <typename... A>
+    requires(std::convertible_to<A, RTExpression<T>> && ...)
+  [[nodiscard]] constexpr RTExpression<T> operator()(const A &...args) const {
+    const std::array<RTExpression<T>, sizeof...(A)> all{
+        RTExpression<T>{args}...};
+    return (*this)(std::span<const RTExpression<T>>{all});
+  }
+
+private:
+  Builder<T> *b_ = nullptr;
+  std::uint32_t index_ = 0;
+  std::optional<errc> why_;
+};
+
+// A function of `record.arity` arguments the caller computes, with its
+// partials: `fn(in, out)` writes the value, then the first partials, then --
+// at order 2 -- the upper triangle of the second, row-major.  ddx calls it
+// from any thread that sweeps, as often as it needs, so it must be re-entrant
+// and must not throw.
+template <impl::Numeric T>
+[[nodiscard]] ExternFunction<T>
+extern_fn(Builder<T> &b, ExternRecord record,
+          std::type_identity_t<ExternFn<T>> fn) {
+  if (!record.valid() || !fn) {
+    return ExternFunction<T>{errc::extern_shape};
+  }
+  const auto index = b.add_extern(ExternEntry<T>{
+      std::move(record), std::make_shared<const ExternFn<T>>(std::move(fn))});
+  return index ? ExternFunction<T>{&b, *index}
+               : ExternFunction<T>{errc::extern_shape};
 }
 
 // The arena var() registers into while an equation() callback runs.  Thread-
@@ -270,13 +367,36 @@ template <impl::Numeric T>
 
 } // namespace detail
 
-// The spelling a model uses; the two-argument form above is the primitive.
+// The spelling a model uses: named in the arena its callback runs in.
 template <impl::Numeric T>
-[[nodiscard]] RTExpression<T> var(std::string_view name) noexcept {
+[[nodiscard]] RTExpression<T> named(OpCode op, std::string_view name) noexcept {
   return (detail::current_arena<T> == nullptr)
              ? RTExpression<T>::poison(errc::no_arena)
-             : var(*detail::current_arena<T>, name);
+             : named(*detail::current_arena<T>, op, name);
 }
+template <impl::Numeric T = double>
+[[nodiscard]] ExternFunction<T>
+extern_fn(ExternRecord record, std::type_identity_t<ExternFn<T>> fn) {
+  return detail::current_arena<T> == nullptr
+             ? ExternFunction<T>{errc::no_arena}
+             : extern_fn(*detail::current_arena<T>, std::move(record),
+                         std::move(fn));
+}
+
+// var(), param() and implicit(), in both spellings, off the table of named
+// kinds.
+#define DDX_RT_INPUT(fn, Op, ...)                                              \
+  template <impl::Numeric T>                                                   \
+  [[nodiscard]] constexpr RTExpression<T> fn(Builder<T> &b,                    \
+                                             std::string_view name) {          \
+    return named(b, OpCode::Op, name);                                         \
+  }                                                                            \
+  template <impl::Numeric T = double>                                          \
+  [[nodiscard]] RTExpression<T> fn(std::string_view name) noexcept {           \
+    return named<T>(OpCode::Op, name);                                         \
+  }
+DDX_RT_NAMED_TABLE(DDX_RT_INPUT)
+#undef DDX_RT_INPUT
 
 } // namespace ddx::rt
 

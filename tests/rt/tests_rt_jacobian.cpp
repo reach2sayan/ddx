@@ -49,8 +49,8 @@ void expect_close(double got, double want) {
   }
 }
 
-// Symbols are matched by name: Equation reports partials alphabetically, the
-// builder numbers them in first-seen order.
+// to_graph declares the symbols in the compile-time Equation's canonical order
+// before lowering, so the two sides' columns line up by name.
 template <ddx::impl::CExpression E, std::size_t N>
 void expect_agrees_with_ddx(const E &e, std::array<double, N> pt) {
   ddx::rt::Builder<> b;
@@ -65,7 +65,7 @@ void expect_agrees_with_ddx(const E &e, std::array<double, N> pt) {
   const auto expected_grad = std::apply(
       [&](auto... a) { return ddx::Equation{e}.jacobian(a...); }, pt);
 
-  // Both sides number their symbols alphabetically, so slot i is partial i.
+  // Both sides number their symbols the same way, so slot i is partial i.
   for (std::size_t i = 0; i < b.symbols().size(); ++i) {
     SCOPED_TRACE("partial d/d" + std::string{b.symbols()[i]});
     expect_close(values[g.partial[i]], expected_grad[i]);
@@ -507,6 +507,51 @@ TEST(RtJacobian, SelectDifferentiatesTheArmTheConditionTakes) {
   }
 }
 
+// The unchosen arm's adjoint is a runtime zero, and log' and sqrt' are infinite
+// at 0: without the guard the arm's contribution is 0 * inf = NaN.
+TEST(RtJacobian, SelectDiscardsTheUnchosenArmsPartials) {
+  const auto clamp = [](auto arm) {
+    return ddx::rt::equation([arm] {
+      const auto x = ddx::rt::var("x");
+      return select(x > 0.0, arm(x), ddx::rt::RTExpression<double>{0.0});
+    });
+  };
+  const auto log_arm = clamp([](const auto &x) { return log(x); });
+  const auto sqrt_arm = clamp([](const auto &x) { return sqrt(x); });
+  const auto nested = clamp([](const auto &x) { return log(sqrt(x)); });
+
+  for (const auto *eq : {&log_arm, &sqrt_arm, &nested}) {
+    EXPECT_EQ((*eq->jacobian(0.0))[0], 0.0);
+    EXPECT_EQ((*eq->hessian(0.0))[0], 0.0);
+    EXPECT_EQ((*eq->hvp("x", 0.0))[0], 0.0);
+    EXPECT_EQ((*eq->jacobian(-1.0))[0], 0.0);
+  }
+  EXPECT_DOUBLE_EQ((*log_arm.jacobian(2.0))[0], 0.5);
+  EXPECT_DOUBLE_EQ((*log_arm.hessian(2.0))[0], -0.25);
+
+  // Both arms chosen inside one batch.
+  const std::array<double, 3> xs{-1.0, 0.0, 1.0};
+  std::array<double, 3> f{};
+  std::array<double, 3> g{};
+  const std::array<const double *, 1> in{xs.data()};
+  const std::array<double *, 1> fv{f.data()};
+  const std::array<double *, 1> gv{g.data()};
+  ASSERT_TRUE(log_arm.jacobian(in, fv, gv, xs.size()).has_value());
+  EXPECT_EQ(g, (std::array{0.0, 0.0, 1.0}));
+}
+
+// The guard hides the arm that was not taken, never a singularity on the arm
+// that was: u is reached both ways, and at 0 the chosen arm is u itself.
+TEST(RtJacobian, SelectKeepsTheChosenArmsSingularity) {
+  const auto eq = ddx::rt::equation([] {
+    const auto x = ddx::rt::var("x");
+    const auto u = sqrt(x);
+    return select(x > 0.0, log(u), u);
+  });
+  EXPECT_EQ((*eq.jacobian(0.0))[0], std::numeric_limits<double>::infinity());
+  EXPECT_DOUBLE_EQ((*eq.jacobian(4.0))[0], 0.125);
+}
+
 // A condition is any nonzero value, as in C -- there is no separate boolean.
 TEST(RtJacobian, SelectReadsAnyNonzeroConditionAsTrue) {
   const auto eq = ddx::rt::equation([] {
@@ -529,8 +574,10 @@ TEST(RtJacobian, ComparisonsComposeFromTheTwoOpcodes) {
   // Equation is move-only, so each spelling is built and read where it is made
   // rather than handed back out of a helper.
   const auto value = [](auto build, double a, double b) {
-    const auto eq = ddx::rt::equation(
-        [&build] { return build(ddx::rt::var("x"), ddx::rt::var("y")); });
+    const auto eq = ddx::rt::equation([&build] {
+      const auto x = ddx::rt::var("x");
+      return build(x, ddx::rt::var("y"));
+    });
     const std::array<double, 2> at{a, b};
     return *eq.evaluate(std::span<const double>{at});
   };
@@ -609,11 +656,15 @@ TEST(RtJacobian, ComparisonsAgreeWithTheKernelAtNaN) {
   // tell an ordered `fcmp` from an unordered one.  C's `!=` is unordered, so a
   // NaN condition is true; the kernel has to say the same.
   {
+    // Declared one statement each: the order of a call's arguments is
+    // unspecified, and the symbols take the order they are named in.
     auto raw = ddx::rt::equation([] {
-      return select(ddx::rt::var("c"), ddx::rt::var("t"), ddx::rt::var("f"));
+      const auto c = ddx::rt::var("c");
+      const auto f = ddx::rt::var("f");
+      const auto t = ddx::rt::var("t");
+      return select(c, t, f);
     });
-    // Symbols sort alphabetically: c, f, t.
-    const std::array<double, 3> at{nan, 1.0, 2.0};
+    const std::array<double, 3> at{nan, 1.0, 2.0}; // c, f, t
     const double interpreted = *raw.evaluate(std::span<const double>{at});
     raw.options({.backend = ddx::jit::Backend::Compile, .points = 1});
     ASSERT_TRUE(raw.wait_for_kernel());
@@ -716,9 +767,9 @@ TEST(RtJacobian, BothArmsOfASelectOverASharedSubexpression) {
 TEST(RtJacobian, SharedArmsThroughTheLoaderStillSum) {
   using ddx::rt::Node;
   ddx::rt::Snapshot<double> snap;
-  snap.symbols = {"x", "y"};
+  snap.model.names[*ddx::rt::named_index(ddx::rt::OpCode::Var)] = {"x", "y"};
   // select(x < y, x, x), which is x -- and which make() would never form.
-  snap.nodes = {
+  snap.model.nodes = {
       Node<double>{.op = ddx::rt::OpCode::Var, .slot = 0},
       Node<double>{.op = ddx::rt::OpCode::Var, .slot = 1},
       Node<double>{.op = ddx::rt::OpCode::Lt, .a = 0, .b = 1},
@@ -726,7 +777,7 @@ TEST(RtJacobian, SharedArmsThroughTheLoaderStillSum) {
   snap.roots = {3};
   snap.model_nodes = 4;
   // What a file carries beside the model: the loader admits nothing less.
-  snap.nodes.push_back(
+  snap.model.nodes.push_back(
       Node<double>{.op = ddx::rt::OpCode::Const, .value = 0.0});
   snap.jacobian = {.value = {3},
                    .partial = {},

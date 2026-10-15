@@ -157,9 +157,9 @@ constexpr auto signed_operand = [](auto &ctx) {
                            : _attr(ctx);
 };
 
-// The whole of the function table is opcode_of and arity_of, so a
+// The whole of the function table is opcode_of, callable and arity_of, so a
 // transcendental added to the opcode tables becomes callable from text with no
-// edit here.  Both leaves answer to opcode_of too, and neither is callable.
+// edit here.
 //
 // Its own two codes rather than unknown_symbol and wrong_arity: those speak
 // about a *point* -- its symbols and how many values it carries -- and reading
@@ -172,7 +172,7 @@ constexpr auto apply = [](auto &ctx) {
     building.why = why;
     _pass(ctx) = false;
   };
-  if (!op || is_leaf(*op)) {
+  if (!op || !callable(*op)) {
     refuse(errc::unknown_function);
   } else if (arity_of(*op) != invocation.args.size()) {
     refuse(errc::wrong_argument_count);

@@ -8,6 +8,10 @@
 
 namespace ddx::jit::detail {
 
+// The runtime's way into a function the program supplied, defined beside
+// libm: ddx_call_extern(fn, in, arity, answer, components).
+inline constexpr const char *trampoline_symbol = "ddx_call_extern";
+
 // One graph as a single counted loop over n points, `lanes` points per
 // iteration: the body is emitted over <lanes x double>, or over double when
 // lanes is 1.

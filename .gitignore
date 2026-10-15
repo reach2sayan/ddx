@@ -538,3 +538,6 @@ docs/ad_jacobian.pdf
 /cmake-build-bench/
 .claude/
 !/docs/
+
+# A solution file the IDE drops in the root; not part of the CMake build.
+/ddx.wsp

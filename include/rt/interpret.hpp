@@ -4,6 +4,8 @@
 #include "rt/builder.hpp"
 #include "util/config.hpp"
 
+#include <boost/container/small_vector.hpp>
+
 #include <array>
 #include <cmath> // std::fma
 #include <concepts>
@@ -124,10 +126,34 @@ template <std::size_t W, impl::Numeric U>
   return [tape](NodeId v) { return tape.data() + std::size_t{v} * W; };
 }
 
+// An extern node, W lanes of it: the function is called once per lane and
+// the component this node names is kept.  Opaque to every scalar but the
+// function's own, which computes_at() tells a sweep before it gets here.
+template <std::size_t W, impl::Numeric T, impl::Numeric U>
+constexpr void lanes_extern(const Builder<T> &b, NodeId v, U *out,
+                            auto &&lane) {
+  if constexpr (std::same_as<U, T>) {
+    const auto [fn, component] = ExternSlot::of(b[v].slot);
+    const ExternEntry<T> &e = b.externs()[fn];
+    const auto args = *extern_arguments(b, v);
+    boost::container::small_vector<T, 8> in(args.size());
+    boost::container::small_vector<T, 16> answer(e.size());
+    for (std::size_t k = 0; k < W; ++k) {
+      for (const auto [j, arg] : args | std::views::enumerate) {
+        in[static_cast<std::size_t>(j)] = lane(arg)[k];
+      }
+      (*e.fn)(in, answer);
+      out[k] = answer[component];
+    }
+  } else {
+    std::ranges::fill_n(out, W, U{});
+  }
+}
+
 // The only place that turns a Step into numbers.
 template <std::size_t W, impl::Numeric T>
 DDX_ALWAYS_INLINE constexpr void sweep_step(const Builder<T> &b,
-                                            std::size_t symbols, const Step &s,
+                                            const Inputs &inputs, const Step &s,
                                             auto at, auto &&lane) {
   const auto &[i, fma] = s;
   const Node<T> &n = b[i];
@@ -138,18 +164,29 @@ DDX_ALWAYS_INLINE constexpr void sweep_step(const Builder<T> &b,
                          out);
     return;
   }
-  if (n.op == OpCode::Const) {
+  switch (kind_of(n.op)) {
+  case Kind::Const:
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = static_cast<U>(n.value);
     }
-  } else if (is_leaf(n.op)) {
+    break;
+  case Kind::Input: {
     const auto src = at + static_cast<std::ptrdiff_t>(
-                              input_column(symbols, n.op, n.slot) * W);
+                              input_column(inputs, n.op, n.slot) * W);
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }
-  } else {
+    break;
+  }
+  case Kind::Extern:
+    detail::lanes_extern<W>(b, i, out, lane);
+    break;
+  case Kind::Args:
+  case Kind::Unary:
+  case Kind::Binary:
+  case Kind::Ternary:
     detail::lanes_apply<W>(n, out, lane);
+    break;
   }
 }
 
@@ -166,9 +203,9 @@ constexpr void evaluate_block(const Builder<T> &b, const R &point_lanes,
                               std::span<const Step> schedule,
                               std::span<U> tape) {
   const auto lane = detail::lanes_of<W>(tape);
-  const std::size_t symbols = b.symbols().size();
+  const Inputs inputs = b.inputs();
   for (const Step &s : schedule) {
-    detail::sweep_step<W>(b, symbols, s, std::ranges::begin(point_lanes), lane);
+    detail::sweep_step<W>(b, inputs, s, std::ranges::begin(point_lanes), lane);
   }
 }
 

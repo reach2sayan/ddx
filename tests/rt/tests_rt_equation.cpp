@@ -105,11 +105,11 @@ TEST(RtEquation, NamesAndPointsBothComeFromRunTimeStrings) {
 
   ASSERT_FALSE(eq.poisoned());
   EXPECT_TRUE(std::ranges::equal(
-      *eq.symbols(), std::array<std::string_view, 2>{"alpha", "beta"}));
+      *eq.symbols(), std::array<std::string_view, 2>{"beta", "alpha"}));
 
   const std::map<std::string, double> vm{{"alpha", 3.0}, {"beta", 5.0}};
   EXPECT_DOUBLE_EQ(*eq.evaluate(vm), 1.0 * 5.0 + 2.0 * 3.0);
-  EXPECT_TRUE(std::ranges::equal(*eq.jacobian(vm), std::array{2.0, 1.0}));
+  EXPECT_TRUE(std::ranges::equal(*eq.jacobian(vm), std::array{1.0, 2.0}));
 
   // Any range of pairs, not only a map, and the key need not own its text.
   const std::vector<std::pair<std::string_view, double>> pairs{{"beta", 5.0},
@@ -512,21 +512,20 @@ TEST(RtEquation, TheArenaIsInvisible) {
   EXPECT_FALSE(poisoned.hessian_colors().has_value());
 }
 
-// A symbol named into a borrowed arena after an Equation has it would move
-// slots under a graph already built, so the arena refuses.
-TEST(RtEquation, AnArenaStopsTakingSymbolsOnceAnEquationHasIt) {
+// An equation copies the arena it is lent, so the caller goes on building in
+// theirs -- a symbol that moves x's slot there moves nothing the equation reads.
+TEST(RtEquation, ALentArenaIsCopiedAndStaysOpen) {
   ddx::rt::Builder<> b;
   const auto x = var(b, "x");
   const auto eq = ddx::rt::equation(x * x);
   ASSERT_EQ(eq.arity(), 1u);
   EXPECT_NEAR(*eq.evaluate(3.0), 9.0, 1e-12);
 
-  const auto a = var(b, "a"); // would have moved x from slot 0 to slot 1
-  EXPECT_TRUE(a.poisoned());
-
+  const auto a = var(b, "a"); // moves x from slot 0 to slot 1 in `b`
+  ASSERT_FALSE(a.poisoned());
   const auto second = ddx::rt::equation(a + x);
-  ASSERT_TRUE(second.status().has_value());
-  EXPECT_EQ(second.status()->code, ddx::errc::sealed_arena);
+  ASSERT_FALSE(second.poisoned());
+  EXPECT_NEAR(*second.evaluate(2.0, 3.0), 5.0, 1e-12);
 
   // The first equation is untouched: same symbol set, same slot, same answers.
   ASSERT_EQ(eq.arity(), 1u);

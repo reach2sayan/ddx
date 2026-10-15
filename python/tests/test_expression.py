@@ -47,12 +47,12 @@ def test_every_exported_unary_is_covered() -> None:
         for name in ddx.__all__
         if callable(getattr(ddx, name)) and not isinstance(getattr(ddx, name), type)
     }
-    binary = {"add", "mul", "div", "pow", "atan2", "hypot", "max", "min"}
-    # Comparisons are operators on Expression, not functions; `select` is the
-    # one ternary.
+    binary = {"add", "mul", "div", "pow", "atan2", "hypot", "max", "min",
+              "lt", "le"}
+    # `select` is the one ternary.
     ternary = {"select"}
     # Not operations at all: these build or read an equation.
-    not_an_op = {"equation", "load", "var"}
+    not_an_op = {"closes", "equation", "implicit", "load", "param", "var"}
     assert functions - binary - ternary - not_an_op == set(UNARY)
 
 
