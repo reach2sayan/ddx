@@ -258,9 +258,12 @@ protected:
   [[nodiscard]] constexpr const Cache &cache() const noexcept { return cache_; }
 
   // `run` is what the call would have done with no cache at all.
-  void through(Want want, const Graph<T> &graph, Answered how,
-               std::span<const T *const> xs, const Columns<T> &out,
-               std::size_t n, auto &&run) const {
+  void through([[maybe_unused]] Want want,
+               [[maybe_unused]] const Graph<T> &graph,
+               [[maybe_unused]] Answered how,
+               [[maybe_unused]] std::span<const T *const> xs,
+               [[maybe_unused]] const Columns<T> &out,
+               [[maybe_unused]] std::size_t n, auto &&run) const {
     if constexpr (std::same_as<Cache, NoCache<T>>) {
       run();
     } else {
@@ -316,18 +319,21 @@ private:
     const Recorded<T> slot = lease.entry();
     std::visit(
         [&]<typename P>(const P &plan) {
+          // Served alone leaves `remember` out: the entry it answered from is
+          // the one already there.
           if constexpr (std::same_as<P, Served>) {
             spread(plan.values, out);
-            return;
-          } else if constexpr (std::same_as<P, Relay>) {
-            run();
-            collect(out, slot.values);
-          } else { // Fill or Amend: whichever sweep the overload names
-            sweep(want, graph, at, plan, slot);
-            keep(graph.output_blocks(), slot.tape, slot.values);
-            spread(slot.values, out);
+          } else {
+            if constexpr (std::same_as<P, Relay>) {
+              run();
+              collect(out, slot.values);
+            } else { // Fill or Amend: whichever sweep the overload names
+              sweep(want, graph, at, plan, slot);
+              keep(graph.output_blocks(), slot.tape, slot.values);
+              spread(slot.values, out);
+            }
+            remember(at, slot, lease);
           }
-          remember(at, slot, lease);
         },
         decide(lease.filled(), at, slot));
   }

@@ -89,7 +89,7 @@ inline constexpr bool probes_Sign =
 // before it reads one.
 template <typename Fn, impl::Numeric T, bool Ok>
 [[nodiscard]] constexpr T
-supported(const impl::Numeric auto &...args) noexcept {
+supported([[maybe_unused]] const impl::Numeric auto &...args) noexcept {
   if constexpr (Ok) {
     return T{Fn{}(args...)};
   } else {

@@ -155,8 +155,8 @@ inline constexpr bool reads_primals_v =
 // The one call shape for both sides: the caller hands every operand and the
 // descriptor's arity decides whether any is read.
 template <template <Numeric> class Fn, Numeric T>
-[[nodiscard]] constexpr auto adjoints_of(const T &adj,
-                                         const auto &...operands) noexcept {
+[[nodiscard]] constexpr auto
+adjoints_of(const T &adj, [[maybe_unused]] const auto &...operands) noexcept {
   if constexpr (reads_primals_v<Fn, T>) {
     return Fn<T>::adjoints(adj, operands...);
   } else {

@@ -62,8 +62,9 @@ TEST(RtSystem, JacobianStacksTheScalarRows) {
     for (const std::size_t j : std::views::iota(0uz, 3uz)) {
       EXPECT_DOUBLE_EQ(J[k * 3 + j], row[j]) << "d f" << k << " / d x" << j;
     }
-    EXPECT_TRUE(std::ranges::equal(*std::ranges::next(pattern.begin(), k),
-                                   *eq.jacobian_pattern()->get().begin()))
+    EXPECT_TRUE(std::ranges::equal(
+        *std::ranges::next(pattern.begin(), static_cast<std::ptrdiff_t>(k)),
+        *eq.jacobian_pattern()->get().begin()))
         << "row " << k;
   }
 }

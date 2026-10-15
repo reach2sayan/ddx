@@ -302,7 +302,9 @@ function(_ddx_silence_dependency)
     endif ()
     foreach (target IN LISTS ARGV)
         if (TARGET ${target})
-            target_compile_options(${target} PRIVATE /W0 /wd4668)
+            # Not /W0: GoogleTest puts /W4 in its own CXX flags, and cl reports
+            # the override as D9025.  Its sources are clean at the level it
+            # picked, so take that level and only drop the warning-as-error.
             set_target_properties(${target} PROPERTIES COMPILE_WARNING_AS_ERROR OFF)
         endif ()
     endforeach ()

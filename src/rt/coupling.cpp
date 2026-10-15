@@ -85,8 +85,9 @@ private:
     const auto scatter = by_color(out_.scatter, count_, n_);
     for (const auto [index, row] : rows_ | std::views::enumerate) {
       const auto j = static_cast<std::size_t>(index);
+      const std::size_t color = out_.color[j];
       for (const std::size_t i : set_bits(row)) {
-        scatter[out_.color[j], i] = j;
+        scatter[color, i] = j;
       }
     }
   }

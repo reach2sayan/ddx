@@ -1289,17 +1289,19 @@ private:
                        .jacobian = as_columns(gs),
                        .hessian = as_columns(hs)},
                       1);
+    } else {
+      auto wanted = roots_;
+      impl::append(wanted, derivative_.partial);
+      const auto values = evaluate_reachable(*arena_, wanted, at);
+      const auto pick = [&values](std::span<T> out, const auto &nodes) {
+        std::ranges::transform(nodes | std::views::take(out.size()),
+                               out.begin(),
+                               [&values](NodeId v) { return values[v]; });
+      };
+      pick(f, roots_);
+      pick(g, derivative_.partial);
+      return {};
     }
-    auto wanted = roots_;
-    impl::append(wanted, derivative_.partial);
-    const auto values = evaluate_reachable(*arena_, wanted, at);
-    const auto pick = [&values](std::span<T> out, const auto &nodes) {
-      std::ranges::transform(nodes | std::views::take(out.size()), out.begin(),
-                             [&values](NodeId v) { return values[v]; });
-    };
-    pick(f, roots_);
-    pick(g, derivative_.partial);
-    return {};
   }
 
   // Row-major rows x columns from the cells the pattern names, the zeros put

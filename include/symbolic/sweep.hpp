@@ -336,13 +336,12 @@ derivative_tensor_impl(const Expr &expr,
       result[Seeded] =
           expr.template eval_seeded<symbols>(seeds).template get<1>();
     });
-    return result;
-  }
-
-  for (const auto &idx : detail::simplex_index_table_v<N, Order>) {
-    const auto seeds = mixed_seeds<S, Order>(values, idx);
-    const U val = expr.template eval_seeded<symbols>(seeds);
-    result.at_index(idx) = extract_nth<Order>(val);
+  } else {
+    for (const auto &idx : detail::simplex_index_table_v<N, Order>) {
+      const auto seeds = mixed_seeds<S, Order>(values, idx);
+      const U val = expr.template eval_seeded<symbols>(seeds);
+      result.at_index(idx) = extract_nth<Order>(val);
+    }
   }
   return result;
 }

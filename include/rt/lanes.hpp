@@ -279,8 +279,9 @@ private:
       }
       return points_.fetch_add(n, std::memory_order_relaxed) + n >=
              rung_at(asked, setting.options);
+    } else {
+      return false;
     }
-    return false;
   }
 
   // Freezing and launching are one step deliberately: split, a lane could be
