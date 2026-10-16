@@ -36,8 +36,8 @@ public:
   // order is load-bearing -- each check is what the next one indexes with.
   [[nodiscard]] result<Verified<T>> operator()() && {
     return symbols() && nodes() && vars() && externs() && reachable() &&
-                   jacobian() &&
-                   hessians() && seeded() && objects()
+                   tensors() && jacobian() && hessians() && seeded() &&
+                   objects()
                ? result<Verified<T>>{Verified<T>{std::move(s_)}}
                : fail(errc::archive_corrupt);
   }
@@ -123,6 +123,74 @@ private:
                              m.externs[ExternSlot::of(m[v].slot).function]
                                  .size());
                });
+  }
+
+  // Every tensor leaf names a table entry of the shape its op reads, every
+  // tensor op's operands are the widths it indexes by, a vector sits nowhere a
+  // scalar is read, and no root is one: the interpreter walks rows by all of
+  // these without a bound.  Tensors compute at double only, so at any other
+  // scalar a file carries none.
+  [[nodiscard]] bool tensors() const {
+    const auto &m = s_.model;
+    const auto vec = [&m](NodeId u) { return tensor_valued(m.op_of(u)); };
+    if constexpr (!std::same_as<T, double>) {
+      return m.tensors.empty() &&
+             std::ranges::none_of(m.nodes, [](const Node<T> &n) {
+               return kind_of(n.op) == Kind::Tensor;
+             });
+    }
+    const auto scalar = [&vec](NodeId u) { return !vec(u); };
+    const auto inner = [](std::uint32_t slot, Kind k) {
+      return slot < op_count && kind_of(static_cast<OpCode>(slot)) == k;
+    };
+    // In id order, and short-circuiting: width_of(m, a) walks nodes below `v`
+    // that have already held.
+    const auto holds = [&](NodeId v) {
+      const Node<T> &n = m[v];
+      const auto [a, b, c] = m.operands(v);
+      switch (n.op) {
+      case OpCode::VecConst:
+        return n.slot < m.tensors.size() && m.tensors[n.slot].cols == 1;
+      case OpCode::MatConst:
+        return n.slot < m.tensors.size();
+      case OpCode::Pack: {
+        const auto args = pack_arguments(m, v);
+        return n.slot >= 1 && args.has_value() &&
+               std::ranges::all_of(*args, scalar);
+      }
+      case OpCode::PackArgs:
+        return scalar(a); // `b` is the rest, which its Pack walks
+      case OpCode::Gather:
+        return vec(a) && n.slot < width_of(m, a);
+      case OpCode::Map:
+        return vec(a) && inner(n.slot, Kind::Unary);
+      case OpCode::Zip:
+        return vec(a) && vec(b) && width_of(m, a) == width_of(m, b) &&
+               inner(n.slot, Kind::Binary);
+      case OpCode::Scale:
+        return scalar(a) && vec(b);
+      case OpCode::Sum:
+        return vec(a);
+      case OpCode::Dot:
+        return vec(a) && vec(b) && width_of(m, a) == width_of(m, b);
+      case OpCode::Gemv: {
+        if (m.op_of(a) != OpCode::MatConst || !vec(b) || n.slot > 1) {
+          return false;
+        }
+        const TensorConst<T> &t = m.tensors[m[a].slot];
+        return width_of(m, b) == (n.slot ? t.rows : t.cols);
+      }
+      case OpCode::AddAt:
+        return vec(a) && scalar(b) && n.slot < width_of(m, a);
+      default: // a scalar op, over scalars
+        return std::ranges::all_of(detail::operands_of(m, v), scalar);
+      }
+    };
+    return std::ranges::all_of(m.tensors, &TensorConst<T>::valid) &&
+           std::ranges::all_of(
+               std::views::iota(NodeId{0}, static_cast<NodeId>(m.size())),
+               holds) &&
+           std::ranges::none_of(s_.roots, vec);
   }
 
   [[nodiscard]] bool reachable() const {

@@ -34,6 +34,8 @@ namespace ddx {
   X(not_univariate,   "needs exactly one symbol")                                             \
   X(not_single_output, "needs exactly one output, and this is a system")                      \
   X(unsupported_scalar, "an operation the sweep's scalar type does not define")               \
+  X(tensor_shape,     "a tensor's shape does not fit the operation, or one sits where a scalar must") \
+  X(tensor_kernel,    "a graph holding tensor nodes runs on the sweep; no kernel is built for it") \
                                                                                               \
   /* Saved graphs. */                                                                         \
   X(archive_io,       "the file could not be read or written")                                \

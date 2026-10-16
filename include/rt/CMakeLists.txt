@@ -4,6 +4,9 @@ target_sources(ddx_rt INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/builder.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/expressions.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/interpret.hpp>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/kernels.hpp>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/tensor.hpp>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/eigen_kernels.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/derivative.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/coupling.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/bridge.hpp>

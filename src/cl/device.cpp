@@ -209,6 +209,10 @@ result<Kernel> Device::compile(const rt::Graph<double> &g,
     return refused(errc::device_compile,
                    "an extern function runs on the host only");
   }
+  if (g.has_tensors()) {
+    return refused(errc::tensor_kernel,
+                   "tensor nodes run on the sweep; no kernel is built for them");
+  }
   const auto start = clock::now();
   const std::string source = detail::emit_source(g);
   const auto emitted = clock::now();

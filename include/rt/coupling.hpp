@@ -369,6 +369,70 @@ template <impl::Numeric T>
         detail::couple(rows, support[v], support[v]);
       }
       break;
+    case Kind::Tensor: {
+      // One support for the whole vector, conservatively: the union of what
+      // its operands read.  Linear ops -- Pack, Gather, Sum, Gemv over a
+      // constant matrix, AddAt, Zip(add) -- couple nothing; the rest couple
+      // as their scalar namesakes do.
+      support[v] = SymbolSet(n);
+      const auto inner = static_cast<OpCode>(node.slot);
+      switch (node.op) {
+      case OpCode::VecConst:
+      case OpCode::MatConst:
+        break;
+      case OpCode::Pack: {
+        const auto args = *pack_arguments(b, v);
+        for (const NodeId s : args) {
+          support[v] |= support[s];
+        }
+        break;
+      }
+      case OpCode::Gather:
+      case OpCode::Sum:
+        support[v] = support[node.a];
+        break;
+      case OpCode::Gemv:
+        support[v] = support[node.b];
+        break;
+      case OpCode::Map:
+        support[v] = support[node.a];
+        if (inner != OpCode::Neg) {
+          detail::couple(rows, support[v], support[v]);
+        }
+        break;
+      case OpCode::PackArgs:
+      case OpCode::AddAt:
+        support[v] = support[node.a];
+        support[v] |= support[node.b];
+        break;
+      case OpCode::Scale:
+      case OpCode::Dot:
+        support[v] = support[node.a];
+        support[v] |= support[node.b];
+        detail::couple(rows, support[node.a], support[node.b]);
+        break;
+      case OpCode::Zip:
+        if (inner == OpCode::Lt || inner == OpCode::Le) {
+          break;
+        }
+        support[v] = support[node.a];
+        support[v] |= support[node.b];
+        if (inner == OpCode::Add) {
+          break;
+        } else if (inner == OpCode::Mul) {
+          detail::couple(rows, support[node.a], support[node.b]);
+        } else if (inner == OpCode::Div) {
+          detail::couple(rows, support[node.a], support[node.b]);
+          detail::couple(rows, support[node.b], support[node.b]);
+        } else {
+          detail::couple(rows, support[v], support[v]);
+        }
+        break;
+      default:
+        std::unreachable();
+      }
+      break;
+    }
     }
   }
   return rows;

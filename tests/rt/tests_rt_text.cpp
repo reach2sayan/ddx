@@ -170,9 +170,9 @@ TEST(RtText, SpellsEveryOpcodeTheTablesName) {
   for (const auto &label : ddx::rt::opcode_labels()) {
     const auto op = ddx::rt::opcode_of(label);
     ASSERT_TRUE(op.has_value()) << label;
-    // The leaves and the externs are not callable, and the operators have
-    // their own syntax.
-    if (ddx::rt::is_leaf(*op) || ddx::rt::is_extern(*op) || !callable(label)) {
+    // What the library says text may not name -- leaves, externs, tensor rows
+    // -- and the operators, which have their own syntax.
+    if (!ddx::rt::callable(*op) || !callable(label)) {
       continue;
     }
     const auto args = ddx::rt::arity_of(*op);

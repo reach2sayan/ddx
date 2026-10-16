@@ -65,7 +65,9 @@ void expression(std::string &out, const rt::Graph<double> &g, rt::NodeId v) {
     return;
   case rt::Kind::Extern:
   case rt::Kind::Args:
+  case rt::Kind::Tensor:
     std::unreachable(); // Device::compile refuses a graph that calls the host
+                        // or holds a tensor row
   case rt::Kind::Unary:
   case rt::Kind::Binary: {
     const auto &[how, name] = rt::lowering_of(p.op);

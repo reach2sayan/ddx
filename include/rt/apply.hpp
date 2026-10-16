@@ -151,6 +151,13 @@ dispatch(OpCode op, auto &&visit) {
             Kind::kind == Kind::Args, arity>{});
     DDX_RT_EXTERN_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
+    // A tensor row is the interpreter's as well, through its kernel table, and
+    // at no scalar but the graph's own.
+#define DDX_RT_DISPATCH(fn, Op, label, arity, kind)                            \
+  case OpCode::Op:                                                             \
+    return visit(Row<void, false, arity>{});
+    DDX_RT_TENSOR_TABLE(DDX_RT_DISPATCH)
+#undef DDX_RT_DISPATCH
   }
   std::unreachable();
 }
@@ -174,7 +181,8 @@ template <impl::Numeric T>
   requires(sizeof...(args) >= 1 && sizeof...(args) <= 3)
 {
   return detail::dispatch<T>(op, [&]<typename R>(R) -> T {
-    if constexpr (R::arity == sizeof...(args)) {
+    if constexpr (R::arity == sizeof...(args) &&
+                  !std::is_void_v<typename R::functor>) {
       return detail::supported<typename R::functor, T, R::ok>(args...);
     } else {
       return T{};

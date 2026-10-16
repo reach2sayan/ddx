@@ -35,6 +35,7 @@ template <typename T> struct Recorded {
   std::span<T> point;
   std::span<T> values;
   std::span<T> tape;
+  std::span<T> vtape; // the tensor rows, where the graph has any
 };
 
 // What a slot holds and what it holds it for.  Two calls share an entry only
@@ -50,6 +51,9 @@ public:
     return values_;
   }
   [[nodiscard]] constexpr std::size_t tape() const noexcept { return tape_; }
+  [[nodiscard]] constexpr std::size_t vtape() const noexcept {
+    return vtape_;
+  }
 
   // `nodes` is the arena's size, not the graph's: a borrowed arena may have
   // grown since the freeze, and live ids index below that.
@@ -57,19 +61,22 @@ public:
   [[nodiscard]] static Extent of(const Graph<T> &graph, Answered how,
                                  std::size_t nodes) {
     const Layout &layout = graph.layout();
+    const bool swept = how != Answered::ByKernel;
     return Extent{graph.arity(),
                   layout.values + layout.jacobian + layout.hessian,
-                  how == Answered::ByKernel ? 0uz : nodes, &graph};
+                  swept ? nodes : 0uz, swept ? graph.tensors().extent : 0uz,
+                  &graph};
   }
 
 private:
   constexpr Extent(std::size_t point, std::size_t values, std::size_t tape,
-                   const void *of) noexcept
-      : point_(point), values_(values), tape_(tape), of_(of) {}
+                   std::size_t vtape, const void *of) noexcept
+      : point_(point), values_(values), tape_(tape), vtape_(vtape), of_(of) {}
 
   std::size_t point_ = 0;
   std::size_t values_ = 0;
   std::size_t tape_ = 0;
+  std::size_t vtape_ = 0;
   const void *of_ = nullptr; // which frozen graph, by identity
 
 public:
@@ -129,7 +136,7 @@ private:
   struct Slot {
     mutable std::shared_mutex mutex;
     Extent extent{};
-    std::vector<T> point, values, tape;
+    std::vector<T> point, values, tape, vtape;
     bool filled = false;
   };
   using Lanes = std::array<Slot, want_count>;
@@ -146,7 +153,7 @@ public:
     }
     [[nodiscard]] bool filled() const noexcept { return slot_->filled; }
     [[nodiscard]] Recorded<const T> entry() const noexcept {
-      return {slot_->point, slot_->values, slot_->tape};
+      return {slot_->point, slot_->values, slot_->tape, slot_->vtape};
     }
 
   private:
@@ -165,7 +172,7 @@ public:
     }
     [[nodiscard]] bool filled() const noexcept { return slot_->filled; }
     [[nodiscard]] Recorded<T> entry() noexcept {
-      return {slot_->point, slot_->values, slot_->tape};
+      return {slot_->point, slot_->values, slot_->tape, slot_->vtape};
     }
     void commit() noexcept { slot_->filled = true; }
 
@@ -204,6 +211,7 @@ public:
       slot.point.assign(extent.point(), T{});
       slot.values.assign(extent.values(), T{});
       slot.tape.assign(extent.tape(), T{});
+      slot.vtape.assign(extent.vtape(), T{});
       slot.filled = false;
     }
     return {slot, std::move(lock)};
@@ -364,7 +372,8 @@ private:
   void sweep(Want, const Graph<T> &graph, const std::vector<T> &at, Fill,
              const Recorded<T> &slot) const {
     [[maybe_unused]] const auto held = self().sweeping();
-    evaluate_into(self().arena(), at, graph.schedule(), slot.tape);
+    evaluate_into(self().arena(), at, graph.schedule(), slot.tape,
+                  tensors_of(graph, slot));
   }
 
   void sweep(Want want, const Graph<T> &graph, const std::vector<T> &at,
@@ -373,7 +382,17 @@ private:
     [[maybe_unused]] const auto held = self().sweeping();
     const Cone &cone = cone_for(want, graph);
     evaluate_reached(self().arena(), at, graph.schedule(), cone, plan.changed,
-                     reach_scratch(), stack_scratch(), slot.tape);
+                     reach_scratch(), stack_scratch(), slot.tape,
+                     tensors_of(graph, slot));
+  }
+
+  // The slot's tensor rows, kept beside its tape for the same reason: an
+  // amendment reads the rows the move did not reach.
+  [[nodiscard]] detail::Tensors<T> tensors_of(const Graph<T> &graph,
+                                              const Recorded<T> &slot) const {
+    return {.rows = graph.tensors().rows,
+            .vtape = slot.vtape.data(),
+            .kernels = &self().tensor_kernels()};
   }
 
   // Read the first time an amendment wants it, and only ever while this lane's

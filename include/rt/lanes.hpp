@@ -5,6 +5,7 @@
 #include "jit/kernel.hpp"
 #include "rt/archive/archive.hpp" // object_of, adopt_stored
 #include "rt/graph.hpp"
+#include "rt/kernels.hpp"
 #include "util/config.hpp" // DDX_FWD
 
 #include <array>
@@ -154,6 +155,9 @@ template <impl::Numeric T> struct Compiled {
   // Rungs share one pool and need not land in the order they were asked for,
   // so this is what refuses a late one.
   jit::Level level = jit::Level::O0;
+  // What the sweep computes tensor rows with: resolved when the lane froze,
+  // so a table the equation is handed later means a new lane.
+  const KernelTable *kernels = nullptr;
 
   [[nodiscard]] std::shared_ptr<const Compiled> with(AnyKernel k,
                                                      jit::Level l) const {
@@ -161,7 +165,8 @@ template <impl::Numeric T> struct Compiled {
                                                      .compile_graph =
                                                          compile_graph,
                                                      .kernel = std::move(k),
-                                                     .level = l});
+                                                     .level = l,
+                                                     .kernels = kernels});
   }
 };
 

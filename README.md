@@ -407,6 +407,47 @@ linear solve, not a quotient. The equation is refused otherwise:
 `errc::unclosed_implicit`, `errc::closed_twice`, `errc::nested_implicit`, and
 `errc::not_implicit` for a `closes` on something that is not an implicit input.
 
+### Vectors
+
+A model over many species writes the same term once per pair, and the graph
+grows with the square of the species count. A vector is one node for all of
+them. Include `rt/tensor.hpp`:
+
+```cpp
+#include "rt/tensor.hpp"
+
+const auto eq = rt::equation([&] {
+  const auto x = rt::vec("x", n);                     // n symbols x[0] .. x[n-1]
+  const auto C = rt::mat_const(n, n, c);              // column-major, n*n values
+  const auto ionic = dot(rt::vec_const(z), x);
+  return dot(x, gemv(C, x)) * exp(-sqrt(ionic)) + sum(x * log(x));
+});
+```
+
+`rt::vec(name, n)` is `n` ordinary symbols, named `name[0]` … `name[n-1]`, so
+`symbols()`, points and every derivative are what they would be had the model
+been written out — a vector is a spelling, not a new kind of input.
+`rt::pack({a, b, c})` makes one from scalars you already have, and `v[i]` reads
+one element back as a scalar. The arithmetic between vectors is elementwise,
+every function in [Expressions](#expressions) applies elementwise (`log(x)`,
+`pow(x, y)`, `abs(x)`), a number or a scalar expression times a vector scales
+it, and a number where a vector is expected broadcasts (`x + 1.0`). The
+reductions are `sum(v)` and `dot(u, v)`; `gemv(M, v)` and `gemv_t(M, v)` are
+$Mv$ and $M^{\top}v$ over a constant matrix; `add_at(v, s, i)` is $v + s\,e_i$.
+
+Every derivative goes through a vector node as a vector: the gradient of the
+model above is a handful of nodes however large `n` is, and `hvp` is two or
+three matrix-vector products. The graph is checked as it is built — a `dot` of
+two widths, a `gemv` over the wrong length, an index past the end — and a
+mistake poisons the equation with `errc::tensor_shape`.
+
+What a vector is not: an output (`rt::equation` takes scalars; a system over a
+vector is `{v[0], v[1], …}`), a comparison or a `select` arm (both are scalar),
+or something `univariate_derivative` sweeps (`errc::unsupported_scalar`).
+Vectors compute at `double` only. A kernel is never compiled over one — the
+equation sweeps instead, and `uses_kernel()` says so; see
+[Kernel backends](#kernel-backends) for what computes them.
+
 ### Written down instead
 
 An equation can be a string rather than a callback. Include
@@ -918,6 +959,8 @@ if (!j) {
 | `not_univariate` | `univariate_derivative` on more than one symbol |
 | `not_single_output` | a member about one function's Hessian, asked of a system |
 | `unsupported_scalar` | `univariate_derivative` over an operation its Taylor arithmetic does not define |
+| `tensor_shape` | a vector's width does not fit the operation — a `dot` of two widths, a `gemv` over the wrong length, an index past the end — or a vector sits where a scalar must, as an output or a `select` arm |
+| `tensor_kernel` | a compile was asked for a graph holding vectors; none is built, and the equation sweeps |
 | `bad_syntax` | a text equation the grammar does not accept |
 | `unknown_function` | a text equation calls a function that does not exist |
 | `wrong_argument_count` | a text equation calls one with the wrong arity |
@@ -1117,6 +1160,56 @@ three orders of magnitude quicker. Failing that, `codegen.codegen_level` — not
 ```cpp
 eq.options({.backend = rt::Backend::Compile, .points = 4096, .cache_dir = "/var/cache/ddx"});
 ```
+
+### Kernel backends
+
+The vector nodes of [Vectors](#vectors) are computed by a *kernel table*: one
+record of functions — `gemv`, `dot`, `scale`, `sum`, and the elementwise `map`
+and `zip` — over plain spans of `double`, column-major for a matrix. ddx ships
+one, the reference table, and tests against it; a program with Eigen, a BLAS or
+kernels of its own hands over another. Include `rt/kernels.hpp`:
+
+```cpp
+#include "rt/kernels.hpp"
+
+struct Mine {
+  static constexpr std::string_view name = "mine";
+  static void gemv(std::size_t rows, std::size_t cols, std::span<const double> m,
+                   std::span<const double> v, std::span<double> out, bool transposed);
+  static double dot(std::span<const double>, std::span<const double>);
+  static void scale(double, std::span<const double>, std::span<double>);
+  static void map(rt::OpCode, std::span<const double>, std::span<double>);
+  static void zip(rt::OpCode, std::span<const double>, std::span<const double>, std::span<double>);
+  static double sum(std::span<const double>);
+};
+static_assert(rt::TensorKernels<Mine>);
+inline constexpr auto mine = rt::kernel_table<Mine>();   // a constant
+
+rt::use_kernels(mine);        // every equation from here on
+eq.kernels(mine);             // this one; lanes and the remembered call start over
+```
+
+`rt::TensorKernels` is the concept a backend satisfies, `rt::kernel_table`
+the only way to make a table from one — a backend missing a member fails
+there, at compile time — and the two scopes are the process default
+(`rt::use_kernels`, set once before any sweep) and one equation
+(`eq.kernels(table)`). `eq.tensor_kernels()` answers which table an equation
+runs on, and `ddx::rt::reference::Kernels` is the shipped one, to inherit from
+when only some members are yours.
+
+Eigen is one header away. Nothing in ddx includes it; a program that has Eigen
+does:
+
+```cpp
+#include "rt/eigen_kernels.hpp"
+
+rt::use_kernels(rt::eigen::table);
+```
+
+If that Eigen is built over a BLAS, that is where the matrix-vector products
+land. A table decides a summation order and nothing else, so two tables may
+differ in the last bits; a saved equation records the table's name, and loads
+onto whatever table the loading program uses.
 
 ## Running on a GPU
 
@@ -1356,6 +1449,7 @@ the output count outside it — when the callback returns a vector. All of it is
 | `hessian_colors()` | `std::optional<std::size_t>` — groups in the Hessian's compression |
 | `prepare({wants…})` | `result<void>` — build those lanes now, so the calls that follow never wait on one |
 | `options(opts)`, `options()` | set or read the compile options; setting returns `*this` |
+| `kernels(table)`, `tensor_kernels()` | set or read the [kernel table](#kernel-backends) the vector nodes compute with; setting returns `*this` |
 | `uses_kernel()`, `kernel_level()` | whether a batch call runs compiled code, and at which level |
 | `warming()` | under `Adapt`, points seen against the next threshold |
 | `wait_for_kernel(want)` | block until the compile in flight for a lane has landed — the Jacobian's unless `want` names another |
@@ -1421,7 +1515,10 @@ It is the runtime above with Python's conventions: a model is a callable or a
 string in the [same grammar](#written-down-instead), a point is a sequence, a
 dict or a `(symbols, points)` NumPy batch, answers are arrays with the Hessian
 dense, errors raise `ddx.Error` carrying the same `errc`, and `Options` is a
-pydantic model of `jit::Options`. A file saved on either side loads on the
+pydantic model of `jit::Options`. [Vectors](#vectors) are `ddx.vec`,
+`ddx.pack`, `ddx.vec_const` and `ddx.mat_const`, with `ddx.sum`, `ddx.dot`,
+`ddx.gemv`, `ddx.gemv_t` and `ddx.add_at` over them; the kernel table is not
+exposed. A file saved on either side loads on the
 other. [python/README.md](python/README.md) — the page PyPI shows — documents
 the module.
 

@@ -212,7 +212,10 @@ public:
             std::max(g.inputs_.seeds, std::size_t{g.properties_[v].slot} + 1);
       }
       g.calls_extern_ |= kind_of(g.properties_[v].op) == Kind::Extern;
+      g.has_tensors_ |= kind_of(g.properties_[v].op) == Kind::Tensor;
     }
+    // Off the arena, which holds the tensor table the widths come from.
+    g.tensors_ = detail::tensor_layout(b, g.schedule_);
     return g;
   }
 
@@ -249,6 +252,13 @@ public:
   // Whether a live node calls one: what a device, which cannot call the host,
   // refuses -- a function the arena registered and nothing reaches is not.
   [[nodiscard]] bool calls_extern() const noexcept { return calls_extern_; }
+  // Whether a live node is a tensor op: what a kernel, which computes scalars
+  // only, refuses, and what makes the sweep carry a second tape.
+  [[nodiscard]] bool has_tensors() const noexcept { return has_tensors_; }
+  // Where each tensor-valued node's rows sit in that tape.
+  [[nodiscard]] const TensorLayout &tensors() const noexcept {
+    return tensors_;
+  }
 
   // How many input columns `xs` carries: the symbol count is not the width.
   [[nodiscard]] std::size_t arity() const { return inputs_.total(); }
@@ -349,6 +359,8 @@ private:
   std::vector<std::string> names_;
   std::vector<ExternEntry<T>> externs_;
   bool calls_extern_ = false;
+  bool has_tensors_ = false;
+  TensorLayout tensors_;
   std::vector<bool> live_;
   std::vector<NodeId> live_order_;
   std::vector<Step> schedule_;

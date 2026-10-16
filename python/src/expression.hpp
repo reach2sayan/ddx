@@ -95,6 +95,9 @@ private:
   // The one ternary.
   friend PyExpression select(const PyExpression &, const PyExpression &,
                              const PyExpression &);
+  // The vector handle: one element of it is one of these, over the same
+  // arena.
+  friend class PyVector;
 
   [[nodiscard]] constexpr const Base &base() const noexcept {
     return expression_;

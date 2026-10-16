@@ -53,7 +53,10 @@ def test_every_exported_unary_is_covered() -> None:
     ternary = {"select"}
     # Not operations at all: these build or read an equation.
     not_an_op = {"closes", "equation", "implicit", "load", "param", "var"}
-    assert functions - binary - ternary - not_an_op == set(UNARY)
+    # Vectors: factories and reductions, not scalar operations.
+    vectors = {"add_at", "dot", "gemv", "gemv_t", "mat_const", "pack", "sum",
+               "vec", "vec_const"}
+    assert functions - binary - ternary - not_an_op - vectors == set(UNARY)
 
 
 @pytest.mark.parametrize("name", sorted(UNARY))

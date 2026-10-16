@@ -20,6 +20,7 @@
 namespace ddx::rt {
 
 template <impl::Numeric T = double> class RTExpression;
+template <impl::Numeric T> class RTVector;
 
 namespace detail {
 // Befriended below: an equation is the one thing that takes an expression's
@@ -222,6 +223,9 @@ private:
   // through poison() -- that it names none.
   friend struct detail::Rooting;
   template <impl::Numeric U> friend class ExternFunction;
+  // The vector handle: one element of it is a scalar, and it poisons as this
+  // does.
+  template <impl::Numeric U> friend class RTVector;
   template <impl::Numeric U>
   friend RTExpression<U> named(OpCode, std::string_view) noexcept;
   template <impl::Numeric U>

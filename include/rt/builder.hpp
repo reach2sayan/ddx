@@ -206,6 +206,19 @@ template <impl::Numeric T> struct TwoOperandNode {
 // node in every arena.
 static_assert(sizeof(Node<double>) == sizeof(detail::TwoOperandNode<double>));
 
+// The data behind a VecConst or MatConst leaf, column-major; a vector is one
+// column.  Owned by the model, so a file carries it and a Gemv's matrix is
+// read in place rather than copied into nodes.
+template <impl::Numeric T> struct TensorConst {
+  std::uint32_t rows = 0;
+  std::uint32_t cols = 1;
+  std::vector<T> data;
+  [[nodiscard]] constexpr bool valid() const noexcept {
+    return rows >= 1 && cols >= 1 && data.size() == std::size_t{rows} * cols;
+  }
+  BOOST_DESCRIBE_CLASS(TensorConst, (), (rows, cols, data), (), ())
+};
+
 // Everything a model is: what the Builder holds, a file keeps, and the model
 // digest keys on -- one described list, so adding to it reaches all three.
 template <impl::Numeric T> struct Model {
@@ -213,8 +226,10 @@ template <impl::Numeric T> struct Model {
   PerKind<std::vector<std::string>> names;
   std::vector<NodeId> closures; // the residual each implicit is a root of
   std::vector<ExternEntry<T>> externs;
+  std::vector<TensorConst<T>> tensors;
   std::vector<Node<T>> nodes;
-  BOOST_DESCRIBE_CLASS(Model, (), (names, closures, externs, nodes), (), ())
+  BOOST_DESCRIBE_CLASS(Model, (), (names, closures, externs, tensors, nodes),
+                       (), ())
 
   // The CNodeSource half, which the Builder lends and the frozen Graph
   // answers as well.
@@ -261,6 +276,66 @@ extern_arguments(const auto &s, NodeId v) {
   return out;
 }
 
+// The tensor table of a source: the Model holds it, the Builder lends it.
+[[nodiscard]] constexpr auto tensors_of(const auto &s) {
+  if constexpr (requires { s.tensors(); }) {
+    return s.tensors();
+  } else {
+    return std::span{s.tensors};
+  }
+}
+
+// A Pack's scalars, the list PackArgs(first, rest) spells, `slot` long, a list
+// of one being the scalar itself.  Nothing where a hop is not a list.
+[[nodiscard]] std::optional<boost::container::small_vector<NodeId, 8>>
+pack_arguments(const auto &s, NodeId v) {
+  boost::container::small_vector<NodeId, 8> out;
+  NodeId args = s.operands(v)[0];
+  for (auto left = s[v].slot; left > 1; --left) {
+    if (s.op_of(args) != OpCode::PackArgs) {
+      return std::nullopt;
+    }
+    const auto [first, rest, unused] = s.operands(args);
+    out.push_back(first);
+    args = rest;
+  }
+  out.push_back(args);
+  return out;
+}
+
+// How many scalars a node's value is: one for a scalar node and for the tensor
+// ops that read a vector down to one; a VecConst's rows; what a Gemv's matrix
+// and flag say; and otherwise the operand's -- a walk, since no node carries
+// its width.  Zero for a MatConst, which is a table and never a row.  Asked of
+// a sound source: ids are topological, so the walk ends.
+[[nodiscard]] constexpr std::uint32_t width_of(const auto &s, NodeId v) {
+  for (;;) {
+    const auto [a, b, c] = s.operands(v);
+    switch (s.op_of(v)) {
+    case OpCode::VecConst:
+      return tensors_of(s)[s[v].slot].rows;
+    case OpCode::MatConst:
+      return 0;
+    case OpCode::Pack:
+      return s[v].slot;
+    case OpCode::Gemv: {
+      const auto &m = tensors_of(s)[s[a].slot];
+      return s[v].slot ? m.cols : m.rows;
+    }
+    case OpCode::Map:
+    case OpCode::Zip:
+    case OpCode::AddAt:
+      v = a;
+      break;
+    case OpCode::Scale:
+      v = b;
+      break;
+    default:
+      return 1;
+    }
+  }
+}
+
 // Nodes are interned as they are formed, so an id *is* the identity of a
 // subexpression -- where the compile-time side compares types.
 template <impl::Numeric T> class Builder {
@@ -272,9 +347,78 @@ public:
     return intern({.op = OpCode::Const, .value = v});
   }
 
+  // A tensor node: formed with its slot, past fold() -- no identity below
+  // reads a vector -- and past the commutative swap, which is a Zip's inner
+  // op's business and not Zip's.
+  [[nodiscard]] constexpr NodeId make_tensor(OpCode op, NodeId a,
+                                             NodeId b = no_node,
+                                             std::uint32_t slot = 0) {
+    assert(kind_of(op) == Kind::Tensor);
+    return intern({.op = op, .a = a, .b = b, .slot = slot});
+  }
+
+  // The leaf over `data`: a VecConst for one column, a MatConst otherwise.
+  // Interned by content where T compares, so zeros(w) is one node per width
+  // and a matrix given twice is kept once.
+  [[nodiscard]] constexpr NodeId tensor_const(std::uint32_t rows,
+                                              std::uint32_t cols,
+                                              std::span<const T> data) {
+    assert(data.size() == std::size_t{rows} * cols);
+    auto at = model_.tensors.end();
+    if constexpr (std::equality_comparable<T>) {
+      at = std::ranges::find_if(model_.tensors, [&](const TensorConst<T> &t) {
+        return t.rows == rows && t.cols == cols &&
+               std::ranges::equal(t.data, data);
+      });
+    }
+    if (at == model_.tensors.end()) {
+      model_.tensors.push_back(
+          {.rows = rows, .cols = cols, .data = {data.begin(), data.end()}});
+      at = std::prev(model_.tensors.end());
+    }
+    return intern({.op = cols == 1 ? OpCode::VecConst : OpCode::MatConst,
+                   .slot = static_cast<std::uint32_t>(
+                       std::distance(model_.tensors.begin(), at))});
+  }
+  [[nodiscard]] constexpr NodeId filled(std::uint32_t width, const T &v) {
+    return tensor_const(width, 1, std::vector<T>(width, v));
+  }
+  [[nodiscard]] constexpr NodeId zeros(std::uint32_t width) {
+    return filled(width, T{0});
+  }
+  [[nodiscard]] constexpr NodeId ones(std::uint32_t width) {
+    return filled(width, T{1});
+  }
+  // What the tensor twin of a cancelled scalar is: a VecConst of nothing but
+  // zero.
+  [[nodiscard]] constexpr bool is_zero_tensor(NodeId id) const {
+    if (model_.nodes[id].op != OpCode::VecConst) {
+      return false;
+    }
+    if constexpr (std::equality_comparable<T>) {
+      return std::ranges::all_of(model_.tensors[model_.nodes[id].slot].data,
+                                 [](const T &x) { return x == T{0}; });
+    } else {
+      return false;
+    }
+  }
+
+  // The vector of `scalars`: the list formed from the back as extern_call
+  // forms its, a list of one being the scalar itself.
+  [[nodiscard]] constexpr NodeId pack(std::span<const NodeId> scalars) {
+    assert(!scalars.empty());
+    NodeId list = scalars.back();
+    for (const NodeId s : scalars | std::views::reverse | std::views::drop(1)) {
+      list = intern({.op = OpCode::PackArgs, .a = s, .b = list});
+    }
+    return make_tensor(OpCode::Pack, list, no_node,
+                       static_cast<std::uint32_t>(scalars.size()));
+  }
+
   [[nodiscard]] constexpr NodeId make(OpCode op, NodeId a, NodeId b = no_node,
                                       NodeId c = no_node) {
-    assert(!is_extern(op)); // formed with its slot, through rebuild() or a friend
+    // formed with its slot, through rebuild() or a friend
+    assert(!is_extern(op) && kind_of(op) != Kind::Tensor);
     // fold() and the commutative swap are both binary questions; a third
     // operand means neither applies, and asking would hand a binary functor
     // three arguments.
@@ -292,13 +436,15 @@ public:
   }
 
   // The same node over remapped operands: what a rewrite that keeps every
-  // operation forms.  An extern keeps its slot, which make() is never told,
-  // and no rule folds a function the program supplies.
+  // operation forms.  An extern and a tensor node keep their slot, which
+  // make() is never told, and no rule folds either.
   [[nodiscard]] constexpr NodeId rebuild(Node<T> n, auto &&remap) {
     for (NodeId *const u : {&n.a, &n.b, &n.c}) {
       *u = *u == no_node ? no_node : remap(*u);
     }
-    return is_extern(n.op) ? intern(n) : make(n.op, n.a, n.b, n.c);
+    return is_extern(n.op) || kind_of(n.op) == Kind::Tensor
+               ? intern(n)
+               : make(n.op, n.a, n.b, n.c);
   }
 
   [[nodiscard]] constexpr const Node<T> &operator[](NodeId id) const {
@@ -347,6 +493,9 @@ public:
   }
   [[nodiscard]] constexpr std::span<const ExternEntry<T>> externs() const {
     return model_.externs;
+  }
+  [[nodiscard]] constexpr std::span<const TensorConst<T>> tensors() const {
+    return model_.tensors;
   }
   [[nodiscard]] constexpr Inputs inputs() const {
     Inputs in;
@@ -801,6 +950,40 @@ schedule_of(const CNodeSource auto &nodes,
                        .fma = on ? contraction_at(nodes, v) : Contraction{}};
          }) |
          impl::to<std::vector<Step>>();
+}
+} // namespace detail
+
+// Where a tensor-valued node's rows sit in the tensor tape: `at` elements in,
+// per lane, `width` wide.  Width 0 is a node with no row.
+struct TensorRow {
+  std::uint32_t at = 0;
+  std::uint32_t width = 0;
+};
+// Every row of a schedule, indexed by id, and the elements one lane of all of
+// them takes.  Empty rows and a zero extent is a schedule with no tensor in
+// it, which is what every sweep without one costs.
+struct TensorLayout {
+  std::vector<TensorRow> rows;
+  std::size_t extent = 0;
+};
+
+namespace detail {
+[[nodiscard]] constexpr TensorLayout
+tensor_layout(const auto &s, std::span<const Step> schedule) {
+  TensorLayout out;
+  for (const Step &step : schedule) {
+    if (!tensor_valued(s.op_of(step.node))) {
+      continue;
+    }
+    if (out.rows.empty()) {
+      out.rows.resize(s.size());
+    }
+    const std::uint32_t w = width_of(s, step.node);
+    out.rows[step.node] = {.at = static_cast<std::uint32_t>(out.extent),
+                           .width = w};
+    out.extent += w;
+  }
+  return out;
 }
 } // namespace detail
 

@@ -2,11 +2,13 @@
 #include "equation.hpp"
 #include "error.hpp"
 #include "expression.hpp"
+#include "vector.hpp"
 
 #include "rt/builder.hpp"
 #include "rt/expressions.hpp"
 #include "rt/text/ast.hpp"
 #include "rt/text/lower.hpp"
+#include "rt/tensor.hpp"
 #include "util/ranges.hpp"
 #include "util/scope_guard.hpp"
 #include "util/version.hpp"
@@ -58,6 +60,14 @@ pyb::handle error_class;
     fail_with(errc::name_clash);
   }
   return {e, current_arena};
+}
+
+// The model running now, for a vector that names no scalar of it.
+[[nodiscard]] PyExpression::Arena arena_now() {
+  if (!current_arena) {
+    fail_with(errc::no_arena);
+  }
+  return current_arena;
 }
 
 // One root, or m of them from a tuple or list.  The count is a runtime value
@@ -367,6 +377,163 @@ PYBIND11_MODULE(_ddx, m) {
         return ddx::py::select(c, t, f);
       },
       pyb::arg("cond"), pyb::arg("if_true"), pyb::arg("if_false"));
+
+  // Vectors: one node per vector operation, over the same arena.  The
+  // elementwise functions are the scalar table's rows again, overloaded on the
+  // vector handle; a scalar times a vector is one Scale.
+  using ddx::py::PyMatrix;
+  using ddx::py::PyVector;
+  pyb::class_<PyVector> vector(m, "Vector");
+  const auto vbinop = [&vector](const char *name, auto fn) {
+    vector
+        .def(
+            name,
+            [fn](const PyVector &l, const PyVector &r) { return fn(l, r); },
+            pyb::is_operator())
+        .def(
+            name,
+            [fn](const PyVector &l, double v) {
+              return fn(l, PyVector{PyVector::Base{v}, {}});
+            },
+            pyb::is_operator());
+  };
+  vector.def("__repr__", &PyVector::repr)
+      .def("__len__", &PyVector::size)
+      .def("__getitem__", &PyVector::at, pyb::arg("i"))
+      .def(
+          "__neg__", [](const PyVector &u) { return vmap(rt::OpCode::Neg, u); },
+          pyb::is_operator())
+      // scalar expression times vector, both ways, and vector over a scalar
+      .def(
+          "__mul__",
+          [](const PyVector &v, const PyExpression &s) { return vscale(s, v); },
+          pyb::is_operator())
+      .def(
+          "__rmul__",
+          [](const PyVector &v, const PyExpression &s) { return vscale(s, v); },
+          pyb::is_operator())
+      .def(
+          "__truediv__",
+          [](const PyVector &v, const PyExpression &s) {
+            return vscale(PyExpression{1.0} / s, v);
+          },
+          pyb::is_operator());
+  vbinop("__add__", [](const auto &l, const auto &r) {
+    return vcombine(l, r, [](const auto &a, const auto &b) { return a + b; });
+  });
+  vbinop("__radd__", [](const auto &l, const auto &r) {
+    return vcombine(l, r, [](const auto &a, const auto &b) { return b + a; });
+  });
+  vbinop("__sub__", [](const auto &l, const auto &r) {
+    return vcombine(l, r, [](const auto &a, const auto &b) { return a - b; });
+  });
+  vbinop("__rsub__", [](const auto &l, const auto &r) {
+    return vcombine(l, r, [](const auto &a, const auto &b) { return b - a; });
+  });
+  vbinop("__mul__", [](const auto &l, const auto &r) {
+    return vcombine(l, r, [](const auto &a, const auto &b) { return a * b; });
+  });
+  vbinop("__rmul__", [](const auto &l, const auto &r) {
+    return vcombine(l, r, [](const auto &a, const auto &b) { return b * a; });
+  });
+  vbinop("__truediv__", [](const auto &l, const auto &r) {
+    return vcombine(l, r, [](const auto &a, const auto &b) { return a / b; });
+  });
+  vbinop("__rtruediv__", [](const auto &l, const auto &r) {
+    return vcombine(l, r, [](const auto &a, const auto &b) { return b / a; });
+  });
+  vbinop("__pow__", [](const auto &l, const auto &r) {
+    return vzip(rt::OpCode::Pow, l, r);
+  });
+  vbinop("__rpow__", [](const auto &l, const auto &r) {
+    return vzip(rt::OpCode::Pow, r, l);
+  });
+
+  pyb::class_<PyMatrix>(m, "Matrix")
+      .def("__repr__", &PyMatrix::repr)
+      .def_property_readonly("rows", &PyMatrix::rows)
+      .def_property_readonly("cols", &PyMatrix::cols);
+
+  for (const auto i : std::views::iota(0uz, rt::op_count)) {
+    const auto op = static_cast<rt::OpCode>(i);
+    const std::string name{rt::name_of(op)};
+    switch (rt::kind_of(op)) {
+    case rt::Kind::Unary:
+      m.def(
+          name.c_str(), [op](const PyVector &u) { return vmap(op, u); },
+          pyb::arg("x"));
+      break;
+    case rt::Kind::Binary:
+      if (op != rt::OpCode::Lt && op != rt::OpCode::Le) {
+        m.def(
+            name.c_str(),
+            [op](const PyVector &l, const PyVector &r) {
+              return vzip(op, l, r);
+            },
+            pyb::arg("x"), pyb::arg("y"));
+      }
+      break;
+    default:
+      break;
+    }
+  }
+
+  m.def(
+      "vec",
+      [](std::string_view name, std::size_t n) {
+        const auto arena = ddx::py::arena_now();
+        return PyVector{rt::vec(*arena, name, n), arena};
+      },
+      pyb::arg("name"), pyb::arg("n"));
+  m.def(
+      "pack",
+      [](const std::vector<PyExpression> &scalars) {
+        return PyVector::pack(scalars, ddx::py::current_arena);
+      },
+      pyb::arg("scalars"));
+  m.def(
+      "vec_const",
+      [](const std::vector<double> &data) {
+        const auto arena = ddx::py::arena_now();
+        return PyVector{rt::vec_const(*arena, std::span<const double>{data}),
+                        arena};
+      },
+      pyb::arg("data"));
+  m.def(
+      "mat_const",
+      [](std::size_t rows, std::size_t cols, const std::vector<double> &data) {
+        const auto arena = ddx::py::arena_now();
+        return PyMatrix{
+            rt::mat_const(*arena, rows, cols, std::span<const double>{data}),
+            arena};
+      },
+      pyb::arg("rows"), pyb::arg("cols"), pyb::arg("data"));
+  m.def(
+      "sum",
+      [](const PyVector &v) {
+        return reduce(v, [](const auto &a) { return sum(a); });
+      },
+      pyb::arg("v"));
+  m.def(
+      "dot",
+      [](const PyVector &u, const PyVector &v) {
+        return reduce(u, v, [](const auto &a, const auto &b) { return dot(a, b); });
+      },
+      pyb::arg("u"), pyb::arg("v"));
+  m.def(
+      "gemv",
+      [](const PyMatrix &M, const PyVector &v) {
+        return PyVector::gemv(M, v, false);
+      },
+      pyb::arg("matrix"), pyb::arg("v"));
+  m.def(
+      "gemv_t",
+      [](const PyMatrix &M, const PyVector &v) {
+        return PyVector::gemv(M, v, true);
+      },
+      pyb::arg("matrix"), pyb::arg("v"));
+  m.def("add_at", &PyVector::add_at, pyb::arg("v"), pyb::arg("s"),
+        pyb::arg("i"));
 
   pyb::native_enum<jit::Backend>(m, "Backend", "enum.IntEnum",
                                  "Whether an equation compiles its graph.")

@@ -437,6 +437,8 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
     case rt::Kind::Binary:
       value[v] = emit.binary(p.op, value[operands[0]], value[operands[1]]);
       break;
+    case rt::Kind::Tensor:
+      std::unreachable(); // Compiler::compile refuses a graph with tensor rows
     }
   }
   return value;

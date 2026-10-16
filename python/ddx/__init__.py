@@ -35,7 +35,10 @@ from ._ddx import (Backend, Call, Expression, Level, Restricted, VecLib, Want, a
                    mul, neg,
                    pow,  # noqa: A004
                    closes, implicit, param, select, sign, sin, sinh, sqrt, tan, tanh,
-                   var, )
+                   var,
+                   Matrix, Vector, add_at, dot, gemv, gemv_t, mat_const, pack,
+                   sum,  # noqa: A004
+                   vec, vec_const, )
 from ._options import Options
 
 if TYPE_CHECKING:
@@ -112,4 +115,6 @@ __all__ = ["Backend", "Call", "Equation", "Error", "Expression", "Level", "Restr
            "has_jit", "has_opencl", "hypot", "le", "load", "log", "log10", "lt", "max",
            "min", "mul", "neg", "param", "pow", "select", "sign", "sin", "sinh", "sqrt",
            "closes", "implicit",
-           "tan", "tanh", "var",]
+           "tan", "tanh", "var",
+           "Matrix", "Vector", "add_at", "dot", "gemv", "gemv_t", "mat_const", "pack",
+           "sum", "vec", "vec_const",]

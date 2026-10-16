@@ -1,5 +1,7 @@
 #include "rt/eigen.hpp"
+#include "rt/eigen_kernels.hpp"
 #include "rt/equation.hpp"
+#include "rt/tensor.hpp"
 
 #include <gtest/gtest.h>
 
@@ -8,6 +10,8 @@
 #include <array>
 #include <cmath>
 #include <ranges>
+#include <span>
+#include <vector>
 
 // A batch straight out of and back into Eigen matrices: the columns are the
 // matrices' own storage, and scatter() lays one point's block out dense.
@@ -79,3 +83,37 @@ TEST(RtEigen, TheHessianBlockScattersDense) {
 }
 
 } // namespace
+
+// The Eigen kernel table under a tensor graph: the same numbers as the
+// reference table to rounding, and the table the equation says it ran on.
+TEST(RtEigen, KernelsAgreeWithTheReferenceTable) {
+  constexpr std::size_t n = 30;
+  std::vector<double> m(n * n);
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = 0; j < n; ++j) {
+      m[i + j * n] = std::sin(static_cast<double>(i * 7 + j * 3));
+    }
+  }
+  const auto model = [&] {
+    const auto x = ddx::rt::vec("x", n);
+    const auto M = ddx::rt::mat_const(n, n, m);
+    return dot(x, gemv(M, x)) + sum(log(x) * gemv_t(M, x)) * 0.5;
+  };
+  const auto reference = ddx::rt::equation(model);
+  auto eigen = ddx::rt::equation(model);
+  eigen.kernels(ddx::rt::eigen::table);
+  EXPECT_EQ(eigen.tensor_kernels().name, "eigen");
+
+  std::vector<double> at(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    at[i] = 0.5 + 0.01 * static_cast<double>(i);
+  }
+  const auto want_g = *reference.gradient(std::span<const double>{at});
+  const auto got_g = *eigen.gradient(std::span<const double>{at});
+  const auto want_h = *reference.hvp(at, std::span<const double>{at});
+  const auto got_h = *eigen.hvp(at, std::span<const double>{at});
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_NEAR(got_g[i], want_g[i], 1e-13 * std::max(1.0, std::abs(want_g[i])));
+    EXPECT_NEAR(got_h[i], want_h[i], 1e-13 * std::max(1.0, std::abs(want_h[i])));
+  }
+}

@@ -785,6 +785,13 @@ struct Compiler::Impl {
                                           const rt::Graph<double> &g,
                                           const Options &opt,
                                           CompileReport &rep) {
+    // No lowering computes a tensor row: the lane sweeps, through its kernel
+    // table, and uses_kernel() says so.
+    if (g.has_tensors()) {
+      return std::unexpected{
+          error{errc::tensor_kernel,
+                "tensor nodes run on the sweep; no kernel is built for them"}};
+    }
     Host host = host_of(self);
     const bool caching = !opt.cache_dir.empty();
     Codegen emitted = opt.codegen;

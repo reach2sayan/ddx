@@ -65,9 +65,12 @@ template <impl::Numeric T> struct Snapshot {
   // The staleness key: rebuilding the model reproduces this prefix.
   std::uint32_t model_nodes = 0;
   std::vector<Object> objects;
+  // Which kernel table computed the tensor rows: a record, since code is not
+  // data -- a load runs on its own table and may differ in the last bits.
+  std::string kernels;
   BOOST_DESCRIBE_CLASS(Snapshot, (),
                        (model, roots, jacobian, hessians, hvp, vjp, jvp,
-                        options, model_nodes, objects),
+                        options, model_nodes, objects, kernels),
                        (), ())
 };
 

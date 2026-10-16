@@ -325,7 +325,8 @@ public:
     return point(args...).transform([this](const auto &at) {
       [[maybe_unused]] const auto held = reading();
       const auto closures = arena_->closures();
-      const auto values = evaluate_reachable(*arena_, closures, at);
+      const auto values =
+          evaluate_reachable(*arena_, closures, at, tensor_kernels());
       return closures |
              std::views::transform([&values](NodeId f) { return values[f]; }) |
              impl::to<std::vector<T>>();
@@ -385,6 +386,30 @@ public:
   }
   [[nodiscard]] const jit::Options &options() const noexcept {
     return options_;
+  }
+
+  // What computes the tensor nodes: the process default (rt::use_kernels)
+  // unless this equation is handed a table of its own.  A table decides the
+  // last bits, so lanes and the remembered call go with the old one.
+  auto &kernels(this auto &self, const KernelTable &table) {
+    if (&table == self.kernels_) {
+      return self;
+    }
+    self.kernels_ = &table;
+    self.lanes_ = std::make_unique<Lanes>();
+    self.cache().clear();
+    return self;
+  }
+  [[nodiscard]] constexpr const KernelTable &tensor_kernels() const noexcept {
+    if (kernels_ != nullptr) {
+      return *kernels_;
+    }
+    // The process default lives in libddx, which constant evaluation cannot
+    // reach; a constant-evaluated equation computes no tensor row anyway.
+    if consteval {
+      return reference_table;
+    }
+    return rt::kernels();
   }
 
   // Sweep and freeze `wants` now, so the calls that follow -- from any number
@@ -696,9 +721,14 @@ protected:
         // Before any sweep appends: what a saved file is keyed on.
         model_nodes_(static_cast<std::uint32_t>(arena_->size())) {
     // An implicit no derivative could carry refuses the whole equation, as a
-    // poisoned output would.
+    // poisoned output would; so does a vector where an output must be a
+    // scalar -- spell a system over its elements.
     if (const auto why = unclosed(*arena_)) {
       poison(error{*why});
+    } else if (std::ranges::any_of(roots_, [this](NodeId r) {
+                 return tensor_valued(arena_->op_of(r));
+               })) {
+      poison(error{errc::tensor_shape});
     } else {
       // One reverse sweep per output is cheap, and it is what the column
       // counts, the pattern and constant evaluation read.
@@ -888,6 +918,7 @@ protected:
     snap.model_nodes = model_nodes_;
     snap.options = options_;
     snap.objects = objects();
+    snap.kernels = std::string{tensor_kernels().name};
     [[maybe_unused]] const auto held = reading();
     snap.model = arena_->model();
     return snap;
@@ -980,7 +1011,8 @@ protected:
     static thread_local std::vector<T> values;
     [[maybe_unused]] const auto held = sweeping();
     values.resize(arena_->size());
-    evaluate_into(*arena_, at, walk, std::span<T>{values});
+    detail::TensorScratch<T> scratch{*arena_, walk, tensor_kernels()};
+    evaluate_into(*arena_, at, walk, std::span<T>{values}, scratch.view());
     const impl::md::mdspan dense{
         h.data(), impl::md::dextents<std::size_t, 3>{roots_.size(), n, n}};
     const auto dims = std::views::iota(0uz, n);
@@ -1302,7 +1334,8 @@ private:
     }
     auto wanted = roots_;
     impl::append(wanted, derivative_.partial);
-    const auto values = evaluate_reachable(*arena_, wanted, at);
+    const auto values =
+        evaluate_reachable(*arena_, wanted, at, tensor_kernels());
     const auto pick = [&values](std::span<T> out, const auto &nodes) {
       std::ranges::transform(nodes | std::views::take(out.size()), out.begin(),
                              [&values](NodeId v) { return values[v]; });
@@ -1445,7 +1478,9 @@ private:
           freeze_for(want, *arena_, rebalanced, contracts()));
     }
 #endif
-    return {.graph = std::move(swept), .compile_graph = std::move(compiled)};
+    return {.graph = std::move(swept),
+            .compile_graph = std::move(compiled),
+            .kernels = &tensor_kernels()};
   }
 
   // Whether the kernel for `want` is lowered from rebalanced roots, which are
@@ -1453,7 +1488,11 @@ private:
   [[nodiscard]] bool rebalances([[maybe_unused]] Want want) const {
 #ifdef DDX_HAS_JIT
     if constexpr (std::same_as<T, double>) {
-      if (!rebalanceable(want) || setting().compiler == nullptr) {
+      // No kernel is lowered over tensor rows, so no rebalanced copy either.
+      if (!rebalanceable(want) || setting().compiler == nullptr ||
+          std::ranges::any_of(arena_->nodes(), [](const Node<T> &n) {
+            return kind_of(n.op) == Kind::Tensor;
+          })) {
         return false;
       }
       (void)sweep(sweeps_->rebalanced, [this] {
@@ -1504,14 +1543,24 @@ private:
         return;
       }
     }
-    interpret(*c.graph, xs, out, n);
+    interpret(*c.graph, *c.kernels, xs, out, n);
   }
 
   // The block sweep, within ~1.4x of a kernel and not a sad path.
-  void interpret(const Graph<T> &graph, std::span<const T *const> xs,
-                 const Columns<T> &out, std::size_t n) const {
+  void interpret(const Graph<T> &graph, const KernelTable &kernels,
+                 std::span<const T *const> xs, const Columns<T> &out,
+                 std::size_t n) const {
     const auto blocks = graph.output_blocks();
     const auto schedule = graph.schedule();
+    // The tensor rows beside each tape, sized by the graph: offsets are the
+    // schedule's own, so a grown arena changes nothing here.
+    const TensorLayout &rows = graph.tensors();
+    const auto tensors = [&rows, &kernels](std::vector<T> &vtape,
+                                           std::size_t lanes) {
+      vtape.resize(rows.extent * lanes);
+      return detail::Tensors<T>{
+          .rows = rows.rows, .vtape = vtape.data(), .kernels = &kernels};
+    };
     // The graph's width, not the arena's symbol count: `xs` carries one column
     // per input, and a lane may hold leaves that are not symbols.
     const std::size_t inputs = graph.arity();
@@ -1528,12 +1577,14 @@ private:
     if (n < block_lanes) {
       static thread_local std::vector<T> at;
       static thread_local std::vector<T> tape;
+      static thread_local std::vector<T> vtape;
       at.resize(inputs);
       tape.resize(arena_->size());
+      const auto t = tensors(vtape, 1);
       for (const std::size_t i : std::views::iota(0uz, n)) {
         std::ranges::transform(xs, at.begin(),
                                [i](const T *column) { return column[i]; });
-        evaluate_into(*arena_, at, schedule, std::span<T>{tape});
+        evaluate_into(*arena_, at, schedule, std::span<T>{tape}, t);
         scatter_blocks(blocks, std::span<const T>{tape}, out, i, 1, 1);
       }
       return;
@@ -1545,8 +1596,10 @@ private:
     // read back.
     static thread_local std::vector<T> lanes;
     static thread_local std::vector<T> tape;
+    static thread_local std::vector<T> vtape;
     lanes.resize(inputs * block_lanes);
     tape.resize(arena_->size() * block_lanes);
+    const auto t = tensors(vtape, block_lanes);
 
     for (const std::size_t base :
          std::views::iota(0uz, n) | std::views::stride(block_lanes)) {
@@ -1558,7 +1611,7 @@ private:
         std::ranges::fill(tail, dst.end(), column[base + width - 1]);
       }
       evaluate_block<block_lanes>(*arena_, std::span<const T>{lanes}, schedule,
-                                  std::span<T>{tape});
+                                  std::span<T>{tape}, t);
       scatter_blocks(blocks, std::span<const T>{tape}, out, base, block_lanes,
                      width);
     }
@@ -1571,6 +1624,8 @@ private:
   std::uint32_t model_nodes_ = 0;
 
   jit::Options options_{};
+  // Null: the process default, read at each freeze.
+  const KernelTable *kernels_ = nullptr;
   // Machine code a file handed over, consulted once per lane by prepare().
   std::vector<Object> objects_{};
 #ifdef DDX_HAS_OPENCL

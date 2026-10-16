@@ -2,11 +2,13 @@
 
 #include "rt/apply.hpp"
 #include "rt/builder.hpp"
+#include "rt/kernels.hpp"
 #include "util/config.hpp"
 
 #include <boost/container/small_vector.hpp>
 
 #include <array>
+#include <cassert>
 #include <cmath> // std::fma
 #include <concepts>
 #include <functional>
@@ -132,16 +134,136 @@ DDX_NOINLINE constexpr void lanes_extern(const Builder<T> &b, NodeId v, U *out,
   }
 }
 
+// The tensor rows a sweep writes: a second tape, `extent` elements per lane,
+// laid out lane-major so each lane's vector is contiguous, and the table that
+// computes them.  Empty rows is a sweep with no tensor in it.
+template <typename U> struct Tensors {
+  std::span<const TensorRow> rows{};
+  U *vtape = nullptr;
+  const KernelTable *kernels = nullptr;
+};
+
+// A tensor node, W lanes of it: each lane's vector is one contiguous span
+// handed to the kernel table, except the copies -- Pack, Gather, AddAt, a
+// VecConst -- which the interpreter does itself.  At any scalar but double
+// the rows are zero: computes_at() keeps such a sweep away.
+template <std::size_t W, impl::Numeric T, impl::Numeric U>
+DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
+                                         const Node<T> &n, U *out, auto &&lane,
+                                         const Tensors<U> &t) {
+  if constexpr (!std::same_as<U, double> || !std::same_as<T, double>) {
+    std::ranges::fill_n(out, W, U{});
+  } else {
+    assert(!t.rows.empty());
+    const auto row = [&t](NodeId u) {
+      return std::pair{t.vtape + std::size_t{t.rows[u].at} * W,
+                       std::size_t{t.rows[u].width}};
+    };
+    // Lane k of node u, as the kernels read it.
+    const auto in = [&row](NodeId u, std::size_t k) {
+      const auto [base, w] = row(u);
+      return std::span<const U>{base + k * w, w};
+    };
+    const auto [self, w] = row(v);
+    const auto mine = [self, w](std::size_t k) {
+      return std::span<U>{self + k * w, w};
+    };
+    const KernelTable &kt = *t.kernels;
+    switch (n.op) {
+    case OpCode::VecConst: {
+      const auto &data = b.tensors()[n.slot].data;
+      for (std::size_t k = 0; k < W; ++k) {
+        std::ranges::copy(data, mine(k).begin());
+      }
+      break;
+    }
+    case OpCode::Pack: {
+      const auto args = *pack_arguments(b, v);
+      for (std::size_t k = 0; k < W; ++k) {
+        std::ranges::transform(args, mine(k).begin(),
+                               [&lane, k](NodeId s) { return lane(s)[k]; });
+      }
+      break;
+    }
+    case OpCode::Gather:
+      for (std::size_t k = 0; k < W; ++k) {
+        out[k] = in(n.a, k)[n.slot];
+      }
+      break;
+    case OpCode::Map:
+      for (std::size_t k = 0; k < W; ++k) {
+        kt.map(static_cast<OpCode>(n.slot), in(n.a, k), mine(k));
+      }
+      break;
+    case OpCode::Zip:
+      for (std::size_t k = 0; k < W; ++k) {
+        kt.zip(static_cast<OpCode>(n.slot), in(n.a, k), in(n.b, k), mine(k));
+      }
+      break;
+    case OpCode::Scale:
+      for (std::size_t k = 0; k < W; ++k) {
+        kt.scale(lane(n.a)[k], in(n.b, k), mine(k));
+      }
+      break;
+    case OpCode::Sum:
+      for (std::size_t k = 0; k < W; ++k) {
+        out[k] = kt.sum(in(n.a, k));
+      }
+      break;
+    case OpCode::Dot:
+      for (std::size_t k = 0; k < W; ++k) {
+        out[k] = kt.dot(in(n.a, k), in(n.b, k));
+      }
+      break;
+    case OpCode::Gemv: {
+      const TensorConst<T> &m = b.tensors()[b[n.a].slot];
+      for (std::size_t k = 0; k < W; ++k) {
+        kt.gemv(m.rows, m.cols, m.data, in(n.b, k), mine(k), n.slot != 0);
+      }
+      break;
+    }
+    case OpCode::AddAt:
+      for (std::size_t k = 0; k < W; ++k) {
+        const auto to = mine(k);
+        std::ranges::copy(in(n.a, k), to.begin());
+        to[n.slot] += lane(n.b)[k];
+      }
+      break;
+    case OpCode::MatConst:  // a table a Gemv reads in place
+    case OpCode::PackArgs: // a list; its Pack reads the scalars
+      break;
+    default:
+      std::unreachable();
+    }
+  }
+}
+
+// The rows apply.hpp hands the interpreter whole: an extern's and a tensor's.
+// The kind test sits here, past the opcode switch, where it costs a sweep of
+// scalars nothing.
+template <std::size_t W, impl::Numeric T, impl::Numeric U>
+DDX_ALWAYS_INLINE constexpr void lanes_opaque(const Builder<T> &b, NodeId v,
+                                              const Node<T> &n, U *out,
+                                              auto &&lane,
+                                              const Tensors<U> &t) {
+  if (kind_of(n.op) == Kind::Tensor) {
+    lanes_tensor<W>(b, v, n, out, lane, t);
+  } else {
+    lanes_extern<W>(b, v, out, lane);
+  }
+}
+
 // Every op's lane loop, off apply.hpp's one dispatch.  An extern's row has
 // nothing to call, and is the function's case of the same switch.
 template <std::size_t W, impl::Numeric T, typename U>
 DDX_ALWAYS_INLINE constexpr void lanes_apply(const Builder<T> &b, NodeId i,
                                              const Node<T> &n,
-                                             U *DDX_RESTRICT out, auto &&lane) {
+                                             U *DDX_RESTRICT out, auto &&lane,
+                                             const Tensors<U> &t) {
   dispatch<U>(n.op, [&]<typename R>(R) {
     using Fn = typename R::functor;
     if constexpr (std::is_void_v<Fn>) {
-      lanes_extern<W>(b, i, out, lane);
+      lanes_opaque<W>(b, i, n, out, lane, t);
     } else if constexpr (R::arity == 1) {
       lanes<W, Fn, U, R::ok>(out, lane(n.a));
     } else if constexpr (R::arity == 2) {
@@ -157,14 +279,14 @@ DDX_ALWAYS_INLINE constexpr void lanes_apply(const Builder<T> &b, NodeId i,
 // The only place that turns a Step into numbers.  `nodes` is b.nodes(), taken
 // once by the caller: read through `b`, every opaque call -- a libm one, an
 // extern -- makes the compiler reload the arena's base on the next step.
-template <std::size_t W, impl::Numeric T>
+template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_ALWAYS_INLINE constexpr void
 sweep_step(const Builder<T> &b, std::span<const Node<T>> nodes,
-           const Inputs &inputs, const Step &s, auto at, auto &&lane) {
+           const Inputs &inputs, const Step &s, auto at, auto &&lane,
+           const Tensors<U> &t) {
   const auto &[i, fma] = s;
   const Node<T> &n = nodes[i];
-  auto *const out = lane(i);
-  using U = std::remove_cvref_t<decltype(*out)>;
+  U *const out = lane(i);
   if (fma) {
     detail::lanes_fma<W>(fma.negated, lane(fma.x), lane(fma.y), lane(fma.z),
                          out);
@@ -184,9 +306,30 @@ sweep_step(const Builder<T> &b, std::span<const Node<T>> nodes,
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }
   } else {
-    detail::lanes_apply<W>(b, i, n, out, lane);
+    detail::lanes_apply<W>(b, i, n, out, lane, t);
   }
 }
+
+// The scratch an arena walk owns for its tensor rows: the layout of its
+// schedule and the tape, handed to the sweep as a view.  The reference table
+// unless told otherwise, which is what a walk outside any equation computes
+// with; an equation passes the table it was given.
+template <impl::Numeric U> class TensorScratch {
+public:
+  constexpr TensorScratch() = default;
+  constexpr TensorScratch(const auto &s, std::span<const Step> schedule,
+                          const KernelTable &kernels)
+      : layout_{tensor_layout(s, schedule)}, tape_(layout_.extent),
+        kernels_{&kernels} {}
+  [[nodiscard]] constexpr Tensors<U> view() noexcept {
+    return {.rows = layout_.rows, .vtape = tape_.data(), .kernels = kernels_};
+  }
+
+private:
+  TensorLayout layout_;
+  std::vector<U> tape_;
+  const KernelTable *kernels_ = nullptr;
+};
 
 } // namespace detail
 
@@ -194,18 +337,20 @@ sweep_step(const Builder<T> &b, std::span<const Node<T>> nodes,
 // symbol-major (symbol s, lane k at s * W + k) and `tape` node-major, so every
 // lane loop is contiguous in both.  Same constraints on the schedule as
 // evaluate_into; a batch's tail repeats a point, and those lanes are not read.
+// `tensors` is the second tape, sized for this schedule; a schedule with no
+// tensor op needs none.
 template <std::size_t W, impl::Numeric T, std::ranges::random_access_range R,
           impl::Numeric U>
   requires impl::Numeric<std::ranges::range_value_t<R>>
 constexpr void evaluate_block(const Builder<T> &b, const R &point_lanes,
-                              std::span<const Step> schedule,
-                              std::span<U> tape) {
+                              std::span<const Step> schedule, std::span<U> tape,
+                              const detail::Tensors<U> &tensors = {}) {
   const auto lane = detail::lanes_of<W>(tape);
   const Inputs inputs = b.inputs();
   const auto nodes = b.nodes();
   for (const Step &s : schedule) {
     detail::sweep_step<W>(b, nodes, inputs, s, std::ranges::begin(point_lanes),
-                          lane);
+                          lane, tensors);
   }
 }
 
@@ -236,8 +381,9 @@ template <impl::Numeric T, std::ranges::random_access_range R>
 template <impl::Numeric T, std::ranges::random_access_range R, impl::Numeric U>
   requires impl::Numeric<std::ranges::range_value_t<R>>
 constexpr void evaluate_into(const Builder<T> &b, const R &point,
-                             std::span<const Step> schedule, std::span<U> v) {
-  evaluate_block<1>(b, point, schedule, v);
+                             std::span<const Step> schedule, std::span<U> v,
+                             const detail::Tensors<U> &tensors = {}) {
+  evaluate_block<1>(b, point, schedule, v, tensors);
 }
 
 // evaluate_all narrowed to what `roots` reach.  Still id-indexed and
@@ -246,14 +392,16 @@ constexpr void evaluate_into(const Builder<T> &b, const R &point,
 // in the arena that one root's walk has no use for.
 template <impl::Numeric T, std::ranges::random_access_range R>
   requires impl::Numeric<std::ranges::range_value_t<R>>
-[[nodiscard]] constexpr auto evaluate_reachable(const Builder<T> &b,
-                                                std::span<const NodeId> roots,
-                                                const R &point) {
+[[nodiscard]] constexpr auto
+evaluate_reachable(const Builder<T> &b, std::span<const NodeId> roots,
+                   const R &point,
+                   const KernelTable &kernels = reference_table) {
   using U = std::ranges::range_value_t<R>;
   const auto live = detail::reachable(b, roots);
+  const auto schedule = detail::schedule_of(b, detail::live_ids(live));
   std::vector<U> v(b.size());
-  evaluate_into(b, point, detail::schedule_of(b, detail::live_ids(live)),
-                std::span<U>{v});
+  detail::TensorScratch<U> scratch{b, schedule, kernels};
+  evaluate_into(b, point, schedule, std::span<U>{v}, scratch.view());
   return v;
 }
 
@@ -262,14 +410,15 @@ template <impl::Numeric T, std::ranges::random_access_range R>
 // arithmetic, so Dual<double> carries derivatives through the same walk.
 template <impl::Numeric T, std::ranges::random_access_range R>
   requires impl::Numeric<std::ranges::range_value_t<R>>
-[[nodiscard]] constexpr auto evaluate_all(const Builder<T> &b, const R &point) {
+[[nodiscard]] constexpr auto
+evaluate_all(const Builder<T> &b, const R &point,
+             const KernelTable &kernels = reference_table) {
   using U = std::ranges::range_value_t<R>;
+  const auto schedule = detail::schedule_of(
+      b, std::views::iota(NodeId{0}, static_cast<NodeId>(b.size())));
   std::vector<U> v(b.size());
-  evaluate_into(
-      b, point,
-      detail::schedule_of(
-          b, std::views::iota(NodeId{0}, static_cast<NodeId>(b.size()))),
-      std::span<U>{v});
+  detail::TensorScratch<U> scratch{b, schedule, kernels};
+  evaluate_into(b, point, schedule, std::span<U>{v}, scratch.view());
   return v;
 }
 
