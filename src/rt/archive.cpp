@@ -4,6 +4,7 @@
 #include "rt/archive/archive.hpp"
 
 #include <boost/crc.hpp>
+#include <boost/scope/scope_exit.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -147,7 +148,11 @@ result<void> Container::write(const std::filesystem::path &path,
   // no-op: last writer wins, and every reader sees one whole file.
   std::filesystem::path tmp = path;
   tmp += stage_suffix();
-  std::error_code ec;
+  // Until the rename lands, every way out removes what was staged.
+  boost::scope::scope_exit unstage{[&tmp] {
+    std::error_code ec;
+    std::filesystem::remove(tmp, ec);
+  }};
   {
     std::ofstream out{tmp, std::ios::binary | std::ios::trunc};
     if (!out) {
@@ -157,14 +162,13 @@ result<void> Container::write(const std::filesystem::path &path,
               static_cast<std::streamsize>(bytes.size()));
     out.flush();
     if (!out) {
-      std::filesystem::remove(tmp, ec);
       return fail(errc::archive_io);
     }
   }
   if (!rename_over(tmp, path)) {
-    std::filesystem::remove(tmp, ec);
     return fail(errc::archive_io);
   }
+  unstage.set_active(false);
   return {};
 }
 

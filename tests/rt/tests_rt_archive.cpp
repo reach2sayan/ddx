@@ -1,6 +1,7 @@
 #include "rt/archive/archive.hpp"
 #include "rt/equation.hpp"
 #include "rt/expressions.hpp"
+#include "scratch.hpp"
 
 #include <gtest/gtest.h>
 
@@ -11,7 +12,6 @@
 #include <filesystem>
 #include <ios>
 #include <latch>
-#include <random>
 #include <ranges>
 #include <span>
 #include <string>
@@ -24,45 +24,16 @@
 // order and so numbered differently by another compiler.
 namespace {
 
-// A file that removes itself, so a failing EXPECT leaves nothing behind.  The
-// name carries a per-process token: a fixed path in the system temp directory
-// is shared mutable state between processes, however private it looks.
-class Scratch {
-public:
-  explicit Scratch(std::string name)
-      : path_(std::filesystem::temp_directory_path() /
-              ("ddx_archive_" + std::move(name) + "_" + token() + ".ddx")) {
-    wipe();
-  }
-  Scratch(const Scratch &) = delete;
-  Scratch &operator=(const Scratch &) = delete;
-  ~Scratch() { wipe(); }
-
-  [[nodiscard]] const std::filesystem::path &path() const { return path_; }
-  operator const std::filesystem::path &() const { return path_; } // NOLINT
-
-  [[nodiscard]] std::vector<std::byte> bytes() const {
-    // Checked, not dereferenced: `*` on a failed result is undefined, so a
-    // vanished file would surface as a segfault rather than as a failure.
-    auto read = ddx::rt::detail::Container::read(path_);
-    EXPECT_TRUE(read.has_value()) << "scratch file went missing";
-    return read ? std::move(*read) : std::vector<std::byte>{};
-  }
-  void write(std::span<const std::byte> b) const {
-    ASSERT_TRUE(ddx::rt::detail::Container::write(path_, b).has_value());
-  }
-
-private:
-  [[nodiscard]] static const std::string &token() {
-    static const std::string t = std::to_string(std::random_device{}());
-    return t;
-  }
-  void wipe() const {
-    std::error_code ec;
-    std::filesystem::remove(path_, ec);
-  }
-  std::filesystem::path path_;
-};
+// Checked, not dereferenced: `*` on a failed result is undefined, so a
+// vanished file would surface as a segfault rather than as a failure.
+[[nodiscard]] std::vector<std::byte> contents(const Scratch &file) {
+  auto read = ddx::rt::detail::Container::read(file);
+  EXPECT_TRUE(read.has_value()) << "scratch file went missing";
+  return read ? std::move(*read) : std::vector<std::byte>{};
+}
+void write(const Scratch &file, std::span<const std::byte> b) {
+  ASSERT_TRUE(ddx::rt::detail::Container::write(file, b).has_value());
+}
 
 // Coupled, so the Hessian colouring is real work -- the expensive thing the
 // file exists to keep.
@@ -192,12 +163,12 @@ TEST(RtArchive, MissingFileIsNotCorruption) {
 TEST(RtArchive, RefusesATruncatedFile) {
   const Scratch file{"truncated"};
   ASSERT_TRUE(coupled().save(file).has_value());
-  const auto whole = file.bytes();
+  const auto whole = contents(file);
 
   // Just past the prologue, so the header parses and the payload does not.
   auto cut = whole;
   cut.resize(ddx::rt::detail::Container::header_bytes + 8);
-  file.write(cut);
+  write(file, cut);
   const auto loaded = ddx::rt::load(file.path());
   ASSERT_FALSE(loaded.has_value());
   EXPECT_TRUE(loaded.error().code == ddx::errc::archive_corrupt ||
@@ -207,14 +178,14 @@ TEST(RtArchive, RefusesATruncatedFile) {
 TEST(RtArchive, RefusesAFlippedByte) {
   const Scratch file{"flipped"};
   ASSERT_TRUE(coupled().save(file).has_value());
-  auto bytes = file.bytes();
+  auto bytes = contents(file);
 
   // One bit, in the middle of the payload, where it will land inside a node.
   const std::size_t at =
       ddx::rt::detail::Container::header_bytes +
       (bytes.size() - ddx::rt::detail::Container::header_bytes) / 2;
   bytes[at] ^= std::byte{0x01};
-  file.write(bytes);
+  write(file, bytes);
 
   const auto loaded = ddx::rt::load(file.path());
   ASSERT_FALSE(loaded.has_value());
@@ -224,11 +195,11 @@ TEST(RtArchive, RefusesAFlippedByte) {
 TEST(RtArchive, RefusesForeignAndFutureFiles) {
   const Scratch file{"foreign"};
   ASSERT_TRUE(coupled().save(file).has_value());
-  const auto whole = file.bytes();
+  const auto whole = contents(file);
 
   auto wrong_magic = whole;
   wrong_magic[0] = std::byte{'x'};
-  file.write(wrong_magic);
+  write(file, wrong_magic);
   EXPECT_EQ(ddx::rt::load(file.path()).error().code, ddx::errc::bad_archive);
 
   // Bumped in place: the checksum covers the payload, not the prologue, so this
@@ -236,14 +207,14 @@ TEST(RtArchive, RefusesForeignAndFutureFiles) {
   auto future = whole;
   future[ddx::rt::detail::Container::magic_bytes] =
       std::byte{0xFF}; // the first `format` byte
-  file.write(future);
+  write(file, future);
   EXPECT_EQ(ddx::rt::load(file.path()).error().code, ddx::errc::bad_archive);
 
   // Format 3 numbered symbols alphabetically, so its positional points would
   // mean something else here: refused, not reinterpreted.
   auto older = whole;
   older[ddx::rt::detail::Container::magic_bytes] = std::byte{3};
-  file.write(older);
+  write(file, older);
   EXPECT_EQ(ddx::rt::load(file.path()).error().code, ddx::errc::bad_archive);
 
   // Letting a reserved byte through would make claiming it later a silent
@@ -252,7 +223,7 @@ TEST(RtArchive, RefusesForeignAndFutureFiles) {
   auto reserved = whole;
   reserved[ddx::rt::detail::Container::header_bytes -
            ddx::rt::detail::Container::reserved_bytes] = std::byte{0x01};
-  file.write(reserved);
+  write(file, reserved);
   EXPECT_EQ(ddx::rt::load(file.path()).error().code, ddx::errc::bad_archive);
 }
 
@@ -286,7 +257,7 @@ TEST(RtArchive, ConcurrentWritersToOnePathAllSucceed) {
     });
     const Scratch one{"racing_src_" + std::to_string(k)};
     EXPECT_TRUE(eq.save(one).has_value());
-    payloads.push_back(one.bytes());
+    payloads.push_back(contents(one));
   }
 
   // Asserted, not assumed: a mixture of two identical payloads is identical to
@@ -316,7 +287,7 @@ TEST(RtArchive, ConcurrentWritersToOnePathAllSucceed) {
   writers.clear(); // join
 
   // Stated but not reliably exercised -- see the note above.
-  const auto landed = file.bytes();
+  const auto landed = contents(file);
   EXPECT_TRUE(std::ranges::any_of(payloads, [&landed](const auto &p) {
     return p == landed;
   })) << "the file is not any single writer's";
@@ -393,9 +364,9 @@ TEST(RtArchive, CacheSurvivesACorruptFile) {
   };
   ASSERT_FALSE(ddx::rt::equation(file.path(), model).loaded());
 
-  auto bytes = file.bytes();
+  auto bytes = contents(file);
   bytes[bytes.size() - 3] ^= std::byte{0xFF};
-  file.write(bytes);
+  write(file, bytes);
 
   // A damaged cache is a rebuild, never a refusal and never an abort.
   const auto rebuilt = ddx::rt::equation(file.path(), model);
@@ -413,7 +384,7 @@ TEST(RtArchive, CacheSurvivesACorruptFile) {
 TEST(RtArchive, SurvivesEverySingleByteCorruption) {
   const Scratch file{"fuzz"};
   ASSERT_TRUE(coupled().save(file).has_value());
-  const auto whole = file.bytes();
+  const auto whole = contents(file);
   ASSERT_GT(whole.size(), ddx::rt::detail::Container::header_bytes);
 
   // Every offset would be a few hundred thousand loads; a stride samples the
@@ -426,7 +397,7 @@ TEST(RtArchive, SurvivesEverySingleByteCorruption) {
          {std::byte{0x01}, std::byte{0x80}, std::byte{0xFF}}) {
       auto bytes = whole;
       bytes[at] ^= mask;
-      file.write(bytes);
+      write(file, bytes);
       // The only requirement: it comes back.  Under ASan, also where a read
       // past the payload would be caught.
       if (const auto loaded = ddx::rt::load(file.path())) {
@@ -451,12 +422,12 @@ TEST(RtArchive, SurvivesEverySingleByteCorruption) {
 TEST(RtArchive, SurvivesEveryTruncation) {
   const Scratch file{"truncations"};
   ASSERT_TRUE(coupled().save(file).has_value());
-  const auto whole = file.bytes();
+  const auto whole = contents(file);
 
   for (std::size_t keep = 0; keep < whole.size(); keep += 13) {
     auto cut = whole;
     cut.resize(keep);
-    file.write(cut);
+    write(file, cut);
     // No prefix of a valid file is a valid file: the prologue's payload length
     // no longer matches what follows it.
     EXPECT_FALSE(ddx::rt::load(file.path()).has_value()) << "kept " << keep;
@@ -537,7 +508,7 @@ TEST(RtArchive, RefusesAFlippedOpcodeLabel) {
   ASSERT_TRUE(eq.save(file).has_value());
   const auto want = *eq.jacobian(0.7);
 
-  auto bytes = file.bytes();
+  auto bytes = contents(file);
   bool flipped = false;
   for (std::size_t i = ddx::rt::detail::Container::header_bytes;
        i + 9 < bytes.size(); ++i) {
@@ -551,7 +522,7 @@ TEST(RtArchive, RefusesAFlippedOpcodeLabel) {
     break;
   }
   ASSERT_TRUE(flipped) << "no one-character \"+\" label in the table";
-  file.write(bytes);
+  write(file, bytes);
 
   const auto loaded = ddx::rt::load(file.path());
   if (loaded) {
@@ -575,7 +546,7 @@ TEST(RtArchive, RefusesAFlippedOpcodeLabel) {
 TEST(RtArchive, EveryPrologueByteIsVerified) {
   const Scratch file{"prologue"};
   ASSERT_TRUE(coupled().save(file).has_value());
-  const auto whole = file.bytes();
+  const auto whole = contents(file);
   ASSERT_GT(whole.size(), ddx::rt::detail::Container::header_bytes);
 
   for (std::size_t at = 0; at < ddx::rt::detail::Container::header_bytes;
@@ -583,7 +554,7 @@ TEST(RtArchive, EveryPrologueByteIsVerified) {
     for (int mask = 1; mask < 256; ++mask) {
       auto bytes = whole;
       bytes[at] ^= static_cast<std::byte>(mask);
-      file.write(bytes);
+      write(file, bytes);
       ASSERT_FALSE(ddx::rt::load(file.path()).has_value())
           << "prologue byte " << at << " accepts corruption 0x" << std::hex
           << mask << ": written but not fully verified";

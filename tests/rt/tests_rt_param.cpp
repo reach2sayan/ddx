@@ -1,12 +1,11 @@
 #include "ddx.hpp"
 #include "rt/equation.hpp"
 #include "rt/text/equation.hpp"
+#include "scratch.hpp"
 
 #include <gtest/gtest.h>
 
 #include <array>
-#include <filesystem>
-#include <random>
 #include <span>
 #include <string>
 #include <vector>
@@ -105,19 +104,14 @@ TEST(RtParam, SeededProductsSpliceTheDirectionAfterTheParams) {
 }
 
 TEST(RtParam, SavesAndLoads) {
-  const auto path = std::filesystem::temp_directory_path() /
-                    ("ddx_param_" + std::to_string(std::random_device{}()) +
-                     ".ddx");
-  {
-    const auto eq = scaled();
-    ASSERT_TRUE(eq.save(path).has_value());
-    const auto loaded = ddx::rt::load(path);
-    ASSERT_TRUE(loaded.has_value());
-    EXPECT_TRUE(std::ranges::equal(*loaded->params(), *eq.params()));
-    EXPECT_EQ(*loaded->gradient(3.0, 5.0), *eq.gradient(3.0, 5.0));
-    EXPECT_EQ(*loaded->evaluate("a"_s = 5.0, "x"_s = 3.0), 45.0);
-  }
-  std::filesystem::remove(path);
+  const Scratch path{"param"};
+  const auto eq = scaled();
+  ASSERT_TRUE(eq.save(path).has_value());
+  const auto loaded = ddx::rt::load(path);
+  ASSERT_TRUE(loaded.has_value());
+  EXPECT_TRUE(std::ranges::equal(*loaded->params(), *eq.params()));
+  EXPECT_EQ(*loaded->gradient(3.0, 5.0), *eq.gradient(3.0, 5.0));
+  EXPECT_EQ(*loaded->evaluate("a"_s = 5.0, "x"_s = 3.0), 45.0);
 }
 
 TEST(RtParam, ANameIsOneKindOfInput) {

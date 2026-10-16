@@ -14,7 +14,6 @@
 #include "symbolic/symbol.hpp"
 #include "symbolic/traits.hpp"
 #include "util/config.hpp"
-#include "util/scope_guard.hpp"
 #include <algorithm>
 #include <array>
 #include <concepts>

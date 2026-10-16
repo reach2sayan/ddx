@@ -1,14 +1,13 @@
 #include "rt/equation.hpp"
 #include "rt/text/equation.hpp"
+#include "scratch.hpp"
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <atomic>
 #include <cmath>
-#include <filesystem>
 #include <latch>
-#include <random>
 #include <ranges>
 #include <span>
 #include <string>
@@ -233,47 +232,36 @@ TEST(RtExtern, CalledFromManyThreads) {
   EXPECT_GT(calls.load(), 0u);
 }
 
-[[nodiscard]] std::filesystem::path scratch(std::string_view stem) {
-  return std::filesystem::temp_directory_path() /
-         (std::string{stem} + std::to_string(std::random_device{}()) + ".ddx");
-}
-
 TEST(RtExtern, SavesTheGraphAndBindsTheFunctionByNameOnLoad) {
-  const auto path = scratch("ddx_extern_");
-  {
-    const auto eq = supplied();
-    ASSERT_TRUE(eq.save(path).has_value());
+  const Scratch path{"extern"};
+  const auto eq = supplied();
+  ASSERT_TRUE(eq.save(path).has_value());
 
-    EXPECT_EQ(ddx::rt::load(path).error().code, ddx::errc::unbound_extern);
+  EXPECT_EQ(ddx::rt::load(path).error().code, ddx::errc::unbound_extern);
 
-    const ddx::rt::ExternFns<double> fns{{"g", g_of}};
-    const auto loaded = ddx::rt::load(path, {}, fns);
-    ASSERT_TRUE(loaded.has_value()) << loaded.error().code;
-    for (const auto &at : points) {
-      EXPECT_EQ(*loaded->jacobian(at), *eq.jacobian(at));
-      EXPECT_EQ(*loaded->hessian(at), *eq.hessian(at));
-    }
+  const ddx::rt::ExternFns<double> fns{{"g", g_of}};
+  const auto loaded = ddx::rt::load(path, {}, fns);
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().code;
+  for (const auto &at : points) {
+    EXPECT_EQ(*loaded->jacobian(at), *eq.jacobian(at));
+    EXPECT_EQ(*loaded->hessian(at), *eq.hessian(at));
   }
-  std::filesystem::remove(path);
 }
 
 // rt::equation(path, model): the model registers the function again, so the
 // file's graph is bound to it with nothing passed.
 TEST(RtExtern, TheModelBindsACachedFile) {
-  const auto path = scratch("ddx_extern_cache_");
+  const Scratch path{"extern_cache"};
   const auto model = [] {
     const auto a = ddx::rt::var("a");
     const auto b = ddx::rt::var("b");
     return ddx::rt::extern_fn({.name = "g", .arity = 2}, g_of)(a, b);
   };
-  {
-    const auto first = ddx::rt::equation(path, model);
-    EXPECT_FALSE(first.loaded());
-    const auto second = ddx::rt::equation(path, model);
-    EXPECT_TRUE(second.loaded());
-    EXPECT_EQ(*second.hessian(points[1]), *first.hessian(points[1]));
-  }
-  std::filesystem::remove(path);
+  const auto first = ddx::rt::equation(path, model);
+  EXPECT_FALSE(first.loaded());
+  const auto second = ddx::rt::equation(path, model);
+  EXPECT_TRUE(second.loaded());
+  EXPECT_EQ(*second.hessian(points[1]), *first.hessian(points[1]));
 }
 
 TEST(RtExtern, ASystemThroughOneFunction) {

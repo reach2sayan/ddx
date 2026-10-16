@@ -4,10 +4,10 @@
 #include "rt/bridge.hpp"
 #include "rt/graph.hpp"
 #include "rt/interpret.hpp"
+#include "scratch.hpp"
 
 #include <gtest/gtest.h>
 
-#include <atomic>
 #include <bit>
 #include <cstdint>
 #include <filesystem>
@@ -15,7 +15,6 @@
 #include <fstream>
 #include <latch>
 #include <numeric>
-#include <random>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -49,16 +48,6 @@ ddx::jit::Kernel must_compile(auto &&...args) {
   auto k = compiler().compile(static_cast<decltype(args) &&>(args)...);
   EXPECT_TRUE(k.has_value()) << (k ? std::string{} : k.error().detail);
   return k ? std::move(*k) : ddx::jit::Kernel{};
-}
-
-// A cache directory of this process's own: a fixed name under
-// temp_directory_path() is shared mutable state between processes, and two
-// copies of this binary would delete each other's entries through remove_all().
-[[nodiscard]] std::filesystem::path cache_dir(std::string_view what) {
-  static const auto token = std::random_device{}();
-  static std::atomic<unsigned> seq{0};
-  return std::filesystem::temp_directory_path() /
-         std::format("ddx_jit_{}_{:08x}_{}", what, token, seq.fetch_add(1));
 }
 
 // Compile `build` and compare a batch against the interpreter.
@@ -546,8 +535,7 @@ TEST(JitValue, AnObjectAdoptsBackIntoTheSameKernel) {
 // The second compile of the same graph does no codegen at all.  The report is
 // the assertion, not timing: a hit does not run the phases at all.
 TEST(JitValue, ACachedObjectSkipsTheWholeCompile) {
-  const auto dir = cache_dir("skips");
-  std::filesystem::remove_all(dir);
+  const Scratch dir{"jit_skips", ""};
 
   const auto build = [] {
     Builder<> b;
@@ -581,15 +569,12 @@ TEST(JitValue, ACachedObjectSkipsTheWholeCompile) {
   EXPECT_EQ(warm.emit.count(), 0) << "the warm compile emitted IR";
   EXPECT_EQ(warm.optimize.count(), 0) << "the warm compile ran the passes";
   EXPECT_EQ(cold_f, warm_f) << "the cached kernel moved a bit";
-
-  std::filesystem::remove_all(dir);
 }
 
 // The checksum is what stands between a corrupt file and machine code being
 // jumped into.
 TEST(JitValue, ACorruptCacheEntryIsAMissNotACrash) {
-  const auto dir = cache_dir("corrupt");
-  std::filesystem::remove_all(dir);
+  const Scratch dir{"jit_corrupt", ""};
 
   ddx::jit::Options opt;
   opt.cache_dir = dir.string();
@@ -622,16 +607,13 @@ TEST(JitValue, ACorruptCacheEntryIsAMissNotACrash) {
   double *const values[]{&got};
   (*k)(xs, values, {}, {}, 1);
   EXPECT_NEAR(got, 0.7 * 0.7 + std::log(0.7), 1e-15);
-
-  std::filesystem::remove_all(dir);
 }
 
 // A cache entry carries lengths read out of its own payload -- the shape where
 // a hand-picked corrupt case proves nothing.  Every prologue byte, a stride
 // through the payload and every truncation: each must degrade to a miss.
 TEST(JitValue, ACacheEntrySurvivesCorruptionAndTruncation) {
-  const auto dir = cache_dir("fuzz");
-  std::filesystem::remove_all(dir);
+  const Scratch dir{"jit_fuzz", ""};
 
   ddx::jit::Options opt;
   opt.cache_dir = dir.string();
@@ -727,8 +709,6 @@ TEST(JitValue, ACacheEntrySurvivesCorruptionAndTruncation) {
             .has_value());
     rejected("an impossible symbol length whose CRC agrees", 0);
   }
-
-  std::filesystem::remove_all(dir);
 }
 
 // The multi-writer case: a parallel build, or two workers warming one key, all
@@ -743,8 +723,7 @@ TEST(JitValue, ACacheEntrySurvivesCorruptionAndTruncation) {
 // find at any size, rename being atomic.  What it covers is the end of the
 // pipe: whatever the writers did, one whole entry loads afterwards.
 TEST(JitValue, ConcurrentCompilesLeaveOneWholeCacheEntry) {
-  const auto dir = cache_dir("writers");
-  std::filesystem::remove_all(dir);
+  const Scratch dir{"jit_writers", ""};
 
   ddx::jit::Options opt;
   opt.cache_dir = dir.string();
@@ -817,14 +796,11 @@ TEST(JitValue, ConcurrentCompilesLeaveOneWholeCacheEntry) {
   const auto k = compiler().compile(graph, opt, &warm);
   ASSERT_TRUE(k.has_value()) << k.error().detail;
   EXPECT_EQ(warm.codegen.count(), 0) << "what the writers left did not load";
-
-  std::filesystem::remove_all(dir);
 }
 
 // No directory named, nothing written.
 TEST(JitValue, NoCacheDirectoryWritesNothing) {
-  const auto dir = cache_dir("absent");
-  std::filesystem::remove_all(dir);
+  const Scratch dir{"jit_absent", ""};
 
   Builder<> b;
   const auto x = var(b, "x");

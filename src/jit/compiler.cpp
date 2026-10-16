@@ -59,11 +59,11 @@ namespace {
 
 // Global LLVM state, and a process may hold more than one Compiler.
 void init_native_target_once() {
-  static std::once_flag once;
-  std::call_once(once, [] {
+  [[maybe_unused]] static const bool once = [] {
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
-  });
+    return true;
+  }();
 }
 
 // The one seam between LLVM's error model and ours.
@@ -733,6 +733,11 @@ struct Compiler::Impl {
           as_error(errc::jit_module, "creating a dylib", jd.takeError())};
     }
     jd->addToLinkOrder(jit.getMainJITDylib());
+    // A failed link is a miss to run(), which compiles instead: nothing of it
+    // may stay in the process-wide session.
+    boost::scope::scope_exit evict{[&] {
+      llvm::consumeError(jit.getExecutionSession().removeJITDylib(*jd));
+    }};
 
     // Copied: the linker keeps the buffer as long as the code lives.  Kept as
     // well, so an adopted kernel saves again like any other.
@@ -755,6 +760,7 @@ struct Compiler::Impl {
                                           llvm::StringRef{symbol},
                                       sym.takeError())};
     }
+    evict.set_active(false);
     return Kernel{sym->toPtr<Kernel::function_type>(), KernelShape::of(g),
                   Externs::of(g), self,
                   std::make_shared<const std::string>(symbol), std::move(kept)};

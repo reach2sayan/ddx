@@ -1,14 +1,13 @@
 #include "ddx.hpp"
 #include "energy_models.hpp"
 #include "rt/equation.hpp"
+#include "scratch.hpp"
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <cmath>
-#include <filesystem>
 #include <format>
-#include <random>
 #include <ranges>
 #include <span>
 #include <string>
@@ -190,18 +189,13 @@ TEST(RtImplicit, ZIsPartOfThePoint) {
 }
 
 TEST(RtImplicit, SavesAndLoadsItsClosure) {
-  const auto path = std::filesystem::temp_directory_path() /
-                    ("ddx_implicit_" + std::to_string(std::random_device{}()) +
-                     ".ddx");
-  {
-    const auto eq = root_of_a();
-    ASSERT_TRUE(eq.save(path).has_value());
-    const auto loaded = ddx::rt::load(path);
-    ASSERT_TRUE(loaded.has_value());
-    EXPECT_EQ(*loaded->hessian(4.0, 2.0), *eq.hessian(4.0, 2.0));
-    EXPECT_EQ(*loaded->residual(4.0, 3.0), std::vector{5.0});
-  }
-  std::filesystem::remove(path);
+  const Scratch path{"implicit"};
+  const auto eq = root_of_a();
+  ASSERT_TRUE(eq.save(path).has_value());
+  const auto loaded = ddx::rt::load(path);
+  ASSERT_TRUE(loaded.has_value());
+  EXPECT_EQ(*loaded->hessian(4.0, 2.0), *eq.hessian(4.0, 2.0));
+  EXPECT_EQ(*loaded->residual(4.0, 3.0), std::vector{5.0});
 }
 
 // --- refusals ----------------------------------------------------------------

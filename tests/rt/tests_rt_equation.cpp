@@ -1,6 +1,7 @@
 #include "ddx.hpp"
 #include "rt/bridge.hpp"
 #include "rt/equation.hpp"
+#include "scratch.hpp"
 #include "util/ranges.hpp"
 
 #include <gtest/gtest.h>
@@ -1545,9 +1546,7 @@ TEST(RtEquation, CodegenZeroIsASingleRung) {
 // separately, being different machine code, so a warm run gets the good kernel
 // rather than the cheap one.
 TEST(RtEquation, AWarmCacheServesBothRungs) {
-  const auto dir =
-      std::filesystem::temp_directory_path() / "ddx_rt_ladder_cache";
-  std::filesystem::remove_all(dir);
+  const Scratch dir{"rt_ladder_cache", ""};
 
   const auto climb = [&dir] {
     auto eq = ladder_model();
@@ -1572,7 +1571,6 @@ TEST(RtEquation, AWarmCacheServesBothRungs) {
   EXPECT_EQ(entries, 2u) << "both rungs should key separately";
 
   EXPECT_EQ(climb(), cold) << "a cached rung moved a bit";
-  std::filesystem::remove_all(dir);
 }
 
 // The sweep is not a rung: with no backend there is no level to report.

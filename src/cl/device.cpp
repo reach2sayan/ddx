@@ -13,6 +13,7 @@
 #include <boost/asio/thread_pool.hpp>
 #include <boost/compute/core.hpp>
 #include <boost/compute/exception/program_build_failure.hpp>
+#include <boost/scope/scope_fail.hpp>
 
 #include <algorithm>
 #include <array>
@@ -264,6 +265,7 @@ result<void> Kernel::operator()(std::span<const double *const> xs,
   const std::size_t bytes = n * sizeof(double);
   const std::array outputs{f, g, h};
   try {
+    const boost::scope::scope_fail drained{[&k] { drain(k.queue); }};
     // Never a zero-sized buffer: OpenCL refuses one, and a block that was not
     // asked for still binds an argument.
     const auto sized = [&](std::size_t slot, std::size_t columns,
@@ -299,10 +301,8 @@ result<void> Kernel::operator()(std::span<const double *const> xs,
     k.queue.finish();
     return {};
   } catch (const bc::opencl_error &e) {
-    drain(k.queue);
     return refused(errc::device_launch, e.error_string());
   } catch (const std::exception &e) {
-    drain(k.queue);
     return refused(errc::device_launch, e.what());
   }
 }

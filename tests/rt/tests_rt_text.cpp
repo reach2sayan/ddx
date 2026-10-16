@@ -4,15 +4,14 @@
 #include "rt/text/ast.hpp"
 #include "rt/text/equation.hpp"
 #include "rt/text/lower.hpp"
+#include "scratch.hpp"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <filesystem>
 #include <format>
-#include <random>
 #include <ranges>
 #include <string>
 #include <string_view>
@@ -268,8 +267,7 @@ TEST(RtText, RefusesAModelThatNamesNoSymbol) {
 }
 
 TEST(RtText, SavesAndLoadsLikeAnyOtherEquation) {
-  const auto path = std::filesystem::temp_directory_path() /
-                    std::format("ddx_text_{}.ddx", std::random_device{}());
+  const Scratch path{"text"};
   const auto eq = ddx::rt::equation("exp(x) * sin(y)");
   ASSERT_TRUE(eq.has_value());
   ASSERT_TRUE(eq->save(path).has_value());
@@ -277,7 +275,6 @@ TEST(RtText, SavesAndLoadsLikeAnyOtherEquation) {
   const auto back = ddx::rt::load<double, 1>(path);
   ASSERT_TRUE(back.has_value());
   EXPECT_DOUBLE_EQ(*back->evaluate(0.3, 1.1), *eq->evaluate(0.3, 1.1));
-  std::filesystem::remove(path);
 }
 
 } // namespace
