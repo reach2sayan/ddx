@@ -36,24 +36,6 @@ constexpr void lanes(T *DDX_RESTRICT out,
   }
 }
 
-// Every op's lane loop, off apply.hpp's one dispatch:
-template <std::size_t W, impl::Numeric T, typename U>
-DDX_ALWAYS_INLINE constexpr void
-lanes_apply(const Node<T> &n, U *DDX_RESTRICT out, auto &&lane) noexcept {
-  dispatch<U>(n.op, [&]<typename R>(R) {
-    using Fn = typename R::functor;
-    if constexpr (R::arity == 1) {
-      lanes<W, Fn, U, R::ok>(out, lane(n.a));
-    } else if constexpr (R::arity == 2) {
-      lanes<W, Fn, U, R::ok>(out, lane(n.a), lane(n.b));
-    } else if constexpr (R::arity == 3) {
-      lanes<W, Fn, U, R::ok>(out, lane(n.a), lane(n.b), lane(n.c));
-    } else {
-      std::unreachable();
-    }
-  });
-}
-
 // x * y + z rounded once, which is what the kernel's llvm.fma lowers to.
 template <impl::Numeric T>
 [[nodiscard]] constexpr T fused_multiply_add(const T &x, const T &y,
@@ -130,8 +112,8 @@ template <std::size_t W, impl::Numeric U>
 // the component this node names is kept.  Opaque to every scalar but the
 // function's own, which computes_at() tells a sweep before it gets here.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
-constexpr void lanes_extern(const Builder<T> &b, NodeId v, U *out,
-                            auto &&lane) {
+DDX_NOINLINE constexpr void lanes_extern(const Builder<T> &b, NodeId v, U *out,
+                                         auto &&lane) {
   if constexpr (std::same_as<U, T>) {
     const auto [fn, component] = ExternSlot::of(b[v].slot);
     const ExternEntry<T> &e = b.externs()[fn];
@@ -150,13 +132,37 @@ constexpr void lanes_extern(const Builder<T> &b, NodeId v, U *out,
   }
 }
 
-// The only place that turns a Step into numbers.
+// Every op's lane loop, off apply.hpp's one dispatch.  An extern's row has
+// nothing to call, and is the function's case of the same switch.
+template <std::size_t W, impl::Numeric T, typename U>
+DDX_ALWAYS_INLINE constexpr void lanes_apply(const Builder<T> &b, NodeId i,
+                                             const Node<T> &n,
+                                             U *DDX_RESTRICT out, auto &&lane) {
+  dispatch<U>(n.op, [&]<typename R>(R) {
+    using Fn = typename R::functor;
+    if constexpr (std::is_void_v<Fn>) {
+      lanes_extern<W>(b, i, out, lane);
+    } else if constexpr (R::arity == 1) {
+      lanes<W, Fn, U, R::ok>(out, lane(n.a));
+    } else if constexpr (R::arity == 2) {
+      lanes<W, Fn, U, R::ok>(out, lane(n.a), lane(n.b));
+    } else if constexpr (R::arity == 3) {
+      lanes<W, Fn, U, R::ok>(out, lane(n.a), lane(n.b), lane(n.c));
+    } else {
+      std::unreachable();
+    }
+  });
+}
+
+// The only place that turns a Step into numbers.  `nodes` is b.nodes(), taken
+// once by the caller: read through `b`, every opaque call -- a libm one, an
+// extern -- makes the compiler reload the arena's base on the next step.
 template <std::size_t W, impl::Numeric T>
-DDX_ALWAYS_INLINE constexpr void sweep_step(const Builder<T> &b,
-                                            const Inputs &inputs, const Step &s,
-                                            auto at, auto &&lane) {
+DDX_ALWAYS_INLINE constexpr void
+sweep_step(const Builder<T> &b, std::span<const Node<T>> nodes,
+           const Inputs &inputs, const Step &s, auto at, auto &&lane) {
   const auto &[i, fma] = s;
-  const Node<T> &n = b[i];
+  const Node<T> &n = nodes[i];
   auto *const out = lane(i);
   using U = std::remove_cvref_t<decltype(*out)>;
   if (fma) {
@@ -164,29 +170,21 @@ DDX_ALWAYS_INLINE constexpr void sweep_step(const Builder<T> &b,
                          out);
     return;
   }
-  switch (kind_of(n.op)) {
-  case Kind::Const:
+  // Not a switch on kind_of(): the shape below is 1.3.6's, and on a
+  // libm-heavy graph (compare/'s swap) a kind test ahead of lanes_apply's own
+  // switch costs 1.4x in mispredicted dispatch.
+  if (n.op == OpCode::Const) {
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = static_cast<U>(n.value);
     }
-    break;
-  case Kind::Input: {
+  } else if (is_leaf(n.op)) {
     const auto src = at + static_cast<std::ptrdiff_t>(
                               input_column(inputs, n.op, n.slot) * W);
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }
-    break;
-  }
-  case Kind::Extern:
-    detail::lanes_extern<W>(b, i, out, lane);
-    break;
-  case Kind::Args:
-  case Kind::Unary:
-  case Kind::Binary:
-  case Kind::Ternary:
-    detail::lanes_apply<W>(n, out, lane);
-    break;
+  } else {
+    detail::lanes_apply<W>(b, i, n, out, lane);
   }
 }
 
@@ -204,8 +202,10 @@ constexpr void evaluate_block(const Builder<T> &b, const R &point_lanes,
                               std::span<U> tape) {
   const auto lane = detail::lanes_of<W>(tape);
   const Inputs inputs = b.inputs();
+  const auto nodes = b.nodes();
   for (const Step &s : schedule) {
-    detail::sweep_step<W>(b, inputs, s, std::ranges::begin(point_lanes), lane);
+    detail::sweep_step<W>(b, nodes, inputs, s, std::ranges::begin(point_lanes),
+                          lane);
   }
 }
 
