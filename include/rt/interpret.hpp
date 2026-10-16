@@ -159,8 +159,8 @@ DDX_ALWAYS_INLINE constexpr void lanes_apply(const Builder<T> &b, NodeId i,
 // extern -- makes the compiler reload the arena's base on the next step.
 template <std::size_t W, impl::Numeric T>
 DDX_ALWAYS_INLINE constexpr void
-sweep_step(const Builder<T> &b, std::span<const Node<T>> nodes,
-           const Inputs &inputs, const Step &s, auto at, auto &&lane) {
+sweep_step(const Builder<T> &b, std::span<const Node<T>> nodes, const Step &s,
+           auto at, auto &&lane) {
   const auto &[i, fma] = s;
   const Node<T> &n = nodes[i];
   auto *const out = lane(i);
@@ -170,16 +170,16 @@ sweep_step(const Builder<T> &b, std::span<const Node<T>> nodes,
                          out);
     return;
   }
-  // Not a switch on kind_of(): the shape below is 1.3.6's, and on a
-  // libm-heavy graph (compare/'s swap) a kind test ahead of lanes_apply's own
-  // switch costs 1.4x in mispredicted dispatch.
+  // Const, the other leaves, then lanes_apply's switch, in that order and not
+  // a switch on kind_of(): on a libm-heavy graph (compare/'s swap) a kind
+  // switch, or the leaf test first, costs up to 1.4x in mispredicted dispatch.
   if (n.op == OpCode::Const) {
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = static_cast<U>(n.value);
     }
   } else if (is_leaf(n.op)) {
     const auto src = at + static_cast<std::ptrdiff_t>(
-                              input_column(inputs, n.op, n.slot) * W);
+                              input_column(b.inputs(), n.op, n.slot) * W);
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }
@@ -201,11 +201,9 @@ constexpr void evaluate_block(const Builder<T> &b, const R &point_lanes,
                               std::span<const Step> schedule,
                               std::span<U> tape) {
   const auto lane = detail::lanes_of<W>(tape);
-  const Inputs inputs = b.inputs();
   const auto nodes = b.nodes();
   for (const Step &s : schedule) {
-    detail::sweep_step<W>(b, nodes, inputs, s, std::ranges::begin(point_lanes),
-                          lane);
+    detail::sweep_step<W>(b, nodes, s, std::ranges::begin(point_lanes), lane);
   }
 }
 

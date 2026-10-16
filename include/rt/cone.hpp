@@ -155,12 +155,11 @@ void evaluate_reached(const Builder<T> &b, const R &point,
                       std::span<U> tape) {
   cone.reach(changed, dirty, pending);
   const auto lane = detail::lanes_of<1>(tape);
-  const Inputs inputs = b.inputs();
   const auto nodes = b.nodes();
   for (auto step = dirty.find_first(); step != boost::dynamic_bitset<>::npos;
        step = dirty.find_next(step)) {
-    detail::sweep_step<1>(b, nodes, inputs, schedule[step],
-                          std::ranges::begin(point), lane);
+    detail::sweep_step<1>(b, nodes, schedule[step], std::ranges::begin(point),
+                          lane);
   }
 }
 
