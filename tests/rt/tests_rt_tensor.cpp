@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdio>
 #include <format>
+#include <functional>
 #include <latch>
 #include <numeric>
 #include <ranges>
@@ -334,8 +335,7 @@ TEST(RtTensor, UnivariateTaylorSweepsRefuseTensors) {
             ddx::errc::unsupported_scalar);
 }
 
-// One graph, one sweep: the batch call, the block sweep and a remembered call
-// all read the same bits.
+// One graph, one sweep: the batch call and the block sweep read the same bits.
 TEST(RtTensor, BatchesAndThreadsAreBitIdentical) {
   constexpr std::size_t n = 7;
   const auto eq = tensor_mse(n);
@@ -389,23 +389,6 @@ TEST(RtTensor, BatchesAndThreadsAreBitIdentical) {
   }
   pool.clear();
   EXPECT_TRUE(std::ranges::all_of(ok, std::identity{}));
-}
-
-TEST(RtTensor, RemembersTheLastCallThroughTensorRows) {
-  constexpr std::size_t n = 6;
-  const auto cold = tensor_mse(n);
-  const auto warm = ddx::rt::equation(
-      [] { return mse_tensor(ddx::rt::vec("x", n)); }, ddx::rt::LastValue{});
-  auto at = composition(n);
-  for (const std::size_t moved : {0uz, 3uz, 5uz, 0uz}) {
-    at[moved] *= 1.1;
-    EXPECT_EQ(*cold.gradient(std::span<const double>{at}),
-              *warm.gradient(std::span<const double>{at}))
-        << moved;
-    EXPECT_EQ(*cold.evaluate(std::span<const double>{at}),
-              *warm.evaluate(std::span<const double>{at}))
-        << moved;
-  }
 }
 
 TEST(RtTensor, RoundTripsThroughAFile) {
@@ -485,4 +468,311 @@ TEST(RtTensor, StaysSmallAtAThousandSpecies) {
               n, gradient_nodes, hvp_nodes, built.count(),
               std::chrono::duration<double, std::milli>(t1 - t0).count(),
               std::chrono::duration<double, std::milli>(t2 - t1).count());
+}
+
+// --- D10b: second order through tensor nodes -------------------------------
+// Nothing new is implemented: hvp is a reverse sweep over the seeded gradient,
+// and every first-order rule emits nodes the second sweep has rules for.  What
+// follows pins that down against the scalar graph, against the coloured
+// Hessian, against differences, and across a pool.
+
+namespace {
+// Every Hessian column by one batch call of n points, each with its own unit
+// direction: the shape a pool uses.  `from`/`count` pick a column range, so a
+// thread takes a slice and the slices tile the batch.
+std::vector<double> hessian_by_hvp(const auto &eq, std::span<const double> at,
+                                   std::size_t from, std::size_t count) {
+  const std::size_t n = at.size();
+  std::vector<std::vector<double>> xs(n, std::vector<double>(count));
+  std::vector<std::vector<double>> vs(n, std::vector<double>(count, 0.0));
+  for (std::size_t i = 0; i < n; ++i) {
+    std::ranges::fill(xs[i], at[i]);
+  }
+  for (std::size_t k = 0; k < count; ++k) {
+    vs[from + k][k] = 1.0;
+  }
+  std::vector<const double *> xcols(n), vcols(n);
+  std::ranges::transform(xs, xcols.begin(), [](const auto &c) { return c.data(); });
+  std::ranges::transform(vs, vcols.begin(), [](const auto &c) { return c.data(); });
+  std::vector<double> f(count);
+  std::vector<std::vector<double>> g(n, std::vector<double>(count));
+  std::vector<std::vector<double>> hv(n, std::vector<double>(count));
+  std::vector<double *> gcols(n), hcols(n);
+  std::ranges::transform(g, gcols.begin(), [](auto &c) { return c.data(); });
+  std::ranges::transform(hv, hcols.begin(), [](auto &c) { return c.data(); });
+  double *const fcol[]{f.data()};
+  EXPECT_TRUE(eq.hvp(xcols, vcols, fcol, gcols, hcols, count).has_value());
+  // Row-major H(i, j): point k answers column from + k.
+  std::vector<double> h(n * count);
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t k = 0; k < count; ++k) {
+      h[i * count + k] = hv[i][k];
+    }
+  }
+  return h;
+}
+} // namespace
+
+TEST(RtTensorHvp, MatchesTheScalarGraphAtAHundredSpecies) {
+  constexpr std::size_t n = 100;
+  const auto want = scalar_mse(n);
+  const auto got = tensor_mse(n);
+  ASSERT_FALSE(got.poisoned());
+  const auto at = composition(n);
+  for (const std::size_t j : {0uz, 37uz, 99uz}) {
+    const auto name = std::format("x[{}]", j);
+    expect_close(*want.hvp(name, std::span<const double>{at}),
+                 *got.hvp(name, std::span<const double>{at}), 1e-10,
+                 name.c_str());
+  }
+  const auto d = direction(n);
+  expect_close(*want.hvp(d, std::span<const double>{at}),
+               *got.hvp(d, std::span<const double>{at}), 1e-10, "hvp(d)");
+}
+
+TEST(RtTensorHvp, ColumnsAssembleTheColouredHessian) {
+  constexpr std::size_t n = 48;
+  const auto eq = tensor_mse(n);
+  ASSERT_FALSE(eq.poisoned());
+  const auto at = composition(n);
+  const auto by_hvp = hessian_by_hvp(eq, at, 0, n);
+  const auto coloured = *eq.hessian(std::span<const double>{at});
+  expect_close(coloured, by_hvp, 1e-10, "H by n hvp vs coloured");
+  // Symmetric, as a Hessian is, to the same rounding.
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = 0; j < i; ++j) {
+      expect_close(by_hvp[i * n + j], by_hvp[j * n + i], 1e-10, "symmetry");
+    }
+  }
+}
+
+TEST(RtTensorHvp, APoolSplitsTheBatchByColumnAndAgreesToTheBit) {
+  constexpr std::size_t n = 64;
+  const auto eq = tensor_mse(n);
+  ASSERT_TRUE(eq.prepare({ddx::rt::Want::Hvp}).has_value());
+  const auto at = composition(n);
+  const auto whole = hessian_by_hvp(eq, at, 0, n);
+
+  constexpr std::size_t threads = 8;
+  constexpr std::size_t slice = n / threads;
+  std::vector<std::vector<double>> parts(threads);
+  std::latch start{threads};
+  {
+    std::vector<std::jthread> pool;
+    for (std::size_t t = 0; t < threads; ++t) {
+      pool.emplace_back([&, t] {
+        start.arrive_and_wait();
+        parts[t] = hessian_by_hvp(eq, at, t * slice, slice);
+      });
+    }
+  }
+  for (std::size_t t = 0; t < threads; ++t) {
+    for (std::size_t i = 0; i < n; ++i) {
+      for (std::size_t k = 0; k < slice; ++k) {
+        EXPECT_EQ(parts[t][i * slice + k], whole[i * n + t * slice + k])
+            << t << "," << i << "," << k;
+      }
+    }
+  }
+}
+
+TEST(RtTensorHvp, JacobianJvpAlongTemperatureMatchesDifferences) {
+  constexpr std::size_t n = 12;
+  const auto eq = ddx::rt::equation([] {
+    const RE T = ddx::rt::var("T");
+    const RV x = ddx::rt::vec("x", n);
+    return T * mse_tensor(x) + log(T) * sum(x * x);
+  });
+  ASSERT_FALSE(eq.poisoned());
+  // T is declared first, so it is the first column.
+  auto at = composition(n);
+  at.insert(at.begin(), 1.7);
+  const auto dj = *eq.jacobian_jvp("T", std::span<const double>{at});
+  const double h = 1e-6;
+  auto hi = at, lo = at;
+  hi[0] += h;
+  lo[0] -= h;
+  const auto ghi = *eq.gradient(std::span<const double>{hi});
+  const auto glo = *eq.gradient(std::span<const double>{lo});
+  ASSERT_EQ(dj.size(), ghi.size());
+  for (std::size_t j = 0; j < dj.size(); ++j) {
+    const double fd = (ghi[j] - glo[j]) / (2 * h);
+    EXPECT_NEAR(dj[j], fd, 1e-6 * std::max(1.0, std::abs(fd))) << j;
+  }
+}
+
+TEST(RtTensorHvp, CostAtAThousandSpecies) {
+  constexpr std::size_t n = 1000;
+  const auto eq = tensor_mse(n);
+  ASSERT_FALSE(eq.poisoned());
+  ASSERT_TRUE(eq.prepare({ddx::rt::Want::Hvp}).has_value());
+  const auto at = composition(n);
+  const auto d = direction(n);
+  (void)eq.hvp(d, std::span<const double>{at}); // warm
+  const auto t0 = std::chrono::steady_clock::now();
+  const auto h = eq.hvp(d, std::span<const double>{at});
+  const auto t1 = std::chrono::steady_clock::now();
+  ASSERT_TRUE(h.has_value());
+  constexpr std::size_t columns = 16;
+  const auto t2 = std::chrono::steady_clock::now();
+  const auto block = hessian_by_hvp(eq, at, 0, columns);
+  const auto t3 = std::chrono::steady_clock::now();
+  EXPECT_EQ(block.size(), n * columns);
+  std::printf("[ ddx ] tensor mse n = %zu: hvp %.2f ms warm; %zu Hessian "
+              "columns by batch hvp %.2f ms (%.2f ms/column)\n",
+              n, std::chrono::duration<double, std::milli>(t1 - t0).count(),
+              columns,
+              std::chrono::duration<double, std::milli>(t3 - t2).count(),
+              std::chrono::duration<double, std::milli>(t3 - t2).count() /
+                  columns);
+}
+
+// --- D10c: the dense Hessian in O(n^2) ---------------------------------------
+// One forward sweep over the gradient's cone with matrix-valued tangents, in
+// place of n + 1 coloured reverse sweeps.  The oracle is the coloured block
+// itself (tested elsewhere against the scalar graph), and for the scalar
+// spelling the two run over the same nodes.
+
+namespace {
+// hessian() is row-major n x n; so is dense_hessian().
+void expect_dense_matches_coloured(const auto &eq, std::span<const double> at,
+                                   double tol) {
+  ASSERT_FALSE(eq.poisoned());
+  const auto coloured = eq.hessian(at);
+  const auto dense = eq.dense_hessian(at);
+  ASSERT_TRUE(coloured.has_value());
+  ASSERT_TRUE(dense.has_value()) << dense.error().code;
+  expect_close(*coloured, *dense, tol, "dense vs coloured");
+}
+} // namespace
+
+TEST(RtTensorDense, MatchesTheColouredHessianOnTheVectorModel) {
+  for (const std::size_t n : {5uz, 20uz, 50uz}) {
+    const auto eq = tensor_mse(n);
+    expect_dense_matches_coloured(eq, composition(n), 1e-10);
+    // The UNIQUAC residual is log(tau^T theta), whose Hessian is
+    // tau diag(.) tau^T: one dense product, which no algebra avoids.  The
+    // rest stays quadratic.
+    const auto cost = eq.dense_hessian_cost();
+    ASSERT_TRUE(cost.has_value());
+    EXPECT_EQ(cost->n3_terms, 1u);
+    EXPECT_GT(cost->n2_terms, 0u);
+  }
+}
+
+TEST(RtTensorDense, MatchesTheColouredHessianOnTheScalarModel) {
+  // No vector in the model: every tangent is a row, and the block is the rows
+  // stacked.
+  const auto eq = scalar_mse(12);
+  expect_dense_matches_coloured(eq, composition(12), 1e-10);
+}
+
+TEST(RtTensorDense, EachNodeAlone) {
+  constexpr std::size_t n = 6;
+  const auto m = matrix(n, n);
+  const auto at = composition(n);
+  const auto models = {
+      std::function<RE(const RV &)>{[&](const RV &x) {
+        return dot(x, gemv(ddx::rt::mat_const(n, n, m), x));
+      }},
+      {[&](const RV &x) { return sum(log(x) * gemv_t(ddx::rt::mat_const(n, n, m), x)); }},
+      {[&](const RV &x) {
+        const RE s = dot(x, x);
+        return sum(exp(x / s)) * s + x[2] * x[3];
+      }},
+      {[&](const RV &x) {
+        return sum(add_at(x * x, x[0] * x[1], 4) * pow(x, 1.5));
+      }},
+      {[&](const RV &x) {
+        const RE k = select(x[0] < 0.3, x[1], x[2] * x[2]);
+        return sum(k * (x * log(x)));
+      }},
+  };
+  for (const auto &model : models) {
+    const auto eq = ddx::rt::equation(
+        [&] { return model(ddx::rt::vec("x", n)); });
+    expect_dense_matches_coloured(eq, at, 1e-10);
+  }
+  // A quadratic form and a transposed product each stay in the algebra: the
+  // identity through a constant matrix is that matrix, copied.
+  const auto quadratic = ddx::rt::equation([&] {
+    const RV x = ddx::rt::vec("x", n);
+    const auto C = ddx::rt::mat_const(n, n, m);
+    return dot(x, gemv(C, x)) + sum(x * gemv_t(C, x));
+  });
+  EXPECT_EQ(quadratic.dense_hessian_cost()->n3_terms, 0u);
+}
+
+TEST(RtTensorDense, BatchColumnsAreThePointsBlockColumnMajor) {
+  constexpr std::size_t n = 5;
+  const auto eq = tensor_mse(n);
+  const auto at = composition(n);
+  const auto want = *eq.dense_hessian(std::span<const double>{at});
+  ASSERT_EQ(*eq.dense_hessian_columns(), n * n);
+  constexpr std::size_t points = 3;
+  std::vector<std::vector<double>> xs(n, std::vector<double>(points));
+  for (std::size_t i = 0; i < n; ++i) {
+    std::ranges::fill(xs[i], at[i]);
+  }
+  std::vector<const double *> xcols(n);
+  std::ranges::transform(xs, xcols.begin(), [](const auto &c) { return c.data(); });
+  std::vector<double> f(points);
+  std::vector<std::vector<double>> g(n, std::vector<double>(points));
+  std::vector<std::vector<double>> h(n * n, std::vector<double>(points));
+  std::vector<double *> gcols(n), hcols(n * n);
+  std::ranges::transform(g, gcols.begin(), [](auto &c) { return c.data(); });
+  std::ranges::transform(h, hcols.begin(), [](auto &c) { return c.data(); });
+  double *const fcol[]{f.data()};
+  ASSERT_TRUE(eq.dense_hessian(xcols, fcol, gcols, hcols, points).has_value());
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = 0; j < n; ++j) {
+      for (std::size_t p = 0; p < points; ++p) {
+        EXPECT_EQ(h[i + j * n][p], want[i * n + j]) << i << "," << j;
+      }
+    }
+  }
+}
+
+TEST(RtTensorDense, RoundTripsThroughAFile) {
+  const Scratch file{"dense"};
+  constexpr std::size_t n = 9;
+  const auto built = tensor_mse(n);
+  const auto at = composition(n);
+  const auto want = *built.dense_hessian(std::span<const double>{at});
+  ASSERT_TRUE(built.save(file).has_value());
+  const auto loaded = ddx::rt::load(file.path());
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().code;
+  EXPECT_EQ(*loaded->dense_hessian(std::span<const double>{at}), want);
+  EXPECT_EQ(loaded->dense_hessian_cost()->n3_terms, 1u);
+}
+
+TEST(RtTensorDense, RefusesASystem) {
+  const auto sys = ddx::rt::equation([] {
+    const RV x = ddx::rt::vec("x", 3);
+    return std::vector<RE>{sum(x * x), dot(x, x) * x[0]};
+  });
+  EXPECT_EQ(sys.dense_hessian(std::span<const double>{composition(3)}).error().code,
+            ddx::errc::not_single_output);
+  EXPECT_FALSE(sys.dense_hessian_cost().has_value());
+}
+
+TEST(RtTensorDense, CostAtManySpecies) {
+  constexpr std::size_t n = 300;
+  const auto eq = tensor_mse(n);
+  ASSERT_FALSE(eq.poisoned());
+  const auto at = composition(n);
+  const auto t0 = std::chrono::steady_clock::now();
+  const auto first = eq.dense_hessian(std::span<const double>{at});
+  const auto t1 = std::chrono::steady_clock::now();
+  const auto second = eq.dense_hessian(std::span<const double>{at});
+  const auto t2 = std::chrono::steady_clock::now();
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+  const auto cost = *eq.dense_hessian_cost();
+  std::printf("[ ddx ] dense hessian n = %zu: %zu quadratic terms, %zu cubic; "
+              "first %.1f ms, warm %.2f ms\n",
+              n, cost.n2_terms, cost.n3_terms,
+              std::chrono::duration<double, std::milli>(t1 - t0).count(),
+              std::chrono::duration<double, std::milli>(t2 - t1).count());
+  EXPECT_EQ(cost.n3_terms, 1u);
 }

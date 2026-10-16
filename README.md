@@ -370,7 +370,7 @@ saved like any other; under `Backend::Device` the lane is interpreted, since
 device code cannot call into the host. Saving keeps the graph and the
 function's name:
 `rt::equation(path, model)` binds it again by running the model, and
-`rt::load(path, memo, fns)` takes it from `fns`, a map from name to function —
+`rt::load(path, fns)` takes it from `fns`, a map from name to function —
 a file whose function is missing answers `errc::unbound_extern`.
 
 ### Implicit inputs
@@ -716,47 +716,30 @@ zero.
 Values, gradient and Hessian are prepared separately, each the first time it is
 asked for. A caller who only ever evaluates never pays for a gradient.
 
-### Remembering the last call
+### The dense Hessian in one sweep
 
-Hand the factory a cache and an equation keeps its last call per kind. Ask again
-at the same point and the answer comes back off it; move one symbol and only the
-part of the graph that symbol reaches is computed again. Nothing else changes:
-the numbers are the ones the sweep gives, bit for bit, and there is no call to
-make -- a point already answered is simply answered.
-
-```cpp
-const auto eq = ddx::rt::equation(model);                      // off
-const auto eq = ddx::rt::equation(model, ddx::rt::LastValue{}); // on
-```
-
-It is off by default, and it earns its place where points repeat or arrive one
-coordinate at a time -- a line search, a finite difference, a minimiser asking
-for the value and then the gradient at the same `x`:
+`hessian()` colours the symbols and sweeps once per colour, so on a model where
+every symbol couples every other -- a vector model with `dot(x, gemv(C, x))` in
+it -- that is $n + 1$ sweeps and $n$ matrix-vector products per point.
+`dense_hessian(point)` answers the same $n \times n$ block, dense and row-major,
+from one forward sweep that carries matrix-valued tangents through the
+gradient: the derivative of $Cx$ is $C$, a copy, and that of $g(s)\,\nabla s$ an
+outer product, so the Hessian of such a model is a short sum of shaped terms and
+costs $O(n^2)$.
 
 ```cpp
-const auto f = *eq.evaluate(x);   // swept
-const auto g = *eq.gradient(x);   // its own lane, so its own first call
-const auto h = *eq.evaluate(x);   // nothing swept at all
+const auto h = *eq.dense_hessian(x);           // n*n, H[i*n + j]
+const auto c = *eq.dense_hessian_cost();       // {n2_terms, n3_terms}
 ```
 
-Every spelling that takes a point is covered; a batch is not, being amortised
-already. A lane a kernel answers keeps the point but not the tape, so it serves
-a repeat and computes a moved point whole -- compiled code has no way to run
-part of itself.
-
-`LastValue` holds one slot per kind behind a shared lock: any number of threads
-can be served the same point at once, and one that arrives while another is
-writing sweeps for itself rather than waiting. The object is copied in, so it
-may be a temporary.
-
-To supply your own, model `ddx::rt::CValueCache`: answer `active()`, and hand out
-a read lease and a write lease per `Want`, each lending the point, the output
-values and the tape of one remembered call. `active()` is asked before anything
-else and is how a cache says no call of yours can hit -- a `false` there costs
-the equation nothing at all, not even reading the point. `ddx::rt::Extent` says
-what a slot has to hold and which frozen graph it holds it for; two calls belong
-to the same entry only where their whole `Extent` matches, so a re-freeze or a
-grown arena parts them without the cache having to know why.
+`dense_hessian_cost()` says how many terms the sweep kept quadratic and how
+many fell back to a dense product. A fallback is still right, just not
+$O(n^2)$: $\log(\tau^{\top}\theta)$ has the Hessian $\tau\,\mathrm{diag}(\cdot)\,\tau^{\top}$,
+one dense product that no algebra avoids. One output only; a system answers
+`errc::not_single_output`. The batch spelling is
+`dense_hessian(xs, f, g, h, n)` with `h` $n^2$ columns, column-major:
+$H(i, j)$ is column $i + jn$. It is a sweep, never a kernel: `uses_kernel()`
+is unaffected and the lane interprets.
 
 ## Batches
 
@@ -1186,7 +1169,7 @@ static_assert(rt::TensorKernels<Mine>);
 inline constexpr auto mine = rt::kernel_table<Mine>();   // a constant
 
 rt::use_kernels(mine);        // every equation from here on
-eq.kernels(mine);             // this one; lanes and the remembered call start over
+eq.kernels(mine);             // this one; its lanes start over
 ```
 
 `rt::TensorKernels` is the concept a backend satisfies, `rt::kernel_table`
@@ -1431,6 +1414,8 @@ the output count outside it — when the callback returns a vector. All of it is
 | `vjp(w, point)` | `result<std::vector<T>>`, $n$ long — $w^{\top}J$ |
 | `hvp(v, point)` | `result<std::vector<T>>`, $n$ long — $Hv$, one output only |
 | `hvp(name, point)` | the same, along the basis vector for that symbol |
+| `dense_hessian(point)` | `result<std::vector<T>>`, dense row-major n × n from one $O(n^2)$ sweep — one output only |
+| `dense_hessian_cost()` | `std::optional<DenseCost>` — `{n2_terms, n3_terms}`: what the sweep kept quadratic and what fell back to a dense product |
 | `jacobian_jvp(v, point)`, `jacobian_jvp(name, point)` | `result<std::vector<T>>`, dense m × n — $\partial J / \partial v$ |
 | `restrict(names)` | `result<rt::Restricted<…>>` — a view with those symbols' Jacobian columns only |
 | `evaluate(xs, f, n)` | `result<void>` — a batch of `n` |
@@ -1440,9 +1425,11 @@ the output count outside it — when the callback returns a vector. All of it is
 | `jvp(xs, vs, f, p, n)` | `result<void>` |
 | `vjp(xs, ws, f, p, n)` | `result<void>` |
 | `hvp(xs, vs, f, g, p, n)` | `result<void>`, one output only — `g` gets $\nabla f$ |
+| `dense_hessian(xs, f, g, h, n)` | `result<void>`, one output only — `h` is $n^2$ columns, $H(i, j)$ at $i + jn$ |
 | `jacobian_jvp(xs, vs, f, g, dg, n)` | `result<void>` — `g` and `dg` both `jacobian_columns()` wide, read with `jacobian_pattern()` |
 | `value_columns()`, `jacobian_columns()`, `hessian_columns()` | `std::optional<std::size_t>` — what sizes the batch buffers |
 | `jvp_columns()`, `vjp_columns()`, `hvp_columns()` | the same, for the seeded products — `m`, `n`, `n` |
+| `dense_hessian_columns()` | the same for the dense block — $n^2$ |
 | `jacobian_pattern()` | `std::optional<std::reference_wrapper<const rt::Sparsity>>` — which (function, symbol) cell each Jacobian column is |
 | `hessian_pattern()` | `std::optional<std::reference_wrapper<const rt::Coloring>>` — which (row, column) cell each Hessian column holds; one output only |
 | `hessian_cell(i, j)` | `std::optional<std::size_t>` — which Hessian column holds H(i, j), or none |
@@ -1455,7 +1442,7 @@ the output count outside it — when the callback returns a vector. All of it is
 | `wait_for_kernel(want)` | block until the compile in flight for a lane has landed — the Jacobian's unless `want` names another |
 | `device_status()` | under `Device`, the device answering or why none is; empty under any other backend |
 | `save(path)`, `verify(path)` | write this equation; ask whether a file holds it |
-| `load(path, memo, fns)`, `loaded()` | read one, binding its extern functions from `fns` by name; whether this one was read — `rt::load<double, rt::dynamic>(path, …)` for a `System` |
+| `load(path, fns)`, `loaded()` | read one, binding its extern functions from `fns` by name; whether this one was read — `rt::load<double, rt::dynamic>(path, …)` for a `System` |
 
 ---
 
@@ -1517,8 +1504,9 @@ dict or a `(symbols, points)` NumPy batch, answers are arrays with the Hessian
 dense, errors raise `ddx.Error` carrying the same `errc`, and `Options` is a
 pydantic model of `jit::Options`. [Vectors](#vectors) are `ddx.vec`,
 `ddx.pack`, `ddx.vec_const` and `ddx.mat_const`, with `ddx.sum`, `ddx.dot`,
-`ddx.gemv`, `ddx.gemv_t` and `ddx.add_at` over them; the kernel table is not
-exposed. A file saved on either side loads on the
+`ddx.gemv`, `ddx.gemv_t` and `ddx.add_at` over them, and `dense_hessian(x)`
+answers `(value, gradient, H)` from the one-sweep block; the kernel table is
+not exposed. A file saved on either side loads on the
 other. [python/README.md](python/README.md) — the page PyPI shows — documents
 the module.
 

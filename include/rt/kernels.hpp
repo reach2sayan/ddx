@@ -31,6 +31,9 @@ namespace ddx::rt {
 
 // `M` is r x c column-major; gemv writes M v (c in, r out) or, transposed,
 // M^T v (r in, c out).  map and zip are the scalar table's rows, elementwise.
+// gemm(r, k, c, A, B, out) writes the r x c product of A (r x k) and B (k x c),
+// the one cubic kernel, which the dense Hessian sweep reaches only where its
+// shape algebra ran out.
 template <class B>
 concept TensorKernels =
     requires(std::span<const double> u, std::span<const double> v,
@@ -43,6 +46,7 @@ concept TensorKernels =
       { B::map(op, v, out) } -> std::same_as<void>;
       { B::zip(op, u, v, out) } -> std::same_as<void>;
       { B::sum(v) } -> std::convertible_to<double>;
+      { B::gemm(r, c, r, u, v, out) } -> std::same_as<void>;
     };
 
 // A backend as the interpreter holds it: one record of function pointers, so
@@ -56,6 +60,7 @@ struct KernelTable {
   void (*map)(OpCode, In, Out) = nullptr;
   void (*zip)(OpCode, In, In, Out) = nullptr;
   double (*sum)(In) = nullptr;
+  void (*gemm)(std::size_t, std::size_t, std::size_t, In, In, Out) = nullptr;
   std::string_view name;
 };
 
@@ -69,6 +74,7 @@ template <TensorKernels B>
           .map = &B::map,
           .zip = &B::zip,
           .sum = &B::sum,
+          .gemm = &B::gemm,
           .name = B::name};
 }
 
@@ -144,6 +150,14 @@ struct Kernels {
 
   [[nodiscard]] static constexpr double sum(In v) noexcept {
     return std::reduce(v.begin(), v.end(), 0.0);
+  }
+
+  // out = A B, one column of B at a time: a gemv per column.
+  static constexpr void gemm(std::size_t r, std::size_t k, std::size_t c,
+                             In a, In bm, Out out) noexcept {
+    for (std::size_t j = 0; j < c; ++j) {
+      gemv(r, k, a, bm.subspan(j * k, k), out.subspan(j * r, r), false);
+    }
   }
 };
 static_assert(TensorKernels<Kernels>);

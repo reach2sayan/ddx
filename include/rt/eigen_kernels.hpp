@@ -64,6 +64,14 @@ struct Kernels : reference::Kernels {
   [[nodiscard]] static double sum(In v) noexcept {
     return Vector(v.data(), static_cast<Eigen::Index>(v.size())).sum();
   }
+  static void gemm(std::size_t r, std::size_t k, std::size_t c, In a, In b,
+                   Out out) noexcept {
+    const auto rows = static_cast<Eigen::Index>(r);
+    const auto inner = static_cast<Eigen::Index>(k);
+    const auto cols = static_cast<Eigen::Index>(c);
+    Eigen::Map<Eigen::MatrixXd> y(out.data(), rows, cols);
+    y.noalias() = Matrix(a.data(), rows, inner) * Matrix(b.data(), inner, cols);
+  }
 };
 static_assert(TensorKernels<Kernels>);
 

@@ -50,6 +50,7 @@ class Equation:
     def buffer(self, x: typing.Any, *, want: Want = ...) -> Call: pass
     def evaluate(self, x: typing.Any) -> typing.Any: pass
     def gradient(self, x: typing.Any) -> typing.Any: pass
+    def dense_hessian(self, x: typing.Any) -> tuple: pass
     def hessian(self, x: typing.Any) -> tuple: pass
     def hvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
     def jacobian(self, x: typing.Any) -> tuple: pass
@@ -427,13 +428,13 @@ def div(x: Expression, y: Expression) -> Expression:
 def div(x: Vector, y: Vector) -> Vector:
     ...
 @typing.overload
-def equation(source: str, *, cache: str | os.PathLike | None = None, remember: bool = False) -> Equation:
+def equation(source: str, *, cache: str | os.PathLike | None = None) -> Equation:
     ...
 @typing.overload
-def equation(source: list[str], *, cache: str | os.PathLike | None = None, remember: bool = False) -> Equation:
+def equation(source: list[str], *, cache: str | os.PathLike | None = None) -> Equation:
     ...
 @typing.overload
-def equation(model: typing.Any, *, cache: str | os.PathLike | None = None, remember: bool = False) -> typing.Any:
+def equation(model: typing.Any, *, cache: str | os.PathLike | None = None) -> typing.Any:
     ...
 @typing.overload
 def erf(x: Expression) -> Expression:

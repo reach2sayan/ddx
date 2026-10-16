@@ -141,7 +141,8 @@ std::string emit_source(const rt::Graph<double> &g) {
 
   // Ids are topological, so one pass needs no worklist, and a multiply every
   // reader swallowed into an fma is never reached.
-  for (const auto &[v, fma] : schedule) {
+  for (const rt::Step &s : schedule) {
+    const auto &[v, fma] = std::pair{s.node, s.fma};
     std::format_to(sink, "  const double v{} = ", v);
     if (fma) {
       std::format_to(sink, "fma({}v{}, v{}, v{})", fma.negated ? "-" : "",

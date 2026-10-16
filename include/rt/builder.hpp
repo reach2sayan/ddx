@@ -145,10 +145,15 @@ struct Contraction {
 };
 
 // One node of a sweep and the fma it takes, if any.  Together, so a walker is
-// never handed an order without the contractions resolved over it.
+// never handed an order without the contractions resolved over it.  `out` and
+// `in` are where the sweep writes and reads: tape rows, which an arena walk
+// leaves as the ids and a freeze packs by liveness -- the ids above stay what
+// codegen and the cone read.
 struct Step {
   NodeId node = no_node;
   Contraction fma{};
+  std::uint32_t out = no_node;
+  std::array<std::uint32_t, 3> in{no_node, no_node, no_node};
 };
 
 namespace detail {
@@ -303,37 +308,79 @@ pack_arguments(const auto &s, NodeId v) {
   return out;
 }
 
-// How many scalars a node's value is: one for a scalar node and for the tensor
-// ops that read a vector down to one; a VecConst's rows; what a Gemv's matrix
-// and flag say; and otherwise the operand's -- a walk, since no node carries
-// its width.  Zero for a MatConst, which is a table and never a row.  Asked of
-// a sound source: ids are topological, so the walk ends.
-[[nodiscard]] constexpr std::uint32_t width_of(const auto &s, NodeId v) {
+// A row's shape: rows x cols, column-major, cols 1 for a vector.  No node
+// carries it; it is a function of the operands -- a walk down the first (or,
+// for a Scale, second) operand through the elementwise ops, and a step into
+// the matrix ops' own operands.  Asked of a sound source, whose ids are
+// topological, so the walk ends.
+struct Shape {
+  std::uint32_t rows = 1;
+  std::uint32_t cols = 1;
+  [[nodiscard]] constexpr std::uint32_t size() const noexcept {
+    return rows * cols;
+  }
+  constexpr bool operator==(const Shape &) const = default;
+};
+[[nodiscard]] constexpr Shape shape_of(const auto &s, NodeId v) {
   for (;;) {
     const auto [a, b, c] = s.operands(v);
     switch (s.op_of(v)) {
     case OpCode::VecConst:
-      return tensors_of(s)[s[v].slot].rows;
+      return {.rows = tensors_of(s)[s[v].slot].rows, .cols = 1};
     case OpCode::MatConst:
-      return 0;
+      return {.rows = 0, .cols = 0};
+    case OpCode::MatRow: {
+      const auto &m = tensors_of(s)[s[a].slot];
+      return s[v].slot ? Shape{.rows = m.cols, .cols = m.rows}
+                       : Shape{.rows = m.rows, .cols = m.cols};
+    }
     case OpCode::Pack:
-      return s[v].slot;
+      return {.rows = s[v].slot, .cols = 1};
     case OpCode::Gemv: {
       const auto &m = tensors_of(s)[s[a].slot];
-      return s[v].slot ? m.cols : m.rows;
+      return {.rows = s[v].slot ? m.cols : m.rows, .cols = 1};
     }
+    case OpCode::Diag: {
+      const std::uint32_t w = shape_of(s, a).rows;
+      return {.rows = w, .cols = w};
+    }
+    case OpCode::Outer:
+      return {.rows = shape_of(s, a).rows, .cols = shape_of(s, b).rows};
+    case OpCode::MatVec: {
+      const Shape m = shape_of(s, a);
+      return {.rows = s[v].slot ? m.cols : m.rows, .cols = 1};
+    }
+    case OpCode::MatMul:
+      return {.rows = shape_of(s, a).rows, .cols = shape_of(s, b).cols};
+    case OpCode::StackRows: {
+      NodeId first = a;
+      if (s[v].slot > 1) {
+        first = s.operands(a)[0];
+      }
+      return {.rows = s[v].slot, .cols = shape_of(s, first).rows};
+    }
+    case OpCode::RowOf:
+      return {.rows = shape_of(s, a).cols, .cols = 1};
     case OpCode::Map:
     case OpCode::Zip:
     case OpCode::AddAt:
+    case OpCode::ColScale:
       v = a;
       break;
     case OpCode::Scale:
+    case OpCode::RowScale:
       v = b;
       break;
     default:
-      return 1;
+      return {};
     }
   }
+}
+// How many scalars a node's value is: one for a scalar node and for the tensor
+// ops that read a vector down to one, else the row's rows x cols.  Zero for a
+// MatConst, which is a table and never a row.
+[[nodiscard]] constexpr std::uint32_t width_of(const auto &s, NodeId v) {
+  return shape_of(s, v).size();
 }
 
 // Nodes are interned as they are formed, so an id *is* the identity of a
@@ -403,16 +450,18 @@ public:
     }
   }
 
-  // The vector of `scalars`: the list formed from the back as extern_call
-  // forms its, a list of one being the scalar itself.
-  [[nodiscard]] constexpr NodeId pack(std::span<const NodeId> scalars) {
-    assert(!scalars.empty());
-    NodeId list = scalars.back();
-    for (const NodeId s : scalars | std::views::reverse | std::views::drop(1)) {
+  // The vector of `scalars` -- or, as StackRows, the matrix whose rows are
+  // `items` -- over the list formed from the back as extern_call forms its, a
+  // list of one being the item itself.
+  [[nodiscard]] constexpr NodeId pack(std::span<const NodeId> items,
+                                      OpCode op = OpCode::Pack) {
+    assert(!items.empty());
+    NodeId list = items.back();
+    for (const NodeId s : items | std::views::reverse | std::views::drop(1)) {
       list = intern({.op = OpCode::PackArgs, .a = s, .b = list});
     }
-    return make_tensor(OpCode::Pack, list, no_node,
-                       static_cast<std::uint32_t>(scalars.size()));
+    return make_tensor(op, list, no_node,
+                       static_cast<std::uint32_t>(items.size()));
   }
 
   [[nodiscard]] constexpr NodeId make(OpCode op, NodeId a, NodeId b = no_node,
@@ -946,10 +995,100 @@ schedule_of(const CNodeSource auto &nodes,
                                NodeId>
 {
   return DDX_FWD(order) | std::views::transform([&nodes, on](NodeId v) {
+           const Contraction c = on ? contraction_at(nodes, v) : Contraction{};
+           const auto ops = nodes.operands(v);
            return Step{.node = v,
-                       .fma = on ? contraction_at(nodes, v) : Contraction{}};
+                       .fma = c,
+                       .out = v,
+                       .in = c ? std::array{c.x, c.y, c.z} : ops};
          }) |
          impl::to<std::vector<Step>>();
+}
+
+// The rows a step reads: a contraction's three, an extern's or a Pack's
+// flattened arguments (the list nodes between are never read), else the
+// operands.  What liveness is computed over, so the one spelling of it.
+[[nodiscard]] constexpr boost::container::small_vector<NodeId, 8>
+reads_of(const auto &s, const Step &step) {
+  if (step.fma) {
+    return {step.fma.x, step.fma.y, step.fma.z};
+  }
+  const OpCode op = s.op_of(step.node);
+  if (kind_of(op) == Kind::Extern) {
+    return *extern_arguments(s, step.node);
+  }
+  if (op == OpCode::Pack || op == OpCode::StackRows) {
+    return *pack_arguments(s, step.node);
+  }
+  return operands_of(s, step.node) |
+         impl::to<boost::container::small_vector<NodeId, 8>>();
+}
+
+// The last schedule position at which each node is read -- its own, if
+// nothing reads it -- and past the end for an output.  Indexed by id over the
+// source.
+[[nodiscard]] constexpr std::vector<std::uint32_t>
+last_uses(const auto &s, std::span<const Step> schedule,
+          std::span<const NodeId> outputs) {
+  std::vector<std::uint32_t> last(s.size(), 0);
+  for (const auto [p, step] : schedule | std::views::enumerate) {
+    last[step.node] = static_cast<std::uint32_t>(p);
+  }
+  for (const auto [p, step] : schedule | std::views::enumerate) {
+    for (const NodeId u : reads_of(s, step)) {
+      last[u] = static_cast<std::uint32_t>(p); // ascending, so the last wins
+    }
+  }
+  for (const NodeId o : outputs) {
+    last[o] = static_cast<std::uint32_t>(schedule.size());
+  }
+  return last;
+}
+
+// Pack the tape: a row is freed after the step that reads it last and taken by
+// the next node formed, so the tape is the live set rather than the arena.
+// Writes every Step's `out` and `in`; answers the row count and, by id, the row
+// each node took -- for the reads a Step cannot carry, an extern's or a Pack's
+// list.  A node's own row is never one it reads this step: the frees happen
+// after the take, which is what lets the lane loops promise no aliasing.
+struct Packed {
+  std::vector<std::uint32_t> slot; // by id; no_node for a node not scheduled
+  std::size_t rows = 0;
+};
+[[nodiscard]] constexpr Packed pack_slots(const auto &s,
+                                          std::span<Step> schedule,
+                                          std::span<const NodeId> outputs) {
+  const auto last = last_uses(s, schedule, outputs);
+  Packed out{.slot = std::vector<std::uint32_t>(s.size(), no_node)};
+  std::vector<std::uint32_t> taken(s.size(), no_node); // the row, while live
+  std::vector<std::uint32_t> free;
+  std::uint32_t next = 0;
+  for (const auto [p, step] : schedule | std::views::enumerate) {
+    const auto at = static_cast<std::uint32_t>(p);
+    auto &row = taken[step.node];
+    if (free.empty()) {
+      row = next++;
+    } else {
+      row = free.back();
+      free.pop_back();
+    }
+    out.slot[step.node] = row;
+    step.out = row;
+    for (const auto [k, u] : step.in | std::views::enumerate) {
+      step.in[static_cast<std::size_t>(k)] = u == no_node ? no_node : taken[u];
+    }
+    // After the take.  A row read twice in one step is freed once.
+    auto reads = reads_of(s, step);
+    reads.push_back(step.node);
+    for (const NodeId u : reads) {
+      if (last[u] == at && taken[u] != no_node) {
+        free.push_back(taken[u]);
+        taken[u] = no_node;
+      }
+    }
+  }
+  out.rows = next;
+  return out;
 }
 } // namespace detail
 
@@ -967,21 +1106,47 @@ struct TensorLayout {
   std::size_t extent = 0;
 };
 
+// Packed as the scalar rows are: a row is freed after its last reader and
+// taken again by the next node of the same width, so the tensor tape is the
+// live vectors, not every one the schedule forms.
 namespace detail {
 [[nodiscard]] constexpr TensorLayout
-tensor_layout(const auto &s, std::span<const Step> schedule) {
+tensor_layout(const auto &s, std::span<const Step> schedule,
+              std::span<const NodeId> outputs = {}) {
   TensorLayout out;
-  for (const Step &step : schedule) {
-    if (!tensor_valued(s.op_of(step.node))) {
-      continue;
+  if (std::ranges::none_of(schedule, [&s](const Step &step) {
+        return tensor_valued(s.op_of(step.node));
+      })) {
+    return out;
+  }
+  const auto last = last_uses(s, schedule, outputs);
+  out.rows.resize(s.size());
+  std::vector<TensorRow> free; // (at, width) runs no live row holds
+  for (const auto [p, step] : schedule | std::views::enumerate) {
+    const auto at = static_cast<std::uint32_t>(p);
+    if (tensor_valued(s.op_of(step.node))) {
+      const std::uint32_t w = width_of(s, step.node);
+      const auto fit = std::ranges::find(free, w, &TensorRow::width);
+      if (fit == free.end()) {
+        out.rows[step.node] = {.at = static_cast<std::uint32_t>(out.extent),
+                               .width = w};
+        out.extent += w;
+      } else {
+        out.rows[step.node] = *fit;
+        free.erase(fit);
+      }
     }
-    if (out.rows.empty()) {
-      out.rows.resize(s.size());
+    // The row keeps its address for the sweep; only the free list forgets it,
+    // once per node however often this step reads it.
+    auto reads = reads_of(s, step);
+    reads.push_back(step.node);
+    std::ranges::sort(reads);
+    const auto [first, end] = std::ranges::unique(reads);
+    for (const NodeId u : std::ranges::subrange(reads.begin(), first)) {
+      if (last[u] == at && out.rows[u].width != 0) {
+        free.push_back(out.rows[u]);
+      }
     }
-    const std::uint32_t w = width_of(s, step.node);
-    out.rows[step.node] = {.at = static_cast<std::uint32_t>(out.extent),
-                           .width = w};
-    out.extent += w;
   }
   return out;
 }

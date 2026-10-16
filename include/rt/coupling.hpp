@@ -428,7 +428,7 @@ template <impl::Numeric T>
           detail::couple(rows, support[v], support[v]);
         }
         break;
-      default:
+      default: // the dense Hessian's matrix rows, never under a root
         std::unreachable();
       }
       break;

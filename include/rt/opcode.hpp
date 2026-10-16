@@ -91,6 +91,17 @@ namespace ddx::rt {
 //   Sum, Dot            a (, b) = vecs; a scalar
 //   Gemv                a = MatConst, b = vec, slot = 1 for M^T v
 //   AddAt               a = vec, b = scalar, slot = element: a + b e_slot
+// A matrix is a row too, column-major, its shape derived from its operands
+// (shape_of in rt/builder.hpp); the dense Hessian sweep forms these:
+//   MatRow              a = MatConst, slot = 1 for M^T: the table as a row
+//   Diag                a = vec w: the w x w diagonal
+//   Outer               a = vec r, b = vec c: a b^T
+//   RowScale            a = vec r, b = matrix r x c: diag(a) M
+//   ColScale            a = matrix r x c, b = vec c: M diag(b)
+//   MatVec              a = matrix, b = vec, slot = 1 for M^T v
+//   MatMul              a = matrix r x k, b = matrix k x c
+//   StackRows           a = PackArgs list of `slot` vectors, each a row
+//   RowOf               a = matrix, slot = row: that row, as a vector
 // The last cells are the arity and the Kind.
 #define DDX_RT_TENSOR_TABLE(X)                                                 \
   X(vec_const, VecConst, "vconst", 0, Tensor)                                  \
@@ -104,7 +115,16 @@ namespace ddx::rt {
   X(vsum, Sum, "vsum", 1, Tensor)                                              \
   X(vdot, Dot, "vdot", 2, Tensor)                                              \
   X(gemv, Gemv, "gemv", 2, Tensor)                                             \
-  X(add_at, AddAt, "add_at", 2, Tensor)
+  X(add_at, AddAt, "add_at", 2, Tensor)                                        \
+  X(mat_row, MatRow, "mrow", 1, Tensor)                                        \
+  X(diag, Diag, "diag", 1, Tensor)                                             \
+  X(outer, Outer, "outer", 2, Tensor)                                          \
+  X(row_scale, RowScale, "row_scale", 2, Tensor)                               \
+  X(col_scale, ColScale, "col_scale", 2, Tensor)                               \
+  X(matvec, MatVec, "matvec", 2, Tensor)                                       \
+  X(matmul, MatMul, "matmul", 2, Tensor)                                       \
+  X(stack_rows, StackRows, "stack_rows", 1, Tensor)                            \
+  X(row_of, RowOf, "row_of", 1, Tensor)
 
 #define DDX_RT_OP_TABLE(X)                                                     \
   DDX_RT_LEAF_TABLE(X)                                                         \

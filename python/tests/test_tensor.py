@@ -88,3 +88,13 @@ def test_a_scalar_scales_a_vector_and_literals_broadcast() -> None:
     s = x[0] * x[1]
     want = sum((2.0 * xi + 1.0) * s - xi / 2.0 + math.exp(-xi) ** 2.0 for xi in x)
     assert math.isclose(eq.evaluate(x), want, rel_tol=1e-12)
+
+
+def test_the_dense_hessian_is_the_coloured_one() -> None:
+    eq = ddx.equation(tensor_model)
+    _, g_want, h_want = eq.hessian(POINT)
+    value, g, h = eq.dense_hessian(POINT)
+    assert math.isclose(value, eq.evaluate(POINT), rel_tol=1e-12)
+    np.testing.assert_allclose(g, g_want, rtol=1e-12)
+    assert h.shape == (N, N)
+    np.testing.assert_allclose(h, h_want, rtol=1e-10)

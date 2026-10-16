@@ -8,6 +8,7 @@ target_sources(ddx_rt INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/tensor.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/eigen_kernels.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/derivative.hpp>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/dense.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/coupling.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/bridge.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/graph.hpp>

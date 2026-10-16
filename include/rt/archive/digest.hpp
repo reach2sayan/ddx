@@ -3,6 +3,7 @@
 #include "rt/archive/codec.hpp"
 #include "rt/archive/snapshot.hpp" // the described member list this walks
 #include "rt/graph.hpp"
+#include "util/ranges.hpp"
 
 #include <boost/describe.hpp>
 #include <boost/hash2/fnv1a.hpp>
@@ -14,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <ranges>
+#include <vector>
 #include <span>
 #include <string>
 #include <string_view>
@@ -48,14 +50,32 @@ constexpr void fold(boost::hash2::fnv1a_64 &h, const auto &v) {
 } // namespace detail
 
 // The model as a file keys on it: every described field, with the arena cut
-// at `upto`.  Off the one list, so a field added to Model is keyed on.
+// at `upto`.  Off the one list, so a field added to Model is keyed on.  The
+// tensor table is cut the same way, to the entries the kept nodes name: a
+// derivative sweep interns its zeros and ones there too, after the model, and
+// a saved model must key as a fresh one does.
 template <impl::Numeric T>
 [[nodiscard]] std::uint64_t digest(const Model<T> &m, std::size_t upto) {
   boost::hash2::fnv1a_64 h;
+  const auto kept = std::span{m.nodes}.first(std::min(upto, m.nodes.size()));
   boost::mp11::mp_for_each<detail::described_members<Model<T>>>([&](auto D) {
     if constexpr (std::string_view{decltype(D)::name} == "nodes") {
       detail::fold(h, upto);
-      detail::fold(h, std::span{m.nodes}.first(std::min(upto, m.nodes.size())));
+      detail::fold(h, kept);
+    } else if constexpr (std::string_view{decltype(D)::name} == "tensors") {
+      auto named = kept | std::views::filter([](const Node<T> &n) {
+                     return n.op == OpCode::VecConst || n.op == OpCode::MatConst;
+                   }) |
+                   std::views::transform(&Node<T>::slot) |
+                   impl::to<std::vector<std::uint32_t>>();
+      std::ranges::sort(named);
+      const auto [first, last] = std::ranges::unique(named);
+      named.erase(first, last);
+      detail::fold(h, named.size());
+      for (const std::uint32_t i : named) {
+        detail::fold(h, i);
+        detail::fold(h, m.tensors[i]);
+      }
     } else {
       detail::fold(h, m.*D.pointer);
     }
@@ -89,7 +109,7 @@ template <impl::Numeric T>
   detail::fold(h, g.layout());
   const auto schedule = g.schedule();
   detail::fold(h, schedule.size());
-  for (const auto &[v, fma] : schedule) {
+  for (const NodeId v : schedule | std::views::transform(&Step::node)) {
     detail::fold(h, v);
     detail::fold(h, g[v]);
     std::ranges::for_each(g.operands(v),

@@ -79,12 +79,15 @@ protected:
                                    std::size_t n) {
   Columns out(g.outputs().size(), std::vector<double>(n));
   std::vector<double> at(xs.size());
-  std::vector<double> tape(b.size());
+  std::vector<double> tape(g.tape_slots());
+  const auto rows = ddx::rt::in_order(g.output_rows()) | std::views::join |
+                    std::views::transform(&ddx::rt::TensorRow::at) |
+                    ddx::impl::to<std::vector<std::uint32_t>>();
   for (const std::size_t i : std::views::iota(0uz, n)) {
     std::ranges::transform(xs, at.begin(),
                            [i](const std::vector<double> &c) { return c[i]; });
     ddx::rt::evaluate_into(b, at, g.schedule(), std::span<double>{tape});
-    for (const auto [column, o] : std::views::zip(out, g.outputs())) {
+    for (const auto [column, o] : std::views::zip(out, rows)) {
       column[i] = tape[o];
     }
   }

@@ -240,7 +240,7 @@ TEST(RtExtern, SavesTheGraphAndBindsTheFunctionByNameOnLoad) {
   EXPECT_EQ(ddx::rt::load(path).error().code, ddx::errc::unbound_extern);
 
   const ddx::rt::ExternFns<double> fns{{"g", g_of}};
-  const auto loaded = ddx::rt::load(path, {}, fns);
+  const auto loaded = ddx::rt::load(path, fns);
   ASSERT_TRUE(loaded.has_value()) << loaded.error().code;
   for (const auto &at : points) {
     EXPECT_EQ(*loaded->jacobian(at), *eq.jacobian(at));

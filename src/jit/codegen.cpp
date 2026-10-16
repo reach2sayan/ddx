@@ -392,7 +392,8 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
            const HoistedColumns &cols, llvm::Value *index, llvm::Value *mask) {
   std::vector<llvm::Value *> value(g.size(), nullptr);
   std::map<std::pair<std::uint32_t, rt::NodeId>, Emitter::Answers> called;
-  for (const auto &[v, c] : g.schedule()) {
+  for (const rt::Step &s : g.schedule()) {
+    const auto &[v, c] = std::pair{s.node, s.fma};
     const auto &p = g[v];
     if (c) {
       value[v] = emit.fma(c, value[c.x], value[c.y], value[c.z]);

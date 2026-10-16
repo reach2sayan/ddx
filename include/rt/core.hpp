@@ -4,8 +4,8 @@
 #include "md/md.hpp"
 #include "ops/numeric.hpp" // compile_time_factorial
 #include "rt/archive/archive.hpp"
-#include "rt/cache.hpp"
 #include "rt/coupling.hpp"
+#include "rt/dense.hpp"
 #include "rt/derivative.hpp"
 #include "rt/expressions.hpp"
 #include "rt/graph.hpp"
@@ -132,6 +132,7 @@ struct Sweeps {
   Lazy<HessianVector> hvp;
   Lazy<VectorJacobian> vjp;
   Lazy<Tangent> jvp;
+  Lazy<DenseHessian> dense;
   Lazy<std::vector<NodeId>> tangent; // not saved: one forward sweep
   Lazy<std::vector<Step>> walk;      // a system's hessian() schedule
 #ifdef DDX_HAS_JIT
@@ -143,12 +144,8 @@ struct Sweeps {
 // every other sweep on first ask, a lane per Want.  Equation, System and the
 // Python Equation are this plus the spellings their callers want.  `Yield` is
 // what a sweep gives up while it runs: the GIL, on the Python side.
-template <impl::Numeric T, CValueCache<T> Cache,
-          std::default_initializable Yield = Nothing>
-class Core : public Caching<Core<T, Cache, Yield>, T, Cache> {
-  using Memo = Caching<Core, T, Cache>;
-  // Reaches arena(), arena_size() and sweeping().
-  friend Memo;
+template <impl::Numeric T, std::default_initializable Yield = Nothing>
+class Core {
   // Freezes its own lanes through checked(), over cells of this Jacobian.
   friend class Restricted<Core>;
 
@@ -365,6 +362,44 @@ public:
     });
   }
 
+  // The same n x n, dense and row-major, from one O(n^2) sweep: the gradient's
+  // cone walked with matrix tangents, where hessian() colours and sweeps n + 1
+  // times over a dense term.  One output only.
+  [[nodiscard]] result<std::vector<T>>
+  dense_hessian(const impl::rt_detail::CPointArg<T> auto &...args) const {
+    return point(args...).and_then([this](const auto &at) {
+      return orders(Want::DenseHessian).and_then([&] {
+        const std::size_t n = symbol_count();
+        std::array<T, 1> f{};
+        std::vector<T> g(derivative_.partial.size());
+        std::vector<T> h(n * n);
+        return gather(Want::DenseHessian, at, f, g, h).transform([&] {
+          // The block is column-major, H(i, j) at i + j n.
+          std::vector<T> out(n * n);
+          for (std::size_t i = 0; i < n; ++i) {
+            for (std::size_t j = 0; j < n; ++j) {
+              out[i * n + j] = h[i + j * n];
+            }
+          }
+          return out;
+        });
+      });
+    });
+  }
+  // How many terms the sweep kept quadratic, and how many fell back to a dense
+  // product: a model's structure defeated the algebra where the second is not
+  // zero -- still right, not O(n^2).
+  struct DenseCost {
+    std::size_t n2_terms = 0;
+    std::size_t n3_terms = 0;
+  };
+  [[nodiscard]] std::optional<DenseCost> dense_hessian_cost() const {
+    return unless_system([this] {
+      const DenseHessian &d = dense_sweep();
+      return DenseCost{.n2_terms = d.n2_terms, .n3_terms = d.n3_terms};
+    });
+  }
+
   // Whether to compile at all, and how; discards anything already compiled.
   // The one non-const member: a call overlapping it is the caller's race.
   auto &options(this auto &self, const jit::Options &opt) {
@@ -374,9 +409,6 @@ public:
     self.options_ = opt;
     self.settle_device();
     self.lanes_ = std::make_unique<Lanes>();
-    // codegen decides the arithmetic, so what was remembered was answered by
-    // another graph.
-    self.cache().clear();
     // Choosing a backend starts the build, so it overlaps whatever the caller
     // does before their first call.
     if (opt.backend != jit::Backend::Interpret && !self.poisoned()) {
@@ -390,14 +422,13 @@ public:
 
   // What computes the tensor nodes: the process default (rt::use_kernels)
   // unless this equation is handed a table of its own.  A table decides the
-  // last bits, so lanes and the remembered call go with the old one.
+  // last bits, so the lanes go with the old one.
   auto &kernels(this auto &self, const KernelTable &table) {
     if (&table == self.kernels_) {
       return self;
     }
     self.kernels_ = &table;
     self.lanes_ = std::make_unique<Lanes>();
-    self.cache().clear();
     return self;
   }
   [[nodiscard]] constexpr const KernelTable &tensor_kernels() const noexcept {
@@ -592,6 +623,20 @@ public:
                     n);
   }
 
+  // `h` is n^2 columns, column-major: H(i, j) is column i + j n.
+  [[nodiscard]] result<void>
+  dense_hessian(const impl::rt_detail::CColumns<const T *> auto &xs,
+                const impl::rt_detail::CColumns<T *> auto &f,
+                const impl::rt_detail::CColumns<T *> auto &g,
+                const impl::rt_detail::CColumns<T *> auto &h,
+                std::size_t n) const {
+    return dispatch(Want::DenseHessian, as_columns(xs),
+                    {.values = as_columns(f),
+                     .jacobian = as_columns(g),
+                     .hessian = as_columns(h)},
+                    n);
+  }
+
   [[nodiscard]] result<void>
   vjp(const impl::rt_detail::CColumns<const T *> auto &xs,
       const impl::rt_detail::CColumns<const T *> auto &w,
@@ -643,6 +688,9 @@ public:
   }
   [[nodiscard]] std::optional<std::size_t> hvp_columns() const {
     return unless_system([this] { return symbol_count(); });
+  }
+  [[nodiscard]] std::optional<std::size_t> dense_hessian_columns() const {
+    return unless_system([this] { return symbol_count() * symbol_count(); });
   }
   [[nodiscard]] std::optional<std::size_t> vjp_columns() const {
     return arity();
@@ -715,8 +763,7 @@ protected:
 
   // The arena is the equation's own from here: one it was lent is copied, so
   // nothing another equation or the caller builds can move a node under it.
-  constexpr Core(std::unique_ptr<Builder<T>> arena, std::vector<NodeId> roots,
-                 Cache memo = {})
+  constexpr Core(std::unique_ptr<Builder<T>> arena, std::vector<NodeId> roots)
       : arena_(std::move(arena)), roots_(std::move(roots)),
         // Before any sweep appends: what a saved file is keyed on.
         model_nodes_(static_cast<std::uint32_t>(arena_->size())) {
@@ -735,13 +782,12 @@ protected:
       derivative_ = build_jacobian_impl(*arena_, roots_);
     }
     settle();
-    this->take_cache(std::move(memo));
   }
 
   // The snapshot's node array is installed verbatim, not replayed: make() folds
   // and would renumber the ids the saved sweeps name.  A block the file carries
   // arrives built.
-  explicit Core(Rebuilt<T> r, Cache memo = {})
+  explicit Core(Rebuilt<T> r)
       : arena_(std::move(r.arena)), roots_(std::move(r.rest.roots)),
         model_nodes_(r.rest.model_nodes), options_(r.rest.options),
         objects_(std::move(r.rest.objects)),
@@ -767,8 +813,10 @@ protected:
       if (rest.jvp.value.size() == m) {
         sweeps_->jvp.settle(std::move(rest.jvp));
       }
+      if (rest.dense.block != no_node) {
+        sweeps_->dense.settle(std::move(rest.dense));
+      }
     }
-    this->take_cache(std::move(memo));
   }
 
   // Refused: by the code it carries, with nothing left to read.  poisoned()
@@ -825,19 +873,19 @@ protected:
   // The three ways an equation comes to be, for whichever class wraps this.
   template <typename D>
   [[nodiscard]] static constexpr D
-  make(Cache memo, std::span<const RTExpression<T>> outputs,
+  make(std::span<const RTExpression<T>> outputs,
        std::unique_ptr<Builder<T>> owned) {
     if (const auto why = why_not(outputs)) {
       return D{*why};
     }
     auto [arena, roots] = rooted(outputs, std::move(owned));
-    return D{std::move(arena), std::move(roots), std::move(memo)};
+    return D{std::move(arena), std::move(roots)};
   }
 
   // Build the model, then take the sweeps off disk if the file still describes
   // it.  An absent or stale file rebuilds rather than refusing; loaded() tells.
   template <typename D>
-  [[nodiscard]] static D cached(Cache memo, const std::filesystem::path &path,
+  [[nodiscard]] static D cached(const std::filesystem::path &path,
                                 std::span<const RTExpression<T>> outputs,
                                 std::unique_ptr<Builder<T>> owned)
     requires std::floating_point<T>
@@ -853,10 +901,9 @@ protected:
                  return std::ranges::find(arena->externs(), name,
                                           &ExternEntry<T>::name)
                      ->fn;
-               }),
-               std::move(memo)};
+               })};
     }
-    D eq{std::move(arena), std::move(roots), std::move(memo)};
+    D eq{std::move(arena), std::move(roots)};
     // A file that cannot be written is still a working equation.
     (void)eq.save(path);
     return eq;
@@ -868,7 +915,6 @@ protected:
   // `fns` lacks is errc::unbound_extern.
   template <typename D>
   [[nodiscard]] static result<D> load(const std::filesystem::path &path,
-                                      Cache memo,
                                       std::optional<std::size_t> outputs,
                                       const ExternFns<T> &fns)
     requires std::floating_point<T>
@@ -883,8 +929,7 @@ protected:
                  return it == fns.end()
                             ? nullptr
                             : std::make_shared<const ExternFn<T>>(it->second);
-               }),
-               std::move(memo)};
+               })};
           return eq.alive().transform([&] { return std::move(eq); });
         });
   }
@@ -913,6 +958,9 @@ protected:
     }
     snap.vjp = vjp_sweep();
     snap.jvp = jvp_sweep();
+    if (!is_system()) {
+      snap.dense = dense_sweep();
+    }
     snap.jacobian = derivative_;
     snap.roots = roots_;
     snap.model_nodes = model_nodes_;
@@ -961,8 +1009,7 @@ protected:
                                       std::size_t n) const {
     return checked(*lanes_, every_cell(), want, xs, out, n)
         .transform([&](const std::shared_ptr<const Compiled> &c) {
-          this->through(want, *c->graph, answered(*c), xs, out, n,
-                        [&] { run(*c, xs, out, n); });
+          run(*c, xs, out, n);
         });
   }
 
@@ -974,12 +1021,13 @@ protected:
     return ready(want).and_then(
         [&]() -> result<std::shared_ptr<const Compiled>> {
           auto c = lane_in(lanes, cells, want, n);
+          // Columns, not nodes: a vector output is one column per element.
           const bool fits =
               xs.size() == c->graph->arity() &&
-              std::ranges::none_of(zip_blocks(out, c->graph->output_blocks()),
+              std::ranges::none_of(zip_blocks(out, c->graph->layout()),
                                    [](const auto &pair) {
-                                     const auto &[columns, block] = pair;
-                                     return columns.size() != block.size();
+                                     const auto &[columns, count] = pair;
+                                     return columns.size() != count;
                                    });
           return fits ? result<std::shared_ptr<const Compiled>>{std::move(c)}
                       : fail(errc::wrong_column_count);
@@ -1093,6 +1141,11 @@ private:
     return sweep(sweeps_->hvp,
                  [this] { return build_hvp_impl(*arena_, roots_.front()); });
   }
+  [[nodiscard]] const DenseHessian &dense_sweep() const {
+    return sweep(sweeps_->dense, [this] {
+      return build_dense_hessian_impl(*arena_, roots_.front());
+    });
+  }
   [[nodiscard]] const VectorJacobian &vjp_sweep() const {
     return sweep(sweeps_->vjp,
                  [this] { return build_vjp_impl(*arena_, roots_); });
@@ -1143,6 +1196,9 @@ private:
       break;
     case Want::JacobianTangent:
       (void)tangent_sweep();
+      break;
+    case Want::DenseHessian:
+      (void)dense_sweep();
       break;
     case Want::Value:
     case Want::Jacobian:
@@ -1196,12 +1252,6 @@ private:
     return Sweeping{.held = reading()};
   }
 
-  // What Caching walks; its callers hold sweeping() around every read.
-  [[nodiscard]] const Builder<T> &arena() const noexcept { return *arena_; }
-  [[nodiscard]] std::size_t arena_size() const {
-    [[maybe_unused]] const auto held = reading();
-    return arena_->size();
-  }
 
   // The seeded products: the point widened by `along`.  A direction is one
   // value per symbol, or per function where the want's seeds say so; the
@@ -1443,6 +1493,9 @@ private:
     [[nodiscard]] std::span<const NodeId> jacobian_tangent() const {
       return product;
     }
+    [[nodiscard]] const DenseHessian &dense_hessian() const {
+      return core.sweeps_->dense.peek();
+    }
   };
 
   // The graphs a lane computes.  A poisoned equation freezes an empty one:
@@ -1529,10 +1582,6 @@ private:
     return options_.codegen.contract;
   }
 
-  [[nodiscard]] static Answered answered(const Compiled &c) noexcept {
-    return c.kernel ? Answered::ByKernel : Answered::BySweep;
-  }
-
   // A kernel that could not run this call -- a device refusing a launch --
   // hands it back, and the sweep answers.
   void run(const Compiled &c, std::span<const T *const> xs,
@@ -1550,24 +1599,22 @@ private:
   void interpret(const Graph<T> &graph, const KernelTable &kernels,
                  std::span<const T *const> xs, const Columns<T> &out,
                  std::size_t n) const {
-    const auto blocks = graph.output_blocks();
+    const auto blocks = graph.output_rows();
     const auto schedule = graph.schedule();
-    // The tensor rows beside each tape, sized by the graph: offsets are the
-    // schedule's own, so a grown arena changes nothing here.
+    // Both tapes are sized by the graph, whose rows are packed by liveness:
+    // the schedule names rows, so a grown arena changes nothing here.
     const TensorLayout &rows = graph.tensors();
-    const auto tensors = [&rows, &kernels](std::vector<T> &vtape,
-                                           std::size_t lanes) {
+    const auto tensors = [&](std::vector<T> &vtape, std::size_t lanes) {
       vtape.resize(rows.extent * lanes);
-      return detail::Tensors<T>{
-          .rows = rows.rows, .vtape = vtape.data(), .kernels = &kernels};
+      return detail::Scratch<T>{.slots = graph.slots(),
+                                .rows = rows.rows,
+                                .vtape = vtape.data(),
+                                .kernels = &kernels};
     };
     // The graph's width, not the arena's symbol count: `xs` carries one column
     // per input, and a lane may hold leaves that are not symbols.
     const std::size_t inputs = graph.arity();
 
-    // Tapes are sized by the arena rather than the graph: it may have grown
-    // since the freeze, and live ids index below that.
-    //
     // thread_local rather than a member: two threads may be inside one
     // equation at once.  resize() rather than assign(): every id read is
     // written first, so zeroing the arena per call is waste.
@@ -1579,13 +1626,14 @@ private:
       static thread_local std::vector<T> tape;
       static thread_local std::vector<T> vtape;
       at.resize(inputs);
-      tape.resize(arena_->size());
+      tape.resize(graph.tape_slots());
       const auto t = tensors(vtape, 1);
       for (const std::size_t i : std::views::iota(0uz, n)) {
         std::ranges::transform(xs, at.begin(),
                                [i](const T *column) { return column[i]; });
         evaluate_into(*arena_, at, schedule, std::span<T>{tape}, t);
-        scatter_blocks(blocks, std::span<const T>{tape}, out, i, 1, 1);
+        scatter_blocks(blocks, std::span<const T>{tape},
+                       std::span<const T>{vtape}, out, i, 1, 1);
       }
       return;
     }
@@ -1598,7 +1646,7 @@ private:
     static thread_local std::vector<T> tape;
     static thread_local std::vector<T> vtape;
     lanes.resize(inputs * block_lanes);
-    tape.resize(arena_->size() * block_lanes);
+    tape.resize(graph.tape_slots() * block_lanes);
     const auto t = tensors(vtape, block_lanes);
 
     for (const std::size_t base :
@@ -1612,8 +1660,8 @@ private:
       }
       evaluate_block<block_lanes>(*arena_, std::span<const T>{lanes}, schedule,
                                   std::span<T>{tape}, t);
-      scatter_blocks(blocks, std::span<const T>{tape}, out, base, block_lanes,
-                     width);
+      scatter_blocks(blocks, std::span<const T>{tape},
+                     std::span<const T>{vtape}, out, base, block_lanes, width);
     }
   }
 
@@ -1814,36 +1862,33 @@ template <impl::Numeric T>
 
 // What Equation and System are over Core: the three ways one comes to be, and
 // evaluate(), with `Outputs` the one place the count's policy acts.
-template <typename D, impl::Numeric T, CValueCache<T> Cache, typename Outputs>
-class Facade : public Core<T, Cache> {
-  using Base = Core<T, Cache>;
+template <typename D, impl::Numeric T, typename Outputs>
+class Facade : public Core<T> {
+  using Base = Core<T>;
 
 public:
   // A refusal rides on the equation rather than a result at every call site;
   // see poisoned().  `owned` is null where the outputs' arena is the caller's,
   // which is then copied.
   [[nodiscard]] static constexpr D
-  create(Cache memo, std::unique_ptr<Builder<T>> owned,
+  create(std::unique_ptr<Builder<T>> owned,
          std::span<const RTExpression<T>> outputs) {
-    return Base::template make<D>(std::move(memo), outputs, std::move(owned));
+    return Base::template make<D>(outputs, std::move(owned));
   }
-  [[nodiscard]] static D cached(Cache memo, const std::filesystem::path &path,
+  [[nodiscard]] static D cached(const std::filesystem::path &path,
                                 std::unique_ptr<Builder<T>> owned,
                                 std::span<const RTExpression<T>> outputs)
     requires std::floating_point<T>
   {
-    return Base::template cached<D>(std::move(memo), path, outputs,
-                                    std::move(owned));
+    return Base::template cached<D>(path, outputs, std::move(owned));
   }
   // Nothing built and nothing swept; an extern function the file names is
   // bound from `fns` by name.
   [[nodiscard]] static result<D> load(const std::filesystem::path &path,
-                                      Cache memo = {},
                                       const ExternFns<T> &fns = {})
     requires std::floating_point<T>
   {
-    return Base::template load<D>(path, std::move(memo), Outputs::expected,
-                                  fns);
+    return Base::template load<D>(path, Outputs::expected, fns);
   }
 
   [[nodiscard]] constexpr auto

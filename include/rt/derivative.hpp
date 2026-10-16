@@ -363,6 +363,18 @@ template <impl::Numeric T>
         add_to(node.a, g, vexpr(adj[v]));
         add_to(node.b, g, vexpr(adj[v])[node.slot]);
         break;
+      // The dense Hessian's matrix rows are never under a root; nothing
+      // differentiates through them.
+      case OpCode::MatRow:
+      case OpCode::Diag:
+      case OpCode::Outer:
+      case OpCode::RowScale:
+      case OpCode::ColScale:
+      case OpCode::MatVec:
+      case OpCode::MatMul:
+      case OpCode::StackRows:
+      case OpCode::RowOf:
+        break;
       default:
         std::unreachable();
       }
@@ -529,6 +541,16 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
       case OpCode::AddAt:
         d[v] = b.make_tensor(OpCode::AddAt, d[node.a], d[node.b], node.slot);
         break;
+      case OpCode::MatRow:
+      case OpCode::Diag:
+      case OpCode::Outer:
+      case OpCode::RowScale:
+      case OpCode::ColScale:
+      case OpCode::MatVec:
+      case OpCode::MatMul:
+      case OpCode::StackRows:
+      case OpCode::RowOf:
+        break; // never under a root
       default:
         std::unreachable();
       }

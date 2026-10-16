@@ -205,21 +205,6 @@ output at one point is a `float`, and everything else is an array. The point is
 bound as an array whatever was passed, so `call.x` is writable even when the
 argument was a list.
 
-## Remembering the last call
-
-`remember=True` keeps the last call: a repeated point is answered off the last
-one, a point one symbol away sweeps only what that symbol reaches, and the
-numbers are unchanged.
-
-```python
-f = ddx.equation(model, remember=True)
-value = f(x)              # swept
-grad = f.gradient(x)      # its own lane
-again = f(x)              # nothing swept
-```
-
-It applies to a point at a time and not to an array of them.
-
 ## Errors
 
 `ddx.Error` is a `RuntimeError` carrying a code:

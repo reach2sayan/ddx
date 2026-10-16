@@ -24,7 +24,7 @@ namespace {
 // both directions are inserted; the ordering and the colouring read only
 // out_degree and adjacent_vertices, which then answer as the undirected list
 // did -- ascending, which keeps the colours identical.  One-shot from an edge
-// range, as graph.hpp and cone.hpp already build theirs.
+// range, as graph.hpp already builds its.
 using ConflictGraph = boost::compressed_sparse_row_graph<boost::directedS>;
 
 // Four stages, each feeding the next off shared state; a step per member keeps

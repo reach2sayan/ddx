@@ -5,7 +5,6 @@
 #include "expression.hpp"
 
 #include "rt/archive/archive.hpp"
-#include "rt/cache.hpp"
 #include "rt/coupling.hpp"
 #include "rt/derivative.hpp"
 #include "rt/dot.hpp"
@@ -54,12 +53,9 @@ inline void scatter(const auto &layout, Columns &cells, Dense &dense,
       [&dense](std::size_t c) { return dense.at(c); }, n, points);
 }
 
-// A Python caller cannot name a C++ type, so the only choice is whether there
-// is one.
-using PyCache = rt::LastValue<double>;
-// Every sweep gives up the GIL while it runs, and only the sweep: the lanes,
-// the cache and the arena's lock are all touched holding it.
-using PyCore = rt::detail::Core<double, PyCache, pyb::gil_scoped_release>;
+// Every sweep gives up the GIL while it runs, and only the sweep: the lanes
+// and the arena's lock are touched holding it.
+using PyCore = rt::detail::Core<double, pyb::gil_scoped_release>;
 
 // rt::detail::Core, spelled in arrays: the output count a number, a point a
 // dict or an array, and a refusal an exception.
@@ -69,15 +65,14 @@ public:
 
   // The arena is copied: the expressions that built it stay usable.
   PyEquation(const std::shared_ptr<rt::Builder<double>> &arena,
-             std::vector<rt::NodeId> roots, bool remember = false)
-      : PyCore{std::make_unique<rt::Builder<double>>(*arena),
-               std::move(roots), PyCache{remember}},
+             std::vector<rt::NodeId> roots)
+      : PyCore{std::make_unique<rt::Builder<double>>(*arena), std::move(roots)},
         symbols_{*sound().symbols()}, inputs_{*inputs()} {}
 
   // From a file: the sweeps it carries arrive built.  Binding an extern
   // function by name has no Python spelling, so a file naming one is refused.
-  explicit PyEquation(rt::Verified<double> snap, bool remember = false)
-      : PyCore{std::move(snap).rebuild(), PyCache{remember}},
+  explicit PyEquation(rt::Verified<double> snap)
+      : PyCore{std::move(snap).rebuild()},
         symbols_{*sound().symbols()}, inputs_{*inputs()} {}
 
   // The same struct the C++ equations fill: one serialiser, and what the cache
@@ -118,7 +113,7 @@ public:
       return pyb::float_(f.value);
     }
     Block f{shape_of({ssize(height())}, at),
-            count(*l, &rt::OutputSpans::values), at.size()};
+            count(*l, &rt::Layout::values), at.size()};
     run(Want::Value, at, {.values = f.rows()});
     return std::move(f).array();
   }
@@ -126,7 +121,7 @@ public:
   [[nodiscard]] pyb::tuple jacobian(const pyb::handle &x) {
     const Point at{x, inputs_};
     const auto l = lane(Want::Jacobian);
-    Scratch cells{count(*l, &rt::OutputSpans::jacobian), at.size()};
+    Scratch cells{count(*l, &rt::Layout::jacobian), at.size()};
     Dense g{shape_of({ssize(height()), ssize(width())}, at), at.size()};
     Cell cell;
     auto f = values_block(*l, at);
@@ -140,7 +135,7 @@ public:
   [[nodiscard]] pyb::object gradient(const pyb::handle &x) {
     const Point at{x, inputs_};
     const auto l = lane(Want::Gradient);
-    Scratch cells{count(*l, &rt::OutputSpans::jacobian), at.size()};
+    Scratch cells{count(*l, &rt::Layout::jacobian), at.size()};
     Dense g{shape_of({ssize(height()), ssize(width())}, at), at.size()};
     run(Want::Gradient, at, {.jacobian = cells.rows()});
     scatter_jacobian(cells, g, at.size());
@@ -158,7 +153,7 @@ public:
     const Point dir{v, symbols_};
     const auto l = lane(Want::Jvp);
     Block out{shape_of({ssize(height())}, at),
-              count(*l, &rt::OutputSpans::jacobian), at.size()};
+              count(*l, &rt::Layout::jacobian), at.size()};
     Cell cell;
     auto f = values_block(*l, at);
     run_seeded(Want::Jvp, at, dir,
@@ -172,7 +167,7 @@ public:
     // nothing to key on.
     const Point dir{w, height()};
     const auto l = lane(Want::Vjp);
-    Block out{symbol_shape(at), count(*l, &rt::OutputSpans::jacobian),
+    Block out{symbol_shape(at), count(*l, &rt::Layout::jacobian),
               at.size()};
     Cell cell;
     auto f = values_block(*l, at);
@@ -190,9 +185,9 @@ public:
     const auto l = lane(Want::Hvp);
     const std::size_t n = width();
 
-    Scratch partials{count(*l, &rt::OutputSpans::jacobian), at.size()};
+    Scratch partials{count(*l, &rt::Layout::jacobian), at.size()};
     Dense g{shape_of({ssize(height()), ssize(n)}, at), at.size()};
-    Block out{symbol_shape(at), count(*l, &rt::OutputSpans::hessian), at.size()};
+    Block out{symbol_shape(at), count(*l, &rt::Layout::hessian), at.size()};
     Cell cell;
     auto f = values_block(*l, at);
     run_seeded(Want::Hvp, at, dir,
@@ -202,6 +197,37 @@ public:
     scatter_jacobian(partials, g, at.size());
     return pyb::make_tuple(value_of(f, cell), std::move(g).array(),
                            std::move(out).array());
+  }
+
+  // (value, gradient, H): the dense n x n from one O(n^2) sweep over matrix
+  // rows, where hessian() colours.  One output only; the lane's block is
+  // column-major and the array row-major.
+  [[nodiscard]] pyb::tuple dense_hessian(const pyb::handle &x) {
+    unwrap(ready(Want::DenseHessian));
+    const Point at{x, inputs_};
+    const auto l = lane(Want::DenseHessian);
+    const std::size_t n = width();
+    Dense g{shape_of({ssize(height()), ssize(n)}, at), at.size()};
+    Scratch partials{count(*l, &rt::Layout::jacobian), at.size()};
+    Scratch block{n * n, at.size()};
+    Cell cell;
+    auto f = values_block(*l, at);
+    run(Want::DenseHessian, at,
+        {.values = f ? f->rows() : cell.rows(),
+         .jacobian = partials.rows(),
+         .hessian = block.rows()});
+    scatter_jacobian(partials, g, at.size());
+    Dense dense{shape_of({ssize(height()), ssize(n), ssize(n)}, at),
+                at.size()};
+    for (std::size_t i = 0; i < n; ++i) {
+      for (std::size_t j = 0; j < n; ++j) {
+        std::ranges::copy_n(block.rows()[i + j * n],
+                            static_cast<std::ptrdiff_t>(at.size()),
+                            dense.at(i * n + j));
+      }
+    }
+    return pyb::make_tuple(value_of(f, cell), std::move(g).array(),
+                           std::move(dense).array());
   }
 
   // F(z, x) for each implicit's residual at one point.
@@ -224,8 +250,8 @@ public:
     const Point dir{v, symbols_};
     const auto l = lane(Want::JacobianTangent);
     const auto shape = shape_of({ssize(height()), ssize(width())}, at);
-    Scratch cells{count(*l, &rt::OutputSpans::jacobian), at.size()};
-    Scratch moved{count(*l, &rt::OutputSpans::hessian), at.size()};
+    Scratch cells{count(*l, &rt::Layout::jacobian), at.size()};
+    Scratch moved{count(*l, &rt::Layout::hessian), at.size()};
     Dense g{shape, at.size()};
     Dense dg{shape, at.size()};
     Cell cell;
@@ -277,10 +303,10 @@ private:
   friend class PyCall;
   friend class PyRestricted;
 
-  using BlockMember = std::span<const rt::NodeId> rt::OutputSpans::*;
+  using BlockMember = std::size_t rt::Layout::*;
   [[nodiscard]] static std::size_t count(const Compiled &c,
                                          BlockMember which) {
-    return (c.graph->output_blocks().*which).size();
+    return c.graph->layout().*which;
   }
 
   // --- running -------------------------------------------------------------
@@ -317,8 +343,8 @@ private:
     const auto l = lane(Want::Hessian);
     const std::size_t n = width();
     Dense g{shape_of({ssize(height()), ssize(n)}, at), at.size()};
-    Scratch partials{count(*l, &rt::OutputSpans::jacobian), at.size()};
-    Scratch compressed{count(*l, &rt::OutputSpans::hessian), at.size()};
+    Scratch partials{count(*l, &rt::Layout::jacobian), at.size()};
+    Scratch compressed{count(*l, &rt::Layout::hessian), at.size()};
     Cell cell;
     auto f = values_block(*l, at);
     run(Want::Hessian, at,
@@ -407,7 +433,7 @@ private:
     return scalar(at) ? std::nullopt
                       : std::optional<Block>{
                             std::in_place, shape_of({ssize(height())}, at),
-                            count(c, &rt::OutputSpans::values), at.size()};
+                            count(c, &rt::Layout::values), at.size()};
   }
 
   [[nodiscard]] static pyb::object value_of(std::optional<Block> &f,

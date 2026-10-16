@@ -61,6 +61,7 @@ template <impl::Numeric T> struct Snapshot {
   HessianVector hvp;
   VectorJacobian vjp;
   Tangent jvp;
+  DenseHessian dense;
   jit::Options options;
   // The staleness key: rebuilding the model reproduces this prefix.
   std::uint32_t model_nodes = 0;
@@ -69,7 +70,7 @@ template <impl::Numeric T> struct Snapshot {
   // data -- a load runs on its own table and may differ in the last bits.
   std::string kernels;
   BOOST_DESCRIBE_CLASS(Snapshot, (),
-                       (model, roots, jacobian, hessians, hvp, vjp, jvp,
+                       (model, roots, jacobian, hessians, hvp, vjp, jvp, dense,
                         options, model_nodes, objects, kernels),
                        (), ())
 };

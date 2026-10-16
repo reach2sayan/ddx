@@ -69,14 +69,11 @@ if TYPE_CHECKING:
 		model: Model | str | list[str],
 		*,
 		cache: StrPath | None = None,
-		remember: bool = False,
 	) -> Equation:
 		"""Build an equation from a model, or from expressions written as text --
-		one string per function.  ``cache`` is a file to keep it in, and
-		``remember`` makes a call at a point already asked come back off the
-		last one."""
+		one string per function.  ``cache`` is a file to keep it in."""
 
-	def load(path: StrPath, *, remember: bool = False) -> Equation:
+	def load(path: StrPath) -> Equation:
 		"""Read an equation from a file, running no model and sweeping nothing."""
 
 else:

@@ -159,7 +159,7 @@ private:
                std::ranges::all_of(*args, scalar);
       }
       case OpCode::PackArgs:
-        return scalar(a); // `b` is the rest, which its Pack walks
+        return true; // a list: its Pack or StackRows checks the items
       case OpCode::Gather:
         return vec(a) && n.slot < width_of(m, a);
       case OpCode::Map:
@@ -182,6 +182,38 @@ private:
       }
       case OpCode::AddAt:
         return vec(a) && scalar(b) && n.slot < width_of(m, a);
+      case OpCode::MatRow:
+        return m.op_of(a) == OpCode::MatConst && n.slot <= 1;
+      case OpCode::Diag:
+        return vec(a) && shape_of(m, a).cols == 1;
+      case OpCode::Outer:
+        return vec(a) && vec(b) && shape_of(m, a).cols == 1 &&
+               shape_of(m, b).cols == 1;
+      case OpCode::RowScale:
+        return vec(a) && vec(b) && shape_of(m, a).cols == 1 &&
+               shape_of(m, a).rows == shape_of(m, b).rows;
+      case OpCode::ColScale:
+        return vec(a) && vec(b) && shape_of(m, b).cols == 1 &&
+               shape_of(m, a).cols == shape_of(m, b).rows;
+      case OpCode::MatVec: {
+        if (!vec(a) || !vec(b) || n.slot > 1 || shape_of(m, b).cols != 1) {
+          return false;
+        }
+        const Shape t = shape_of(m, a);
+        return shape_of(m, b).rows == (n.slot ? t.rows : t.cols);
+      }
+      case OpCode::MatMul:
+        return vec(a) && vec(b) && shape_of(m, a).cols == shape_of(m, b).rows;
+      case OpCode::StackRows: {
+        const auto items = pack_arguments(m, v);
+        return n.slot >= 1 && items.has_value() &&
+               std::ranges::all_of(*items, [&](NodeId u) {
+                 return vec(u) && shape_of(m, u) == shape_of(m, (*items)[0]) &&
+                        shape_of(m, u).cols == 1;
+               });
+      }
+      case OpCode::RowOf:
+        return vec(a) && n.slot < shape_of(m, a).rows;
       default: // a scalar op, over scalars
         return std::ranges::all_of(detail::operands_of(m, v), scalar);
       }
@@ -246,7 +278,16 @@ private:
         h.value == no_node && h.partial.empty() && h.product.empty();
     const bool vjp_absent = j.value.empty() && j.product.empty();
     const bool jvp_absent = t.value.empty() && t.product.empty();
-    return (hvp_absent ||
+    const auto &d = s_.dense;
+    const bool dense_absent =
+        d.value == no_node && d.partial.empty() && d.block == no_node;
+    const bool dense_whole =
+        in(d.value) && d.partial.size() == nsym &&
+        std::ranges::all_of(d.partial, in) && in(d.block) &&
+        s_.model.op_of(d.block) == OpCode::StackRows &&
+        shape_of(s_.model, d.block) == Shape{.rows = static_cast<std::uint32_t>(nsym),
+                                             .cols = static_cast<std::uint32_t>(nsym)};
+    return (dense_absent || dense_whole) && (hvp_absent ||
             (in(h.value) && h.partial.size() == nsym &&
              h.product.size() == nsym && std::ranges::all_of(h.partial, in) &&
              std::ranges::all_of(h.product, in))) &&

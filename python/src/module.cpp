@@ -102,16 +102,16 @@ pyb::handle error_class;
 [[nodiscard]] pyb::object
 built_or_loaded(const std::optional<std::filesystem::path> &cache,
                 std::shared_ptr<rt::Builder<double>> arena,
-                std::vector<rt::NodeId> roots, bool remember) {
+                std::vector<rt::NodeId> roots) {
   if (cache) {
     if (auto snap = rt::load_snapshot<double>(*cache);
         snap &&
         PyEquation::describes(**snap, *arena, roots, arena->size())) {
-      return pyb::cast(PyEquation{std::move(*snap), remember});
+      return pyb::cast(PyEquation{std::move(*snap)});
     }
   }
   pyb::object eq =
-      pyb::cast(PyEquation{std::move(arena), std::move(roots), remember});
+      pyb::cast(PyEquation{std::move(arena), std::move(roots)});
   if (cache) {
     // A cache that cannot be written is still a working equation.
     (void)eq.cast<PyEquation &>().save(*cache);
@@ -122,10 +122,9 @@ built_or_loaded(const std::optional<std::filesystem::path> &cache,
 // An equation from a file and nothing else: no model runs and nothing is
 // swept.  The output count is a number here, so unlike the C++ side there is
 // nothing to state and nothing to refuse.
-[[nodiscard]] pyb::object load_equation(const std::filesystem::path &path,
-                                        bool remember) {
+[[nodiscard]] pyb::object load_equation(const std::filesystem::path &path) {
   return pyb::cast(
-      PyEquation{unwrap(rt::load_snapshot<double>(path)), remember});
+      PyEquation{unwrap(rt::load_snapshot<double>(path))});
 }
 
 // ddx.equation over sources rather than a callback: the same three steps, with
@@ -135,8 +134,7 @@ built_or_loaded(const std::optional<std::filesystem::path> &cache,
 // introduces still wants a slot.
 [[nodiscard]] pyb::object
 text_equation(std::span<const std::string> sources,
-              const std::optional<std::filesystem::path> &cache,
-              bool remember) {
+              const std::optional<std::filesystem::path> &cache) {
   auto arena = std::make_shared<rt::Builder<double>>();
   pyb::list built;
   for (const std::string &source : sources) {
@@ -148,7 +146,7 @@ text_equation(std::span<const std::string> sources,
                                         arena}));
   }
   auto roots = roots_of(built, *arena);
-  return built_or_loaded(cache, std::move(arena), std::move(roots), remember);
+  return built_or_loaded(cache, std::move(arena), std::move(roots));
 }
 
 // The whole of ddx.equation: install an arena, run the model in it, take what
@@ -156,8 +154,7 @@ text_equation(std::span<const std::string> sources,
 // number rather than a template parameter.
 [[nodiscard]] pyb::object
 make_equation(const pyb::object &model,
-              const std::optional<std::filesystem::path> &cache,
-              bool remember) {
+              const std::optional<std::filesystem::path> &cache) {
   auto arena = std::make_shared<rt::Builder<double>>();
   pyb::object built;
   {
@@ -170,7 +167,7 @@ make_equation(const pyb::object &model,
 
   auto roots = roots_of(built, *arena);
   pyb::object eq =
-      built_or_loaded(cache, std::move(arena), std::move(roots), remember);
+      built_or_loaded(cache, std::move(arena), std::move(roots));
 
   // What functools.wraps would do, without a Python wrapper to do it: the
   // equation answers help() and repr() with the model's own name and docstring.
@@ -313,23 +310,20 @@ PYBIND11_MODULE(_ddx, m) {
   m.def(
       "equation",
       [](const std::string &source,
-         const std::optional<std::filesystem::path> &cache, bool remember) {
-        return ddx::py::text_equation(std::span{&source, 1}, cache, remember);
+         const std::optional<std::filesystem::path> &cache) {
+        return ddx::py::text_equation(std::span{&source, 1}, cache);
       },
-      pyb::arg("source"), pyb::kw_only(), pyb::arg("cache") = pyb::none(),
-      pyb::arg("remember") = false);
+      pyb::arg("source"), pyb::kw_only(), pyb::arg("cache") = pyb::none());
   m.def(
       "equation",
       [](const std::vector<std::string> &sources,
-         const std::optional<std::filesystem::path> &cache, bool remember) {
-        return ddx::py::text_equation(sources, cache, remember);
+         const std::optional<std::filesystem::path> &cache) {
+        return ddx::py::text_equation(sources, cache);
       },
-      pyb::arg("source"), pyb::kw_only(), pyb::arg("cache") = pyb::none(),
-      pyb::arg("remember") = false);
+      pyb::arg("source"), pyb::kw_only(), pyb::arg("cache") = pyb::none());
   m.def("equation", &ddx::py::make_equation, pyb::arg("model"), pyb::kw_only(),
-        pyb::arg("cache") = pyb::none(), pyb::arg("remember") = false);
-  m.def("load", &ddx::py::load_equation, pyb::arg("path"), pyb::kw_only(),
-        pyb::arg("remember") = false);
+        pyb::arg("cache") = pyb::none());
+  m.def("load", &ddx::py::load_equation, pyb::arg("path"));
 #define DDX_PY_INPUT(fn, Op, ...)                                              \
   m.def(                                                                       \
       #fn,                                                                     \
@@ -643,6 +637,7 @@ PYBIND11_MODULE(_ddx, m) {
       .def("jvp", &PyEquation::jvp, pyb::arg("v"), pyb::arg("x"))
       .def("vjp", &PyEquation::vjp, pyb::arg("w"), pyb::arg("x"))
       .def("hvp", &PyEquation::hvp, pyb::arg("v"), pyb::arg("x"))
+      .def("dense_hessian", &PyEquation::dense_hessian, pyb::arg("x"))
       .def("jacobian_jvp", &PyEquation::jacobian_jvp, pyb::arg("v"),
            pyb::arg("x"))
       .def("residual", &PyEquation::residual_at, pyb::arg("x"))
