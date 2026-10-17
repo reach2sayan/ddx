@@ -2,6 +2,13 @@
 #   ddx/_ddx.cpython-*.so   these bindings
 #   ddx/libddx.so.1         the library they link
 
+# A Windows wheel is MSVC-built: anything else links a runtime the wheel does
+# not carry, and the import fails on every machine but the builder's.
+if (WIN32 AND NOT MSVC)
+    message(FATAL_ERROR "the Python module on Windows needs MSVC, not "
+                        "${CMAKE_CXX_COMPILER_ID}; run from a developer prompt")
+endif ()
+
 pybind11_add_module(ddx_python src/module.cpp)
 set_target_properties(ddx_python PROPERTIES OUTPUT_NAME _ddx)
 target_link_libraries(ddx_python PRIVATE ddx::rt)
