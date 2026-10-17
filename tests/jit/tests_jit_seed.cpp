@@ -1,5 +1,6 @@
 #include "ddx.hpp"
 #include "jit/kernel.hpp"
+#include "jit/tests_jit_common.hpp"
 #include "rt/graph.hpp"
 #include "rt/interpret.hpp"
 
@@ -15,17 +16,6 @@ namespace {
 using ddx::rt::Builder;
 using ddx::rt::Graph;
 
-ddx::jit::Compiler &compiler() {
-  static ddx::jit::result<ddx::jit::Compiler> c = ddx::jit::Compiler::create();
-  EXPECT_TRUE(c.has_value()) << (c ? "" : c.error().detail);
-  return *c;
-}
-
-ddx::jit::Kernel must_compile(auto &&...args) {
-  auto k = compiler().compile(static_cast<decltype(args) &&>(args)...);
-  EXPECT_TRUE(k.has_value()) << (k ? std::string{} : k.error().detail);
-  return k ? std::move(*k) : ddx::jit::Kernel{};
-}
 
 // x, y, then v0, v1 -- the order input_column() states.
 Graph<> seeded_graph(Builder<> &b) {

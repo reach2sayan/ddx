@@ -3,8 +3,8 @@
 #include "cl/device.hpp"
 #include "cl/kernel.hpp"
 #include "jit/kernel.hpp"
-#include "rt/archive/archive.hpp" // object_of, adopt_stored
 #include "rt/graph.hpp"
+#include "rt/kernels.hpp"
 #include "util/config.hpp" // DDX_FWD
 
 #include <array>
@@ -36,8 +36,8 @@ struct Guarded {
   mutable std::shared_mutex mutex;
 };
 
-// The kernel a lane publishes, whichever backend built it.  A variant, so the
-// alternative a build may lack is spelled here and nowhere else.
+// The kernel a pipeline publishes, whichever backend built it.  A variant, so
+// the alternative a build may lack is spelled here and nowhere else.
 class AnyKernel {
 public:
   AnyKernel() = default;
@@ -101,10 +101,10 @@ private:
 class Pending {
 public:
   Pending() = default;
-  explicit Pending(std::shared_future<jit::result<jit::Kernel>> f)
+  explicit Pending(std::shared_future<jit::compile_result<jit::Kernel>> f)
       : future_{std::move(f)} {}
 #ifdef DDX_HAS_OPENCL
-  explicit Pending(std::shared_future<cl::result<cl::Kernel>> f)
+  explicit Pending(std::shared_future<cl::compile_result<cl::Kernel>> f)
       : future_{std::move(f)} {}
 #endif
 
@@ -124,7 +124,7 @@ public:
     std::visit([](const auto &f) { f.wait(); }, future_);
   }
   // The kernel, or why there is none.  Only once landed().
-  [[nodiscard]] jit::result<AnyKernel> take() const {
+  [[nodiscard]] jit::compile_result<AnyKernel> take() const {
     return std::visit(
         [](const auto &f) {
           return f.get().transform([](const auto &k) { return AnyKernel{k}; });
@@ -134,11 +134,11 @@ public:
 
 private:
 #ifdef DDX_HAS_OPENCL
-  std::variant<std::shared_future<jit::result<jit::Kernel>>,
-               std::shared_future<cl::result<cl::Kernel>>>
+  std::variant<std::shared_future<jit::compile_result<jit::Kernel>>,
+               std::shared_future<cl::compile_result<cl::Kernel>>>
       future_;
 #else
-  std::variant<std::shared_future<jit::result<jit::Kernel>>> future_;
+  std::variant<std::shared_future<jit::compile_result<jit::Kernel>>> future_;
 #endif
 };
 
@@ -153,30 +153,34 @@ template <impl::Numeric T> struct Compiled {
   AnyKernel kernel{};
   // Rungs share one pool and need not land in the order they were asked for,
   // so this is what refuses a late one.
-  jit::Level level = jit::Level::O0;
+  jit::OptLevel level = jit::OptLevel::O0;
+  // What the sweep computes tensor rows with: resolved when the pipeline froze,
+  // so a table the equation is handed later means a new pipeline.
+  const TensorKernelTable *kernels = nullptr;
 
   [[nodiscard]] std::shared_ptr<const Compiled> with(AnyKernel k,
-                                                     jit::Level l) const {
-    return std::make_shared<const Compiled>(Compiled{.graph = graph,
-                                                     .compile_graph =
-                                                         compile_graph,
-                                                     .kernel = std::move(k),
-                                                     .level = l});
+                                                     jit::OptLevel l) const {
+    return std::make_shared<const Compiled>(
+        Compiled{.graph = graph,
+                 .compile_graph = compile_graph,
+                 .kernel = std::move(k),
+                 .level = l,
+                 .kernels = kernels});
   }
 };
 
-// What a lane needs from the equation that owns it.  Both null is a lane that
-// will never compile: an interpreting backend, a poisoned equation and a host
-// with neither backend all arrive here as one.  At most one is set.
+// What a pipeline needs from the equation that owns it.  Both null is a
+// pipeline that will never compile: an interpreting backend, a poisoned
+// equation and a host with neither backend all arrive here as one.  At most one
+// is set.
 struct Setting {
   jit::Options options{};
-  std::span<const Object> objects{};
   jit::Compiler *compiler = nullptr;  // Compile and Adapt
   const cl::Device *device = nullptr; // Device
 };
 
 // Two rungs: a cheap compile that lands soon, then the requested level.
-template <impl::Numeric T> class Lane {
+template <impl::Numeric T> class Pipeline {
 public:
   using Held = Compiled<T>;
   static constexpr std::size_t Rungs = 2;
@@ -194,7 +198,8 @@ public:
         return ready_;
       }
     }
-    [[maybe_unused]] const auto fill = lock_.write(); // another thread may have won
+    [[maybe_unused]] const auto fill =
+        lock_.write(); // another thread may have won
     if (!ready_) {
       prepare(want, setting, DDX_FWD(freeze));
     }
@@ -207,25 +212,6 @@ public:
     return ready_;
   }
 
-  // Only an LLVM kernel that kept its bytes, so without retain_object an
-  // equation saves its graph and no code.
-  [[nodiscard]] std::optional<Object> object([[maybe_unused]] Want want,
-                                             const Setting &setting) const {
-    [[maybe_unused]] const auto read = lock_.read();
-    const jit::Kernel *const kernel =
-        ready_ ? ready_->kernel.jit_kernel() : nullptr;
-    if (setting.compiler == nullptr || kernel == nullptr ||
-        kernel->object().empty()) {
-      return std::nullopt;
-    }
-#ifdef DDX_HAS_JIT
-    return object_of(want, *ready_->graph, *kernel, *setting.compiler,
-                     setting.options.codegen);
-#else
-    return std::nullopt;
-#endif
-  }
-
   // The cheapest rung, so a caller waits on it holding no lock of ours -- and,
   // on the Python side, none of its own either.
   [[nodiscard]] Pending pending() const {
@@ -234,7 +220,7 @@ public:
   }
 
   // Why the last rung to land brought no kernel, if one did not.
-  [[nodiscard]] std::optional<jit::error> refused() const {
+  [[nodiscard]] std::optional<jit::compile_error> refused() const {
     [[maybe_unused]] const auto read = lock_.read();
     return refused_;
   }
@@ -262,11 +248,11 @@ private:
   // other way about.
   struct Rung {
     Pending pending; // set once, then read
-    jit::Level level = jit::Level::O0;
+    jit::OptLevel level = jit::OptLevel::O0;
   };
 
   // Whether the batch bought a rung.  False once every rung is spoken for, so
-  // a settled lane never writes to the counter at all.
+  // a settled pipeline never writes to the counter at all.
   [[nodiscard]] bool count(std::size_t n, const Setting &setting) {
     if constexpr (std::same_as<T, double>) {
       if (n == 0 || setting.compiler == nullptr ||
@@ -284,9 +270,9 @@ private:
     }
   }
 
-  // Freezing and launching are one step deliberately: split, a lane could be
-  // ready having compiled nothing, and the next caller would interpret forever
-  // with every answer still right.
+  // Freezing and launching are one step deliberately: split, a pipeline could
+  // be ready having compiled nothing, and the next caller would interpret
+  // forever with every answer still right.
   void prepare([[maybe_unused]] Want want, const Setting &setting,
                auto &&freeze) {
     ready_ = std::make_shared<const Held>(freeze());
@@ -297,7 +283,7 @@ private:
       // alone is what keeps it on the sweep's bits.
       if (setting.device != nullptr) {
         rungs_[0] = {Pending{setting.device->compile_async(ready_->graph)},
-                     jit::Level::O0};
+                     jit::OptLevel::O0};
         return;
       }
 #endif
@@ -305,22 +291,6 @@ private:
         return;
       }
 #ifdef DDX_HAS_JIT
-      // A rung already climbed: published at its own level, with the ladder
-      // launched as always and adopt()'s rank dropping what cannot beat it.
-      if (auto have =
-              adopt_stored(setting.objects, want, *ready_->compile_graph,
-                           *setting.compiler, setting.options.codegen)) {
-        const bool topped =
-            have.level >= setting.options.codegen.codegen_level;
-        ready_ = ready_->with(AnyKernel{std::move(have.kernel)}, have.level);
-        // Nothing left to climb to, so nothing is launched and, under Adapt,
-        // nothing more is counted.
-        if (topped) {
-          asked_.store(Rungs, std::memory_order_relaxed);
-          return;
-        }
-        asked_.store(1, std::memory_order_relaxed);
-      }
       // Adapt buys its rungs in climb(); Compile asks for them outright.
       if (setting.options.backend == jit::Backend::Compile) {
         launch(setting);
@@ -349,10 +319,11 @@ private:
       }
 #ifdef DDX_HAS_JIT
       // The swept graph, not the rebalanced one a Compile backend takes: a
-      // lane that climbs mid-run must not change its answer under a caller, and
-      // rebalancing moves the last bits.
-      if (asked == 0 && setting.options.codegen.codegen_level > jit::Level::O0) {
-        rungs_[0] = rung(setting, jit::Level::O0, ready_->graph);
+      // pipeline that climbs mid-run must not change its answer under a caller,
+      // and rebalancing moves the last bits.
+      if (asked == 0 &&
+          setting.options.codegen.codegen_level > jit::OptLevel::O0) {
+        rungs_[0] = rung(setting, jit::OptLevel::O0, ready_->graph);
         asked_.store(1, std::memory_order_relaxed);
         return;
       }
@@ -369,15 +340,15 @@ private:
   // lands sooner for a slower kernel, and every level agrees to the bit.
   void launch(const Setting &setting) {
     std::size_t next = 0;
-    if (setting.options.codegen.codegen_level > jit::Level::O0) {
-      rungs_[next++] = rung(setting, jit::Level::O0, ready_->compile_graph);
+    if (setting.options.codegen.codegen_level > jit::OptLevel::O0) {
+      rungs_[next++] = rung(setting, jit::OptLevel::O0, ready_->compile_graph);
     }
     rungs_[next] = rung(setting, setting.options.codegen.codegen_level,
                         ready_->compile_graph);
   }
 
   [[nodiscard]] Rung
-  rung([[maybe_unused]] const Setting &setting, jit::Level level,
+  rung([[maybe_unused]] const Setting &setting, jit::OptLevel level,
        [[maybe_unused]] const std::shared_ptr<const Graph<T>> &from) {
 #ifdef DDX_HAS_JIT
     jit::Options opt = setting.options;
@@ -392,7 +363,7 @@ private:
   // race is dropped rather than allowed to demote a live kernel.
   void adopt() {
     AnyKernel best;
-    jit::Level level = jit::Level::O0;
+    jit::OptLevel level = jit::OptLevel::O0;
     for (Rung &rung : rungs_) {
       if (!rung.pending.landed()) {
         continue;
@@ -411,7 +382,7 @@ private:
     }
   }
 
-  // Whether the lane owes a reader anything: only ever a kernel to publish.
+  // Whether the pipeline owes a reader anything: only ever a kernel to publish.
   [[nodiscard]] bool arrived() const {
     return std::ranges::any_of(
         rungs_, [](const Rung &rung) { return rung.pending.landed(); });
@@ -421,7 +392,7 @@ private:
   std::shared_ptr<const Held> ready_;
   // Submission order, so rungs_[0] answers soonest.
   std::array<Rung, Rungs> rungs_;
-  std::optional<jit::error> refused_;
+  std::optional<jit::compile_error> refused_;
   mutable std::atomic<std::size_t> points_{};
   mutable std::atomic<unsigned> asked_{};
 };

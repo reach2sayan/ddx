@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <numbers>
 #include <numeric> // std::midpoint, std::transform_reduce
 #include <ranges>
@@ -313,7 +314,8 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
   // pow(u, v) = exp(v·log u), requires u[0] > 0.  A constant exponent goes
   // through powser, which needs no logarithm and allows u[0] < 0; at u[0] == 0
   // powser is 0/0, so a whole non-negative exponent takes the truncated
-  // product instead.
+  // product instead, and any other positive one is zero below order p and has
+  // no coefficient from there on.
   [[nodiscard]] friend constexpr TaylorDual pow(const TaylorDual &u,
                                                 const TaylorDual &v) noexcept {
     using std::pow, std::trunc;
@@ -332,6 +334,15 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
           }
           return w;
         }
+        if (u.c[0] == S{} && p > S{}) {
+          TaylorDual w;
+          for (std::size_t k = 1; k <= N; ++k) {
+            if (!(static_cast<S>(k) < p)) {
+              w.c[k] = std::numeric_limits<S>::quiet_NaN();
+            }
+          }
+          return w;
+        }
       }
       return powser(u, p, pow(u.c[0], p));
     }
@@ -344,13 +355,17 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
     return powser(u, S{1} / S{3}, cbrt(u.c[0]));
   }
 
-  // log10(u) = log(u) / ln(10); every coefficient scales by log10(e).
+  // log10(u) = log(u) / ln(10); the value is std::log10's, the derivative
+  // coefficients log's scaled by log10(e).
   [[nodiscard]] friend constexpr TaylorDual
   log10(const TaylorDual &u) noexcept {
+    using std::log10;
     TaylorDual w = log(u);
+    w.c[0] = log10(u.c[0]);
     const S log10e = static_cast<S>(std::numbers::log10e);
     std::ranges::transform(
-        w.c, w.c.begin(), [log10e](const S &x) noexcept { return x * log10e; });
+        w.c | std::views::drop(1), w.c.begin() + 1,
+        [log10e](const S &x) noexcept { return x * log10e; });
     return w;
   }
 
@@ -392,10 +407,22 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
     return w;
   }
 
-  // (x² + y²)·w' = x·y' − y·x', so the recurrence never divides by x.
-  [[nodiscard]] friend constexpr TaylorDual
-  atan2(const TaylorDual &y, const TaylorDual &x) noexcept {
+  // (x² + y²)·w' = x·y' − y·x', so the recurrence never divides by x.  The
+  // squares overflow past ~1e154, so both sides first scale by the power of
+  // two that brings the larger value near 1: exact, and the ratio unchanged.
+  [[nodiscard]] friend constexpr TaylorDual atan2(TaylorDual y,
+                                                  TaylorDual x) noexcept {
     using std::atan2;
+    if constexpr (CArithmetic<S>) {
+      using std::abs, std::fmax, std::ilogb, std::isfinite, std::scalbn;
+      const S big = fmax(abs(x.c[0]), abs(y.c[0]));
+      if (isfinite(big) && big != S{}) {
+        const int e = -ilogb(big);
+        const auto by = [e](const S &v) noexcept { return scalbn(v, e); };
+        std::ranges::transform(x.c, x.c.begin(), by);
+        std::ranges::transform(y.c, y.c.begin(), by);
+      }
+    }
     // n integrates x·y' − y·x', which is all implicit_recurrence reads of u.
     TaylorDual n;
     for (std::size_t k = 1; k <= N; ++k) {

@@ -1,6 +1,5 @@
 #include "energy_models.hpp"
 #include "rt/equation.hpp"
-#include "scratch.hpp"
 
 #include <gtest/gtest.h>
 
@@ -20,7 +19,7 @@
 // Jacobian waits to be asked for.
 namespace {
 
-using RE = ddx::rt::RTExpression<>;
+using RE = ddx::rt::Expression<>;
 
 // Five functions of three symbols, as a model whose count comes from data.
 [[nodiscard]] std::vector<RE> five(const RE &x, const RE &y, const RE &z) {
@@ -36,8 +35,7 @@ using RE = ddx::rt::RTExpression<>;
 // Function k alone, as a one-output Equation over the same model.
 [[nodiscard]] auto one_of_five(std::size_t k) {
   return ddx::rt::equation([k] {
-    return five(ddx::rt::var("x"), ddx::rt::var("y"),
-                ddx::rt::var("z"))[k];
+    return five(ddx::rt::var("x"), ddx::rt::var("y"), ddx::rt::var("z"))[k];
   });
 }
 
@@ -76,15 +74,14 @@ TEST(RtSystem, BatchJacobianMatchesThePointCalls) {
   for (const auto [j, column] : std::views::enumerate(xs)) {
     column.resize(n);
     for (const std::size_t i : std::views::iota(0uz, n)) {
-      column[i] = 0.5 + 0.1 * static_cast<double>(i) +
-                  0.3 * static_cast<double>(j);
+      column[i] =
+          0.5 + 0.1 * static_cast<double>(i) + 0.3 * static_cast<double>(j);
     }
   }
   std::vector<std::vector<double>> f(5, std::vector<double>(n));
   std::vector<std::vector<double>> g(cells, std::vector<double>(n));
   const auto pointers = [](auto &columns) {
-    return columns |
-           std::views::transform([](auto &c) { return c.data(); }) |
+    return columns | std::views::transform([](auto &c) { return c.data(); }) |
            ddx::impl::to<std::vector<double *>>();
   };
   const auto in = pointers(xs) | std::views::transform([](double *p) {
@@ -119,12 +116,12 @@ TEST(RtSystem, OneOutputMembersRefuseASystem) {
   EXPECT_EQ(sys.prepare({ddx::rt::Want::Hessian}).error().code,
             ddx::errc::not_single_output);
   EXPECT_FALSE(sys.hessian_columns().has_value());
-  EXPECT_FALSE(sys.hessian_colors().has_value());
+  EXPECT_FALSE(sys.hessian_colours().has_value());
   EXPECT_FALSE(sys.hessian_cell(0, 0).has_value());
-  EXPECT_TRUE(sys.vjp(std::span<const double>{std::array{1.0, 0.0, 0.0, 0.0,
-                                                          0.0}},
-                      point)
-                  .has_value());
+  EXPECT_TRUE(
+      sys.vjp(std::span<const double>{std::array{1.0, 0.0, 0.0, 0.0, 0.0}},
+              point)
+          .has_value());
 }
 
 // m x n x n off the arena, each block the scalar equation's Hessian.
@@ -146,21 +143,6 @@ TEST(RtSystem, AnEmptyRangeIsNoGraph) {
   ASSERT_TRUE(sys.poisoned());
   EXPECT_EQ(sys.status()->code, ddx::errc::no_graph);
   EXPECT_FALSE(sys.outputs().has_value());
-}
-
-TEST(RtSystem, SavesAndLoadsAnyCount) {
-  const Scratch path{"system"};
-  const auto sys = five_system();
-  ASSERT_TRUE(sys.save(path).has_value());
-  const auto loaded = ddx::rt::load<double, ddx::rt::dynamic>(path);
-  ASSERT_TRUE(loaded.has_value());
-  EXPECT_TRUE(loaded->loaded());
-  EXPECT_EQ(loaded->outputs(), 5u);
-  EXPECT_EQ(*loaded->jacobian(point), *sys.jacobian(point));
-  EXPECT_EQ(*loaded->hessian(point), *sys.hessian(point));
-  EXPECT_TRUE(sys.verify(path).has_value());
-  // A fixed-count Equation refuses a file holding another count.
-  EXPECT_EQ(ddx::rt::load(path).error().code, ddx::errc::archive_mismatch);
 }
 
 // Construction sweeps the Jacobian and nothing else: at n = 128 the coloured
@@ -203,8 +185,7 @@ TEST(RtSystem, PreparedLanesServeManyThreads) {
     }
     std::vector<std::vector<double>> f(5, std::vector<double>(n));
     std::vector<std::vector<double>> g(cells, std::vector<double>(n));
-    std::array<const double *, 3> in{xs[0].data(), xs[1].data(),
-                                     xs[2].data()};
+    std::array<const double *, 3> in{xs[0].data(), xs[1].data(), xs[2].data()};
     auto fs = f | std::views::transform([](auto &c) { return c.data(); }) |
               ddx::impl::to<std::vector<double *>>();
     auto gs = g | std::views::transform([](auto &c) { return c.data(); }) |

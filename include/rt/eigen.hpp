@@ -59,22 +59,21 @@ void scatter(const Sparsity &pattern, const Eigen::MatrixBase<B> &block,
   dense.derived().setZero(static_cast<Eigen::Index>(pattern.size()),
                           static_cast<Eigen::Index>(pattern.columns));
   const auto row = block.row(point);
-  for (const auto [i, j, v] :
-       pattern.cells(std::views::iota(Eigen::Index{0}, block.cols()) |
-                     std::views::transform(
-                         [&row](Eigen::Index k) { return row(k); }))) {
+  for (const auto [i, j, v] : pattern.cells(
+           std::views::iota(Eigen::Index{0}, block.cols()) |
+           std::views::transform([&row](Eigen::Index k) { return row(k); }))) {
     dense(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j)) = v;
   }
 }
 
 // The Hessian at one point, dense symbols x symbols, from a hessian block
-// compressed by `coloring`.
+// compressed by `colouring`.
 template <typename B, typename H>
-void scatter(const Coloring &coloring, const Eigen::MatrixBase<B> &block,
+void scatter(const Colouring &colouring, const Eigen::MatrixBase<B> &block,
              Eigen::Index point, Eigen::MatrixBase<H> &dense) {
-  const auto n = static_cast<Eigen::Index>(coloring.color.size());
+  const auto n = static_cast<Eigen::Index>(colouring.colour.size());
   dense.derived().setZero(n, n);
-  for (const Cell &cell : coloring.entries()) {
+  for (const Cell &cell : colouring.entries()) {
     dense(static_cast<Eigen::Index>(cell.row),
           static_cast<Eigen::Index>(cell.column)) =
         block(point, static_cast<Eigen::Index>(cell.slot));

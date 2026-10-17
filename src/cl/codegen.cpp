@@ -44,7 +44,8 @@ double ddx_min(double a, double b) {
 // OpenCL's NAN and INFINITY are float.
 [[nodiscard]] std::string literal(double v) {
   if (!std::isfinite(v)) {
-    return std::format("as_double(0x{:016x}ul)", std::bit_cast<std::uint64_t>(v));
+    return std::format("as_double(0x{:016x}ul)",
+                       std::bit_cast<std::uint64_t>(v));
   }
   return std::format("{}0x{:a}", std::signbit(v) ? "-" : "", std::fabs(v));
 }
@@ -61,11 +62,14 @@ void expression(std::string &out, const rt::Graph<double> &g, rt::NodeId v) {
     return;
   case rt::Kind::Input:
     std::format_to(sink, "xs[{}ul * n + i]",
-                   rt::input_column(g.inputs(), p.op, p.slot));
+                   rt::input_column(g.inputs(), p.op, rt::detail::index_of(p)));
     return;
+  case rt::Kind::Nary:
+    std::unreachable(); // a statement per term: sum() below
   case rt::Kind::Extern:
-  case rt::Kind::Args:
+  case rt::Kind::Tensor:
     std::unreachable(); // Device::compile refuses a graph that calls the host
+                        // or holds a tensor row
   case rt::Kind::Unary:
   case rt::Kind::Binary: {
     const auto &[how, name] = rt::lowering_of(p.op);
@@ -94,7 +98,8 @@ void expression(std::string &out, const rt::Graph<double> &g, rt::NodeId v) {
       return;
     // The last arm reaches only ±0 and NaN, as in the LLVM emitter.
     case rt::OpCode::Sign:
-      std::format_to(sink, "(v{0} > 0.0 ? 1.0 : (v{0} < 0.0 ? -1.0 : v{0} - v{0}))", a);
+      std::format_to(
+          sink, "(v{0} > 0.0 ? 1.0 : (v{0} < 0.0 ? -1.0 : v{0} - v{0}))", a);
       return;
     default: // Max and Min, through the prelude's NaN-propagating pair
       std::format_to(sink, "ddx_{}(v{}, v{})", label, a, b);
@@ -106,6 +111,32 @@ void expression(std::string &out, const rt::Graph<double> &g, rt::NodeId v) {
     // the first arm, as select_impl does.
     std::format_to(sink, "(v{} != 0.0 ? v{} : v{})", a, b, c);
     return;
+  }
+}
+
+// A sum, one statement per term so no expression nests: the terms into the
+// running sum in list order, as the LLVM emitter and the sweep take them -- a
+// product term one fma() where the step is fused, the first term formed.
+void sum(std::string &out, const rt::Graph<double> &g, const rt::Step &s) {
+  auto sink = std::back_inserter(out);
+  const rt::NodeId v = s.node;
+  for (const auto [i, t] : rt::arguments(g, v) | std::views::enumerate) {
+    const rt::Contraction f =
+        s.fused ? rt::product_of(g, t) : rt::Contraction{};
+    const std::string_view sign = f.negated ? "-" : "";
+    if (i == 0) {
+      if (f) {
+        std::format_to(sink, "  double v{} = {}(v{} * v{});\n", v, sign, f.x,
+                       f.y);
+      } else {
+        std::format_to(sink, "  double v{} = v{};\n", v, t);
+      }
+    } else if (f) {
+      std::format_to(sink, "  v{0} = fma({1}v{2}, v{3}, v{0});\n", v, sign, f.x,
+                     f.y);
+    } else {
+      std::format_to(sink, "  v{} += v{};\n", v, t);
+    }
   }
 }
 
@@ -139,7 +170,12 @@ std::string emit_source(const rt::Graph<double> &g) {
 
   // Ids are topological, so one pass needs no worklist, and a multiply every
   // reader swallowed into an fma is never reached.
-  for (const auto &[v, fma] : schedule) {
+  for (const rt::Step &s : schedule) {
+    const auto &[v, fma] = std::pair{s.node, s.fma};
+    if (rt::kind_of(g.op_of(v)) == rt::Kind::Nary) {
+      sum(out, g, s);
+      continue;
+    }
     std::format_to(sink, "  const double v{} = ", v);
     if (fma) {
       std::format_to(sink, "fma({}v{}, v{}, v{})", fma.negated ? "-" : "",

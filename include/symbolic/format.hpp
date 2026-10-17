@@ -93,7 +93,7 @@ void print_infix(const printer<V> &p, const CExpression auto &e, int min_prec) {
       static_assert(std::tuple_size_v<typename U::children_t> == 1,
                     "prefix notation is only defined for unary nodes");
       p.put(Op::label);
-      print_infix(p, std::get<0>(kids), prec);
+      print_infix(p, std::get<0>(kids), prec + 1); // -(-c), never --c
     } else { // Function: brings its own parentheses, children start fresh
       p.put(Op::label);
       p.put('(');

@@ -25,8 +25,7 @@ struct Lowering {
 namespace detail {
 inline constexpr std::array lowering = [] {
   std::array<Lowering, op_count> t{};
-  const auto set = [&t](OpCode op, Lower how,
-                        std::string_view name = {}) {
+  const auto set = [&t](OpCode op, Lower how, std::string_view name = {}) {
     t[std::to_underlying(op)] = {how, name.empty() ? label_of(op) : name};
   };
   for (const OpCode op : {OpCode::Add, OpCode::Mul, OpCode::Div}) {
@@ -42,8 +41,8 @@ inline constexpr std::array lowering = [] {
 #define DDX_RT_LOWER(fn, Op, label) set(OpCode::Op, Lower::Call);
   DDX_UNARY_MATH_TABLE(DDX_RT_LOWER)
 #undef DDX_RT_LOWER
-  for (const OpCode op : {OpCode::Neg, OpCode::Sign, OpCode::Max, OpCode::Min,
-                          OpCode::Select}) {
+  for (const OpCode op :
+       {OpCode::Neg, OpCode::Sign, OpCode::Max, OpCode::Min, OpCode::Select}) {
     set(op, Lower::Special);
   }
   return t;
@@ -55,10 +54,11 @@ inline constexpr std::array lowering = [] {
 }
 
 // Every operation a backend may meet has a spelling.
-static_assert(std::ranges::all_of(
-    std::views::iota(0uz, op_count), [](std::size_t i) {
-      const auto op = static_cast<OpCode>(i);
-      return !callable(op) || lowering_of(op).how != Lower::None;
-    }));
+static_assert(std::ranges::all_of(std::views::iota(0uz, op_count),
+                                  [](std::size_t i) {
+                                    const auto op = static_cast<OpCode>(i);
+                                    return !callable(op) ||
+                                           lowering_of(op).how != Lower::None;
+                                  }));
 
 } // namespace ddx::rt

@@ -52,7 +52,10 @@ constexpr auto arithmetic(const A &a, const B &b, auto build) noexcept {
                             build);
   } else {
     using value_type = typename A::value_type;
-    if constexpr (CLit<A> && CLit<B>) {
+    // A literal zero divisor is left to the graph: x / 0 is no constant
+    // expression.
+    if constexpr (CLit<A> && CLit<B> &&
+                  !(std::same_as<Fold, std::divides<>> && is_zero_v<B>)) {
       constexpr auto folded = Fold{}(A::value, B::value);
       if constexpr (CArithmetic<value_type>) {
         return Lit<value_type, static_cast<value_type>(folded)>{};
@@ -132,8 +135,7 @@ DDX_EXPR_UNFN(abs, AbsOp, "abs")
   template <CExpression LHS, CExpression RHS>                                  \
     requires CompatibleValueTypes<LHS, RHS>                                    \
   constexpr auto NAME(const LHS &a, const RHS &b) noexcept {                   \
-    using value_type = typename LHS::value_type;                               \
-    return Expression<OP<value_type>, LHS, RHS>{a, b};                         \
+    return detail::simplify_node<OP<typename LHS::value_type>>(a, b);          \
   }                                                                            \
   template <CArithmetic S, CExpression RHS>                                    \
   constexpr auto NAME(S s, const RHS &b) noexcept {                            \
@@ -171,10 +173,6 @@ public:
   [[nodiscard]] constexpr auto derivative() const noexcept {
     return Lit<T, 0>{};
   }
-
-  template <std::size_t Base = 0>
-  constexpr void backward(const auto &, T, auto &,
-                          const auto &) const noexcept {}
 
   // At its own type the value passes through; deeper, ConstantEmbedder<U>
   // embeds it with zero dual parts.
@@ -242,21 +240,7 @@ public:
   using value_type = T;
 
   [[nodiscard]] constexpr auto derivative() const noexcept {
-    return Lit<T, frozen ? 0 : 1>{};
-  }
-
-  template <std::size_t Base = 0>
-  constexpr void backward(const auto &syms, T adj, auto &grads,
-                          const auto &) const noexcept {
-    if constexpr (!frozen) {
-      using Syms = std::decay_t<decltype(syms)>;
-      constexpr auto idx = symbol_index<symbol, Syms>();
-      static_assert(idx < mp::mp_size<Syms>::value,
-                    "backward: this symbol is not in the list swept");
-      // `+` and assignment, not `+=`: CFieldLike promises only a + b.  Do not
-      // "simplify" this back to `+=`.
-      grads[idx] = std::move(grads[idx]) + adj;
-    }
+    return Lit < T, frozen ? 0 : 1 > {};
   }
 
   // A frozen symbol takes the seed's value and drops its derivative slots.

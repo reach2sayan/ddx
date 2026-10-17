@@ -11,6 +11,7 @@
 #include <concepts>
 #include <cstdint>
 #include <iterator>
+#include <limits>
 #include <ranges>
 #include <span>
 #include <string>
@@ -20,7 +21,7 @@
 #include <variant>
 #include <vector>
 
-// An Ast into somebody's arena.  Every node goes through RTExpression::form,
+// An Ast into somebody's arena.  Every node goes through Expression::form,
 // which interns, folds and carries poison, so nothing here re-implements what
 // building an expression by hand already does.
 namespace ddx::rt::text {
@@ -30,22 +31,29 @@ namespace detail {
 // The literal as written, read at T rather than at double and then narrowed:
 // the grammar has no types, so "1/2" is T(1)/T(2) whatever T is.  Whole or not
 // at all -- a trailing character is a literal the grammar should not have
-// matched.
+// matched.  Past the range is the infinity or the zero it rounds to, as a
+// number in source would be.
 template <std::floating_point T>
 [[nodiscard]] result<T> scalar_of(const std::string_view text) noexcept {
   T v{};
   const auto *const end = text.data() + text.size();
   const auto [stopped, ec] = std::from_chars(text.data(), end, v);
-  return ec == std::errc{} && stopped == end ? result<T>{v}
-                                             : fail(errc::bad_syntax);
+  if (stopped != end) {
+    return fail(errc::bad_syntax);
+  } else if (ec == std::errc::result_out_of_range) {
+    const auto e = text.find_first_of("eE");
+    const bool tiny = e != text.npos && text.find('-', e) != text.npos;
+    return tiny ? T{0} : std::numeric_limits<T>::infinity();
+  }
+  return ec == std::errc{} ? result<T>{v} : fail(errc::bad_syntax);
 }
 
 // One term, with its symbols and its operands already standing.
 template <std::floating_point T>
-[[nodiscard]] constexpr result<RTExpression<T>>
-form(const Ast &ast, std::span<const RTExpression<T>> symbols,
-     std::span<const RTExpression<T>> built, const Term &t) {
-  using Expr = RTExpression<T>;
+[[nodiscard]] constexpr result<Expression<T>>
+form(const Ast &ast, std::span<const Expression<T>> symbols,
+     std::span<const Expression<T>> built, const Term &t) {
+  using Expr = Expression<T>;
   const auto at = [](std::span<const Expr> from,
                      const std::uint32_t i) -> result<Expr> {
     return i < from.size() ? result<Expr>{from[i]} : fail(errc::bad_syntax);
@@ -91,7 +99,8 @@ form(const Ast &ast, std::span<const RTExpression<T>> symbols,
       });
     });
   case Kind::Extern:
-  case Kind::Args:
+  case Kind::Nary:
+  case Kind::Tensor:
     break; // the parser refuses the names
   }
   return fail(errc::bad_syntax);
@@ -102,8 +111,8 @@ form(const Ast &ast, std::span<const RTExpression<T>> symbols,
 // The arena gains one symbol per free identifier and one node per term; the
 // answer is the root.
 template <std::floating_point T>
-[[nodiscard]] result<RTExpression<T>> lower(Builder<T> &arena, const Ast &ast) {
-  using Expr = RTExpression<T>;
+[[nodiscard]] result<Expression<T>> lower(Builder<T> &arena, const Ast &ast) {
+  using Expr = Expression<T>;
 
   // Every symbol before any node, in the order the text first named them: the
   // arena is then a function of the model rather than of the order the parser

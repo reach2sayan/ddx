@@ -11,8 +11,6 @@
 set(DDX_BOOST_HEADER_DIRS
         boost
         boost/assert
-        boost/concept
-        boost/concept/detail
         boost/config
         boost/config/abi
         boost/config/compiler
@@ -28,67 +26,13 @@ set(DDX_BOOST_HEADER_DIRS
         boost/core/detail
         boost/describe
         boost/describe/detail
-        boost/detail
         boost/dynamic_bitset
         boost/dynamic_bitset/detail
         boost/dynamic_bitset/impl
-        boost/endian
-        boost/endian/detail
         boost/exception
-        boost/functional
         boost/functional/hash
-        boost/fusion
-        boost/fusion/adapted
-        boost/fusion/adapted/boost_tuple
-        boost/fusion/adapted/boost_tuple/detail
-        boost/fusion/adapted/boost_tuple/mpl
-        boost/fusion/adapted/mpl
-        boost/fusion/adapted/mpl/detail
-        boost/fusion/algorithm/iteration
-        boost/fusion/algorithm/iteration/detail
-        boost/fusion/algorithm/iteration/detail/preprocessed
-        boost/fusion/algorithm/query
-        boost/fusion/algorithm/query/detail
-        boost/fusion/algorithm/transformation
-        boost/fusion/container/deque
-        boost/fusion/container/list
-        boost/fusion/container/list/detail
-        boost/fusion/container/map
-        boost/fusion/container/set
-        boost/fusion/container/vector
-        boost/fusion/container/vector/detail
-        boost/fusion/iterator
-        boost/fusion/iterator/detail
-        boost/fusion/iterator/mpl
-        boost/fusion/mpl
-        boost/fusion/mpl/detail
-        boost/fusion/sequence
-        boost/fusion/sequence/comparison
-        boost/fusion/sequence/comparison/detail
-        boost/fusion/sequence/intrinsic
-        boost/fusion/sequence/intrinsic/detail
-        boost/fusion/support
-        boost/fusion/support/detail
-        boost/fusion/view
-        boost/fusion/view/detail
-        boost/fusion/view/iterator_range
-        boost/fusion/view/iterator_range/detail
-        boost/fusion/view/joint_view
-        boost/fusion/view/joint_view/detail
-        boost/fusion/view/single_view
-        boost/fusion/view/single_view/detail
-        boost/fusion/view/transform_view
-        boost/fusion/view/transform_view/detail
-        boost/graph
-        boost/graph/detail
-        boost/graph/property_maps
-        boost/hash2
-        boost/hash2/detail
         boost/intrusive
         boost/intrusive/detail
-        boost/iterator
-        boost/iterator/detail
-        boost/iterator/detail/type_traits
         boost/move
         boost/move/algo
         boost/move/algo/detail
@@ -132,8 +76,6 @@ set(DDX_BOOST_HEADER_DIRS
         boost/mpl/vector/aux_/preprocessed/no_ctps
         boost/mpl/vector/aux_/preprocessed/plain
         boost/mpl/vector/aux_/preprocessed/typeof_based
-        boost/pending
-        boost/pending/detail
         boost/preprocessor
         boost/preprocessor/arithmetic
         boost/preprocessor/arithmetic/detail
@@ -196,18 +138,4 @@ set(DDX_BOOST_HEADER_DIRS
         boost/preprocessor/variadic
         boost/preprocessor/variadic/detail
         boost/preprocessor/variadic/limits
-        boost/property_map
-        boost/range
-        boost/range/algorithm
-        boost/range/detail
-        boost/smart_ptr
-        boost/smart_ptr/detail
-        boost/stl_interfaces
-        boost/tuple
-        boost/tuple/detail
-        boost/type_traits
-        boost/type_traits/detail
-        boost/unordered
-        boost/unordered/detail
-        boost/utility
-        boost/utility/detail)
+        boost/stl_interfaces)

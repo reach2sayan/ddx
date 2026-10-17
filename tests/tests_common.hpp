@@ -9,8 +9,6 @@
 #include "symbolic/bound.hpp"
 #include "symbolic/equation.hpp"
 #include "symbolic/format.hpp"
-#include "symbolic/seeded_energy.hpp"
-#include "symbolic/sweep.hpp"
 #include "symbolic/traits.hpp"
 #include "symbolic/values.hpp"
 #include "util/scope_guard.hpp"

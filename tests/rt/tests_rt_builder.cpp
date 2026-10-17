@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -11,7 +13,7 @@
 
 namespace {
 using ddx::rt::Builder;
-using ddx::rt::RTExpression;
+using RE = ddx::rt::Expression<>;
 
 TEST(RtBuilder, IdenticalSubtreesInternToOneNode) {
   Builder<> b;
@@ -23,6 +25,30 @@ TEST(RtBuilder, IdenticalSubtreesInternToOneNode) {
 
   EXPECT_EQ(f.id(b), g.id(b));
   EXPECT_EQ(b.size(), after_first);
+}
+
+TEST(RtBuilder, ReserveChangesNeitherIdsNorInterning) {
+  const auto build = [](Builder<> &b) {
+    const auto x = var(b, "x");
+    const auto y = var(b, "y");
+    auto f = exp(x) * sin(y);
+    for (int k = 1; k < 200; ++k) {
+      f += pow(x, k) / (y + k);
+    }
+    return f.id(b);
+  };
+  Builder<> plain;
+  Builder<> reserved;
+  reserved.reserve(4096);
+  EXPECT_EQ(reserved.size(), 0u);
+  const auto f = build(plain);
+  const auto g = build(reserved);
+
+  EXPECT_EQ(f, g);
+  EXPECT_EQ(plain.size(), reserved.size());
+  EXPECT_EQ(exp(var(plain, "x")).id(plain),
+            exp(var(reserved, "x")).id(reserved));
+  EXPECT_EQ(plain.size(), reserved.size());
 }
 
 TEST(RtBuilder, CommutativeOperandsCanonicalise) {
@@ -39,16 +65,16 @@ TEST(RtBuilder, IdentityRewrites) {
   const auto x = var(b, "x");
   const auto y = var(b, "y");
 
-  EXPECT_EQ((x + RTExpression<>{0}).id(b), x.id(b));
-  EXPECT_EQ((x * RTExpression<>{1}).id(b), x.id(b));
-  EXPECT_EQ((x / RTExpression<>{1}).id(b), x.id(b));
+  EXPECT_EQ((x + RE{0}).id(b), x.id(b));
+  EXPECT_EQ((x * RE{1}).id(b), x.id(b));
+  EXPECT_EQ((x / RE{1}).id(b), x.id(b));
   EXPECT_EQ((-(-x)).id(b), x.id(b));
-  EXPECT_EQ(pow(x, RTExpression<>{1}).id(b), x.id(b));
+  EXPECT_EQ(pow(x, RE{1}).id(b), x.id(b));
 
-  EXPECT_TRUE(b.is_constant((x * RTExpression<>{0}).id(b), 0.0));
-  EXPECT_TRUE(b.is_constant((RTExpression<>{0} / x).id(b), 0.0));
+  EXPECT_TRUE(b.is_constant((x * RE{0}).id(b), 0.0));
+  EXPECT_TRUE(b.is_constant((RE{0} / x).id(b), 0.0));
   EXPECT_TRUE(b.is_constant((x / x).id(b), 1.0));
-  EXPECT_TRUE(b.is_constant(pow(x, RTExpression<>{0}).id(b), 1.0));
+  EXPECT_TRUE(b.is_constant(pow(x, RE{0}).id(b), 1.0));
 
   // (n/d)*d -> n, the DAG form of the compile-time rule: on interned nodes the
   // denominator match is an id compare.
@@ -60,13 +86,12 @@ TEST(RtBuilder, LiteralsFoldBeforeReachingTheGraph) {
   Builder<> b;
   const auto x = var(b, "x");
   const std::size_t before = b.size();
-  const auto c = RTExpression<>{2} * RTExpression<>{3} + RTExpression<>{1};
+  const auto c = RE{2} * RE{3} + RE{1};
   EXPECT_TRUE(c.pending());
   EXPECT_DOUBLE_EQ(c.literal(), 7.0);
   EXPECT_EQ(b.size(), before);
 
-  EXPECT_TRUE(
-      b.is_constant((RTExpression<>{2} * RTExpression<>{3}).id(b), 6.0));
+  EXPECT_TRUE(b.is_constant((RE{2} * RE{3}).id(b), 6.0));
   (void)x;
 }
 
@@ -76,6 +101,21 @@ TEST(RtBuilder, ConstantOperandsFold) {
   EXPECT_TRUE(b.is_constant((lit(b, 2.0) * lit(b, 3.0)).id(b), 6.0));
   EXPECT_TRUE(b.is_constant(sqrt(lit(b, 9.0)).id(b), 3.0));
   (void)x;
+}
+
+// Constants intern by their bits, which is what they hash by: the two zeros
+// stay apart whatever was built first, and a NaN is one node.
+TEST(RtBuilder, ConstantsInternByTheirBits) {
+  Builder<> b;
+  for (int i = 0; i < 64; ++i) {
+    (void)lit(b, 1.0 + i).id(b);
+  }
+  const auto plus = lit(b, 0.0).id(b);
+  const auto minus = lit(b, -0.0).id(b);
+  EXPECT_NE(plus, minus);
+  EXPECT_TRUE(std::signbit(b[minus].value));
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(lit(b, nan).id(b), lit(b, nan).id(b));
 }
 
 TEST(RtBuilder, SymbolsInternByName) {
@@ -95,8 +135,8 @@ TEST(RtBuilder, SlotsAreDeclarationOrder) {
   const auto a = var(b, "a");
 
   EXPECT_EQ(b.symbols(), (std::vector<std::string>{"z", "a"}));
-  EXPECT_EQ(b[z.id(b)].slot, 0u);
-  EXPECT_EQ(b[a.id(b)].slot, 1u);
+  EXPECT_EQ(b[z.id(b)].aux, 0u);
+  EXPECT_EQ(b[a.id(b)].aux, 1u);
   EXPECT_EQ(b[s.id(b)].a, z.id(b)) << "the subexpression still names z";
 }
 
@@ -111,8 +151,8 @@ TEST(RtBuilder, ParamsShareTheNamespaceAndNumberTheirOwnSlots) {
   EXPECT_EQ(b.symbols(), (std::vector<std::string>{"x", "y"}));
   EXPECT_EQ(b.params(), (std::vector<std::string>{"k"}));
   EXPECT_EQ(b[k.id(b)].op, ddx::rt::OpCode::Param);
-  EXPECT_EQ(b[k.id(b)].slot, 0u);
-  EXPECT_EQ(b[y.id(b)].slot, 1u);
+  EXPECT_EQ(b[k.id(b)].aux, 0u);
+  EXPECT_EQ(b[y.id(b)].aux, 1u);
   EXPECT_EQ(ddx::rt::param(b, "k").id(b), k.id(b));
   EXPECT_TRUE(ddx::rt::param(b, "x").poisoned()) << "x is a symbol";
   EXPECT_TRUE(var(b, "k").poisoned()) << "k is a parameter";
@@ -123,6 +163,8 @@ TEST(RtBuilder, ParamsShareTheNamespaceAndNumberTheirOwnSlots) {
 // Compound assignment rebinds the handle through the same operators, so an
 // accumulator written either way lands on the same node -- which interning
 // makes an id comparison.
+// Two terms are the long form's own Add; the other compound operators build
+// what their operator builds.  Past two terms `+=` is a SumN: tests_rt_sumn.
 TEST(RtBuilder, CompoundAssignmentBuildsWhatTheLongFormBuilds) {
   Builder<> b;
   const auto x = var(b, "x");
@@ -130,13 +172,14 @@ TEST(RtBuilder, CompoundAssignmentBuildsWhatTheLongFormBuilds) {
 
   auto acc = x;
   acc += y;
-  acc -= sin(x);
   acc *= exp(y);
   acc /= (x + y);
+  acc -= sin(x);
+  const auto id = acc.id(b); // a sum is formed when it is first read
   const std::size_t after = b.size();
 
-  const auto spelled = (((x + y) - sin(x)) * exp(y)) / (x + y);
-  EXPECT_EQ(acc.id(b), spelled.id(b));
+  const auto spelled = ((x + y) * exp(y)) / (x + y) - sin(x);
+  EXPECT_EQ(id, spelled.id(b));
   EXPECT_EQ(b.size(), after)
       << "the long form built a node the short one did not";
 }
@@ -149,9 +192,9 @@ TEST(RtBuilder, CompoundAssignmentTakesAScalar) {
 
   auto e = x;
   e += 2.0;
-  EXPECT_EQ(e.id(b), (x + RTExpression<>{2.0}).id(b));
+  EXPECT_EQ(e.id(b), (x + RE{2.0}).id(b));
 
-  RTExpression<> lit = 3.0;
+  RE lit = 3.0;
   lit *= 4.0;
   EXPECT_TRUE(lit.pending()) << "two literals reached the graph";
   EXPECT_EQ(lit.literal(), 12.0);

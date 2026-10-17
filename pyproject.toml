@@ -51,7 +51,7 @@ compare = [
 ]
 # torch and JAX for the GPU comparison, one build of the pair at a time.
 # PyPI's torch is the CUDA build on Linux, so each group takes torch from
-# PyTorch's own index; `scripts/compare.py --stack=rocm|cuda|cpu` syncs one.
+# PyTorch's own index; `uv sync --group stack-rocm` (or -cuda, -cpu) syncs one.
 # The markers are where wheels exist: torch's ROCm build is Linux-only and stops
 # at CPython 3.14, its CUDA build has no macOS, and JAX starts at 3.12, its GPU
 # plugins on Linux only.  jax[rocm7-local] runs on the system's ROCm 7; torch's

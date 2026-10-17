@@ -1,5 +1,4 @@
 #include "ddx.hpp"
-#include "rt/dot.hpp"
 #include "rt/equation.hpp"
 #include "rt/graph.hpp"
 #include "rt/interpret.hpp"
@@ -70,15 +69,5 @@ TEST(RtSeed, ADeadSeedDoesNotWiden) {
   const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
 
   EXPECT_EQ(graph.arity(), 1u);
-}
-
-TEST(RtSeed, DotNamesTheDirection) {
-  ddx::rt::Builder<> b;
-  const auto x = var(b, "x");
-  const auto f = x + seed(b, 2);
-  const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
-
-  const auto text = ddx::rt::Dot{graph}.str();
-  EXPECT_NE(text.find("v[2]"), std::string::npos) << text;
 }
 } // namespace

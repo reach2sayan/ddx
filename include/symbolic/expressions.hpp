@@ -99,10 +99,6 @@ template <Numeric T> struct EvalResult {
 template <Numeric T>
 inline constexpr bool is_expression_type_v<EvalResult<T>> = true;
 
-template <COperation Op> struct BaseExpression {
-  using value_type = typename Op::value_type;
-};
-
 template <CExpression T> consteval std::size_t node_count_fn() {
   using U = std::remove_cvref_t<T>;
   if constexpr (CExpressionNode<U>) {
@@ -118,16 +114,6 @@ template <CExpression T> consteval std::size_t node_count_fn() {
 template <CExpression T>
 inline constexpr std::size_t node_count_v =
     node_count_fn<std::remove_cvref_t<T>>();
-
-// Preorder cache slot of the I-th child of a node at `Base1
-template <std::size_t Base, CTupleLike Kids, std::size_t I>
-consteval std::size_t child_base_at() {
-  std::size_t off = Base + 1;
-  static_for<I>([&]<std::size_t K>() {
-    off += node_count_v<std::tuple_element_t<K, Kids>>;
-  });
-  return off;
-}
 
 // One element of a point: a number, a range, a ValueMap, or a named value.
 template <typename T>
@@ -171,11 +157,10 @@ protected:
 };
 
 template <CExpression Derived, COperation Op>
-class ExpressionOps : public BaseExpression<Op>,
-                      public EquationConvertible<Derived> {
+class ExpressionOps : public EquationConvertible<Derived> {
 public:
   using op_type = Op;
-  using value_type = typename BaseExpression<Op>::value_type;
+  using value_type = typename Op::value_type;
 
   [[nodiscard]] constexpr auto derivative() const noexcept {
     return std::apply(
@@ -193,21 +178,6 @@ public:
           return Op::eval(EvalResult<U>{e.template eval_seeded<Syms>(vals)}...);
         },
         this->self().expressions());
-  }
-
-  template <std::size_t Base = 0>
-  constexpr void backward(const auto &syms, value_type adj, auto &grads,
-                          const auto &cache) const noexcept {
-    using Kids = typename Derived::children_t;
-    index_apply<std::tuple_size_v<Kids>>([&]<std::size_t... I>() noexcept {
-      auto child_adj =
-          Op::template adjoints<Base, child_base_at<Base, Kids, I>()...>(adj,
-                                                                         cache);
-      (std::get<I>(this->self().expressions())
-           .template backward<child_base_at<Base, Kids, I>()>(
-               syms, std::move(child_adj[I]), grads, cache),
-       ...);
-    });
   }
 };
 

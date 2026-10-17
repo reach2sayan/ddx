@@ -1,28 +1,38 @@
 #pragma once
+#include "dual/taylor_dual.hpp" // the univariate sweep's scalar
+#include "md/tensor.hpp"
+#include "ops/mode.hpp" // DiffMode
 #include "ops/scalar.hpp"
+#include "rt/bridge.hpp"
+#include "rt/derivative.hpp"
+#include "rt/interpret.hpp"
 #include "symbolic/bound.hpp"
 #include "symbolic/format.hpp"
 #include "symbolic/simplify.hpp"
-#include "symbolic/sweep.hpp"
 #include "symbolic/symbol.hpp"
 #include "util/config.hpp" // DDX_KEYED_ACCESSORS
 #include "util/scope_guard.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <ranges>
+#include <span>
 #include <string_view>
 #include <utility>
+#include <vector>
 
+// A compile-time expression and its numbers.  The tree is the type: what is
+// kept here is the canonicalised expressions and, on demand, their symbolic
+// partial trees.  Every number comes from the runtime graph the expressions
+// lower to -- one arena per call, swept at whatever scalar the point is
+// spelled in: a dual for a derivative tensor, a truncated polynomial for the
+// univariate derivative.  A model swept in a loop goes through
+// rt::equation(eq), which lowers once and keeps lanes, kernels and the
+// compiled code.
 namespace ddx::impl {
 
 namespace detail {
-// Evaluate a tuple of expressions at one point, in canonical symbol order.
-template <CSymbolList Syms>
-constexpr auto eval_all(const CNumericBuffer auto &vals,
-                        const CExpression auto &...es) noexcept {
-  return std::array{es.template eval_seeded<Syms>(vals)...};
-}
 
 // The expressions are final by now, so this is where commutative operands get
 // ordered; folding already happened as they were built.
@@ -49,6 +59,98 @@ constexpr auto make_jac_rows(const std::tuple<Exprs...> &es,
       es);
 }
 
+// A dual-valued row carries the seed in its dual part; the derivative proper
+// is the real part.
+template <Numeric T, std::size_t N>
+[[nodiscard]] constexpr auto
+strip_seed(const std::array<T, N> &grads) noexcept {
+  if constexpr (DualLike<T>) {
+    std::array<dual_scalar_t<T>, N> result{};
+    std::ranges::transform(grads, result.begin(),
+                           [](const T &g) { return g.template get<0>(); });
+    return result;
+  } else {
+    return grads;
+  }
+}
+template <Numeric T> [[nodiscard]] constexpr auto strip_seed(const T &v) {
+  if constexpr (DualLike<T>) {
+    return v.template get<0>();
+  } else {
+    return v;
+  }
+}
+
+template <Numeric S, std::size_t Depth>
+constexpr nth_dual_t<S, Depth> make_mixed_seed(S value,
+                                               std::span<const std::size_t> idx,
+                                               std::size_t k) noexcept {
+  if constexpr (Depth == 0) {
+    return value;
+  } else if constexpr (Depth == 1) {
+    return nth_dual_t<S, 1>{value, k == idx[0] ? S{1} : S{}};
+  } else {
+    auto inner =
+        make_mixed_seed<S, Depth - 1>(std::move(value), idx.subspan(1), k);
+    auto outer_tangent = embed_constant<S, Depth - 1>(k == idx[0] ? S{1} : S{});
+    return nth_dual_t<S, Depth>{std::move(inner), std::move(outer_tangent)};
+  }
+}
+
+// The cartesian product of Order copies of [0, N), in layout_right order.
+template <std::size_t N, std::size_t Order>
+[[nodiscard]] constexpr auto index_grid() noexcept {
+  return index_apply<Order>([]<std::size_t... D>() {
+    return std::views::cartesian_product(
+        ((void)D, std::views::iota(std::size_t{0}, N))...);
+  });
+}
+
+// One representative per permutation class: by Schwarz only C(N+Order-1, Order)
+// of the N^Order entries are distinct.  A consteval table, not a filtered view
+// or lazy iterator: both measured 4x slower.
+// Ref: Neidinger, ACM TOMS 18(2) (1992) 159.
+template <std::size_t N, std::size_t Order>
+  requires(N > 0 && Order > 0)
+consteval auto simplex_index_table() noexcept {
+  std::array<std::array<std::size_t, Order>, binomial(N + Order - 1, Order)>
+      out{};
+  std::array<std::size_t, Order> idx{};
+  for (auto &slot : out) {
+    slot = idx;
+    // Raise the rightmost position that can be, and collapse the rest onto it.
+    for (std::size_t p = Order; p-- > 0;) {
+      if (idx[p] + 1 < N) {
+        const std::size_t v = ++idx[p];
+        std::ranges::fill(idx | std::views::drop(p + 1), v);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+template <std::size_t N, std::size_t Order>
+inline constexpr auto simplex_index_table_v = simplex_index_table<N, Order>();
+
+template <std::size_t N, Numeric T>
+constexpr auto extract_nth(const T &x) noexcept {
+  return component<N, 1>(x);
+}
+
+// Every variable lifted to nth_dual_t, with the tangents `idx` names on.
+template <Numeric S, std::size_t Order, std::size_t N>
+[[nodiscard]] constexpr std::array<nth_dual_t<S, Order>, N>
+mixed_seeds(const std::array<S, N> &values,
+            std::span<const std::size_t> idx) noexcept {
+  std::array<nth_dual_t<S, Order>, N> seeds{};
+  std::ranges::transform(values, std::views::iota(0uz, N), seeds.begin(),
+                         [&idx](const S &v, std::size_t k) {
+                           return make_mixed_seed<S, Order>(v, idx, k);
+                         });
+  return seeds;
+}
+
 } // namespace detail
 
 template <CExpression TFirst, CExpression... TRest>
@@ -64,6 +166,11 @@ public:
   static constexpr std::size_t number_of_derivatives = input_dim;
 
 private:
+  // The scalar the graph is built over; a dual-valued expression lowers to a
+  // graph over its base and is swept at the dual.
+  using scalar = scalar_base_t<value_type>;
+  using S = dual_scalar_t<value_type>;
+
   // Derived from what the user wrote, so a partial that folds away a symbol
   // cannot shrink the point.
   using Exprs =
@@ -71,117 +178,32 @@ private:
   Exprs expressions;
 
   using point_t = std::array<value_type, input_dim>;
-
-  // strip_seed, so a dual-valued expression answers with the derivative proper
-  // rather than one still carrying its seed.  dual_scalar_t is the identity on
-  // a plain scalar.
   using jacobian_tensor_t =
-      md_tensor<dual_scalar_t<value_type>,
-                md::extents<std::size_t, output_dim, input_dim>>;
+      md_tensor<S, md::extents<std::size_t, output_dim, input_dim>>;
 
-  // One derivative row at a point, the seed stripped.
-  [[nodiscard]] static constexpr auto eval_row(const auto &row,
-                                               const point_t &vals) noexcept {
-    return detail::strip_seed(std::apply(
-        [&](const auto &...ds) {
-          return detail::eval_all<symbols>(vals, ds...);
-        },
-        row));
-  }
-
-  [[nodiscard]] constexpr auto
-  jacobian_symbolic(const point_t &vals) const noexcept
-    requires(output_dim > 1 && input_dim > 0)
-  {
-    jacobian_tensor_t J{};
-    const auto rows = jacobian_rows();
+  // The runtime graph of the expressions: the symbols declared first, in the
+  // Equation's order, so a column is a symbol's slot in the point -- the
+  // canonicalised tree's own list can be shorter, (y*x)/(x*y) folds to 1 and
+  // loses both.
+  struct Lowered {
+    rt::Builder<scalar> arena;
+    std::array<rt::NodeId, output_dim> roots;
+  };
+  [[nodiscard]] constexpr Lowered lower() const {
+    Lowered l{};
+    mp::mp_for_each<symbols>(
+        [&l]<typename Sym>(Sym) { (void)rt::var(l.arena, Sym::name); });
     static_for<output_dim>([&]<std::size_t I>() {
-      assign_row(J, I, eval_row(std::get<I>(rows), vals));
+      l.roots[I] = rt::to_graph(l.arena, std::get<I>(expressions)).id(l.arena);
     });
-    return J;
+    return l;
   }
-
-  [[nodiscard]] constexpr auto
-  jacobian_reverse_mode(const point_t &vals) const noexcept
-    requires(output_dim > 1 && input_dim > 0)
-  {
-    jacobian_tensor_t J{};
-    static_for<output_dim>([&]<std::size_t I>() {
-      // reverse_sweep fills a plain array; the row lands in the tensor after.
-      std::array<value_type, input_dim> row{};
-      reverse_sweep<symbols>(std::get<I>(expressions), vals, row);
-      assign_row(J, I, detail::strip_seed(row));
-    });
-    return J;
-  }
-
-  // Row 0, without the leading axis.
-  [[nodiscard]] constexpr auto symbolic_row(const point_t &vals) const noexcept
-    requires(output_dim == 1 && input_dim > 0)
-  {
-    return eval_row(std::get<0>(jacobian_rows()), vals);
-  }
-
-  // The dual level carries the tangent seed while the sweep carries the
-  // adjoints, so one sweep is an exact Hessian-vector product.
-  // Ref: Pearlmutter, Neural Computation 6(1) (1994) 147.
-  [[nodiscard]] constexpr auto hessian_forward_over_reverse(
-      const std::array<dual_scalar_t<value_type>, input_dim> &values)
-      const noexcept
-    requires(DualLike<value_type> && input_dim > 0)
-  {
-    using S = dual_scalar_t<value_type>;
-    nd_stack_t<S, output_dim, input_dim, 2> H{};
-
-    // Only the seeded tangent moves.
-    point_t seeds{};
-    std::ranges::transform(values, seeds.begin(),
-                           [](const S &v) { return value_type{v, S{}}; });
-
-    for (auto &&[index, seeded] : std::views::enumerate(seeds)) {
-      const auto j = static_cast<std::size_t>(index);
-      const auto seed = scoped_seed<1>(seeded.deriv());
-      static_for<output_dim>([&]<std::size_t K>() {
-        point_t grads{};
-        reverse_sweep<symbols>(std::get<K>(expressions), seeds, grads);
-
-        const auto column =
-            grads | std::views::transform([](const value_type &g) {
-              return g.template get<1>();
-            });
-        for (auto &&[i, entry] :
-             std::views::zip(std::views::iota(0uz, input_dim), column)) {
-          H[K, i, j] = entry;
-        }
-      });
-    }
-    return H;
-  }
-
-  template <std::size_t Order>
-  [[nodiscard]] constexpr auto equation_derivative_tensor_impl(
-      const std::array<scalar_base_t<value_type>, input_dim> &values)
-      const noexcept
-    requires(input_dim > 0 && Order > 0)
-  {
-    using S = scalar_base_t<value_type>;
-    using U = nth_dual_t<S, Order>;
-    nd_stack_t<S, output_dim, input_dim, Order> result{};
-
-    for (const auto &idx : detail::simplex_index_table_v<input_dim, Order>) {
-
-      const auto seeds = detail::mixed_seeds<S, Order>(values, idx);
-
-      static_for<output_dim>([&]<std::size_t OUT>() {
-        const U val =
-            std::get<OUT>(expressions).template eval_seeded<symbols>(seeds);
-        const auto stacked = [&]<std::size_t... K>(std::index_sequence<K...>) {
-          return std::array<std::size_t, Order + 1>{OUT, idx[K]...};
-        }(std::make_index_sequence<Order>{});
-        result.at_index(stacked) = detail::extract_nth<Order>(val);
-      });
-    }
-    return result;
+  // The nodes `wanted` reach, at the point's scalar.
+  template <Numeric U>
+  [[nodiscard]] static constexpr std::vector<U>
+  sweep(const Lowered &l, std::span<const rt::NodeId> wanted,
+        const std::array<U, input_dim> &at) {
+    return rt::evaluate_reachable(l.arena, wanted, at);
   }
 
   // The symbolic trees and their partials.  Every other member reduces them to
@@ -228,15 +250,15 @@ public:
   [[nodiscard]] constexpr auto
   evaluate(const CEvalArg auto &...args) const noexcept {
     return detail::with_point<symbols, value_type, input_dim>(
-        [&](const auto &vals) {
+        [&](const point_t &vals) {
+          const Lowered l = lower();
+          const auto v = sweep(l, l.roots, vals);
           if constexpr (output_dim == 1) {
-            return std::get<0>(expressions).template eval_seeded<symbols>(vals);
+            return v[l.roots[0]];
           } else {
-            return std::apply(
-                [&](const auto &...es) {
-                  return detail::eval_all<symbols>(vals, es...);
-                },
-                expressions);
+            return index_apply<output_dim>([&]<std::size_t... I>() {
+              return std::array<value_type, output_dim>{v[l.roots[I]]...};
+            });
           }
         },
         args...);
@@ -247,81 +269,150 @@ public:
   DDX_KEYED_ACCESSORS(std::size_t N, std::size_t N, N, idx_t<N>,
                       requires(output_dim == 1 && N <= input_dim))
 
-  // Symbolic evaluates the stored partial trees; Reverse never builds them.
-  // The leading output axis appears only with more than one output, as in
-  // hessian() and derivative_tensor().  Every branch sweeps `symbols`, the
-  // list the point is laid out by: the canonicalised tree's own list can be
-  // shorter -- (y*x)/(x*y) folds to 1 and loses both -- and a sweep indexed by
-  // it would put z's partial in x's slot.
+  // Symbolic lowers the stored partial trees beside the function and sweeps
+  // them; Reverse builds the adjoint sweep on the graph and never forms a
+  // tree.  The leading output axis appears only with more than one output, as
+  // in hessian() and derivative_tensor().
   template <DiffMode Mode = DiffMode::Reverse>
   [[nodiscard]] constexpr auto
   jacobian(const CEvalArg auto &...args) const noexcept
     requires(input_dim > 0)
   {
     return detail::with_point<symbols, value_type, input_dim>(
-        [&](const auto &vals) {
-          if constexpr (output_dim == 1) {
-            if constexpr (Mode == DiffMode::Symbolic) {
-              return symbolic_row(vals);
-            } else {
-              std::array<value_type, input_dim> row{};
-              reverse_sweep<symbols>(std::get<0>(expressions), vals, row);
-              return detail::strip_seed(row);
+        [&](const point_t &vals) {
+          Lowered l = lower();
+          std::array<rt::NodeId, output_dim * input_dim> cells{};
+          if constexpr (Mode == DiffMode::Symbolic) {
+            const auto rows = jacobian_rows();
+            static_for<output_dim>([&]<std::size_t I>() {
+              static_for<input_dim>([&]<std::size_t J>() {
+                cells[I * input_dim + J] =
+                    rt::to_graph(l.arena, std::get<J>(std::get<I>(rows)))
+                        .id(l.arena);
+              });
+            });
+          } else {
+            const rt::Jacobian j = rt::derive_jacobian(l.arena, l.roots);
+            for (const std::size_t i : std::views::iota(0uz, output_dim)) {
+              for (const std::size_t k : std::views::iota(0uz, input_dim)) {
+                cells[i * input_dim + k] = j.at(i, k);
+              }
             }
-          } else if constexpr (Mode == DiffMode::Symbolic) {
-            return jacobian_symbolic(vals);
-          } else {
-            return jacobian_reverse_mode(vals);
           }
-        },
-        args...);
-  }
-
-  // No DiffMode: only the reverse path.  A symbolic second derivative would be
-  // derivative_tensor<2> with extra steps, and the colouring is what makes this
-  // worth having over that.
-  [[nodiscard]] constexpr auto
-  hessian(const CEvalArg auto &...args) const noexcept
-    requires(DualLike<value_type> && input_dim > 0)
-  {
-    return detail::with_point<symbols, dual_scalar_t<value_type>, input_dim>(
-        [&](const auto &vals) {
+          const auto v = sweep(l, cells, vals);
           if constexpr (output_dim == 1) {
-            return detail::reverse_mode_hessian<symbols>(
-                std::get<0>(expressions), vals);
+            std::array<value_type, input_dim> row{};
+            std::ranges::transform(cells, row.begin(),
+                                   [&v](rt::NodeId c) { return v[c]; });
+            return detail::strip_seed(row);
           } else {
-            return hessian_forward_over_reverse(vals);
+            jacobian_tensor_t J{};
+            for (const std::size_t i : std::views::iota(0uz, output_dim)) {
+              for (const std::size_t k : std::views::iota(0uz, input_dim)) {
+                J[i, k] = detail::strip_seed(v[cells[i * input_dim + k]]);
+              }
+            }
+            return J;
           }
         },
         args...);
   }
 
+  // The reverse-mode Hessian, compressed by the graph's colouring and read
+  // back dense.  The colouring is libddx's, so this is not constant-evaluated;
+  // derivative_tensor<2> is.
+  [[nodiscard]] auto hessian(const CEvalArg auto &...args) const noexcept
+    requires(input_dim > 0)
+  {
+    return detail::with_point<symbols, S, input_dim>(
+        [&](const std::array<S, input_dim> &vals) {
+          Lowered l = lower();
+          std::array<rt::Hessian, output_dim> hs;
+          std::vector<rt::NodeId> wanted;
+          for (const std::size_t k : std::views::iota(0uz, output_dim)) {
+            hs[k] = rt::derive_hessian(l.arena, l.roots[k]);
+            append(wanted, hs[k].compressed);
+          }
+          const auto v = sweep(l, wanted, vals);
+          constexpr auto dims = std::views::iota(0uz, input_dim);
+          if constexpr (output_dim == 1) {
+            nd_tensor_t<S, input_dim, 2> H{};
+            for (const auto [i, j] :
+                 std::views::cartesian_product(dims, dims)) {
+              H[i, j] = v[hs[0].at(i, j)];
+            }
+            return H;
+          } else {
+            nd_stack_t<S, output_dim, input_dim, 2> H{};
+            for (const std::size_t k : std::views::iota(0uz, output_dim)) {
+              for (const auto [i, j] :
+                   std::views::cartesian_product(dims, dims)) {
+                H[k, i, j] = v[hs[k].at(i, j)];
+              }
+            }
+            return H;
+          }
+        },
+        args...);
+  }
+
+  // Forward mode at a dual nested Order deep: one sweep per distinct
+  // multi-index serves every output.
   template <std::size_t Order>
   [[nodiscard]] constexpr auto
   derivative_tensor(const CEvalArg auto &...args) const noexcept
     requires(input_dim > 0 && Order > 0)
   {
-    return detail::with_point<symbols, scalar_base_t<value_type>, input_dim>(
-        [&](const auto &vals) {
-          if constexpr (output_dim == 1) {
-            return detail::derivative_tensor_impl<Order>(
-                std::get<0>(expressions), vals);
-          } else {
-            return equation_derivative_tensor_impl<Order>(vals);
+    using U = nth_dual_t<scalar, Order>;
+    return detail::with_point<symbols, scalar, input_dim>(
+        [&](const std::array<scalar, input_dim> &vals) {
+          const Lowered l = lower();
+          auto result = [] {
+            if constexpr (output_dim == 1) {
+              return nd_tensor_t<scalar, input_dim, Order>{};
+            } else {
+              return nd_stack_t<scalar, output_dim, input_dim, Order>{};
+            }
+          }();
+          for (const auto &idx :
+               detail::simplex_index_table_v<input_dim, Order>) {
+            const auto seeds = detail::mixed_seeds<scalar, Order>(vals, idx);
+            const auto v = sweep<U>(l, l.roots, seeds);
+            if constexpr (output_dim == 1) {
+              result.at_index(idx) = detail::extract_nth<Order>(v[l.roots[0]]);
+            } else {
+              for (const std::size_t k : std::views::iota(0uz, output_dim)) {
+                const auto stacked =
+                    [&]<std::size_t... K>(std::index_sequence<K...>) {
+                      return std::array<std::size_t, Order + 1>{k, idx[K]...};
+                    }(std::make_index_sequence<Order>{});
+                result.at_index(stacked) =
+                    detail::extract_nth<Order>(v[l.roots[k]]);
+              }
+            }
           }
+          return result;
         },
         args...);
   }
 
-  // A plain number, not a one-entry tensor.  Spelled over a plain scalar, so it
-  // has to be guarded rather than disappearing with forward mode.
+  // One Taylor sweep, then undo the 1/Order! normalisation.  A plain number,
+  // not a one-entry tensor.  Ref: Griewank, Utke & Walther, Math. Comp.
+  // 69(231) (2000) 1117.
   template <std::size_t Order>
   [[nodiscard]] DDX_ALWAYS_INLINE constexpr auto
-  univariate_derivative(scalar_base_t<value_type> x0) const noexcept
+  univariate_derivative(scalar x0) const noexcept
     requires(input_dim == 1 && output_dim == 1 && Order > 0)
   {
-    return detail::univariate_derivative_impl<Order>(std::get<0>(expressions),
-                                                     x0);
+    using Taylor = TaylorDual<scalar, Order>;
+    static_assert(
+        rt::detail::computes_at_tree<Taylor, std::tuple_element_t<0, Exprs>>(),
+        "an operation the Taylor arithmetic does not define");
+    const Lowered l = lower();
+    const auto v =
+        sweep(l, l.roots, std::array<Taylor, 1>{Taylor::variable(x0)});
+    return v[l.roots[0]].c[Order] *
+           static_cast<scalar>(detail::compile_time_factorial(Order));
   }
 };
 

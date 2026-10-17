@@ -4,7 +4,6 @@
 #include "rt/text/ast.hpp"
 #include "rt/text/equation.hpp"
 #include "rt/text/lower.hpp"
-#include "scratch.hpp"
 
 #include <gtest/gtest.h>
 
@@ -12,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <format>
+#include <limits>
 #include <ranges>
 #include <string>
 #include <string_view>
@@ -61,6 +61,15 @@ TEST(RtText, RaisesToAPowerTheWayPythonDoes) {
   EXPECT_DOUBLE_EQ(value_of("-+-x", 4.0), 4.0);
 }
 
+// Past the range is what Python reads: the infinity or the zero.
+TEST(RtText, ALiteralPastTheRangeRounds) {
+  EXPECT_EQ(value_of("x + 1e999", 1.0),
+            std::numeric_limits<double>::infinity());
+  EXPECT_EQ(value_of("x + 1e-999", 1.0), 1.0);
+  EXPECT_EQ(value_of("x * 1e+999", 1.0),
+            std::numeric_limits<double>::infinity());
+}
+
 TEST(RtText, BuildsTheSameArenaAsTheCppSpelling) {
   // One subexpression per name, in the order the text reduces them: C++ leaves
   // the order of an operator's operands unspecified, and an arena records the
@@ -84,7 +93,7 @@ TEST(RtText, BuildsTheSameArenaAsTheCppSpelling) {
   // Node for node: interning makes the arena a function of the model, so equal
   // models are the same bytes and not merely the same answers.
   const auto same = [](const auto &l, const auto &r) {
-    return l.op == r.op && l.a == r.a && l.b == r.b && l.slot == r.slot &&
+    return l.op == r.op && l.a == r.a && l.b == r.b && l.aux == r.aux &&
            l.value == r.value;
   };
   EXPECT_TRUE(std::ranges::equal(written.nodes(), parsed.nodes(), same));
@@ -107,7 +116,7 @@ TEST(RtText, ComposesEqualityAsTheOperatorsDo) {
     const auto lowered = lower(parsed, *ast);
     ASSERT_TRUE(lowered.has_value()) << source;
     const auto same = [](const auto &l, const auto &r) {
-      return l.op == r.op && l.a == r.a && l.b == r.b && l.slot == r.slot &&
+      return l.op == r.op && l.a == r.a && l.b == r.b && l.aux == r.aux &&
              l.value == r.value;
     };
     EXPECT_TRUE(std::ranges::equal(written.nodes(), parsed.nodes(), same))
@@ -150,7 +159,7 @@ TEST(RtText, FoldsWhatNeverNeededAGraph) {
   ASSERT_TRUE(lowered.has_value());
 
   // A literal that has met no symbol stays pending, so a constant expression
-  // costs no node at all -- exactly as `RTExpression{3.0} + 4.0` does.
+  // costs no node at all -- exactly as `rt::Expression{3.0} + 4.0` does.
   EXPECT_EQ(arena.size(), 0U);
   EXPECT_TRUE(lowered->pending());
   EXPECT_DOUBLE_EQ(lowered->literal(), 7.0);
@@ -170,9 +179,9 @@ TEST(RtText, SpellsEveryOpcodeTheTablesName) {
   for (const auto &label : ddx::rt::opcode_labels()) {
     const auto op = ddx::rt::opcode_of(label);
     ASSERT_TRUE(op.has_value()) << label;
-    // The leaves and the externs are not callable, and the operators have
-    // their own syntax.
-    if (ddx::rt::is_leaf(*op) || ddx::rt::is_extern(*op) || !callable(label)) {
+    // What the library says text may not name -- leaves, externs, tensor rows
+    // -- and the operators, which have their own syntax.
+    if (!ddx::rt::callable(*op) || !callable(label)) {
       continue;
     }
     const auto args = ddx::rt::arity_of(*op);
@@ -259,22 +268,11 @@ TEST(RtText, NamesSymbolsWhicheverFunctionFirstUsesThem) {
 
 TEST(RtText, RefusesAModelThatNamesNoSymbol) {
   // A bare constant folds to a pending literal, which names no arena -- the
-  // same refusal `ddx::rt::equation(RTExpression{7.0})` earns.
+  // same refusal `ddx::rt::equation(rt::Expression{7.0})` earns.
   const auto eq = ddx::rt::equation("3 + 4");
   ASSERT_TRUE(eq.has_value());
   EXPECT_TRUE(eq->poisoned());
   EXPECT_EQ(eq->status()->code, errc::no_graph);
-}
-
-TEST(RtText, SavesAndLoadsLikeAnyOtherEquation) {
-  const Scratch path{"text"};
-  const auto eq = ddx::rt::equation("exp(x) * sin(y)");
-  ASSERT_TRUE(eq.has_value());
-  ASSERT_TRUE(eq->save(path).has_value());
-
-  const auto back = ddx::rt::load<double, 1>(path);
-  ASSERT_TRUE(back.has_value());
-  EXPECT_DOUBLE_EQ(*back->evaluate(0.3, 1.1), *eq->evaluate(0.3, 1.1));
 }
 
 } // namespace

@@ -3,16 +3,17 @@ ddx's runtime expression graph, LLVM JIT and OpenCL device
 """
 from __future__ import annotations
 import enum
-import os
 import typing
 __all__: list[str] = ['Backend', 'Call', 'Equation', 'Error', 'Expression',
                       'VecLib', 'Want', 'abs', 'acos', 'acosh', 'add', 'asin',
                       'asinh', 'atan', 'atan2', 'atanh', 'cbrt', 'cos',
                       'cosh', 'div', 'equation', 'erf', 'errc', 'exp',
-                      'has_jit', 'has_opencl', 'hypot', 'le', 'Level', 'load', 'log', 'log10',
+                      'has_jit', 'has_opencl', 'hypot', 'le', 'OptLevel', 'log', 'log10',
                       'lt',
                       'max', 'min', 'mul', 'neg', 'pow', 'select', 'sign',
-                      'sin', 'sinh', 'sqrt', 'tan', 'tanh', 'var']
+                      'sin', 'sinh', 'sqrt', 'tan', 'tanh', 'var',
+                      'dot', 'gemv',
+                      'mat_constant', 'pack', 'sum', 'vec', 'vec_constant']
 class Backend(enum.IntEnum):
     """
     Whether an equation compiles its graph.
@@ -48,6 +49,7 @@ class Equation:
     def buffer(self, x: typing.Any, *, want: Want = ...) -> Call: pass
     def evaluate(self, x: typing.Any) -> typing.Any: pass
     def gradient(self, x: typing.Any) -> typing.Any: pass
+    def dense_hessian(self, x: typing.Any) -> tuple: pass
     def hessian(self, x: typing.Any) -> tuple: pass
     def hvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
     def jacobian(self, x: typing.Any) -> tuple: pass
@@ -56,9 +58,6 @@ class Equation:
     def restrict(self, names: list[str]) -> Restricted: pass
     def jvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
     def nodes(self, *, want: Want = ...) -> int: pass
-    def save(self, path: str | os.PathLike) -> None: pass
-    def to_dot(self, *, all: bool = False) -> str: pass
-    def verify(self, path: str | os.PathLike) -> None: pass
     def vjp(self, w: typing.Any, x: typing.Any) -> tuple: pass
     def wait_for_kernel(self, *, want: Want = ...) -> bool: pass
     @property
@@ -66,11 +65,9 @@ class Equation:
     @property
     def device_status(self) -> str | None: pass
     @property
-    def hessian_colors(self) -> int: pass
+    def hessian_colours(self) -> int: pass
     @property
     def inputs(self) -> list[str]: pass
-    @property
-    def loaded(self) -> bool: pass
     @property
     def outputs(self) -> int: pass
     @property
@@ -102,7 +99,11 @@ class Expression:
     @typing.overload
     def __gt__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass
     __hash__: typing.ClassVar[None] = None
+    @property
+    def shape(self) -> tuple[int, ...]: pass
     def __init__(self, value: typing.SupportsFloat | typing.SupportsIndex) -> None: pass
+    def __len__(self) -> int: pass
+    def __getitem__(self, i: typing.SupportsInt | typing.SupportsIndex) -> Expression: pass
     @typing.overload
     def __le__(self, arg0: Expression) -> Expression: pass
     @typing.overload
@@ -124,6 +125,14 @@ class Expression:
     def __pow__(self, arg0: Expression) -> Expression: pass
     @typing.overload
     def __pow__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass
+    @typing.overload
+    def __iadd__(self, arg0: Expression) -> Expression: pass
+    @typing.overload
+    def __iadd__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass
+    @typing.overload
+    def __isub__(self, arg0: Expression) -> Expression: pass
+    @typing.overload
+    def __isub__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass
     @typing.overload
     def __radd__(self, arg0: Expression) -> Expression: pass
     @typing.overload
@@ -154,14 +163,14 @@ class Expression:
     @typing.overload
     def __truediv__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass
     
-class Level(enum.IntEnum):
+class OptLevel(enum.IntEnum):
     """
     LLVM's -O0 to -O3, for the IR pipeline and for codegen.
     """
-    O0: typing.ClassVar[Level]  # value = <Level.O0: 0>
-    O1: typing.ClassVar[Level]  # value = <Level.O1: 1>
-    O2: typing.ClassVar[Level]  # value = <Level.O2: 2>
-    O3: typing.ClassVar[Level]  # value = <Level.O3: 3>
+    O0: typing.ClassVar[OptLevel]  # value = <OptLevel.O0: 0>
+    O1: typing.ClassVar[OptLevel]  # value = <OptLevel.O1: 1>
+    O2: typing.ClassVar[OptLevel]  # value = <OptLevel.O2: 2>
+    O3: typing.ClassVar[OptLevel]  # value = <OptLevel.O3: 3>
     @classmethod
     def __new__(cls, value): pass
     def __format__(self, format_spec): pass
@@ -187,11 +196,12 @@ class Want(enum.IntEnum):
     """
     Which blocks a bound call fills.
     """
+    DENSE_HESSIAN: typing.ClassVar[Want]  # value = <Want.DENSE_HESSIAN: 8>
     GRADIENT: typing.ClassVar[Want]  # value = <Want.GRADIENT: 6>
     HESSIAN: typing.ClassVar[Want]  # value = <Want.HESSIAN: 2>
     HVP: typing.ClassVar[Want]  # value = <Want.HVP: 3>
     JACOBIAN: typing.ClassVar[Want]  # value = <Want.JACOBIAN: 1>
-    JACOBIANTANGENT: typing.ClassVar[Want]  # value = <Want.JACOBIANTANGENT: 7>
+    JACOBIAN_JVP: typing.ClassVar[Want]  # value = <Want.JACOBIAN_JVP: 7>
     JVP: typing.ClassVar[Want]  # value = <Want.JVP: 5>
     VALUE: typing.ClassVar[Want]  # value = <Want.VALUE: 0>
     VJP: typing.ClassVar[Want]  # value = <Want.VJP: 4>
@@ -206,16 +216,15 @@ class _Options:
     contract: bool
     device: str
     loop_vectorize: bool
-    retain_object: bool
-    slp: bool
+    slp_vectorize: bool
     time_passes: bool
     veclib: VecLib
     def __eq__(self, arg0: _Options) -> bool: pass
     def __init__(self) -> None: pass
     @property
-    def codegen_level(self) -> Level: pass
+    def codegen_level(self) -> OptLevel: pass
     @codegen_level.setter
-    def codegen_level(self, arg0: Level) -> None: pass
+    def codegen_level(self, arg0: OptLevel) -> None: pass
     @property
     def lanes(self) -> int | None: pass
     @lanes.setter
@@ -225,9 +234,9 @@ class _Options:
     @hot_points.setter
     def hot_points(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None: pass
     @property
-    def opt_level(self) -> Level: pass
+    def opt_level(self) -> OptLevel: pass
     @opt_level.setter
-    def opt_level(self, arg0: Level) -> None: pass
+    def opt_level(self, arg0: OptLevel) -> None: pass
     @property
     def points(self) -> int: pass
     @points.setter
@@ -241,37 +250,35 @@ class errc(enum.IntEnum):
     """
     Why ddx refused; Error.code carries one.
     """
-    archive_corrupt: typing.ClassVar[errc]  # value = <errc.archive_corrupt: 18>
-    archive_io: typing.ClassVar[errc]  # value = <errc.archive_io: 16>
-    archive_mismatch: typing.ClassVar[errc]  # value = <errc.archive_mismatch: 19>
-    bad_archive: typing.ClassVar[errc]  # value = <errc.bad_archive: 17>
-    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 25>
-    device_compile: typing.ClassVar[errc]  # value = <errc.device_compile: 29>
-    device_launch: typing.ClassVar[errc]  # value = <errc.device_launch: 30>
+    short_point: typing.ClassVar[errc]  # value = <errc.short_point: 0>
+    wrong_arity: typing.ClassVar[errc]  # value = <errc.wrong_arity: 1>
+    wrong_direction: typing.ClassVar[errc]  # value = <errc.wrong_direction: 2>
+    unknown_symbol: typing.ClassVar[errc]  # value = <errc.unknown_symbol: 3>
     index_out_of_range: typing.ClassVar[errc]  # value = <errc.index_out_of_range: 4>
-    jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 24>
-    jit_module: typing.ClassVar[errc]  # value = <errc.jit_module: 21>
-    jit_object: typing.ClassVar[errc]  # value = <errc.jit_object: 22>
-    jit_target: typing.ClassVar[errc]  # value = <errc.jit_target: 20>
-    jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 23>
-    no_arena: typing.ClassVar[errc]  # value = <errc.no_arena: 6>
-    no_device: typing.ClassVar[errc]  # value = <errc.no_device: 28>
-    closed_twice: typing.ClassVar[errc]  # value = <errc.closed_twice: 10>
-    name_clash: typing.ClassVar[errc]  # value = <errc.name_clash: 8>
-    nested_implicit: typing.ClassVar[errc]  # value = <errc.nested_implicit: 11>
-    not_implicit: typing.ClassVar[errc]  # value = <errc.not_implicit: 12>
-    unclosed_implicit: typing.ClassVar[errc]  # value = <errc.unclosed_implicit: 9>
+    wrong_column_count: typing.ClassVar[errc]  # value = <errc.wrong_column_count: 5>
+    outside_equation: typing.ClassVar[errc]  # value = <errc.outside_equation: 6>
     no_graph: typing.ClassVar[errc]  # value = <errc.no_graph: 7>
+    name_clash: typing.ClassVar[errc]  # value = <errc.name_clash: 8>
+    closed_twice: typing.ClassVar[errc]  # value = <errc.closed_twice: 9>
+    nested_implicit: typing.ClassVar[errc]  # value = <errc.nested_implicit: 10>
+    extern_order: typing.ClassVar[errc]  # value = <errc.extern_order: 11>
+    extern_shape: typing.ClassVar[errc]  # value = <errc.extern_shape: 12>
     not_univariate: typing.ClassVar[errc]  # value = <errc.not_univariate: 13>
     not_single_output: typing.ClassVar[errc]  # value = <errc.not_single_output: 14>
-    short_point: typing.ClassVar[errc]  # value = <errc.short_point: 0>
-    unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 26>
-    unknown_symbol: typing.ClassVar[errc]  # value = <errc.unknown_symbol: 3>
     unsupported_scalar: typing.ClassVar[errc]  # value = <errc.unsupported_scalar: 15>
-    wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 27>
-    wrong_arity: typing.ClassVar[errc]  # value = <errc.wrong_arity: 1>
-    wrong_column_count: typing.ClassVar[errc]  # value = <errc.wrong_column_count: 5>
-    wrong_direction: typing.ClassVar[errc]  # value = <errc.wrong_direction: 2>
+    tensor_shape: typing.ClassVar[errc]  # value = <errc.tensor_shape: 16>
+    tensor_kernel: typing.ClassVar[errc]  # value = <errc.tensor_kernel: 17>
+    jit_target: typing.ClassVar[errc]  # value = <errc.jit_target: 18>
+    jit_module: typing.ClassVar[errc]  # value = <errc.jit_module: 19>
+    jit_object: typing.ClassVar[errc]  # value = <errc.jit_object: 20>
+    jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 21>
+    jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 22>
+    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 23>
+    unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 24>
+    wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 25>
+    no_device: typing.ClassVar[errc]  # value = <errc.no_device: 26>
+    device_compile: typing.ClassVar[errc]  # value = <errc.device_compile: 27>
+    device_launch: typing.ClassVar[errc]  # value = <errc.device_launch: 28>
     @classmethod
     def __new__(cls, value):
         ...
@@ -306,13 +313,13 @@ def cosh(x: Expression) -> Expression:
 def div(x: Expression, y: Expression) -> Expression:
     ...
 @typing.overload
-def equation(source: str, *, cache: str | os.PathLike | None = None, remember: bool = False) -> Equation:
+def equation(source: str) -> Equation:
     ...
 @typing.overload
-def equation(source: list[str], *, cache: str | os.PathLike | None = None, remember: bool = False) -> Equation:
+def equation(source: list[str]) -> Equation:
     ...
 @typing.overload
-def equation(model: typing.Any, *, cache: str | os.PathLike | None = None, remember: bool = False) -> typing.Any:
+def equation(model: typing.Any) -> typing.Any:
     ...
 def erf(x: Expression) -> Expression:
     ...
@@ -352,13 +359,25 @@ def tan(x: Expression) -> Expression:
     ...
 def tanh(x: Expression) -> Expression:
     ...
-def closes(z: Expression, f: Expression) -> None:
-    ...
-def implicit(name: str) -> Expression:
-    ...
+def implicit(name: str, residual: typing.Callable[[Expression], Expression | float]) -> Expression:
+    """An input the caller solved for, a root of residual(z)."""
 def param(name: str) -> Expression:
     ...
 def var(name: str) -> Expression:
+    ...
+def dot(u: Expression, v: Expression) -> Expression:
+    ...
+def gemv(matrix: Expression, v: Expression, transposed: bool = False) -> Expression:
+    """M v, or M^T v when transposed."""
+def mat_constant(rows: typing.SupportsInt | typing.SupportsIndex, cols: typing.SupportsInt | typing.SupportsIndex, data: typing.Sequence[typing.SupportsFloat]) -> Expression:
+    """A constant rows x cols matrix from column-major data."""
+def pack(scalars: typing.Sequence[Expression]) -> Expression:
+    """The vector of these scalars, in order."""
+def sum(v: Expression) -> Expression:
+    ...
+def vec(name: str, n: typing.SupportsInt | typing.SupportsIndex) -> Expression:
+    """n symbols named name[0] .. name[n-1], packed."""
+def vec_constant(data: typing.Sequence[typing.SupportsFloat]) -> Expression:
     ...
 __version__: str = ...
 has_jit: bool = True

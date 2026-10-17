@@ -15,7 +15,7 @@ namespace {
 
 using ddx::rt::Builder;
 using ddx::rt::GraphBuilder;
-using RE = ddx::rt::RTExpression<>;
+using RE = ddx::rt::Expression<>;
 using ClTranscendental = cltest::OnDevice;
 
 struct Domain {
@@ -27,18 +27,19 @@ struct Domain {
 // Every row of DDX_UNARY_MATH_TABLE needs one, and the test below fails on a
 // row without: a new transcendental cannot arrive untested.
 const std::map<std::string_view, Domain> domains{
-    {"sin", {-10.0, 10.0, 5}},    {"cos", {-10.0, 10.0, 5}},
-    {"tan", {-1.5, 1.5, 6}},      {"exp", {-20.0, 20.0, 4}},
-    {"log", {0.01, 100.0, 4}},    {"log10", {0.01, 100.0, 4}},
-    {"sqrt", {0.0, 100.0, 0}},    {"cbrt", {-100.0, 100.0, 3}},
-    {"asin", {-0.99, 0.99, 5}},   {"acos", {-0.99, 0.99, 5}},
-    {"atan", {-5.0, 5.0, 6}},     {"sinh", {-5.0, 5.0, 5}},
-    {"cosh", {-5.0, 5.0, 5}},     {"tanh", {-5.0, 5.0, 6}},
-    {"asinh", {-5.0, 5.0, 5}},    {"acosh", {1.01, 50.0, 5}},
-    {"atanh", {-0.99, 0.99, 6}},  {"erf", {-5.0, 5.0, 17}},
+    {"sin", {-10.0, 10.0, 5}},   {"cos", {-10.0, 10.0, 5}},
+    {"tan", {-1.5, 1.5, 6}},     {"exp", {-20.0, 20.0, 4}},
+    {"log", {0.01, 100.0, 4}},   {"log10", {0.01, 100.0, 4}},
+    {"sqrt", {0.0, 100.0, 0}},   {"cbrt", {-100.0, 100.0, 3}},
+    {"asin", {-0.99, 0.99, 5}},  {"acos", {-0.99, 0.99, 5}},
+    {"atan", {-5.0, 5.0, 6}},    {"sinh", {-5.0, 5.0, 5}},
+    {"cosh", {-5.0, 5.0, 5}},    {"tanh", {-5.0, 5.0, 6}},
+    {"asinh", {-5.0, 5.0, 5}},   {"acosh", {1.01, 50.0, 5}},
+    {"atanh", {-0.99, 0.99, 6}}, {"erf", {-5.0, 5.0, 17}},
 };
 
-#define DDX_CL_TEST_MAKER(fn, Op, label) {label, [](const RE &x) { return fn(x); }},
+#define DDX_CL_TEST_MAKER(fn, Op, label)                                       \
+  {label, [](const RE &x) { return fn(x); }},
 const std::map<std::string_view, RE (*)(const RE &)> unary{
     DDX_UNARY_MATH_TABLE(DDX_CL_TEST_MAKER)};
 #undef DDX_CL_TEST_MAKER
@@ -93,12 +94,18 @@ TEST_F(ClTranscendental, EveryBinaryOpIsWithinItsBound) {
     Domain y;
   };
   const std::array binaries{
-      Binary{"pow", [](const RE &x, const RE &y) { return pow(x, y); },
-             {0.1, 10.0, 17}, {-3.0, 3.0, 17}},
-      Binary{"atan2", [](const RE &x, const RE &y) { return atan2(x, y); },
-             {-5.0, 5.0, 7}, {-5.0, 5.0, 7}},
-      Binary{"hypot", [](const RE &x, const RE &y) { return hypot(x, y); },
-             {-100.0, 100.0, 5}, {-100.0, 100.0, 5}},
+      Binary{"pow",
+             [](const RE &x, const RE &y) { return pow(x, y); },
+             {0.1, 10.0, 17},
+             {-3.0, 3.0, 17}},
+      Binary{"atan2",
+             [](const RE &x, const RE &y) { return atan2(x, y); },
+             {-5.0, 5.0, 7},
+             {-5.0, 5.0, 7}},
+      Binary{"hypot",
+             [](const RE &x, const RE &y) { return hypot(x, y); },
+             {-100.0, 100.0, 5},
+             {-100.0, 100.0, 5}},
   };
   for (const Binary &op : binaries) {
     cltest::Columns xs(2);

@@ -52,8 +52,10 @@ def test_every_exported_unary_is_covered() -> None:
     # `select` is the one ternary.
     ternary = {"select"}
     # Not operations at all: these build or read an equation.
-    not_an_op = {"closes", "equation", "implicit", "load", "param", "var"}
-    assert functions - binary - ternary - not_an_op == set(UNARY)
+    not_an_op = {"equation", "implicit", "param", "var"}
+    # Vectors: factories and reductions, not scalar operations.
+    vectors = {"dot", "gemv", "mat_constant", "pack", "sum", "vec", "vec_constant"}
+    assert functions - binary - ternary - not_an_op - vectors == set(UNARY)
 
 
 @pytest.mark.parametrize("name", sorted(UNARY))
@@ -111,6 +113,34 @@ def test_interning_makes_a_repeated_subexpression_one_node() -> None:
     assert shared.symbols == ["x", "y"]
 
 
+def test_in_place_add_accumulates_and_leaves_copies_alone() -> None:
+    """A loop of += is one node of its terms; a name bound earlier keeps its value."""
+
+    @ddx.equation
+    def summed() -> ddx.Expression:
+        x, y = ddx.var("x"), ddx.var("y")
+        acc = x
+        acc += y
+        acc += x * y
+        acc -= 2.0
+        acc += 0.0
+        return acc
+
+    assert summed.evaluate([2.0, 3.0]) == pytest.approx(2.0 + 3.0 + 6.0 - 2.0)
+
+    @ddx.equation
+    def kept() -> ddx.Expression:
+        x, y = ddx.var("x"), ddx.var("y")
+        acc = x
+        acc += y
+        acc += y
+        before = acc
+        acc += x * y
+        return before
+
+    assert kept.evaluate([2.0, 3.0]) == pytest.approx(2.0 + 3.0 + 3.0)
+
+
 def test_literals_fold_without_reaching_a_graph() -> None:
     """Two pending literals never become nodes, so this equation has no symbols."""
     eq = ddx.equation(lambda: ddx.Expression(2.0) * 3.0)
@@ -122,7 +152,7 @@ def test_literals_fold_without_reaching_a_graph() -> None:
 def test_var_outside_a_model_is_refused() -> None:
     with pytest.raises(ddx.Error) as caught:
         ddx.var("stray")
-    assert caught.value.code is ddx.errc.no_arena
+    assert caught.value.code is ddx.errc.outside_equation
 
 
 def test_a_raising_model_leaves_no_arena_installed() -> None:
@@ -141,7 +171,7 @@ def test_a_raising_model_leaves_no_arena_installed() -> None:
 
     with pytest.raises(ddx.Error) as caught:
         ddx.var("after")
-    assert caught.value.code is ddx.errc.no_arena
+    assert caught.value.code is ddx.errc.outside_equation
 
 
 def test_repr_names_what_it_is() -> None:

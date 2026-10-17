@@ -1,5 +1,6 @@
 #include "jit/format.hpp"
 #include "jit/kernel.hpp"
+#include "jit/tests_jit_common.hpp"
 #include "rt/derivative.hpp"
 #include "rt/expressions.hpp"
 #include "rt/graph.hpp"
@@ -18,21 +19,6 @@
 namespace {
 using ddx::rt::Builder;
 using ddx::rt::Graph;
-
-// No native target means no JIT to test; bring it up once and name the reason.
-ddx::jit::Compiler &compiler() {
-  static ddx::jit::result<ddx::jit::Compiler> c = ddx::jit::Compiler::create();
-  EXPECT_TRUE(c.has_value()) << (c ? "" : c.error().detail);
-  return *c;
-}
-
-// compile() answers with result<Kernel>; name LLVM's reason here rather than
-// meeting an empty Kernel three lines later.
-ddx::jit::Kernel must_compile(auto &&...args) {
-  auto k = compiler().compile(static_cast<decltype(args) &&>(args)...);
-  EXPECT_TRUE(k.has_value()) << (k ? std::string{} : k.error().detail);
-  return k ? std::move(*k) : ddx::jit::Kernel{};
-}
 
 // Any width: libmvec offers 2, 4 and 8, and the choice is the host's.
 bool has_vector_doubles(const std::string &ir) {
@@ -53,7 +39,7 @@ constexpr bool host_has_libmvec =
 
 std::string ir_for(auto build, std::size_t nvars, ddx::jit::Options opt = {}) {
   Builder<> b;
-  std::vector<ddx::rt::RTExpression<>> vars;
+  std::vector<ddx::rt::Expression<>> vars;
   static constexpr const char *names[] = {"x", "y"};
   for (std::size_t i = 0; i < nvars; ++i) {
     vars.push_back(var(b, names[i]));
@@ -153,7 +139,7 @@ TEST(JitVectorize, JacobianLoopVectorises) {
 // the body is emitted wide instead, so the column count is not a question.
 TEST(JitVectorize, WideTranscendentalJacobianIsVector) {
   Builder<> b;
-  std::vector<ddx::rt::RTExpression<>> v;
+  std::vector<ddx::rt::Expression<>> v;
   for (std::size_t i = 0; i < 16; ++i) {
     v.push_back(var(b, "x" + std::to_string(i)));
   }
@@ -189,7 +175,7 @@ TEST(JitVectorize, EveryVectorSymbolResolves) {
   Builder<> b;
   const auto x = var(b, "x");
   auto f = sin(x) + cos(x) + exp(x) + log(x) + tanh(x) + erf(x) + cbrt(x);
-  f = f + atan(x) + asinh(x) + pow(x, ddx::rt::RTExpression<>{3});
+  f = f + atan(x) + asinh(x) + pow(x, ddx::rt::Expression<>{3});
 
   const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
   ddx::jit::Options on;

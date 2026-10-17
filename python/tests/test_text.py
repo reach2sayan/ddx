@@ -80,13 +80,3 @@ def test_refuses_with_the_code_that_says_why(source: str, code: str) -> None:
     with pytest.raises(ddx.Error) as caught:
         ddx.equation(source)
     assert caught.value.code is getattr(ddx.errc, code)
-
-
-def test_takes_a_cache_like_any_other_model(tmp_path: object) -> None:
-    cache = tmp_path / "written.ddx"  # type: ignore[operator]
-    first = ddx.equation("exp(x) * sin(y)", cache=cache)
-    assert not first.loaded
-
-    second = ddx.equation("exp(x) * sin(y)", cache=cache)
-    assert second.loaded
-    assert second.evaluate([2.0, 3.0]) == pytest.approx(first.evaluate([2.0, 3.0]))

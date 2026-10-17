@@ -1,5 +1,6 @@
 #include "ddx.hpp"
 #include "jit/kernel.hpp"
+#include "jit/tests_jit_common.hpp"
 #include "rt/bridge.hpp"
 #include "rt/derivative.hpp"
 #include "rt/graph.hpp"
@@ -20,32 +21,17 @@ namespace {
 using ddx::rt::Builder;
 using ddx::rt::Graph;
 
-// No native target means no JIT to test; bring it up once and name the reason.
-ddx::jit::Compiler &compiler() {
-  static ddx::jit::result<ddx::jit::Compiler> c = ddx::jit::Compiler::create();
-  EXPECT_TRUE(c.has_value()) << (c ? "" : c.error().detail);
-  return *c;
-}
-
-// compile() answers with result<Kernel>; name LLVM's reason here rather than
-// meeting an empty Kernel three lines later.
-ddx::jit::Kernel must_compile(auto &&...args) {
-  auto k = compiler().compile(static_cast<decltype(args) &&>(args)...);
-  EXPECT_TRUE(k.has_value()) << (k ? std::string{} : k.error().detail);
-  return k ? std::move(*k) : ddx::jit::Kernel{};
-}
-
 void expect_jacobian_matches_interpreter(auto build, std::size_t nvars,
                                          std::size_t n = 32) {
   Builder<> b;
-  std::vector<ddx::rt::RTExpression<>> vars;
+  std::vector<ddx::rt::Expression<>> vars;
   static constexpr const char *names[] = {"x", "y", "z"};
   for (std::size_t i = 0; i < nvars; ++i) {
     vars.push_back(var(b, names[i]));
   }
   const auto root = build(b, vars);
   // The sweep is repeated for the reference values; the builder runs its own.
-  const auto reference_jacobian = ddx::rt::build_jacobian_impl(b, root.id(b));
+  const auto reference_jacobian = ddx::rt::derive_jacobian(b, root.id(b));
   const auto kernel = must_compile(
       ddx::rt::GraphBuilder{b}.value(root).build_jacobian().finish());
   ASSERT_EQ(kernel.shape().outputs(), nvars + 1);
@@ -180,7 +166,7 @@ TEST(JitHessian, ThirdBlockCarriesTheColouredHessian) {
   kernel(xs, values, jp, hp, n);
 
   // Against the interpreter over the same graph, scattered the same way.
-  const auto &coloring = graph.coloring();
+  const auto &colouring = graph.colouring();
   for (std::size_t point = 0; point < n; ++point) {
     const std::array<double, 2> at{cx[point], cy[point]};
     const auto reference = ddx::rt::evaluate_all(b, at);
@@ -195,7 +181,7 @@ TEST(JitHessian, ThirdBlockCarriesTheColouredHessian) {
           << "compressed Hessian column " << c;
     }
   }
-  EXPECT_EQ(coloring.count() * 2, kernel.shape().hessian);
+  EXPECT_EQ(colouring.count() * 2, kernel.shape().hessian);
 }
 
 } // namespace

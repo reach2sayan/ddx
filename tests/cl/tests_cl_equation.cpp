@@ -1,5 +1,5 @@
-// Backend::Device through the Equation a user holds: every lane, the choice of
-// device, and what happens when there is none.
+// Backend::Device through the Equation a user holds: every pipeline, the choice
+// of device, and what happens when there is none.
 #include "tests_cl_common.hpp"
 
 #include "rt/energy_models.hpp"
@@ -20,7 +20,7 @@ namespace {
 
 using ddx::rt::Backend;
 using ddx::rt::Want;
-using RE = ddx::rt::RTExpression<>;
+using RE = ddx::rt::Expression<>;
 using ClEquation = cltest::OnDevice;
 
 constexpr std::size_t symbols = 12;
@@ -112,7 +112,8 @@ constexpr std::size_t symbols = 12;
 void expect_same_bits(const std::vector<double> &want,
                       const std::vector<double> &got, std::size_t n) {
   ASSERT_EQ(want.size(), got.size());
-  for (const auto [i, pair] : std::views::enumerate(std::views::zip(want, got))) {
+  for (const auto [i, pair] :
+       std::views::enumerate(std::views::zip(want, got))) {
     const auto [w, g] = pair;
     EXPECT_EQ(cltest::bits(w), cltest::bits(g))
         << "n = " << n << ", element " << i << ": " << w << " swept, " << g
@@ -122,7 +123,9 @@ void expect_same_bits(const std::vector<double> &want,
 
 [[nodiscard]] ddx::jit::Options on_device(std::string selector = std::string{
                                               cltest::selector()}) {
-  return {.backend = Backend::Device, .points = 1000, .device = std::move(selector)};
+  return {.backend = Backend::Device,
+          .points = 1000,
+          .device = std::move(selector)};
 }
 
 TEST_F(ClEquation, EveryLaneAnswersOnTheDeviceToTheBit) {
@@ -130,6 +133,10 @@ TEST_F(ClEquation, EveryLaneAnswersOnTheDeviceToTheBit) {
   auto dev = arithmetic();
   dev.options(on_device());
   for (const Want want : ddx::rt::want_values) {
+    // The dense Hessian is a sweep over matrix rows, which no kernel computes.
+    if (want == Want::DenseHessian) {
+      continue;
+    }
     EXPECT_TRUE(dev.wait_for_kernel(want)) << ddx::rt::name_of(want);
   }
   EXPECT_TRUE(dev.uses_kernel());
@@ -175,9 +182,11 @@ TEST_F(ClEquation, AModelWithTranscendentalsAgreesClosely) {
   };
   const auto want = run(swept);
   const auto got = run(dev);
-  for (const auto [k, pair] : std::views::enumerate(std::views::zip(want, got))) {
+  for (const auto [k, pair] :
+       std::views::enumerate(std::views::zip(want, got))) {
     const auto &[w, g] = pair;
-    for (const auto [i, values] : std::views::enumerate(std::views::zip(w, g))) {
+    for (const auto [i, values] :
+         std::views::enumerate(std::views::zip(w, g))) {
       const auto [expected, actual] = values;
       EXPECT_NEAR(actual, expected, 1e-10 * std::max(1.0, std::abs(expected)))
           << "column " << k << ", point " << i;

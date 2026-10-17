@@ -17,8 +17,8 @@
 #include <llvm/Support/Alignment.h>
 
 #include <algorithm>
-#include <cstdint>
 #include <array>
+#include <cstdint>
 #include <map>
 #include <ranges>
 #include <span>
@@ -41,8 +41,12 @@ llvm::Intrinsic::ID intrinsic_for(rt::OpCode op) {
       const auto &[how, name] = rt::lowering_of(static_cast<rt::OpCode>(i));
       llvm::SmallString<32> spelled{"llvm."};
       spelled += name;
-      t[i] = how == rt::Lower::Call ? llvm::Intrinsic::lookupIntrinsicID(spelled)
-                                    : llvm::Intrinsic::not_intrinsic;
+      // Not pow: the library-call simplifier rewrites llvm.pow with a constant
+      // operand -- 1/x for -1, sqrt for 0.5 -- and libm's pow is not
+      // correctly rounded, so the kernel would leave the sweep by an ulp.
+      t[i] = how == rt::Lower::Call && i != std::to_underlying(rt::OpCode::Pow)
+                 ? llvm::Intrinsic::lookupIntrinsicID(spelled)
+                 : llvm::Intrinsic::not_intrinsic;
     }
     return t;
   }();
@@ -74,9 +78,9 @@ llvm::Function *trampoline_decl(llvm::Module &m) {
   llvm::PointerType *const ptr = llvm::PointerType::getUnqual(ctx);
   llvm::Type *const i64 = llvm::Type::getInt64Ty(ctx);
   llvm::FunctionCallee c = m.getOrInsertFunction(
-      trampoline_symbol, llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
-                                                 {ptr, ptr, i64, ptr, i64},
-                                                 false));
+      trampoline_symbol,
+      llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+                              {ptr, ptr, i64, ptr, i64}, false));
   auto *fn = llvm::cast<llvm::Function>(c.getCallee());
   fn->setDoesNotThrow();
   fn->setWillReturn();
@@ -139,10 +143,10 @@ public:
     // Sign: u > 0 ? 1 : u < 0 ? -1 : u - u -- the last arm reaches only ±0
     // and NaN.
     llvm::Value *const zero = constant(0.0);
-    return b_.CreateSelect(
-        b_.CreateFCmpOGT(u, zero), constant(1.0),
-        b_.CreateSelect(b_.CreateFCmpOLT(u, zero), constant(-1.0),
-                        b_.CreateFSub(u, u)));
+    return b_.CreateSelect(b_.CreateFCmpOGT(u, zero), constant(1.0),
+                           b_.CreateSelect(b_.CreateFCmpOLT(u, zero),
+                                           constant(-1.0),
+                                           b_.CreateFSub(u, u)));
   }
 
   // Not llvm.fmuladd, which is only *permission* to fuse
@@ -252,11 +256,22 @@ private:
       if (id != llvm::Intrinsic::not_intrinsic) {
         fn = llvm::Intrinsic::getOrInsertDeclaration(&m_, id, {lanes_.ty});
       } else {
-        fn = libm_decl(m_, rt::label_of(op), static_cast<unsigned>(args.size()));
+        fn =
+            libm_decl(m_, rt::label_of(op), static_cast<unsigned>(args.size()));
         scalarise = lanes_.vector();
       }
     }
-    return scalarise ? scalarised(fn, args) : b_.CreateCall(fn, args);
+    return scalarise ? scalarised(fn, args) : libm_call(fn, args);
+  }
+  // A libm call stays that call: nobuiltin keeps the simplifier from trading
+  // it for another function that rounds differently.
+  llvm::Value *libm_call(llvm::Function *fn,
+                         llvm::ArrayRef<llvm::Value *> args) const {
+    llvm::CallInst *const c = b_.CreateCall(fn, args);
+    if (!fn->isIntrinsic()) {
+      c->addFnAttr(llvm::Attribute::NoBuiltin);
+    }
+    return c;
   }
 
   llvm::Value *scalarised(llvm::Function *fn,
@@ -264,7 +279,7 @@ private:
     std::vector<llvm::Value *> answers(lanes_.width);
     per_lane(std::span{args.data(), args.size()},
              [&](unsigned lane, llvm::ArrayRef<llvm::Value *> scalars) {
-               answers[lane] = b_.CreateCall(fn, scalars);
+               answers[lane] = libm_call(fn, scalars);
              });
     return gathered([&](unsigned lane) { return answers[lane]; });
   }
@@ -328,7 +343,7 @@ llvm::Function *declare_kernel(llvm::Module &m, llvm::StringRef name,
   // not asked for arrives as an empty span, whose data() may be null, so it
   // gets neither nonnull nor a size.
   const auto &layout = g.layout();
-  const std::array counts{g.arity(), layout.values, layout.jacobian,
+  const std::array counts{g.arity(),      layout.values,  layout.jacobian,
                           layout.hessian, std::size_t{0}, g.externs().size()};
   for (const auto [i, count] : counts | std::views::enumerate) {
     const auto arg = static_cast<unsigned>(i);
@@ -360,7 +375,7 @@ using ColumnValues = boost::container::small_vector<llvm::Value *, 8>;
 struct HoistedColumns {
   ColumnValues inputs;
   // f[k], g[k*n + j], h[c*n + i]
-  rt::Blocks<ColumnValues> out;
+  rt::PerBlock<ColumnValues> out;
 };
 
 HoistedColumns hoist_columns(llvm::IRBuilder<> &b, llvm::Function &fn,
@@ -392,7 +407,8 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
            const HoistedColumns &cols, llvm::Value *index, llvm::Value *mask) {
   std::vector<llvm::Value *> value(g.size(), nullptr);
   std::map<std::pair<std::uint32_t, rt::NodeId>, Emitter::Answers> called;
-  for (const auto &[v, c] : g.schedule()) {
+  for (const rt::Step &s : g.schedule()) {
+    const auto &[v, c] = std::pair{s.node, s.fma};
     const auto &p = g[v];
     if (c) {
       value[v] = emit.fma(c, value[c.x], value[c.y], value[c.z]);
@@ -404,24 +420,39 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
       value[v] = emit.constant(p.value);
       break;
     case rt::Kind::Input:
-      value[v] = emit.load(
-          cols.inputs[rt::input_column(g.inputs(), p.op, p.slot)], index, mask,
-          "");
+      value[v] = emit.load(cols.inputs[rt::input_column(
+                               g.inputs(), p.op, rt::detail::index_of(p))],
+                           index, mask, "");
       break;
-    case rt::Kind::Args: // a list's value is its first argument
-      value[v] = value[operands[0]];
+    case rt::Kind::Nary: {
+      // The terms into the running sum in list order, a product term as the
+      // fma the sweep takes where the step is fused; the first term is formed.
+      llvm::Value *acc = nullptr;
+      for (const rt::NodeId t : rt::arguments(g, v)) {
+        const rt::Contraction c =
+            s.fused ? rt::product_of(g, t) : rt::Contraction{};
+        if (!c) {
+          acc = acc ? emit.binary(rt::OpCode::Add, acc, value[t]) : value[t];
+        } else if (acc) {
+          acc = emit.fma(c, value[c.x], value[c.y], acc);
+        } else {
+          acc = emit.binary(rt::OpCode::Mul, value[c.x], value[c.y]);
+          acc = c.negated ? emit.unary(rt::OpCode::Neg, acc) : acc;
+        }
+      }
+      value[v] = acc;
       break;
+    }
     case rt::Kind::Extern: {
       // One call per (function, argument list), whichever component asked
       // first; the rest are loads off the same answer.
-      const auto [fn, component] = rt::ExternSlot::of(p.slot);
+      const auto [fn, component] = rt::detail::extern_of(p);
       auto [answers, fresh] = called.try_emplace({fn, operands[0]});
       if (fresh) {
-        const auto args = *rt::extern_arguments(g, v) |
-                          std::views::transform([&value](rt::NodeId a) {
-                            return value[a];
-                          }) |
-                          impl::to<std::vector<llvm::Value *>>();
+        const auto args =
+            rt::arguments(g, v) |
+            std::views::transform([&value](rt::NodeId a) { return value[a]; }) |
+            impl::to<std::vector<llvm::Value *>>();
         answers->second = emit.extern_call(g.externs()[fn], fn, args);
       }
       value[v] = emit.component(answers->second, component);
@@ -437,6 +468,8 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
     case rt::Kind::Binary:
       value[v] = emit.binary(p.op, value[operands[0]], value[operands[1]]);
       break;
+    case rt::Kind::Tensor:
+      std::unreachable(); // Compiler::compile refuses a graph with tensor rows
     }
   }
   return value;
@@ -446,7 +479,7 @@ void emit_stores(const Emitter &emit, const rt::Graph<double> &g,
                  const HoistedColumns &cols,
                  std::span<llvm::Value *const> value, llvm::Value *index,
                  llvm::Value *mask) {
-  const rt::Blocks<std::span<llvm::Value *const>> columns{
+  const rt::PerBlock<std::span<llvm::Value *const>> columns{
       cols.out.values, cols.out.jacobian, cols.out.hessian};
   for (const auto [block_columns, block] :
        rt::zip_blocks(columns, g.output_blocks())) {

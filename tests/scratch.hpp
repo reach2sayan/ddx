@@ -16,9 +16,9 @@
 // copies of one binary would wipe each other's entries through remove_all.
 class Scratch : private ddx::impl::pinned {
 public:
-  explicit Scratch(std::string_view name, std::string_view suffix = ".ddx")
+  explicit Scratch(std::string_view name)
       : path_(std::filesystem::temp_directory_path() /
-              std::format("ddx_{}_{:08x}_{}{}", name, token(), seq(), suffix)) {
+              std::format("ddx_{}_{:08x}_{}", name, token(), seq())) {
     wipe();
   }
   ~Scratch() { wipe(); }

@@ -17,7 +17,7 @@
 // of the Jacobian's columns.
 namespace {
 
-using RE = ddx::rt::RTExpression<>;
+using RE = ddx::rt::Expression<>;
 
 // f = {x^2 y, sin(xy)}, so
 //   J     = [[2xy, x^2], [y cos(xy), x cos(xy)]]
@@ -53,13 +53,13 @@ void expect_near_all(std::span<const double> got, std::span<const double> want,
   }
 }
 
-TEST(RtJacobianTangent, AlongABasisVectorIsTheAnalyticDerivative) {
+TEST(RtJacobianJvp, AlongABasisVectorIsTheAnalyticDerivative) {
   const auto eq = pair();
   expect_near_all(*eq.jacobian_jvp("x", px, py), d_dx(), 1e-14);
   expect_near_all(*eq.jacobian_jvp("y", px, py), d_dy(), 1e-14);
 }
 
-TEST(RtJacobianTangent, AlongAnyDirectionIsTheCombination) {
+TEST(RtJacobianJvp, AlongAnyDirectionIsTheCombination) {
   const auto eq = pair();
   const std::array v{0.3, -1.7};
   const auto got = *eq.jacobian_jvp(std::span<const double>{v}, px, py);
@@ -78,7 +78,7 @@ TEST(RtJacobianTangent, AlongAnyDirectionIsTheCombination) {
   }
 }
 
-TEST(RtJacobianTangent, ForOneFunctionItIsAHessianColumn) {
+TEST(RtJacobianJvp, ForOneFunctionItIsAHessianColumn) {
   const auto eq = ddx::rt::equation([] {
     const auto t = ddx::rt::var("T");
     const auto x = ddx::rt::var("x");
@@ -93,7 +93,7 @@ TEST(RtJacobianTangent, ForOneFunctionItIsAHessianColumn) {
   }
 }
 
-TEST(RtJacobianTangent, TheBatchMatchesThePointCalls) {
+TEST(RtJacobianJvp, TheBatchMatchesThePointCalls) {
   const auto eq = pair();
   constexpr std::size_t n = 11;
   const std::size_t cells = *eq.jacobian_columns();
@@ -129,7 +129,7 @@ TEST(RtJacobianTangent, TheBatchMatchesThePointCalls) {
   }
 }
 
-TEST(RtJacobianTangent, ASystemTakesItInOneSweep) {
+TEST(RtJacobianJvp, ASystemTakesItInOneSweep) {
   const auto sys = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
     const auto y = ddx::rt::var("y");
@@ -138,7 +138,7 @@ TEST(RtJacobianTangent, ASystemTakesItInOneSweep) {
   expect_near_all(*sys.jacobian_jvp("x", px, py), d_dx(), 1e-14);
 }
 
-TEST(RtJacobianTangent, AWrongDirectionOrNameIsRefused) {
+TEST(RtJacobianJvp, AWrongDirectionOrNameIsRefused) {
   const auto eq = pair();
   const std::array v{1.0};
   EXPECT_EQ(eq.jacobian_jvp(std::span<const double>{v}, px, py).error().code,
@@ -201,6 +201,25 @@ TEST(RtRestrict, KeepsOnlyTheChosenColumns) {
   EXPECT_EQ(part_dt[1], full_dt[1]);
 }
 
+// A restriction that keeps no cell keeps none, not all of them: y's column is
+// there, and zero.
+TEST(RtRestrict, KeepingNoCellIsNoColumns) {
+  const auto eq = ddx::rt::equation([] {
+    const auto x = ddx::rt::var("x");
+    (void)ddx::rt::var("y");
+    return x * x;
+  });
+  const auto none = eq.restrict({"y"});
+  ASSERT_TRUE(none.has_value());
+  EXPECT_EQ(none->jacobian_columns(), 0u);
+  const auto j = none->jacobian(3.0, 4.0);
+  ASSERT_TRUE(j.has_value()) << j.error().code;
+  EXPECT_EQ(*j, std::vector{0.0});
+  const auto dt = none->jacobian_jvp("y", 3.0, 4.0);
+  ASSERT_TRUE(dt.has_value()) << dt.error().code;
+  EXPECT_EQ(*dt, std::vector{0.0});
+}
+
 TEST(RtRestrict, ABatchThroughTheView) {
   constexpr std::size_t species = 4;
   const auto eq = mse(species);
@@ -214,10 +233,9 @@ TEST(RtRestrict, ABatchThroughTheView) {
              (1.0 + 0.001 * static_cast<double>(i));
     }
   }
-  const auto in = columns | std::views::transform([](const auto &c) {
-                    return c.data();
-                  }) |
-                  ddx::impl::to<std::vector<const double *>>();
+  const auto in =
+      columns | std::views::transform([](const auto &c) { return c.data(); }) |
+      ddx::impl::to<std::vector<const double *>>();
   std::vector<double> f(n);
   std::vector<std::vector<double>> g(tp.jacobian_columns(),
                                      std::vector<double>(n));
@@ -237,7 +255,8 @@ TEST(RtRestrict, ABatchThroughTheView) {
   // Two columns, so a block sized for the whole Jacobian is refused.
   std::vector<std::vector<double>> wide(*eq.jacobian_columns(),
                                         std::vector<double>(n));
-  const auto ws = wide | std::views::transform([](auto &c) { return c.data(); }) |
+  const auto ws = wide |
+                  std::views::transform([](auto &c) { return c.data(); }) |
                   ddx::impl::to<std::vector<double *>>();
   EXPECT_EQ(tp.jacobian(in, fs, ws, n).error().code,
             ddx::errc::wrong_column_count);
@@ -245,8 +264,7 @@ TEST(RtRestrict, ABatchThroughTheView) {
 
 TEST(RtRestrict, AnUnknownNameIsRefused) {
   const auto eq = pair();
-  EXPECT_EQ(eq.restrict({"x", "nope"}).error().code,
-            ddx::errc::unknown_symbol);
+  EXPECT_EQ(eq.restrict({"x", "nope"}).error().code, ddx::errc::unknown_symbol);
 }
 
 } // namespace

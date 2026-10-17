@@ -92,9 +92,9 @@ def test_one_function_members_refuse_a_system(system: ddx.Equation) -> None:
     with pytest.raises(ddx.Error) as caught:
         system.hvp([1.0, 0.0], [1.0, 2.0])
     assert caught.value.code is ddx.errc.not_single_output
-    with pytest.raises(ddx.Error) as colors:
-        _ = system.hessian_colors
-    assert colors.value.code is ddx.errc.not_single_output
+    with pytest.raises(ddx.Error) as colours:
+        _ = system.hessian_colours
+    assert colours.value.code is ddx.errc.not_single_output
 
 
 def test_shapes_drop_the_axes_that_are_not_there(scalar: ddx.Equation) -> None:
@@ -159,12 +159,6 @@ def test_symbols_are_in_the_order_a_point_is_read_in(scalar: ddx.Equation) -> No
     assert scalar.symbols == ["x", "y"]
 
 
-def test_to_dot_renders_the_frozen_graph(scalar: ddx.Equation) -> None:
-    live = scalar.to_dot()
-    assert live.startswith("digraph")
-    assert len(scalar.to_dot(all=True)) >= len(live)
-
-
 def test_a_sparse_coupling_scatters_to_the_right_cells() -> None:
     """The compressed Hessian is indexed by colour and row, not as colours x n.
 
@@ -183,7 +177,7 @@ def test_a_sparse_coupling_scatters_to_the_right_cells() -> None:
 
     _, _, hessian = eq.hessian([0.3, 0.7, 1.1])
 
-    assert eq.hessian_colors == 3
+    assert eq.hessian_colours == 3
     assert hessian == pytest.approx(
         np.array(
             [
@@ -225,6 +219,19 @@ def test_a_param_is_an_input_with_no_column() -> None:
     with pytest.raises(ddx.Error) as missing:
         eq({"x": 3.0})
     assert missing.value.code is ddx.errc.wrong_arity
+
+
+def test_a_system_with_a_param_has_a_hessian() -> None:
+    @ddx.equation
+    def eq() -> tuple[ddx.Expression, ddx.Expression]:
+        x = ddx.var("x")
+        a = ddx.param("a")
+        return a * x * x, x * a
+
+    _, _, hessian = eq.hessian([3.0, 5.0])
+    assert hessian.shape == (2, 1, 1)
+    assert hessian[0].tolist() == [[10.0]]
+    assert hessian[1].tolist() == [[0.0]]
 
 
 def test_a_name_is_one_kind_of_input() -> None:
@@ -276,9 +283,7 @@ def test_restrict_keeps_the_chosen_columns() -> None:
 def test_an_implicit_input_carries_dz_dx() -> None:
     def model():
         a = ddx.var("a")
-        z = ddx.implicit("z")
-        ddx.closes(z, z * z - a)
-        return z
+        return ddx.implicit("z", lambda z: z * z - a)
 
     eq = ddx.equation(model)
     assert eq.symbols == ["a"]
@@ -290,7 +295,11 @@ def test_an_implicit_input_carries_dz_dx() -> None:
     assert eq.residual([4.0, 3.0]) == [5.0]
 
 
-def test_an_unclosed_implicit_is_refused() -> None:
+def test_an_implicit_named_twice_is_refused() -> None:
+    def model():
+        a = ddx.var("a")
+        return ddx.implicit("z", lambda z: z * z - a) + ddx.implicit("z", lambda z: z - a)
+
     with pytest.raises(ddx.Error) as caught:
-        ddx.equation(lambda: ddx.var("a") * ddx.implicit("z"))
-    assert caught.value.code is ddx.errc.unclosed_implicit
+        ddx.equation(model)
+    assert caught.value.code is ddx.errc.closed_twice

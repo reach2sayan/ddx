@@ -83,16 +83,15 @@ static_assert(std::forward_iterator<SetBits>);
 }
 
 // Always colours-major and n wide, said once so `c * n + i` is not respelled.
-[[nodiscard]] constexpr auto by_color(auto &&flat, std::size_t colors,
-                                      std::size_t n) {
+[[nodiscard]] constexpr auto by_colour(auto &&flat, std::size_t colours,
+                                       std::size_t n) {
   return impl::md::mdspan{std::ranges::data(flat),
-                          impl::md::dextents<std::size_t, 2>{colors, n}};
+                          impl::md::dextents<std::size_t, 2>{colours, n}};
 }
 
 // A stored cell of a derivative block: where it belongs in the dense matrix,
 // and where it is actually kept.  CSR by row and colour-major are two ways of
-// leaving cells out, and both answer this -- `slot` as the compile-time twin
-// names it (symbolic/coupling.hpp's `compressed_entry`).
+// leaving cells out, and both answer this.
 struct Cell {
   std::size_t row;
   std::size_t column;
@@ -211,8 +210,8 @@ static_assert(std::random_access_iterator<Sparsity::Iterator>);
 
 // Two columns share a colour only when no row couples them, so one sweep can
 // seed all of a colour's columns and the results still separate.
-struct Coloring {
-  std::vector<std::size_t> color;   // per symbol
+struct Colouring {
+  std::vector<std::size_t> colour;  // per symbol
   std::vector<std::size_t> scatter; // count() * n; column a (colour, row) owns
   // count() * n again, but the other question: *where* (colour, row) is stored,
   // or no_column for a cell no column of that colour owns.  Those are the ones
@@ -220,28 +219,28 @@ struct Coloring {
   std::vector<std::size_t> cell;
 
   [[nodiscard]] constexpr std::size_t count() const noexcept {
-    return color.empty() ? 0 : scatter.size() / color.size();
+    return colour.empty() ? 0 : scatter.size() / colour.size();
   }
   // The compressed block's width: how many cells any column owns.
   [[nodiscard]] constexpr std::size_t width() const noexcept {
     return static_cast<std::size_t>(std::ranges::count_if(
         cell, [](std::size_t k) { return k != no_column; }));
   }
-  [[nodiscard]] constexpr auto colors() const noexcept {
+  [[nodiscard]] constexpr auto colours() const noexcept {
     return std::views::iota(0uz, count());
   }
   // The symbols one sweep of colour `c` seeds together.
   [[nodiscard]] constexpr auto columns_of(std::size_t c) const {
-    return std::views::iota(0uz, color.size()) |
+    return std::views::iota(0uz, colour.size()) |
            std::views::filter(
-               [this, c](std::size_t j) { return color[j] == c; });
+               [this, c](std::size_t j) { return colour[j] == c; });
   }
   // The cells colour `c` owns -- what one sweep's result goes into.  A row of
   // that colour that no column owns is computed for nobody, and is absent.
   [[nodiscard]] constexpr auto owned_cells(std::size_t c) const {
-    const auto n = color.size();
-    const auto owner = by_color(scatter, count(), n);
-    const auto slot = by_color(cell, count(), n);
+    const auto n = colour.size();
+    const auto owner = by_colour(scatter, count(), n);
+    const auto slot = by_colour(cell, count(), n);
     return std::views::iota(0uz, n) |
            std::views::transform([c, owner, slot](std::size_t i) {
              return Cell{.row = i, .column = owner[c, i], .slot = slot[c, i]};
@@ -252,7 +251,7 @@ struct Coloring {
   // Every stored cell, colour-major.  What a caller scatters a compressed block
   // back to (i, j) with, rather than asking `cell_of` about every pair.
   [[nodiscard]] constexpr auto entries() const {
-    return colors() | std::views::transform([this](std::size_t c) {
+    return colours() | std::views::transform([this](std::size_t c) {
              return owned_cells(c);
            }) |
            std::views::join;
@@ -260,14 +259,14 @@ struct Coloring {
   // Where H(i, j) is stored, or nullopt for a cell the colouring calls zero.
   [[nodiscard]] constexpr std::optional<std::size_t>
   cell_of(std::size_t i, std::size_t j) const {
-    const auto n = color.size();
-    const auto colors = count();
-    const std::size_t c = color[j];
-    return by_color(scatter, colors, n)[c, i] == j
-               ? std::optional{by_color(cell, colors, n)[c, i]}
+    const auto n = colour.size();
+    const auto colours = count();
+    const std::size_t c = colour[j];
+    return by_colour(scatter, colours, n)[c, i] == j
+               ? std::optional{by_colour(cell, colours, n)[c, i]}
                : std::nullopt;
   }
-  BOOST_DESCRIBE_CLASS(Coloring, (), (color, scatter, cell), (), ())
+  BOOST_DESCRIBE_CLASS(Colouring, (), (colour, scatter, cell), (), ())
 };
 
 namespace detail {
@@ -301,80 +300,124 @@ template <impl::Numeric T>
   // otherwise contribute couplings this one does not have.
   const auto live = detail::reachable(b, std::span{&root, 1});
 
-  std::vector<SymbolSet> support(b.size());
+  // One set per node of the cone, by rank among its ids; operands come first,
+  // so theirs are always ranked by the time a node reads them.
+  std::vector<NodeId> rank(b.size(), no_node);
+  std::vector<SymbolSet> support;
+  support.reserve(static_cast<std::size_t>(std::ranges::count(live, true)));
+  const auto of = [&](NodeId u) -> const SymbolSet & {
+    return support[rank[u]];
+  };
   for (const NodeId v : detail::live_ids(live)) {
+    rank[v] = static_cast<NodeId>(support.size());
+    SymbolSet &here = support.emplace_back(n);
+    const auto unite = [&](const auto &ids) {
+      std::ranges::for_each(ids, [&](NodeId u) { here |= of(u); });
+    };
     const auto &node = b[v];
-    switch (kind_of(node.op)) {
+    // A Map or Zip couples as its inner op does, over the whole vector.
+    const OpCode op = detail::effective_op(node);
+    switch (kind_of(op)) {
     case Kind::Const:
-      support[v] = SymbolSet(n);
       break;
     case Kind::Input:
-      support[v] = SymbolSet(n);
       if (node.op == OpCode::Var) {
-        support[v].set(node.slot);
+        here.set(detail::index_of(node));
       } else if (node.op == OpCode::Implicit) {
         // Whatever its residual reads, and nonlinearly: z is a root, not a
         // sum.  The sweep's dz/dx nodes are not in the arena yet, so the
         // closure is read here rather than discovered.
-        const NodeId f = b.closures()[node.slot];
+        const NodeId f = b.closures()[detail::index_of(node)];
         const auto through = detail::reachable(b, std::span{&f, 1});
         for (const auto [u, leaf] : b.nodes() | std::views::enumerate) {
           if (leaf.op == OpCode::Var && through[static_cast<NodeId>(u)]) {
-            support[v].set(leaf.slot);
+            here.set(detail::index_of(leaf));
           }
         }
-        detail::couple(rows, support[v], support[v]);
+        detail::couple(rows, here, here);
       }
       break;
     case Kind::Unary:
-      support[v] = support[node.a];
+      here = of(node.a);
       // Negation is linear; anything else couples its argument with itself.
-      if (node.op != OpCode::Neg) {
-        detail::couple(rows, support[v], support[v]);
+      if (op != OpCode::Neg) {
+        detail::couple(rows, here, here);
       }
       break;
     case Kind::Extern:
-      // Nonlinear in every argument the list carries.
-      support[v] = support[node.a];
-      detail::couple(rows, support[v], support[v]);
+      // Nonlinear in every argument.
+      unite(arguments(b, v));
+      detail::couple(rows, here, here);
       break;
-    case Kind::Args:
-      // A list carries its arguments' support; the call couples it.
-      support[v] = support[node.a];
-      support[v] |= support[node.b];
+    case Kind::Nary:
+      // A sum is as linear as an Add: the terms' union, no coupling.
+      unite(arguments(b, v));
       break;
     case Kind::Ternary:
       // As linear as an Add: it chooses between two derivatives rather than
       // combining them.
-      support[v] = support[node.b];
-      support[v] |= support[node.c];
+      here = of(node.b);
+      here |= of(node.c);
       break;
     case Kind::Binary:
       // Zero derivative everywhere it exists, so no support and no coupling --
       // the conservative arm below cost a colour or two per tested quantity.
-      if (node.op == OpCode::Lt || node.op == OpCode::Le) {
-        support[v] = SymbolSet(n);
+      if (op == OpCode::Lt || op == OpCode::Le) {
         break;
       }
-      support[v] = support[node.a];
-      support[v] |= support[node.b];
-      if (node.op == OpCode::Add) {
+      here = of(node.a);
+      here |= of(node.b);
+      if (op == OpCode::Add) {
         break; // linear: contributes nothing
-      } else if (node.op == OpCode::Mul) {
-        detail::couple(rows, support[node.a], support[node.b]);
-      } else if (node.op == OpCode::Div) {
-        detail::couple(rows, support[node.a], support[node.b]);
-        detail::couple(rows, support[node.b], support[node.b]);
+      } else if (op == OpCode::Mul) {
+        detail::couple(rows, of(node.a), of(node.b));
+      } else if (op == OpCode::Div) {
+        detail::couple(rows, of(node.a), of(node.b));
+        detail::couple(rows, of(node.b), of(node.b));
       } else {
-        detail::couple(rows, support[v], support[v]);
+        detail::couple(rows, here, here);
       }
       break;
+    case Kind::Tensor: {
+      // One support for the whole vector, conservatively: the union of what
+      // its operands read.  Linear ops -- Pack, Gather, Sum, Gemv over a
+      // constant matrix, AddAt -- couple nothing; a Map or Zip took its inner
+      // op's arm above, and Scale and Dot couple as a product does.
+      switch (node.op) {
+      case OpCode::VecConst:
+      case OpCode::MatConst:
+        break;
+      case OpCode::Pack:
+        unite(arguments(b, v));
+        break;
+      case OpCode::Gather:
+      case OpCode::Sum:
+        here = of(node.a);
+        break;
+      case OpCode::Gemv:
+        here = of(node.b);
+        break;
+      case OpCode::AddAt:
+        here = of(node.a);
+        here |= of(node.b);
+        break;
+      case OpCode::Scale:
+      case OpCode::Dot:
+        here = of(node.a);
+        here |= of(node.b);
+        detail::couple(rows, of(node.a), of(node.b));
+        break;
+      default: // the dense Hessian's matrix rows, never under a root
+        std::unreachable();
+      }
+      break;
+    }
     }
   }
   return rows;
 }
 
-// The cells a layout stores -- a Sparsity's or a Coloring's, each answering
+// The cells a layout stores -- a Sparsity's or a Colouring's, each answering
 // entries() -- into a dense row-major block n wide, each cell `points` long:
 // cell(slot) is where a stored cell's values start, dense(i * n + j) where
 // they go.  The zeros are the caller's fill.  The one scatter the point calls
@@ -387,8 +430,9 @@ constexpr void scatter(const auto &layout, auto &&cell, auto &&dense,
   }
 }
 
-// Columns j and k conflict iff their coupling rows overlap -- the CPR colouring
-// symbolic/coupling.hpp runs at compile time, and carries the citations.
-[[nodiscard]] DDX_API Coloring color_columns(const CouplingRows &rows);
+// Columns j and k conflict iff their coupling rows overlap: the CPR colouring,
+// smallest-last ordered.  Ref: Curtis, Powell & Reid, J. Inst. Math. Appl.
+// 13(1) (1974) 117; Coleman & Moré, SIAM J. Numer. Anal. 20(1) (1983) 187.
+[[nodiscard]] DDX_API Colouring colour_columns(const CouplingRows &rows);
 
 } // namespace ddx::rt

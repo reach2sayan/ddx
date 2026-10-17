@@ -9,7 +9,7 @@
 // -- the machinery is what is under test, not the thermodynamics.
 namespace models {
 
-using RE = ddx::rt::RTExpression<>;
+using RE = ddx::rt::Expression<>;
 
 inline double pseudo(std::size_t i, std::size_t j, double lo, double hi) {
   const double t = static_cast<double>((i * 7919 + j * 104729) % 1000) / 1000.0;

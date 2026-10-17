@@ -1,7 +1,6 @@
 #pragma once
 
 #include "symbolic/entry.hpp"
-#include "symbolic/sweep.hpp"
 #include "symbolic/traits.hpp"
 #include "util/config.hpp" // DDX_KEYED_ACCESSORS
 #include "util/error.hpp"
@@ -170,6 +169,15 @@ template <FixedString... Syms, Numeric... Vs>
   return bind(DDX_FWD(e), values(nv...));
 }
 
+// The value-array APIs take CANONICAL (alphabetical) order.
+template <CExpression Expr>
+[[nodiscard]] consteval auto symbol_order() noexcept {
+  using SymList = detail::expr_symbols_t<std::remove_cvref_t<Expr>>;
+  constexpr std::size_t N = mp::mp_size<SymList>::value;
+  return index_apply<N>([]<std::size_t... I>() {
+    return std::array<std::string_view, N>{mp::mp_at_c<SymList, I>::name...};
+  });
+}
 template <CExpression Expr>
 [[nodiscard]] consteval auto symbol_order(const Expr &) noexcept {
   return symbol_order<std::remove_cvref_t<Expr>>();
@@ -292,16 +300,15 @@ template <auto Seed, CExpression Expr, CEvalArg... Args>
   using VT = typename std::remove_cvref_t<Expr>::value_type;
   using Syms = expr_symbols_t<Expr>;
   constexpr std::size_t N = expr_arity_v<Expr>;
-  static_assert(sizeof...(Args) == N,
-                "eval_with_tangent: supply exactly one value per symbol, in "
-                "canonical order (see symbol_order<Expr>())");
-  const std::array<VT, N> vals{static_cast<VT>(args)...};
-  std::array<Dual<VT>, N> seeds{};
-  static_for<N>([&]<std::size_t I>() {
-    constexpr bool seeded = mp::mp_at_c<Syms, I>::value == Seed;
-    seeds[I] = Dual<VT>{vals[I], seeded ? VT{1} : VT{}};
-  });
-  return e.template eval_seeded<Syms>(seeds);
+  return with_point<Syms, VT, N>(
+      [&e](const std::array<VT, N> &vals) {
+        const auto seeds = index_apply<N>([&]<std::size_t... I>() {
+          return std::array<Dual<VT>, N>{Dual<VT>{
+              vals[I], mp::mp_at_c<Syms, I>::value == Seed ? VT{1} : VT{}}...};
+        });
+        return e.template eval_seeded<Syms>(seeds);
+      },
+      args...);
 }
 
 } // namespace detail

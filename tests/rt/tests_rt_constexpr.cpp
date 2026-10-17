@@ -17,7 +17,7 @@
 
 namespace {
 using ddx::rt::Builder;
-using ddx::rt::RTExpression;
+using RE = ddx::rt::Expression<>;
 
 consteval double build_and_evaluate() {
   Builder<> b;
@@ -33,9 +33,9 @@ consteval bool rewrites_hold() {
   Builder<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
-  return (x + RTExpression<>{0}).id(b) == x.id(b) &&
-         (x * RTExpression<>{1}).id(b) == x.id(b) && (-(-x)).id(b) == x.id(b) &&
-         ((y / x) * x).id(b) == y.id(b) && ((x * y)).id(b) == (y * x).id(b);
+  return (x + RE{0}).id(b) == x.id(b) && (x * RE{1}).id(b) == x.id(b) &&
+         (-(-x)).id(b) == x.id(b) && ((y / x) * x).id(b) == y.id(b) &&
+         ((x * y)).id(b) == (y * x).id(b);
 }
 static_assert(rewrites_hold());
 
@@ -56,7 +56,7 @@ consteval double partial_of_product() {
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * y;
-  const auto g = ddx::rt::build_jacobian_impl(b, f.id(b));
+  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
   return ddx::rt::evaluate_all(b, std::array{3.0, 4.0})[g.partial[0]];
 }
 static_assert(partial_of_product() == 4.0);
@@ -68,7 +68,7 @@ consteval double transcendental_jacobian() {
   Builder<> b;
   const auto x = var(b, "x");
   const auto f = sin(x) * x;
-  const auto g = ddx::rt::build_jacobian_impl(b, f.id(b));
+  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
   const auto v = ddx::rt::evaluate_all(b, std::array{0.0});
   return v[g.partial[0]]; // d(x sin x)/dx at 0 is sin 0 + 0 cos 0
 }
@@ -118,9 +118,10 @@ consteval ddx::rt::NodeId scatter_reads() {
       .value = 0,
       .partial = {},
       .compressed = {7, 8},
-      .coloring = {.color = {0, 0}, .scatter = {0, 1}, .cell = {0, 1}},
+      .colouring = {.colour = {0, 0}, .scatter = {0, 1}, .cell = {0, 1}},
       .zero = 99};
-  return h.colors() == 1 && h.at(0, 0) == 7 && h.at(1, 1) == 8 ? h.at(0, 1) : 0;
+  return h.colours() == 1 && h.at(0, 0) == 7 && h.at(1, 1) == 8 ? h.at(0, 1)
+                                                                : 0;
 }
 static_assert(scatter_reads() == 99); // off the pattern: the zero node
 
@@ -131,9 +132,9 @@ consteval ddx::rt::NodeId unowned_cell_reads() {
   ddx::rt::Hessian h{.value = 0,
                      .partial = {},
                      .compressed = {7},
-                     .coloring = {.color = {0, 0},
-                                  .scatter = {0, ddx::rt::no_column},
-                                  .cell = {0, ddx::rt::no_column}},
+                     .colouring = {.colour = {0, 0},
+                                   .scatter = {0, ddx::rt::no_column},
+                                   .cell = {0, ddx::rt::no_column}},
                      .zero = 99};
   return h.at(0, 0) == 7 && h.at(1, 1) == 99 ? h.at(1, 0) : 0;
 }

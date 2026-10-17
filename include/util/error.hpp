@@ -21,25 +21,18 @@ namespace ddx {
   X(wrong_column_count, "wrong number of output columns")                                     \
                                                                                               \
   /* Runtime graphs. */                                                                       \
-  X(no_arena,         "no arena is current -- name symbols inside ddx::rt::equation()")       \
+  X(outside_equation, "no equation is being built -- name symbols inside ddx::rt::equation()")\
   X(no_graph,         "the expression has no graph (a bare literal names none)")              \
   X(name_clash,       "the name is already an input of another kind")                          \
-  X(unclosed_implicit, "an implicit input has no rt::closes() residual")                     \
-  X(closed_twice,     "an implicit input is closed by two residuals")                         \
+  X(closed_twice,     "an implicit input is named, with a residual, twice")                   \
   X(nested_implicit,  "a residual reaches an implicit input other than its own")              \
-  X(not_implicit,     "rt::closes() names something that is not an implicit input")           \
   X(extern_order,     "an extern function does not supply the partials this call needs")       \
   X(extern_shape,     "an extern function's arity or order cannot be represented")            \
-  X(unbound_extern,   "the file names an extern function the caller did not supply")          \
   X(not_univariate,   "needs exactly one symbol")                                             \
   X(not_single_output, "needs exactly one output, and this is a system")                      \
   X(unsupported_scalar, "an operation the sweep's scalar type does not define")               \
-                                                                                              \
-  /* Saved graphs. */                                                                         \
-  X(archive_io,       "the file could not be read or written")                                \
-  X(bad_archive,      "not a ddx graph file, or a format this build does not read")           \
-  X(archive_corrupt,  "the file's checksum or its structure does not hold")                   \
-  X(archive_mismatch, "the file loads, but does not describe this equation")                  \
+  X(tensor_shape,     "a tensor's shape does not fit the operation, or one sits where a scalar must") \
+  X(tensor_kernel,    "a graph holding tensor nodes runs on the sweep; no kernel is built for it") \
                                                                                               \
   /* The JIT. */                                                                              \
   X(jit_target, "the JIT could not bring up a target for this host")                          \

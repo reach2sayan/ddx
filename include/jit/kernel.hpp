@@ -78,7 +78,7 @@ public:
   }
   [[nodiscard]] const KernelShape &shape() const noexcept { return shape_; }
 
-  // Empty only where Options::retain_object was turned off.
+  // The bytes the compile produced, which the object cache stores.
   [[nodiscard]] std::span<const std::byte> object() const noexcept {
     return object_ ? std::span<const std::byte>{*object_}
                    : std::span<const std::byte>{};
@@ -101,7 +101,7 @@ private:
 // The LLJIT itself, shared by every Kernel it made.
 class Compiler : private impl::noncopyable {
 public:
-  [[nodiscard]] static DDX_JIT_API result<Compiler> create();
+  [[nodiscard]] static DDX_JIT_API compile_result<Compiler> create();
 
   // `x86_64-pc-linux-gnu/znver3/+avx2,+fma/llvm-20.1`: a string, not a folded
   // key, because this answers *why* a stored kernel was passed over.
@@ -111,20 +111,20 @@ public:
   DDX_JIT_API Compiler(Compiler &&) noexcept;
   DDX_JIT_API Compiler &operator=(Compiler &&) noexcept;
 
-  [[nodiscard]] DDX_JIT_API result<Kernel>
+  [[nodiscard]] DDX_JIT_API compile_result<Kernel>
   compile(const rt::Graph<double> &g, const Options &opt = {},
           CompileReport *report = nullptr);
 
   // The future's destructor does not join: dropping it abandons the result.
-  [[nodiscard]] DDX_JIT_API std::shared_future<result<Kernel>>
+  [[nodiscard]] DDX_JIT_API std::shared_future<compile_result<Kernel>>
   compile_async(std::shared_ptr<const rt::Graph<double>> g, Options opt = {});
 
   // Links an object compiled earlier.  Nothing beyond the link is verified --
-  // rt::Object carries the host, Options and graph digest for that -- and a
+  // the cache key carries the host, options and graph digest for that -- and a
   // corrupt object is an error, not an abort.  The graph is what the object
   // was lowered from: its shape and its extern functions are read off it, never
   // claimed by the bytes.
-  [[nodiscard]] DDX_JIT_API result<Kernel>
+  [[nodiscard]] DDX_JIT_API compile_result<Kernel>
   adopt(std::span<const std::byte> object, std::string_view symbol,
         const rt::Graph<double> &g);
 
@@ -134,7 +134,7 @@ private:
 
   // Private, but Ir::str() calls it from a consumer's TU, so it is exported.
   friend class Ir;
-  [[nodiscard]] DDX_JIT_API result<std::string>
+  [[nodiscard]] DDX_JIT_API compile_result<std::string>
   render_ir(const rt::Graph<double> &g, const Options &opt) const;
 
   std::shared_ptr<Impl> impl_;
@@ -149,7 +149,7 @@ public:
   Ir(const Compiler &&, const rt::Graph<double> &, Options = {}) = delete;
   Ir(const Compiler &, const rt::Graph<double> &&, Options = {}) = delete;
 
-  [[nodiscard]] result<std::string> str() const {
+  [[nodiscard]] compile_result<std::string> str() const {
     return compiler_.render_ir(graph_, options_);
   }
 

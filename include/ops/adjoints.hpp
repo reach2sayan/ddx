@@ -8,14 +8,13 @@
 
 // The reverse-mode rule for every op outside unary_math.hpp's eighteen.  Both
 // sides call these: the sweep instantiates them at a number, the graph builder
-// at RTExpression.  No rule reads its own primal -- the compile-time cache
-// never stores a node's own slot -- so pow and hypot recompute it, which costs
-// a graph nothing.  max/min are the one pair not shared; see ExtremumOpFn.
+// at rt::Expression.  No rule reads its own primal, so pow and hypot recompute
+// it, which costs a graph nothing.
 namespace ddx::impl::detail {
 
 // The number for an arithmetic T, the Sign node for a graph handle: ordinary
-// lookup finds this and ADL finds RTExpression's hidden friend.  sign(0) is 0,
-// the usual subgradient convention, and a - a reaches only ±0 and NaN.
+// lookup finds this and ADL finds rt::Expression's hidden friend.  sign(0) is
+// 0, the usual subgradient convention, and a - a reaches only ±0 and NaN.
 template <Numeric T>
   requires std::totally_ordered<T>
 [[nodiscard]] constexpr T sign(const T &a) noexcept {
@@ -50,7 +49,8 @@ template <Numeric T> struct NegateOpFn {
 };
 
 // `a / b` is right division, so the two spellings do not fold into one; see
-// DivideOp::derivative.  A graph handle's branch is decided by its scalar.
+// DivideOp::derivative.  A graph handle's branch is decided by its scalar, and
+// the negation's place decides contraction, so the commutative one stays.
 template <Numeric T> struct DivideOpFn {
   [[nodiscard]] static constexpr std::array<T, 2>
   adjoints(const auto &adj, const auto &a, const auto &b) noexcept {
@@ -81,14 +81,12 @@ template <Numeric T> struct PowOpFn {
       if (a == T{}) {
         return {b == T{} ? T{} : da, p == T{} ? T{} : db};
       }
-      return {da, db};
     } else if constexpr (requires { select(a == T{0}, da, db); }) {
       const T at_zero = a == T{0};
       return {select(at_zero * (b == T{0}), T{0}, da),
               select(at_zero * (p == T{0}), T{0}, db)};
-    } else {
-      return {da, db};
     }
+    return {da, db};
   }
 };
 
@@ -127,9 +125,9 @@ template <Numeric T> struct SignOpFn {
   }
 };
 
-// The one rule the two sides do not share: a node has no comparisons, so the
-// kink is a sign -- exact away from the tie, NaN at it.  ExtremumOp keeps a
-// branching rule for numbers, which is cheaper and can halve a tie.
+// Branch-free, since a node has no comparisons: the kink is a sign -- exact
+// away from the tie, half to each side at it, as ExtremumOp's symbolic
+// derivative spells the same expansion.
 template <Numeric T, bool IsMax> struct ExtremumOpFn {
   [[nodiscard]] static constexpr std::array<T, 2>
   adjoints(const auto &adj, const auto &l, const auto &r) noexcept {
