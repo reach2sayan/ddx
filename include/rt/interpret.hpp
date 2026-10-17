@@ -132,9 +132,11 @@ template <typename U> struct Scratch {
 // An extern node, W lanes of it: the function is called once per lane and
 // the component this node names is kept.  Opaque to every scalar but the
 // function's own, which computes_at() tells a sweep before it gets here.
+// `lane` by value here and in the two below, for the reason lanes_apply
+// gives.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_NOINLINE constexpr void lanes_extern(const Builder<T> &b, NodeId v, U *out,
-                                         auto &&lane, const Scratch<U> &t) {
+                                         auto lane, const Scratch<U> &t) {
   if constexpr (std::same_as<U, T>) {
     const auto [fn, component] = ExternSlot::of(b[v].slot);
     const ExternEntry<T> &e = b.externs()[fn];
@@ -160,7 +162,7 @@ DDX_NOINLINE constexpr void lanes_extern(const Builder<T> &b, NodeId v, U *out,
 // the rows are zero: computes_at() keeps such a sweep away.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
-                                         const Node<T> &n, U *out, auto &&lane,
+                                         const Node<T> &n, U *out, auto lane,
                                          const Scratch<U> &t) {
   if constexpr (!std::same_as<U, double> || !std::same_as<T, double>) {
     std::ranges::fill_n(out, W, U{});
@@ -356,7 +358,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
 // +0.0.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_NOINLINE constexpr void lanes_sum(const Builder<T> &b, NodeId v, bool fused,
-                                      U *DDX_RESTRICT out, auto &&lane,
+                                      U *DDX_RESTRICT out, auto lane,
                                       const Scratch<U> &t) {
   const auto row = [&](NodeId u) { return lane(t.slot(u)); };
   for (const auto [i, term] : arguments(b, v) | std::views::enumerate) {
@@ -402,18 +404,20 @@ DDX_ALWAYS_INLINE constexpr void lanes_opaque(const Builder<T> &b, NodeId v,
   }
 }
 
-// Every op's lane loop, off apply.hpp's one dispatch.  An extern's row has
-// nothing to call, and is the function's case of the same switch.
+// Every op's lane loop, off apply.hpp's one dispatch.  A row with nothing to
+// call answers true and is called past the switch: called from inside the
+// visitor, GCC keeps those instances out of line, the closure goes to memory,
+// and the tape base with it -- reloaded on every step of the sweep.
 template <std::size_t W, impl::Numeric T, typename U>
 DDX_ALWAYS_INLINE constexpr void
 lanes_apply(const Builder<T> &b, NodeId i, const Node<T> &n,
             U *DDX_RESTRICT out, auto &&lane, const Step &s,
             const Scratch<U> &t) {
   const auto &in = s.in;
-  dispatch<U>(n.op, [&]<typename R>(R) {
+  const bool opaque = dispatch<U>(n.op, [&]<typename R>(R) {
     using Fn = typename R::functor;
     if constexpr (std::is_void_v<Fn>) {
-      lanes_opaque<W>(b, i, n, s.fused, out, lane, t);
+      return true;
     } else if constexpr (R::arity == 1) {
       lanes<W, Fn, U, R::ok>(out, lane(in[0]));
     } else if constexpr (R::arity == 2) {
@@ -423,7 +427,11 @@ lanes_apply(const Builder<T> &b, NodeId i, const Node<T> &n,
     } else {
       std::unreachable();
     }
+    return false;
   });
+  if (opaque) {
+    lanes_opaque<W>(b, i, n, s.fused, out, lane, t);
+  }
 }
 
 // The only place that turns a Step into numbers: rows by the Step's slots, the

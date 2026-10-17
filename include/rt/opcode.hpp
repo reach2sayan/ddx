@@ -8,6 +8,7 @@
 #include <cassert>
 #include <cstdint>
 #include <functional>
+#include <numeric>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -274,9 +275,16 @@ template <impl::Numeric T>
                                 op == OpCode::Min || op == OpCode::Hypot);
 }
 
+// The leaf table opens the op table, so a leaf is one compare: the sweep asks
+// on every step, and a kind_of() here is a table load ahead of its dispatch.
 [[nodiscard]] constexpr bool is_leaf(OpCode op) noexcept {
-  return kind_of(op) == Kind::Const || kind_of(op) == Kind::Input;
+  return op <= OpCode::Seed;
 }
+static_assert(std::ranges::all_of(std::views::iota(0uz, op_count), [](auto i) {
+  const auto op = static_cast<OpCode>(i);
+  return is_leaf(op) ==
+         (kind_of(op) == Kind::Const || kind_of(op) == Kind::Input);
+}));
 [[nodiscard]] constexpr bool is_extern(OpCode op) noexcept {
   return kind_of(op) == Kind::Extern;
 }
@@ -422,10 +430,11 @@ struct Inputs {
 // have to agree.
 [[nodiscard]] constexpr std::size_t input_column(const Inputs &in, OpCode op,
                                                  std::uint32_t slot) noexcept {
-  const auto before = named_index(op).value_or(named_count);
-  return std::ranges::fold_left(std::span{in.by_kind}.first(before), 0uz,
-                                std::plus<>{}) +
-         slot;
+  // A scan of fixed length: a fold over a prefix of variable length
+  // vectorises, and the sweep's leaf step pays for the loop.
+  std::array<std::size_t, named_count + 1> start{};
+  std::inclusive_scan(in.by_kind.begin(), in.by_kind.end(), start.begin() + 1);
+  return start[named_index(op).value_or(named_count)] + slot;
 }
 
 } // namespace ddx::rt

@@ -385,6 +385,16 @@ public:
     return intern({.op = OpCode::Const, .value = v});
   }
 
+  // Room for `nodes` in all, arena and table at once, instead of growing both
+  // through every doubling on the way: what a pass that knows the size of
+  // what it is about to build asks for.
+  constexpr void reserve(std::size_t nodes) {
+    model_.nodes.reserve(nodes);
+    if (2 * nodes > table_.size()) {
+      rehash(nodes);
+    }
+  }
+
   // The leaf over `data`: a VecConst for one column, a MatConst otherwise.
   // Interned by content where T compares, so zeros(w) is one node per width
   // and a matrix given twice is kept once.
@@ -742,12 +752,11 @@ private:
                [mask = table_.size() - 1](std::size_t k) { return k & mask; });
   }
 
-  constexpr void rehash() {
-    // bit_ceil, not doubling: the size is the invariant the mask needs, and
-    // half full is where linear probing starts to degrade.
-    table_.assign(
-        std::bit_ceil(std::max<std::size_t>(64, 2 * (model_.nodes.size() + 1))),
-        no_node);
+  // The table for `nodes` in all.  bit_ceil, not doubling: the size is the
+  // invariant the mask needs, and half full is where linear probing starts to
+  // degrade.
+  constexpr void rehash(std::size_t nodes) {
+    table_.assign(std::bit_ceil(std::max<std::size_t>(64, 2 * nodes)), no_node);
     for (const auto [id, n] : model_.nodes | std::views::enumerate) {
       auto run = probe(hash_of(n));
       table_[*std::ranges::find_if(run, [this](std::size_t i) {
@@ -758,7 +767,7 @@ private:
 
   constexpr NodeId intern(const Node<T> &n) {
     if ((model_.nodes.size() + 1) * 2 > table_.size()) {
-      rehash();
+      rehash(model_.nodes.size() + 1);
     }
     // The run stops at whichever comes first, the node itself or the empty
     // slot it would take.
