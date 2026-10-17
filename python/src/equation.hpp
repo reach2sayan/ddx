@@ -280,16 +280,19 @@ private:
     if constexpr (w.seeds == rt::Seeds::None) {
       unwrap(dispatch(W, at.columns(), columns, at.size()));
     } else {
-      std::optional<Point> dir;
-      if constexpr (w.seeds == rt::Seeds::Functions) {
-        dir.emplace(*v, height());
-      } else {
-        dir.emplace(*v, symbols_);
-      }
-      if (dir->size() != at.size()) {
+      // Built in place: Point is pinned, and its positional constructor is
+      // ours alone -- optional::emplace would construct it from outside.
+      const Point dir = [&] {
+        if constexpr (w.seeds == rt::Seeds::Functions) {
+          return Point(*v, height());
+        } else {
+          return Point(*v, symbols_);
+        }
+      }();
+      if (dir.size() != at.size()) {
         fail_with(errc::wrong_direction);
       }
-      const auto xs = widen(at.columns(), dir->columns());
+      const auto xs = widen(at.columns(), dir.columns());
       unwrap(dispatch(W, as_columns(xs), columns, at.size()));
     }
     pyb::list parts;
