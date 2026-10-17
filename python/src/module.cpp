@@ -232,6 +232,16 @@ PYBIND11_MODULE(_ddx, m) {
       });
   binop("__add__", [](const auto &l, const auto &r) { return l + r; });
   binop("__radd__", [](const auto &l, const auto &r) { return r + l; });
+  // On a copy, so `y = acc; acc += t` leaves y alone; a loop of += is one
+  // node of all its terms.
+  binop("__iadd__", [](const auto &l, const auto &r) {
+    PyExpression acc = l;
+    return acc += r;
+  });
+  binop("__isub__", [](const auto &l, const auto &r) {
+    PyExpression acc = l;
+    return acc += -r;
+  });
   binop("__sub__", [](const auto &l, const auto &r) { return l - r; });
   binop("__rsub__", [](const auto &l, const auto &r) { return r - l; });
   binop("__mul__", [](const auto &l, const auto &r) { return l * r; });

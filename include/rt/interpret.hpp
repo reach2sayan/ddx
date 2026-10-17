@@ -138,7 +138,7 @@ DDX_NOINLINE constexpr void lanes_extern(const Builder<T> &b, NodeId v, U *out,
   if constexpr (std::same_as<U, T>) {
     const auto [fn, component] = ExternSlot::of(b[v].slot);
     const ExternEntry<T> &e = b.externs()[fn];
-    const auto args = *extern_arguments(b, v);
+    const auto args = arguments(b, v);
     boost::container::small_vector<T, 8> in(args.size());
     boost::container::small_vector<T, 16> answer(e.size());
     for (std::size_t k = 0; k < W; ++k) {
@@ -189,7 +189,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
       break;
     }
     case OpCode::Pack: {
-      const auto args = *pack_arguments(b, v);
+      const auto args = arguments(b, v);
       for (std::size_t k = 0; k < W; ++k) {
         std::ranges::transform(args, mine(k).begin(), [&](NodeId s) {
           return lane(t.slot(s))[k];
@@ -317,7 +317,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
       break;
     }
     case OpCode::StackRows: { // row i of the matrix is item i: (i, j) at i + j w
-      const auto items = *pack_arguments(b, v);
+      const auto items = arguments(b, v);
       const std::size_t rows = items.size();
       for (std::size_t k = 0; k < W; ++k) {
         const auto to = mine(k);
@@ -341,8 +341,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
       }
       break;
     }
-    case OpCode::MatConst:  // a table a Gemv reads in place
-    case OpCode::PackArgs: // a list; its Pack reads the scalars
+    case OpCode::MatConst: // a table a Gemv reads in place
       break;
     default:
       std::unreachable();
@@ -350,17 +349,55 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
   }
 }
 
-// The rows apply.hpp hands the interpreter whole: an extern's and a tensor's.
-// The kind test sits here, past the opcode switch, where it costs a sweep of
-// scalars nothing.
+// A sum, W lanes of it: the terms in list order into the running sum, a
+// product term as one fma where the step is fused -- the same arithmetic the
+// Add chain it replaces took, one node and no dispatch per term.  The first
+// term's product is formed, not fused: fma(x, y, 0) would turn its -0.0 into
+// +0.0.
+template <std::size_t W, impl::Numeric T, impl::Numeric U>
+DDX_NOINLINE constexpr void lanes_sum(const Builder<T> &b, NodeId v, bool fused,
+                                      U *DDX_RESTRICT out, auto &&lane,
+                                      const Scratch<U> &t) {
+  const auto row = [&](NodeId u) { return lane(t.slot(u)); };
+  for (const auto [i, term] : arguments(b, v) | std::views::enumerate) {
+    const Contraction c = fused ? product_of(b, term) : Contraction{};
+    if (!c) {
+      const U *const r = row(term);
+      for (std::size_t k = 0; k < W; ++k) {
+        out[k] = i == 0 ? r[k] : out[k] + r[k];
+      }
+      continue;
+    }
+    const U *const x = row(c.x);
+    const U *const y = row(c.y);
+    for (std::size_t k = 0; k < W; ++k) {
+      if (i == 0) {
+        out[k] = c.negated ? -(x[k] * y[k]) : x[k] * y[k];
+      } else if (c.negated) {
+        out[k] = fma_fn<std::negate<>>{}(x[k], y[k], out[k]);
+      } else {
+        out[k] = fma_fn<std::identity>{}(x[k], y[k], out[k]);
+      }
+    }
+  }
+}
+
+// The rows apply.hpp hands the interpreter whole: an extern's, a sum's and a
+// tensor's.  The kind test sits here, past the opcode switch, where it costs
+// a sweep of scalars nothing.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_ALWAYS_INLINE constexpr void lanes_opaque(const Builder<T> &b, NodeId v,
-                                              const Node<T> &n, U *out,
-                                              auto &&lane,
+                                              const Node<T> &n, bool fused,
+                                              U *out, auto &&lane,
                                               const Scratch<U> &t) {
-  if (kind_of(n.op) == Kind::Tensor) {
+  switch (kind_of(n.op)) {
+  case Kind::Tensor:
     lanes_tensor<W>(b, v, n, out, lane, t);
-  } else {
+    break;
+  case Kind::Nary:
+    lanes_sum<W>(b, v, fused, out, lane, t);
+    break;
+  default:
     lanes_extern<W>(b, v, out, lane, t);
   }
 }
@@ -370,12 +407,13 @@ DDX_ALWAYS_INLINE constexpr void lanes_opaque(const Builder<T> &b, NodeId v,
 template <std::size_t W, impl::Numeric T, typename U>
 DDX_ALWAYS_INLINE constexpr void
 lanes_apply(const Builder<T> &b, NodeId i, const Node<T> &n,
-            U *DDX_RESTRICT out, auto &&lane,
-            const std::array<std::uint32_t, 3> &in, const Scratch<U> &t) {
+            U *DDX_RESTRICT out, auto &&lane, const Step &s,
+            const Scratch<U> &t) {
+  const auto &in = s.in;
   dispatch<U>(n.op, [&]<typename R>(R) {
     using Fn = typename R::functor;
     if constexpr (std::is_void_v<Fn>) {
-      lanes_opaque<W>(b, i, n, out, lane, t);
+      lanes_opaque<W>(b, i, n, s.fused, out, lane, t);
     } else if constexpr (R::arity == 1) {
       lanes<W, Fn, U, R::ok>(out, lane(in[0]));
     } else if constexpr (R::arity == 2) {
@@ -419,7 +457,7 @@ sweep_step(const Builder<T> &b, std::span<const Node<T>> nodes,
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }
   } else {
-    detail::lanes_apply<W>(b, i, n, out, lane, s.in, t);
+    detail::lanes_apply<W>(b, i, n, out, lane, s, t);
   }
 }
 

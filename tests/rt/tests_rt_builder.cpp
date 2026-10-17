@@ -123,6 +123,8 @@ TEST(RtBuilder, ParamsShareTheNamespaceAndNumberTheirOwnSlots) {
 // Compound assignment rebinds the handle through the same operators, so an
 // accumulator written either way lands on the same node -- which interning
 // makes an id comparison.
+// Two terms are the long form's own Add; the other compound operators build
+// what their operator builds.  Past two terms `+=` is a SumN: tests_rt_sumn.
 TEST(RtBuilder, CompoundAssignmentBuildsWhatTheLongFormBuilds) {
   Builder<> b;
   const auto x = var(b, "x");
@@ -130,13 +132,14 @@ TEST(RtBuilder, CompoundAssignmentBuildsWhatTheLongFormBuilds) {
 
   auto acc = x;
   acc += y;
-  acc -= sin(x);
   acc *= exp(y);
   acc /= (x + y);
+  acc -= sin(x);
+  const auto id = acc.id(b); // a sum is formed when it is first read
   const std::size_t after = b.size();
 
-  const auto spelled = (((x + y) - sin(x)) * exp(y)) / (x + y);
-  EXPECT_EQ(acc.id(b), spelled.id(b));
+  const auto spelled = ((x + y) * exp(y)) / (x + y) - sin(x);
+  EXPECT_EQ(id, spelled.id(b));
   EXPECT_EQ(b.size(), after)
       << "the long form built a node the short one did not";
 }

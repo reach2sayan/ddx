@@ -134,7 +134,7 @@ template <impl::Numeric T, typename Sink>
 constexpr void extern_partials(Builder<T> &b, NodeId v, Sink &&sink) {
   const auto [fn, at] = ExternSlot::of(b[v].slot);
   const ExternRecord &e = b.externs()[fn];
-  for (const auto [l, arg] : *extern_arguments(b, v) | std::views::enumerate) {
+  for (const auto [l, arg] : arguments(b, v) | std::views::enumerate) {
     if (const auto up = e.up(at, static_cast<std::size_t>(l))) {
       sink(arg, RTExpression<T>{b, b.extern_component(v, *up)});
     }
@@ -263,12 +263,16 @@ template <impl::Numeric T>
     switch (kind_of(op)) {
     case Kind::Const:
     case Kind::Input:
-    case Kind::Args: // never reached: a call hands adjoints to its arguments
       break;
     case Kind::Extern:
       detail::extern_partials(b, v, [&](NodeId arg, const RTExpression<T> &c) {
         add_to(arg, g, a * c);
       });
+      break;
+    case Kind::Nary: // linear: every term takes the adjoint whole
+      for (const NodeId t : arguments(b, v)) {
+        add_to(t, g, a);
+      }
       break;
     case Kind::Unary:
       add_to(node.a, g, detail::contribution(op, a, expr(node.a), expr(v)));
@@ -294,10 +298,9 @@ template <impl::Numeric T>
       switch (node.op) {
       case OpCode::VecConst:
       case OpCode::MatConst:
-      case OpCode::PackArgs: // never reached: a Pack hands adjoints to its scalars
         break;
       case OpCode::Pack: {
-        const auto args = *pack_arguments(b, v);
+        const auto args = arguments(b, v);
         for (const auto [i, s] : args | std::views::enumerate) {
           add_to(s, g, a[static_cast<std::size_t>(i)]);
         }
@@ -404,9 +407,14 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
       d[v] = sum.id(b);
       break;
     }
-    case Kind::Args: // a list's value is its first argument
-      d[v] = d[node.a];
+    case Kind::Nary: { // the sum of the terms' tangents, as a sum again
+      RTExpression<T> sum{0};
+      for (const NodeId t : arguments(b, v)) {
+        sum += RTExpression<T>{b, d[t]};
+      }
+      d[v] = sum.id(b);
       break;
+    }
     case Kind::Const:
       d[v] = b.constant(T{0});
       break;
@@ -461,10 +469,9 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
         d[v] = b.zeros(width_of(b, v));
         break;
       case OpCode::MatConst: // a table, never read as a value
-      case OpCode::PackArgs: // a list; its Pack reads the scalars' tangents
         break;
       case OpCode::Pack: {
-        const auto args = *pack_arguments(b, v);
+        const auto args = arguments(b, v);
         const auto tangents =
             args | std::views::transform([&d](NodeId s) { return d[s]; }) |
             impl::to<boost::container::small_vector<NodeId, 8>>();

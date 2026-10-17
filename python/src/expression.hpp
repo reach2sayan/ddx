@@ -71,6 +71,18 @@ public:
     return checked(rt::pack(*arena, std::span<const Base>{bases}), arena);
   }
 
+  // The base's accumulating `+=`, with the arena put back: what a loop of
+  // `acc += term` builds as one node.  Python's `+=` rebinds the name to what
+  // __iadd__ answers, so this is called on a copy and no other reference to
+  // the old handle moves.
+  PyExpression &operator+=(const PyExpression &o) {
+    expression_ += o.expression_;
+    if (!arena_) {
+      arena_ = o.arena_;
+    }
+    return *this;
+  }
+
   // Elements per point: zero for a scalar.
   [[nodiscard]] std::size_t size() const noexcept { return expression_.size(); }
   [[nodiscard]] PyExpression at(std::size_t i) const {

@@ -335,14 +335,19 @@ template <impl::Numeric T>
       }
       break;
     case Kind::Extern:
-      // Nonlinear in every argument the list carries.
-      support[v] = support[node.a];
+      // Nonlinear in every argument.
+      support[v] = SymbolSet(n);
+      for (const NodeId arg : arguments(b, v)) {
+        support[v] |= support[arg];
+      }
       detail::couple(rows, support[v], support[v]);
       break;
-    case Kind::Args:
-      // A list carries its arguments' support; the call couples it.
-      support[v] = support[node.a];
-      support[v] |= support[node.b];
+    case Kind::Nary:
+      // A sum is as linear as an Add: the terms' union, no coupling.
+      support[v] = SymbolSet(n);
+      for (const NodeId t : arguments(b, v)) {
+        support[v] |= support[t];
+      }
       break;
     case Kind::Ternary:
       // As linear as an Add: it chooses between two derivatives rather than
@@ -380,13 +385,11 @@ template <impl::Numeric T>
       case OpCode::VecConst:
       case OpCode::MatConst:
         break;
-      case OpCode::Pack: {
-        const auto args = *pack_arguments(b, v);
-        for (const NodeId s : args) {
+      case OpCode::Pack:
+        for (const NodeId s : arguments(b, v)) {
           support[v] |= support[s];
         }
         break;
-      }
       case OpCode::Gather:
       case OpCode::Sum:
         support[v] = support[node.a];
@@ -394,7 +397,6 @@ template <impl::Numeric T>
       case OpCode::Gemv:
         support[v] = support[node.b];
         break;
-      case OpCode::PackArgs:
       case OpCode::AddAt:
         support[v] = support[node.a];
         support[v] |= support[node.b];

@@ -43,6 +43,15 @@ const std::array cases{
          }},
     Case{"compare",
          [](const RE &x, const RE &y, const RE &z) { return (x <= y) + (y < z) * x; }},
+    // A SumN: a product fused, a negated one, and a plain term.
+    Case{"sum_n",
+         [](const RE &x, const RE &y, const RE &z) {
+           RE acc = z;
+           acc += x * y;
+           acc -= y * z;
+           acc += x;
+           return acc;
+         }},
 };
 
 // The awkward doubles, every triple of them: signed zeros, infinities, NaN,

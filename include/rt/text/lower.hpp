@@ -91,7 +91,7 @@ form(const Ast &ast, std::span<const RTExpression<T>> symbols,
       });
     });
   case Kind::Extern:
-  case Kind::Args:
+  case Kind::Nary:
   case Kind::Tensor:
     break; // the parser refuses the names
   }

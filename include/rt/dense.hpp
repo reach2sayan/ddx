@@ -218,7 +218,7 @@ private:
 
   // Whether a Pack is the symbol vector itself, in order: the identity.
   [[nodiscard]] bool is_symbols(NodeId v) const {
-    const auto args = *pack_arguments(b_, v);
+    const auto args = arguments(b_, v);
     return args.size() == n_ &&
            std::ranges::all_of(std::views::iota(0u, n_), [&](std::uint32_t j) {
              return args[j] == b_.leaf(OpCode::Var, j);
@@ -246,8 +246,13 @@ private:
         return b_.pack(Implicits::row(b_, node.slot));
       }
       return no_node;
-    case Kind::Args:
-      return row_[node.a];
+    case Kind::Nary: {
+      NodeId r = no_node;
+      for (const NodeId t : arguments(b_, v)) {
+        r = add(r, row_[t]);
+      }
+      return r;
+    }
     case Kind::Extern: {
       NodeId r = no_node;
       extern_partials(b_, v, [&](NodeId arg, const E &c) {
@@ -294,13 +299,12 @@ private:
     Terms out;
     switch (node.op) {
     case OpCode::VecConst:
-    case OpCode::PackArgs: // a list; its Pack reads the scalars' rows
       break;
     case OpCode::Pack:
       if (is_symbols(v)) {
         out.push_back({.kind = Term::Kind::Identity});
       } else {
-        const auto rows = *pack_arguments(b_, v) |
+        const auto rows = arguments(b_, v) |
                           std::views::transform([this](NodeId s) {
                             return row_[s] == no_node ? zeros() : row_[s];
                           }) |

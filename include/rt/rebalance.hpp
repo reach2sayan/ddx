@@ -103,8 +103,7 @@ rebalance(Builder<T> &b, std::span<const NodeId> roots, std::size_t blocks = 16,
 
   std::vector<std::uint32_t> uses(size, 0);
   for (const NodeId v : detail::live_ids(live)) {
-    std::ranges::for_each(detail::operands_of(b, v),
-                          [&uses](NodeId u) { ++uses[u]; });
+    detail::for_each_operand(b, v, [&uses](NodeId u) { ++uses[u]; });
   }
   std::vector is_root(size, false);
   for (const NodeId r : roots) {
@@ -120,10 +119,16 @@ rebalance(Builder<T> &b, std::span<const NodeId> roots, std::size_t blocks = 16,
       remap[v] = v;
       continue;
     }
+    // A SumN is a spine already flattened; an Add spine is read off its
+    // single-use interior.
     const bool spine_top =
-        node.op == OpCode::Add && (uses[v] != 1 || is_root[v]);
+        node.op == OpCode::SumN ||
+        (node.op == OpCode::Add && (uses[v] != 1 || is_root[v]));
     if (spine_top) {
-      auto terms = detail::spine_terms(b, v, uses, is_root);
+      auto terms = node.op == OpCode::SumN
+                       ? arguments(b, v) |
+                             impl::to<boost::container::small_vector<NodeId, 64>>()
+                       : detail::spine_terms(b, v, uses, is_root);
       if (terms.size() >= least) {
         std::ranges::transform(terms, terms.begin(),
                                [&remap](NodeId t) { return remap[t]; });
@@ -131,7 +136,7 @@ rebalance(Builder<T> &b, std::span<const NodeId> roots, std::size_t blocks = 16,
         continue;
       }
     }
-    remap[v] = b.rebuild(node, [&remap](NodeId u) { return remap[u]; });
+    remap[v] = b.rebuild(v, [&remap](NodeId u) { return remap[u]; });
   }
 
   return roots |

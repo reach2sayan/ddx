@@ -515,8 +515,13 @@ for (const auto &s : data) {
 | Conditional | `select(cond, if_true, if_false)` |
 
 They are found by argument-dependent lookup, so they work whether or not `rt` is
-in scope. The compound forms are members, and rebind the handle rather than
-mutating what other expressions already refer to.
+in scope. `*=` and `/=` build what `*` and `/` build. `+=` and `-=` accumulate:
+a loop of `acc += term` is one node holding every term, where `acc = acc + term`
+is a chain of one node per term. The sum is formed when it is first read, two
+terms as the plain `+`, more as one n-ary sum, and a copy taken part-way keeps
+the value it had. A term that is a product is fused into the running sum the way
+`x * y + z` is, so the sum rounds once per term in term order; against the same
+terms spelled with `+` the last bits can differ.
 
 Where a rule has a choice to make, it is made the same way everywhere: `abs`
 differentiates to `0` at zero and `sign` to `0` throughout, `max` and `min` give

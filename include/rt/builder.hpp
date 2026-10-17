@@ -151,6 +151,7 @@ struct Step {
   Contraction fma{};
   std::uint32_t out = no_node;
   std::array<std::uint32_t, 3> in{no_node, no_node, no_node};
+  bool fused = false; // a SumN under contraction: its product terms are fma
 };
 
 namespace detail {
@@ -180,7 +181,9 @@ reachable(std::size_t n, std::span<const NodeId> roots, auto &&operands_of) {
 }
 
 // The operands a node actually has.  Arity is at most three and the absent ones
-// are no_node, so every walker would otherwise repeat the same skip.
+// are no_node, so every walker would otherwise repeat the same skip.  Not for
+// a node with a list (has_list), whose `a` is no operand: for_each_operand
+// below is what a walk over every node takes.
 [[nodiscard]] constexpr auto operands_of(const auto &nodes, NodeId v) {
   return nodes.operands(v) |
          std::views::filter([](NodeId u) { return u != no_node; });
@@ -234,9 +237,11 @@ template <impl::Numeric T> struct Model {
   std::vector<NodeId> closures; // the residual each implicit is a root of
   std::vector<ExternEntry<T>> externs;
   std::vector<TensorConst<T>> tensors;
+  std::vector<NodeId> lists; // every has_list node's ids, end to end
   std::vector<Node<T>> nodes;
-  BOOST_DESCRIBE_CLASS(Model, (), (names, closures, externs, tensors, nodes),
-                       (), ())
+  BOOST_DESCRIBE_CLASS(Model, (),
+                       (names, closures, externs, tensors, lists, nodes), (),
+                       ())
 
   // The CNodeSource half, which the Builder lends and the frozen Graph
   // answers as well.
@@ -250,39 +255,22 @@ template <impl::Numeric T> struct Model {
   [[nodiscard]] constexpr std::size_t size() const { return nodes.size(); }
 };
 
-// An extern node's arguments, off any source that answers operands and
-// externs: the list ExternArgs(first, rest) spells, the function's arity long,
-// a list of one being the argument itself.  Nothing where the slot names no
-// function or a hop is not a list -- what a file's checker asks, and what
-// every other caller dereferences.
-[[nodiscard]] std::optional<boost::container::small_vector<NodeId, 8>>
-extern_arguments(const auto &s, NodeId v) {
-  // The function table: the Model holds it, the Builder and the Graph lend it.
-  const auto externs = [&s] {
-    if constexpr (requires { s.externs(); }) {
-      return s.externs();
-    } else {
-      return std::span{s.externs};
-    }
-  }();
-  const auto [fn, component] = ExternSlot::of(s[v].slot);
-  if (fn >= externs.size()) {
-    return std::nullopt;
+// The function table and the list pool of a source: the Model holds them, the
+// Builder and the frozen Graph lend them.
+[[nodiscard]] constexpr auto externs_of(const auto &s) {
+  if constexpr (requires { s.externs(); }) {
+    return s.externs();
+  } else {
+    return std::span{s.externs};
   }
-  boost::container::small_vector<NodeId, 8> out;
-  NodeId args = s.operands(v)[0];
-  for (auto left = externs[fn].arity; left > 1; --left) {
-    if (kind_of(s.op_of(args)) != Kind::Args) {
-      return std::nullopt;
-    }
-    const auto [first, rest, unused] = s.operands(args);
-    out.push_back(first);
-    args = rest;
-  }
-  out.push_back(args);
-  return out;
 }
-
+[[nodiscard]] constexpr std::span<const NodeId> lists_of(const auto &s) {
+  if constexpr (requires { s.lists(); }) {
+    return s.lists();
+  } else {
+    return std::span{s.lists};
+  }
+}
 // The tensor table of a source: the Model holds it, the Builder lends it.
 [[nodiscard]] constexpr auto tensors_of(const auto &s) {
   if constexpr (requires { s.tensors(); }) {
@@ -292,23 +280,29 @@ extern_arguments(const auto &s, NodeId v) {
   }
 }
 
-// A Pack's scalars, the list PackArgs(first, rest) spells, `slot` long, a list
-// of one being the scalar itself.  Nothing where a hop is not a list.
-[[nodiscard]] std::optional<boost::container::small_vector<NodeId, 8>>
-pack_arguments(const auto &s, NodeId v) {
-  boost::container::small_vector<NodeId, 8> out;
-  NodeId args = s.operands(v)[0];
-  for (auto left = s[v].slot; left > 1; --left) {
-    if (s.op_of(args) != OpCode::PackArgs) {
-      return std::nullopt;
-    }
-    const auto [first, rest, unused] = s.operands(args);
-    out.push_back(first);
-    args = rest;
-  }
-  out.push_back(args);
-  return out;
+// The ids a has_list node is over, in order: an extern's arguments, the
+// function's arity long; a Pack's or StackRows' items or a sum's terms, the
+// slot long.
+[[nodiscard]] constexpr std::span<const NodeId> arguments(const auto &s,
+                                                          NodeId v) {
+  const OpCode op = s.op_of(v);
+  const std::size_t count =
+      is_extern(op) ? externs_of(s)[ExternSlot::of(s[v].slot).function].arity
+                    : s[v].slot;
+  return lists_of(s).subspan(s.operands(v)[0], count); // `a` is the offset
 }
+
+namespace detail {
+// Every id a node reads: its list, or the operands its arity names.  The one
+// spelling of a node's children, which every reachability walk takes.
+constexpr void for_each_operand(const auto &s, NodeId v, auto &&f) {
+  if (has_list(s.op_of(v))) {
+    std::ranges::for_each(arguments(s, v), f);
+  } else {
+    std::ranges::for_each(operands_of(s, v), f);
+  }
+}
+} // namespace detail
 
 // A row's shape: rows x cols, column-major, cols 1 for a vector.  No node
 // carries it; it is a function of the operands -- a walk down the first (or,
@@ -354,13 +348,8 @@ struct Shape {
     }
     case OpCode::MatMul:
       return {.rows = shape_of(s, a).rows, .cols = shape_of(s, b).cols};
-    case OpCode::StackRows: {
-      NodeId first = a;
-      if (s[v].slot > 1) {
-        first = s.operands(a)[0];
-      }
-      return {.rows = s[v].slot, .cols = shape_of(s, first).rows};
-    }
+    case OpCode::StackRows:
+      return {.rows = s[v].slot, .cols = shape_of(s, arguments(s, v)[0]).rows};
     case OpCode::RowOf:
       return {.rows = shape_of(s, a).cols, .cols = 1};
     case OpCode::Map:
@@ -429,26 +418,22 @@ public:
     return filled(width, T{1});
   }
   // The vector of `scalars` -- or, as StackRows, the matrix whose rows are
-  // `items` -- over the list formed from the back as extern_call forms its, a
-  // list of one being the item itself.
+  // `items`.
   [[nodiscard]] constexpr NodeId pack(std::span<const NodeId> items,
                                       OpCode op = OpCode::Pack) {
     assert(!items.empty());
-    NodeId list = items.back();
-    for (const NodeId s : items | std::views::reverse | std::views::drop(1)) {
-      list = intern({.op = OpCode::PackArgs, .a = s, .b = list});
-    }
-    return make(op, list, no_node, no_node,
+    return make(op, list(items), no_node, no_node,
                 static_cast<std::uint32_t>(items.size()));
   }
 
-  // A tensor node is formed with its slot, past fold() -- no identity below
-  // reads a vector -- and past the commutative swap, which is a Zip's inner
-  // op's business and not Zip's; so is an extern call.
+  // A node with a list, a tensor node or an extern call is formed with its
+  // slot and past fold() -- no identity below reads a vector or a list -- and
+  // past the commutative swap, which is a Zip's inner op's business and not
+  // Zip's.
   [[nodiscard]] constexpr NodeId make(OpCode op, NodeId a, NodeId b = no_node,
                                       NodeId c = no_node,
                                       std::uint32_t slot = 0) {
-    if (is_extern(op) || kind_of(op) == Kind::Tensor) {
+    if (has_list(op) || kind_of(op) == Kind::Tensor) {
       return intern({.op = op, .a = a, .b = b, .c = c, .slot = slot});
     }
     assert(slot == 0);
@@ -468,9 +453,15 @@ public:
     return intern({.op = op, .a = a, .b = b, .c = c});
   }
 
-  // The same node over remapped operands: what a rewrite that keeps every
-  // operation forms.
-  [[nodiscard]] constexpr NodeId rebuild(Node<T> n, auto &&remap) {
+  // The same node over remapped operands -- or over its remapped list --
+  // what a rewrite that keeps every operation forms.
+  [[nodiscard]] constexpr NodeId rebuild(NodeId v, auto &&remap) {
+    Node<T> n = model_[v]; // by value: list() and make() may reallocate
+    if (has_list(n.op)) {
+      n.a = list(arguments(*this, v) | std::views::transform(remap) |
+                 impl::to<std::vector<NodeId>>());
+      return make(n.op, n.a, no_node, no_node, n.slot);
+    }
     for (NodeId *const u : {&n.a, &n.b, &n.c}) {
       *u = *u == no_node ? no_node : remap(*u);
     }
@@ -526,6 +517,9 @@ public:
   }
   [[nodiscard]] constexpr std::span<const TensorConst<T>> tensors() const {
     return model_.tensors;
+  }
+  [[nodiscard]] constexpr std::span<const NodeId> lists() const {
+    return model_.lists;
   }
   [[nodiscard]] constexpr Inputs inputs() const {
     Inputs in;
@@ -616,19 +610,60 @@ private:
     return static_cast<std::uint32_t>(model_.externs.size() - 1);
   }
 
-  // The call: the one place the list is formed, from the back, a list of one
-  // being the argument itself.  The function's value; the sweeps ask for the
-  // other components.
+  // The call, the function's value; the sweeps ask for the other components.
   template <impl::Numeric U> friend class ExternFunction;
   constexpr NodeId extern_call(std::uint32_t function,
                                std::span<const NodeId> args) {
-    NodeId list = args.back();
-    for (const NodeId a : args | std::views::reverse | std::views::drop(1)) {
-      list = intern({.op = OpCode::ExternArgs, .a = a, .b = list});
-    }
     return intern({.op = OpCode::Extern,
-                   .a = list,
+                   .a = list(args),
                    .slot = ExternSlot{.function = function}.packed()});
+  }
+
+  // Where `ids` sit in the pool: the run already there that spells them, else
+  // appended.  Content-keyed, so two nodes over the same list intern to one.
+  [[nodiscard]] constexpr NodeId list(std::span<const NodeId> ids) {
+    const auto found = std::ranges::search(model_.lists, ids);
+    if (!found.empty()) {
+      return static_cast<NodeId>(found.begin() - model_.lists.begin());
+    }
+    const auto at = static_cast<NodeId>(model_.lists.size());
+    impl::append(model_.lists, ids);
+    return at;
+  }
+
+  // A sum still being accumulated by `+=`: the terms so far as a list that
+  // shares its prefix with every handle copied along the way, so a copy of an
+  // accumulator keeps the value it had.  Nothing is a node until the sum is
+  // read, and then once: one term is itself, two are an Add -- the chain's
+  // own folds and fma -- and more a SumN over the terms in order.
+  template <impl::Numeric U> friend class RTExpression;
+  struct Pending {
+    NodeId term = no_node;
+    std::uint32_t prev = no_node; // the entry before, no_node for the first
+    NodeId node = no_node;        // what this entry materialised as
+  };
+  std::vector<Pending> pending_;
+  [[nodiscard]] constexpr std::uint32_t push_term(std::uint32_t prev,
+                                                  NodeId term) {
+    pending_.push_back({.term = term, .prev = prev});
+    return static_cast<std::uint32_t>(pending_.size() - 1);
+  }
+  [[nodiscard]] constexpr NodeId sum_of(std::uint32_t entry) {
+    if (pending_[entry].node != no_node) {
+      return pending_[entry].node;
+    }
+    std::vector<NodeId> terms;
+    for (auto i = entry; i != no_node; i = pending_[i].prev) {
+      terms.push_back(pending_[i].term);
+    }
+    std::ranges::reverse(terms);
+    const NodeId node =
+        terms.size() == 1   ? terms[0]
+        : terms.size() == 2 ? make(OpCode::Add, terms[0], terms[1])
+                            : make(OpCode::SumN, list(terms), no_node, no_node,
+                                   static_cast<std::uint32_t>(terms.size()));
+    pending_[entry].node = node;
+    return node;
   }
   // Another component of the call `v` is: the same function and list,
   // another slot.
@@ -904,12 +939,26 @@ concept CNodeSource = requires(const S &s, NodeId v) {
   { s.size() } -> std::convertible_to<std::size_t>;
 };
 
+// The product a term is, if it is one: a Mul, or a Mul behind a Neg (what a
+// subtraction builds); `z` left for the add it is fused into.
+[[nodiscard]] constexpr Contraction product_of(const CNodeSource auto &nodes,
+                                               NodeId u) {
+  const bool negated = nodes.op_of(u) == OpCode::Neg;
+  const NodeId m = negated ? nodes.operands(u)[0] : u;
+  if (nodes.op_of(m) != OpCode::Mul) {
+    return {};
+  }
+  const auto factors = nodes.operands(m);
+  return {.x = factors[0], .y = factors[1], .negated = negated};
+}
+
 // fadd(fmul(x, y), z) -> fma(x, y, z),
 // The rule is structural -- it asks the add what its operands are and nothing
 // about how many readers they have -- which is what lets the arena walk, the
 // frozen graph and the kernel agree to the bit.  The lower-id operand wins
 // where an add has two products, the order Builder::make already sorted
-// commutative operands into.
+// commutative operands into.  A SumN fuses by the same rule, term by term
+// into the running sum (the `fused` Step).
 [[nodiscard]] constexpr Contraction
 contraction_at(const CNodeSource auto &nodes, NodeId v) {
   if (nodes.op_of(v) != OpCode::Add) {
@@ -917,20 +966,10 @@ contraction_at(const CNodeSource auto &nodes, NodeId v) {
   }
   const auto ops = nodes.operands(v);
   for (const auto side : {0uz, 1uz}) {
-    const NodeId u = ops[side];
-    if (u == no_node) {
-      continue;
+    if (Contraction c = product_of(nodes, ops[side])) {
+      c.z = ops[1 - side];
+      return c;
     }
-    const bool negated = nodes.op_of(u) == OpCode::Neg;
-    const NodeId m = negated ? nodes.operands(u)[0] : u;
-    if (m == no_node || nodes.op_of(m) != OpCode::Mul) {
-      continue;
-    }
-    const auto factors = nodes.operands(m);
-    return {.x = factors[0],
-            .y = factors[1],
-            .z = ops[1 - side],
-            .negated = negated};
   }
   return {};
 }
@@ -946,33 +985,42 @@ schedule_of(const CNodeSource auto &nodes,
                                NodeId>
 {
   return DDX_FWD(order) | std::views::transform([&nodes, on](NodeId v) {
+           const OpCode op = nodes.op_of(v);
            const Contraction c = on ? contraction_at(nodes, v) : Contraction{};
-           const auto ops = nodes.operands(v);
+           // A list is read off the arena, not the Step.
+           const auto ops = has_list(op)
+                                ? std::array{no_node, no_node, no_node}
+                                : nodes.operands(v);
            return Step{.node = v,
                        .fma = c,
                        .out = v,
-                       .in = c ? std::array{c.x, c.y, c.z} : ops};
+                       .in = c ? std::array{c.x, c.y, c.z} : ops,
+                       .fused = on && op == OpCode::SumN};
          }) |
          impl::to<std::vector<Step>>();
 }
 
-// The rows a step reads: a contraction's three, an extern's or a Pack's
-// flattened arguments (the list nodes between are never read), else the
-// operands.  What liveness is computed over, so the one spelling of it.
+// The rows a step reads: a contraction's three, a list -- a fused sum's
+// product terms as their factors -- else the operands.  What liveness is
+// computed over, so the one spelling of it.
 [[nodiscard]] constexpr boost::container::small_vector<NodeId, 8>
 reads_of(const auto &s, const Step &step) {
   if (step.fma) {
     return {step.fma.x, step.fma.y, step.fma.z};
   }
-  const OpCode op = s.op_of(step.node);
-  if (kind_of(op) == Kind::Extern) {
-    return *extern_arguments(s, step.node);
+  boost::container::small_vector<NodeId, 8> out;
+  if (step.fused) {
+    for (const NodeId t : arguments(s, step.node)) {
+      if (const Contraction c = product_of(s, t)) {
+        out.insert(out.end(), {c.x, c.y});
+      } else {
+        out.push_back(t);
+      }
+    }
+    return out;
   }
-  if (op == OpCode::Pack || op == OpCode::StackRows) {
-    return *pack_arguments(s, step.node);
-  }
-  return operands_of(s, step.node) |
-         impl::to<boost::container::small_vector<NodeId, 8>>();
+  for_each_operand(s, step.node, [&out](NodeId u) { out.push_back(u); });
+  return out;
 }
 
 // The last schedule position at which each node is read -- its own, if
@@ -1110,7 +1158,7 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr std::vector<bool>
 reachable(const Builder<T> &b, std::span<const NodeId> roots) {
   return reachable(b.size(), roots, [&b](NodeId v, auto &&mark) {
-    std::ranges::for_each(operands_of(b, v), mark);
+    for_each_operand(b, v, mark);
   });
 }
 

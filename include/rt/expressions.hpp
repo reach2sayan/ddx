@@ -99,14 +99,20 @@ public:
   }
   [[nodiscard]] constexpr const T &literal() const noexcept { return lit_; }
 
-  // Give the node an identity in `b`, materialising a pending literal: a
-  // constant, or the vector of `width` copies where it meets a vector.
+  // Give the node an identity in `b`, materialising a pending literal -- a
+  // constant, or the vector of `width` copies where it meets a vector -- or
+  // a sum `+=` is still accumulating.
   [[nodiscard]] constexpr NodeId id(Builder<T> &b,
                                     std::uint32_t width = 0) const {
-    return builder_ ? id_ : (width ? b.filled(width, lit_) : b.constant(lit_));
+    if (builder_ == nullptr) {
+      return width ? b.filled(width, lit_) : b.constant(lit_);
+    }
+    return sum_ ? builder_->sum_of(id_) : id_;
   }
-  // The identity it already has.
-  [[nodiscard]] constexpr NodeId id() const noexcept { return id_; }
+  // The identity it has in its own arena; no_node for a pending literal.
+  [[nodiscard]] constexpr NodeId id() const {
+    return builder_ ? id(*builder_) : no_node;
+  }
 
   // One element of a vector, as a scalar.
   [[nodiscard]] constexpr RTExpression operator[](std::size_t i) const {
@@ -119,7 +125,7 @@ public:
     if (i >= width_) {
       return poison(errc::tensor_shape);
     }
-    return {*builder_, builder_->make(OpCode::Gather, id_, no_node, no_node,
+    return {*builder_, builder_->make(OpCode::Gather, id(), no_node, no_node,
                                       static_cast<std::uint32_t>(i))};
   }
 
@@ -139,9 +145,9 @@ public:
       return poison(errc::tensor_shape);
     }
     return u.width_ == 0
-               ? RTExpression{*b, b->make(op, u.id_)}
-               : RTExpression{*b, b->make(OpCode::Map, u.id_, no_node, no_node,
-                                          std::to_underlying(op))};
+               ? RTExpression{*b, b->make(op, u.id(*b))}
+               : RTExpression{*b, b->make(OpCode::Map, u.id(*b), no_node,
+                                          no_node, std::to_underlying(op))};
   }
 
   // Two vectors zip elementwise at one width; a literal takes the vector's.
@@ -170,21 +176,21 @@ public:
     const RTExpression &other = l.width_ ? r : l;
     if (other.width_ == 0 && !other.pending()) {
       if (op == OpCode::Mul) {
-        return {*b, b->make(OpCode::Scale, other.id_, vec.id_)};
+        return {*b, b->make(OpCode::Scale, other.id(*b), vec.id(*b))};
       }
       if (op == OpCode::Div && &other == &r) {
         return {*b, b->make(OpCode::Scale, (RTExpression{1} / r).id(*b),
-                            vec.id_)};
+                            vec.id(*b))};
       }
       return poison(errc::tensor_shape);
     }
     if (other.pending()) {
       if (op == OpCode::Mul) {
-        return {*b, b->make(OpCode::Scale, other.id(*b), vec.id_)};
+        return {*b, b->make(OpCode::Scale, other.id(*b), vec.id(*b))};
       }
       if (op == OpCode::Div && &other == &r) {
         return {*b, b->make(OpCode::Scale, (RTExpression{1} / r).id(*b),
-                            vec.id_)};
+                            vec.id(*b))};
       }
     }
     return {*b, b->make(OpCode::Zip, l.id(*b, w), r.id(*b, w), no_node,
@@ -250,16 +256,39 @@ public:
     return l + (-r);
   }
 
-  // Through the operators above, never into builder_ and id_ directly: form()
-  // propagates poison and folds pending literals, where an in-place version
-  // would take a poisoned accumulator, adopt the other side's arena and answer
-  // instead of refusing.  The parameter is the class type rather than a Numeric
-  // auto, so += accepts exactly what + accepts.
+  // `+=` on a scalar node accumulates: the terms are kept on the arena and
+  // become one node -- a SumN past two terms, an Add at two -- when the sum
+  // is first read, so a loop of `+=` is one node of k terms where `+` would
+  // be k.  A copy of an accumulator shares the terms so far and keeps its
+  // value.  A zero term is dropped, as `x + 0` folds.  Everything else --
+  // poison, a vector or a matrix, a pending literal on the left -- goes
+  // through the operator, which propagates poison and folds literals where an
+  // in-place version would take a poisoned accumulator, adopt the other
+  // side's arena and answer instead of refusing.  The parameter is the class
+  // type rather than a Numeric auto, so += accepts exactly what + accepts.
   constexpr RTExpression &operator+=(const RTExpression &o) {
-    return *this = *this + o;
+    if (why_ || o.why_ || pending() || width_ || o.width_ || is_matrix() ||
+        o.is_matrix()) {
+      return *this = *this + o;
+    }
+    if constexpr (std::equality_comparable<T>) {
+      if (o.pending() && o.lit_ == T{0}) {
+        return *this;
+      }
+    }
+    const NodeId t = o.id(*builder_);
+    if (builder_->is_constant(t, T{0})) {
+      return *this;
+    }
+    if (!sum_) {
+      id_ = builder_->push_term(no_node, id_);
+      sum_ = true;
+    }
+    id_ = builder_->push_term(id_, t);
+    return *this;
   }
   constexpr RTExpression &operator-=(const RTExpression &o) {
-    return *this = *this - o;
+    return *this += -o;
   }
   constexpr RTExpression &operator*=(const RTExpression &o) {
     return *this = *this * o;
@@ -355,12 +384,14 @@ private:
   }
   // A matrix is a table a gemv reads, with no algebra of its own.
   [[nodiscard]] constexpr bool is_matrix() const noexcept {
-    return builder_ != nullptr && builder_->op_of(id_) == OpCode::MatConst;
+    return builder_ != nullptr && !sum_ &&
+           builder_->op_of(id_) == OpCode::MatConst;
   }
 
   Builder<T> *builder_ = nullptr;
-  NodeId id_ = no_node;
+  NodeId id_ = no_node; // a node, or while sum_ the arena's pending entry
   std::uint32_t width_ = 0;
+  bool sum_ = false;
   T lit_{};
   std::optional<errc> why_;
 };
@@ -388,7 +419,7 @@ constexpr void closes(const RTExpression<T> &z, const RTExpression<T> &f) {
   if (b == nullptr) {
     return; // two literals: nothing names an arena to refuse in
   }
-  b->close(z.builder_ ? z.id_ : no_node, f.id(*b));
+  b->close(z.builder_ ? z.id(*b) : no_node, f.id(*b));
 }
 // The direction a seeded product is taken along
 template <impl::Numeric T>

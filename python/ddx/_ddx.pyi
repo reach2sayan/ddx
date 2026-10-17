@@ -126,6 +126,14 @@ class Expression:
     @typing.overload
     def __pow__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass
     @typing.overload
+    def __iadd__(self, arg0: Expression) -> Expression: pass
+    @typing.overload
+    def __iadd__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass
+    @typing.overload
+    def __isub__(self, arg0: Expression) -> Expression: pass
+    @typing.overload
+    def __isub__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass
+    @typing.overload
     def __radd__(self, arg0: Expression) -> Expression: pass
     @typing.overload
     def __radd__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass

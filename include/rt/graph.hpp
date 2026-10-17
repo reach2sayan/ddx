@@ -205,6 +205,7 @@ public:
     g.jacobian_ = std::move(jacobian);
     g.inputs_ = b.inputs();
     g.externs_.assign(b.externs().begin(), b.externs().end());
+    g.lists_.assign(b.lists().begin(), b.lists().end());
     g.names_ = b.names();
     g.properties_.reserve(b.size());
     g.operands_.reserve(b.size());
@@ -276,6 +277,8 @@ public:
   [[nodiscard]] std::span<const ExternEntry<T>> externs() const {
     return externs_;
   }
+  // Every has_list node's ids, shared with the arena: what arguments() reads.
+  [[nodiscard]] std::span<const NodeId> lists() const { return lists_; }
   // Whether a live node calls one: what a device, which cannot call the host,
   // refuses -- a function the arena registered and nothing reaches is not.
   [[nodiscard]] bool calls_extern() const noexcept { return calls_extern_; }
@@ -343,16 +346,17 @@ private:
   void mark_live() {
     live_ = detail::reachable(
         properties_.size(), outputs_, [this](NodeId v, auto &&mark) {
-          std::ranges::for_each(detail::operands_of(*this, v), mark);
+          detail::for_each_operand(*this, v, mark);
         });
     live_order_.reserve(
         static_cast<std::size_t>(std::ranges::count(live_, true)));
     impl::append(live_order_, detail::live_ids(live_));
   }
 
-  // Liveness under contraction, which is all this freeze settles -- an add
-  // reaches the multiply's operands rather than the multiply, so a multiply
-  // nothing else reads drops out with the Neg of a subtraction behind it.
+  // Liveness under contraction, which is all this freeze settles -- an add,
+  // or a sum, reaches a multiply's operands rather than the multiply, so a
+  // multiply nothing else reads drops out with the Neg of a subtraction
+  // behind it.
   void contract(bool on) {
     if (!on) {
       schedule_ = detail::schedule_of(*this, live_order_, false);
@@ -366,7 +370,18 @@ private:
             mark(c.z);
             return;
           }
-          std::ranges::for_each(detail::operands_of(*this, v), mark);
+          if (op_of(v) == OpCode::SumN) {
+            for (const NodeId t : arguments(*this, v)) {
+              if (const Contraction c = product_of(*this, t)) {
+                mark(c.x);
+                mark(c.y);
+              } else {
+                mark(t);
+              }
+            }
+            return;
+          }
+          detail::for_each_operand(*this, v, mark);
         });
     schedule_ = detail::schedule_of(
         *this, live_order_ |
@@ -384,6 +399,7 @@ private:
   Inputs inputs_;
   std::vector<std::string> names_;
   std::vector<ExternEntry<T>> externs_;
+  std::vector<NodeId> lists_;
   bool calls_extern_ = false;
   bool has_tensors_ = false;
   TensorLayout tensors_;
