@@ -6,7 +6,7 @@
 
 #include <vector>
 
-// The gate: H(x)v built by re-rooting, against build_hessian_impl's own
+// The gate: H(x)v built by re-rooting, against derive_hessian's own
 // Hessian contracted with the same v.  Two different sweeps of the same arena,
 // so a wrong rule for the Seed leaf shows up as a wrong number here.
 
@@ -39,15 +39,15 @@ void expect_hvp_matches_hessian(auto build, std::size_t nvars,
                                 std::span<const double> x,
                                 std::span<const double> v) {
   Builder<> b;
-  std::vector<ddx::rt::RTExpression<>> vars;
+  std::vector<ddx::rt::Expression<>> vars;
   static constexpr const char *names[] = {"a", "b", "c", "d", "e", "f"};
   for (const std::size_t i : std::views::iota(0uz, nvars)) {
     vars.push_back(var(b, names[i]));
   }
   const auto root = build(b, vars).id(b);
 
-  const auto hess = ddx::rt::build_hessian_impl(b, root);
-  const auto hvp = ddx::rt::build_hvp_impl(b, root);
+  const auto hess = ddx::rt::derive_hessian(b, root);
+  const auto hvp = ddx::rt::derive_hvp(b, root);
   ASSERT_EQ(hvp.product.size(), nvars);
 
   const auto values = ddx::rt::evaluate_all(b, widened(x, v));
@@ -61,7 +61,7 @@ void expect_hvp_matches_hessian(auto build, std::size_t nvars,
 
 // Dense coupling: colours == n, the worst case for the coloured path.
 auto dense = [](Builder<> &, auto &v) {
-  auto acc = ddx::rt::RTExpression<>{0};
+  auto acc = ddx::rt::Expression<>{0};
   for (const auto &a : v) {
     for (const auto &c : v) {
       acc = acc + exp(a * c);
@@ -73,7 +73,7 @@ auto dense = [](Builder<> &, auto &v) {
 // Separable: one colour, and every off-diagonal cell structurally zero, so the
 // fold's terms mostly vanish before a node exists.
 auto separable = [](Builder<> &, auto &v) {
-  auto acc = ddx::rt::RTExpression<>{0};
+  auto acc = ddx::rt::Expression<>{0};
   for (const auto &a : v) {
     acc = acc + sin(a) * sin(a);
   }
@@ -111,7 +111,7 @@ TEST(RtHvp, IsLinearInTheDirection) {
   const auto q = var(b, "b");
   const auto r = var(b, "c");
   const auto root = (exp(p * q) + r * r * p).id(b);
-  const auto hvp = ddx::rt::build_hvp_impl(b, root);
+  const auto hvp = ddx::rt::derive_hvp(b, root);
 
   const auto one = ddx::rt::evaluate_all(b, widened(x, v));
   const auto two = ddx::rt::evaluate_all(b, widened(x, scaled));
@@ -127,7 +127,7 @@ TEST(RtHvp, CarriesTheGradient) {
   const auto q = var(b, "b");
   const auto root = (p * p * q).id(b);
 
-  const auto hvp = ddx::rt::build_hvp_impl(b, root);
+  const auto hvp = ddx::rt::derive_hvp(b, root);
   const auto reverse = ddx::rt::build_reverse_jacobian(b, root);
   EXPECT_EQ(hvp.partial, reverse.partial) << "interning shares one gradient";
 

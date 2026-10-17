@@ -30,11 +30,10 @@ inline constexpr int precedence_atom = 100;
 // support with itself.  Self is the conservative answer.
 enum class Curvature : std::uint8_t { None, Bilinear, Quotient, Self };
 
-template <Numeric T, typename func, CFixedString auto symbol,
-          Notation note = Notation::Function, int prec = precedence_atom>
-  requires std::regular_invocable<func, const T &> &&
-           std::convertible_to<std::invoke_result_t<func, const T &>, T>
-struct UnaryOp {
+// What every op descriptor states besides how it evaluates.
+template <Numeric T, typename func, CFixedString auto symbol, Notation note,
+          int prec>
+struct OpDescriptor {
   using value_type = T;
   using func_type = func;
   static constexpr std::string_view label = symbol.view();
@@ -47,6 +46,13 @@ struct UnaryOp {
   static constexpr Curvature curvature = Curvature::Self;
   // Which identities the simplifier may apply; none for most ops.
   static constexpr std::optional<algebra::RuleOp> rule_op = std::nullopt;
+};
+
+template <Numeric T, typename func, CFixedString auto symbol,
+          Notation note = Notation::Function, int prec = precedence_atom>
+  requires std::regular_invocable<func, const T &> &&
+           std::convertible_to<std::invoke_result_t<func, const T &>, T>
+struct UnaryOp : OpDescriptor<T, func, symbol, note, prec> {
   [[nodiscard]] static constexpr auto
   eval(const CExpression auto &lhs) noexcept {
     using VT = typename std::remove_cvref_t<decltype(lhs)>::value_type;
@@ -59,18 +65,7 @@ template <Numeric T, typename func, CFixedString auto symbol,
   requires std::regular_invocable<func, const T &, const T &> &&
            std::convertible_to<std::invoke_result_t<func, const T &, const T &>,
                                T>
-struct BinaryOp {
-  using value_type = T;
-  using func_type = func;
-  static constexpr std::string_view label = symbol.view();
-  static constexpr Notation notation = note;
-  static constexpr int precedence = prec;
-  static_assert(note == Notation::Function || prec < precedence_atom,
-                "an op printed without its own parentheses must state a "
-                "precedence");
-
-  static constexpr Curvature curvature = Curvature::Self;
-  static constexpr std::optional<algebra::RuleOp> rule_op = std::nullopt;
+struct BinaryOp : OpDescriptor<T, func, symbol, note, prec> {
   template <CExpression LT, CExpression RT>
   [[nodiscard]] static constexpr auto eval(const LT &lhs,
                                            const RT &rhs) noexcept {

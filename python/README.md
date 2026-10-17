@@ -110,14 +110,14 @@ operation rather than one per element:
 @ddx.equation
 def quad():
     x = ddx.vec("x", 3)                         # symbols x[0], x[1], x[2]
-    C = ddx.mat_const(3, 3, coefficients)       # column-major
+    C = ddx.mat_constant(3, 3, coefficients)       # column-major
     return ddx.dot(x, ddx.gemv(C, x)) + ddx.sum(x * ddx.log(x))
 ```
 
 | Function | Is |
 |---|---|
 | `vec(name, n)` | `n` symbols `name[0]` … `name[n-1]`, packed |
-| `pack(scalars)`, `vec_const(data)`, `mat_const(rows, cols, data)` | a vector of expressions, a constant vector, a constant matrix |
+| `pack(scalars)`, `vec_constant(data)`, `mat_constant(rows, cols, data)` | a vector of expressions, a constant vector, a constant matrix |
 | `sum(v)`, `dot(u, v)` | the reductions to a scalar |
 | `gemv(M, v)`, `gemv(M, v, transposed=True)` | `M·v` and `Mᵀ·v` |
 
@@ -260,11 +260,11 @@ is the spelling.
 | `short_point` | a named point leaves a symbol unreached |
 | `unknown_symbol` | a named point uses a name the equation does not have |
 | `wrong_column_count` | a batch block has the wrong number of columns |
-| `no_arena` | a symbol was named outside a model |
+| `outside_equation` | a symbol was named outside a model |
 | `no_graph` | the model is a bare number, naming no function |
 | `name_clash` | one name used for both a symbol and a parameter |
 | `closed_twice`, `nested_implicit` | an implicit input named twice, or a residual reading another implicit |
-| `not_single_output` | `hvp`, `dense_hessian` or `hessian_colors` on a system |
+| `not_single_output` | `hvp`, `dense_hessian` or `hessian_colours` on a system |
 | `tensor_shape` | vector operands of mismatched shapes, an element index past the end, or a vector returned as an output |
 | `bad_syntax` | a string the grammar does not accept |
 | `unknown_function` | a string calls a function that does not exist |
@@ -330,7 +330,7 @@ carries the device backend; a source build asks for it with
 | `compile(**fields)` | set `Options`, block for the kernel, return self |
 | `uses_kernel`, `wait_for_kernel(*, want)` | whether a call runs compiled code, and blocking for it — for the Jacobian lane unless `want` names another |
 | `device_status` | property — under `DEVICE`, the device answering; `None` otherwise; raises when none answers |
-| `hessian_colors` | groups in the Hessian's compression; raises on a system |
+| `hessian_colours` | groups in the Hessian's compression; raises on a system |
 | `buffer(x, *, want)` | a `Call` bound to its buffers, for a loop |
 | `nodes(*, want)` | how many nodes a call for `want` evaluates |
 

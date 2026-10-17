@@ -17,7 +17,7 @@ namespace {
 
 using ddx::rt::Builder;
 using ddx::rt::GraphBuilder;
-using RE = ddx::rt::RTExpression<>;
+using RE = ddx::rt::Expression<>;
 using ClValue = cltest::OnDevice;
 
 struct Case {
@@ -28,21 +28,25 @@ struct Case {
 // Every op a graph can hold short of the transcendentals, alone or nearly so,
 // with its Jacobian: the derivatives bring the selects and comparisons.
 const std::array cases{
-    Case{"x*y + z", [](const RE &x, const RE &y, const RE &z) { return x * y + z; }},
-    Case{"z - x*y", [](const RE &x, const RE &y, const RE &z) { return z - x * y; }},
-    Case{"(x+y)/(x-z)",
-         [](const RE &x, const RE &y, const RE &z) { return (x + y) / (x - z); }},
+    Case{"x*y + z",
+         [](const RE &x, const RE &y, const RE &z) { return x * y + z; }},
+    Case{"z - x*y",
+         [](const RE &x, const RE &y, const RE &z) { return z - x * y; }},
+    Case{"(x+y)/(x-z)", [](const RE &x, const RE &y,
+                           const RE &z) { return (x + y) / (x - z); }},
     Case{"-x*y", [](const RE &x, const RE &y, const RE &) { return -x * y; }},
-    Case{"abs", [](const RE &x, const RE &y, const RE &z) { return abs(x - y) * z; }},
-    Case{"sign", [](const RE &x, const RE &y, const RE &z) { return sign(x - y) + z; }},
-    Case{"max", [](const RE &x, const RE &y, const RE &z) { return max(x, y) * z; }},
-    Case{"min", [](const RE &x, const RE &y, const RE &z) { return min(x, -y) + z; }},
-    Case{"select",
-         [](const RE &x, const RE &y, const RE &z) {
-           return select(x < y, x * z, y / z);
-         }},
-    Case{"compare",
-         [](const RE &x, const RE &y, const RE &z) { return (x <= y) + (y < z) * x; }},
+    Case{"abs",
+         [](const RE &x, const RE &y, const RE &z) { return abs(x - y) * z; }},
+    Case{"sign",
+         [](const RE &x, const RE &y, const RE &z) { return sign(x - y) + z; }},
+    Case{"max",
+         [](const RE &x, const RE &y, const RE &z) { return max(x, y) * z; }},
+    Case{"min",
+         [](const RE &x, const RE &y, const RE &z) { return min(x, -y) + z; }},
+    Case{"select", [](const RE &x, const RE &y,
+                      const RE &z) { return select(x < y, x * z, y / z); }},
+    Case{"compare", [](const RE &x, const RE &y,
+                       const RE &z) { return (x <= y) + (y < z) * x; }},
     // A SumN: a product fused, a negated one, and a plain term.
     Case{"sum_n",
          [](const RE &x, const RE &y, const RE &z) {
@@ -59,11 +63,13 @@ const std::array cases{
 [[nodiscard]] cltest::Columns awkward() {
   constexpr auto inf = std::numeric_limits<double>::infinity();
   constexpr auto tiny = std::numeric_limits<double>::denorm_min();
-  const std::array values{0.0,  -0.0, 1.0,  -1.0, 0.5,   3.0,     -2.5, inf,
-                          -inf, std::numeric_limits<double>::quiet_NaN(),
-                          tiny, -tiny, 1e-310, 1e308, std::numeric_limits<double>::max()};
+  const std::array values{
+      0.0,  -0.0,  1.0,    -1.0,  0.5,
+      3.0,  -2.5,  inf,    -inf,  std::numeric_limits<double>::quiet_NaN(),
+      tiny, -tiny, 1e-310, 1e308, std::numeric_limits<double>::max()};
   cltest::Columns xs(3);
-  for (const auto [x, y, z] : std::views::cartesian_product(values, values, values)) {
+  for (const auto [x, y, z] :
+       std::views::cartesian_product(values, values, values)) {
     xs[0].push_back(x);
     xs[1].push_back(y);
     xs[2].push_back(z);
@@ -100,7 +106,8 @@ TEST_F(ClValue, EveryArithmeticOpAgreesWithTheSweepToTheBit) {
 // work-items; none of them may write.
 TEST_F(ClValue, EveryBatchLengthAgrees) {
   const auto xs = awkward();
-  for (const std::size_t n : {1uz, 2uz, 7uz, 8uz, 9uz, 63uz, 64uz, 65uz, 1000uz}) {
+  for (const std::size_t n :
+       {1uz, 2uz, 7uz, 8uz, 9uz, 63uz, 64uz, 65uz, 1000uz}) {
     expect_case_agrees(cases[0], true, xs, n);
     expect_case_agrees(cases[8], true, xs, n);
   }

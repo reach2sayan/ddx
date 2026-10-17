@@ -8,12 +8,12 @@ __all__: list[str] = ['Backend', 'Call', 'Equation', 'Error', 'Expression',
                       'VecLib', 'Want', 'abs', 'acos', 'acosh', 'add', 'asin',
                       'asinh', 'atan', 'atan2', 'atanh', 'cbrt', 'cos',
                       'cosh', 'div', 'equation', 'erf', 'errc', 'exp',
-                      'has_jit', 'has_opencl', 'hypot', 'le', 'Level', 'log', 'log10',
+                      'has_jit', 'has_opencl', 'hypot', 'le', 'OptLevel', 'log', 'log10',
                       'lt',
                       'max', 'min', 'mul', 'neg', 'pow', 'select', 'sign',
                       'sin', 'sinh', 'sqrt', 'tan', 'tanh', 'var',
                       'dot', 'gemv',
-                      'mat_const', 'pack', 'sum', 'vec', 'vec_const']
+                      'mat_constant', 'pack', 'sum', 'vec', 'vec_constant']
 class Backend(enum.IntEnum):
     """
     Whether an equation compiles its graph.
@@ -65,7 +65,7 @@ class Equation:
     @property
     def device_status(self) -> str | None: pass
     @property
-    def hessian_colors(self) -> int: pass
+    def hessian_colours(self) -> int: pass
     @property
     def inputs(self) -> list[str]: pass
     @property
@@ -163,14 +163,14 @@ class Expression:
     @typing.overload
     def __truediv__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass
     
-class Level(enum.IntEnum):
+class OptLevel(enum.IntEnum):
     """
     LLVM's -O0 to -O3, for the IR pipeline and for codegen.
     """
-    O0: typing.ClassVar[Level]  # value = <Level.O0: 0>
-    O1: typing.ClassVar[Level]  # value = <Level.O1: 1>
-    O2: typing.ClassVar[Level]  # value = <Level.O2: 2>
-    O3: typing.ClassVar[Level]  # value = <Level.O3: 3>
+    O0: typing.ClassVar[OptLevel]  # value = <OptLevel.O0: 0>
+    O1: typing.ClassVar[OptLevel]  # value = <OptLevel.O1: 1>
+    O2: typing.ClassVar[OptLevel]  # value = <OptLevel.O2: 2>
+    O3: typing.ClassVar[OptLevel]  # value = <OptLevel.O3: 3>
     @classmethod
     def __new__(cls, value): pass
     def __format__(self, format_spec): pass
@@ -196,12 +196,12 @@ class Want(enum.IntEnum):
     """
     Which blocks a bound call fills.
     """
-    DENSEHESSIAN: typing.ClassVar[Want]  # value = <Want.DENSEHESSIAN: 8>
+    DENSE_HESSIAN: typing.ClassVar[Want]  # value = <Want.DENSE_HESSIAN: 8>
     GRADIENT: typing.ClassVar[Want]  # value = <Want.GRADIENT: 6>
     HESSIAN: typing.ClassVar[Want]  # value = <Want.HESSIAN: 2>
     HVP: typing.ClassVar[Want]  # value = <Want.HVP: 3>
     JACOBIAN: typing.ClassVar[Want]  # value = <Want.JACOBIAN: 1>
-    JACOBIANTANGENT: typing.ClassVar[Want]  # value = <Want.JACOBIANTANGENT: 7>
+    JACOBIAN_JVP: typing.ClassVar[Want]  # value = <Want.JACOBIAN_JVP: 7>
     JVP: typing.ClassVar[Want]  # value = <Want.JVP: 5>
     VALUE: typing.ClassVar[Want]  # value = <Want.VALUE: 0>
     VJP: typing.ClassVar[Want]  # value = <Want.VJP: 4>
@@ -216,15 +216,15 @@ class _Options:
     contract: bool
     device: str
     loop_vectorize: bool
-    slp: bool
+    slp_vectorize: bool
     time_passes: bool
     veclib: VecLib
     def __eq__(self, arg0: _Options) -> bool: pass
     def __init__(self) -> None: pass
     @property
-    def codegen_level(self) -> Level: pass
+    def codegen_level(self) -> OptLevel: pass
     @codegen_level.setter
-    def codegen_level(self, arg0: Level) -> None: pass
+    def codegen_level(self, arg0: OptLevel) -> None: pass
     @property
     def lanes(self) -> int | None: pass
     @lanes.setter
@@ -234,9 +234,9 @@ class _Options:
     @hot_points.setter
     def hot_points(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None: pass
     @property
-    def opt_level(self) -> Level: pass
+    def opt_level(self) -> OptLevel: pass
     @opt_level.setter
-    def opt_level(self, arg0: Level) -> None: pass
+    def opt_level(self, arg0: OptLevel) -> None: pass
     @property
     def points(self) -> int: pass
     @points.setter
@@ -256,7 +256,7 @@ class errc(enum.IntEnum):
     unknown_symbol: typing.ClassVar[errc]  # value = <errc.unknown_symbol: 3>
     index_out_of_range: typing.ClassVar[errc]  # value = <errc.index_out_of_range: 4>
     wrong_column_count: typing.ClassVar[errc]  # value = <errc.wrong_column_count: 5>
-    no_arena: typing.ClassVar[errc]  # value = <errc.no_arena: 6>
+    outside_equation: typing.ClassVar[errc]  # value = <errc.outside_equation: 6>
     no_graph: typing.ClassVar[errc]  # value = <errc.no_graph: 7>
     name_clash: typing.ClassVar[errc]  # value = <errc.name_clash: 8>
     closed_twice: typing.ClassVar[errc]  # value = <errc.closed_twice: 9>
@@ -369,7 +369,7 @@ def dot(u: Expression, v: Expression) -> Expression:
     ...
 def gemv(matrix: Expression, v: Expression, transposed: bool = False) -> Expression:
     """M v, or M^T v when transposed."""
-def mat_const(rows: typing.SupportsInt | typing.SupportsIndex, cols: typing.SupportsInt | typing.SupportsIndex, data: typing.Sequence[typing.SupportsFloat]) -> Expression:
+def mat_constant(rows: typing.SupportsInt | typing.SupportsIndex, cols: typing.SupportsInt | typing.SupportsIndex, data: typing.Sequence[typing.SupportsFloat]) -> Expression:
     """A constant rows x cols matrix from column-major data."""
 def pack(scalars: typing.Sequence[Expression]) -> Expression:
     """The vector of these scalars, in order."""
@@ -377,7 +377,7 @@ def sum(v: Expression) -> Expression:
     ...
 def vec(name: str, n: typing.SupportsInt | typing.SupportsIndex) -> Expression:
     """n symbols named name[0] .. name[n-1], packed."""
-def vec_const(data: typing.Sequence[typing.SupportsFloat]) -> Expression:
+def vec_constant(data: typing.Sequence[typing.SupportsFloat]) -> Expression:
     ...
 __version__: str = ...
 has_jit: bool = True

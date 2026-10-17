@@ -68,7 +68,7 @@ TEST(RtEnergy, UniquacJacobian) {
   Builder<> b;
   const auto x = species(b, 8);
   const auto f = models::uniquac(x);
-  const auto g = ddx::rt::build_jacobian_impl(b, f.id(b));
+  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
   expect_jacobian_matches_differences(b, f.id(b), g, composition(8));
 }
 
@@ -77,7 +77,7 @@ TEST(RtEnergy, PengRobinsonJacobian) {
   auto x = species(b, 6);
   const auto Z = var(b, "Z");
   const auto f = models::peng_robinson(x, Z);
-  const auto g = ddx::rt::build_jacobian_impl(b, f.id(b));
+  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
   auto pt = composition(6);
   pt.push_back(0.93); // Z is the last symbol
   expect_jacobian_matches_differences(b, f.id(b), g, pt);
@@ -87,7 +87,7 @@ TEST(RtEnergy, MseJacobian) {
   Builder<> b;
   const auto x = species(b, 6);
   const auto f = models::mse(x);
-  const auto g = ddx::rt::build_jacobian_impl(b, f.id(b));
+  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
   expect_jacobian_matches_differences(b, f.id(b), g, composition(6));
 }
 
@@ -97,7 +97,7 @@ TEST(RtEnergy, StableDownToTraceMoleFractions) {
   Builder<> b;
   const auto x = species(b, n);
   const auto f = models::uniquac(x);
-  const auto g = ddx::rt::build_jacobian_impl(b, f.id(b));
+  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
 
   double previous_value = 0;
   double previous_trace = 0;
@@ -151,7 +151,7 @@ TEST(RtEnergy, HessianMatchesDifferencesOfTheJacobian) {
   Builder<> b;
   const auto x = species(b, n);
   const auto f = models::uniquac(x);
-  const auto h = ddx::rt::build_hessian_impl(b, f.id(b));
+  const auto h = ddx::rt::derive_hessian(b, f.id(b));
   expect_matches_differences(h, b, n);
 }
 
@@ -163,8 +163,8 @@ TEST(RtEnergy, MixingRulesGiveADenseHessian) {
     auto x = species(b, n);
     const auto f = models::peng_robinson(x, RE{0.9}); // Z pinned: n symbols
     const auto rows = ddx::rt::coupling_pattern(b, f.id(b));
-    const auto coloring = ddx::rt::color_columns(rows);
-    EXPECT_EQ(coloring.count(), n) << "n=" << n;
+    const auto colouring = ddx::rt::colour_columns(rows);
+    EXPECT_EQ(colouring.count(), n) << "n=" << n;
 
     // Every column couples every other, so no two may share a colour.
     for (const auto [i, row] : rows | std::views::enumerate) {
@@ -181,7 +181,7 @@ TEST(RtEnergy, JacobianStaysCheapAsSpeciesAreAdded) {
     const auto x = species(b, n);
     const auto f = models::uniquac(x);
     const std::size_t built = b.size();
-    (void)ddx::rt::build_jacobian_impl(b, f.id(b));
+    (void)ddx::rt::derive_jacobian(b, f.id(b));
     const std::size_t added = b.size() - built;
 
     // One reverse sweep: a small multiple of the function, not of n.
@@ -205,13 +205,13 @@ TEST(RtEnergySparse, FiniteRangeGivesFewColours) {
     Builder<> b;
     const auto s = species(b, n);
     const auto e = models::cluster_expansion(s, 2);
-    const auto coloring =
-        ddx::rt::color_columns(ddx::rt::coupling_pattern(b, e.id(b)));
+    const auto colouring =
+        ddx::rt::colour_columns(ddx::rt::coupling_pattern(b, e.id(b)));
 
     // Bounded degree, so the colour count must not grow with n.  Measured at
     // 5 with smallest-last ordering, which is worth ~2.4x here.
-    EXPECT_LE(coloring.count(), 6u) << "n=" << n;
-    EXPECT_LT(coloring.count(), n);
+    EXPECT_LE(colouring.count(), 6u) << "n=" << n;
+    EXPECT_LT(colouring.count(), n);
   }
 }
 
@@ -230,7 +230,7 @@ TEST(RtEnergySparse, BondedChainIsBanded) {
       EXPECT_LE(span, 2u) << "unexpected coupling " << i << "," << j;
     }
   }
-  EXPECT_LE(ddx::rt::color_columns(rows).count(), 5u);
+  EXPECT_LE(ddx::rt::colour_columns(rows).count(), 5u);
 }
 
 // Colouring can silently break correctness, so check elementwise.
@@ -240,8 +240,8 @@ TEST(RtEnergySparse, ColouredHessianIsStillCorrect) {
   Builder<> b;
   const auto s = species(b, n);
   const auto e = models::cluster_expansion(s, 2);
-  const auto h = ddx::rt::build_hessian_impl(b, e.id(b));
-  EXPECT_LT(h.colors(), n)
+  const auto h = ddx::rt::derive_hessian(b, e.id(b));
+  EXPECT_LT(h.colours(), n)
       << "a banded pattern should beat one sweep per column";
   expect_matches_differences(h, b, n);
 }

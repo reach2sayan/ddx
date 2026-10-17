@@ -23,7 +23,7 @@
 
 namespace ddx::rt {
 
-template <impl::Numeric T = double> class RTExpression;
+template <impl::Numeric T = double> class Expression;
 
 namespace detail {
 // Befriended below: an equation is the one thing that takes an expression's
@@ -32,33 +32,33 @@ namespace detail {
 struct Rooting {
   template <impl::Numeric T>
   [[nodiscard]] static constexpr Builder<T> *
-  builder(const RTExpression<T> &e) noexcept {
+  builder(const Expression<T> &e) noexcept {
     return e.builder();
   }
   template <impl::Numeric T>
   [[nodiscard]] static constexpr std::optional<errc>
-  why(const RTExpression<T> &e) noexcept {
+  why(const Expression<T> &e) noexcept {
     return e.why();
   }
   template <impl::Numeric T>
-  [[nodiscard]] static constexpr RTExpression<T> poison(errc why) noexcept {
-    return RTExpression<T>::poison(why);
+  [[nodiscard]] static constexpr Expression<T> poison(errc why) noexcept {
+    return Expression<T>::poison(why);
   }
 };
 } // namespace detail
 
-// Declared ahead of RTExpression, which befriends it: `named` is where a
+// Declared ahead of Expression, which befriends it: `named` is where a
 // missing arena, or a name another kind of input holds, turns into a poisoned
 // expression.
 template <impl::Numeric T = double>
-[[nodiscard]] RTExpression<T> named(OpCode op, std::string_view name) noexcept;
+[[nodiscard]] Expression<T> named(OpCode op, std::string_view name) noexcept;
 template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> named(Builder<T> &b, OpCode op,
-                                              std::string_view name);
+[[nodiscard]] constexpr Expression<T> named(Builder<T> &b, OpCode op,
+                                            std::string_view name);
 
 // A handle onto one node, plus the arithmetic surface that builds more.  A null
 // builder is a literal not yet given to a graph, which is what lets
-// RTExpression{1} exist for CFieldLike's constructible_from<int>.
+// Expression{1} exist for CFieldLike's constructible_from<int>.
 //
 // The node may be a vector: `width()` elements per point, and the same
 // arithmetic then builds one elementwise node -- a Map or Zip carrying the
@@ -66,22 +66,22 @@ template <impl::Numeric T>
 // vector takes its width, so every derivative rule in ops/adjoints.hpp reads
 // elementwise and no rule is written twice.  rt/tensor.hpp holds the
 // factories and reductions.
-template <impl::Numeric T> class RTExpression {
+template <impl::Numeric T> class Expression {
 public:
   using value_type = T;
   using builder_type = Builder<T>;
 
-  constexpr RTExpression() = default;
+  constexpr Expression() = default;
 
-  // By value: RTExpression is itself Numeric, and a Numeric&& would out-match
+  // By value: Expression is itself Numeric, and a Numeric&& would out-match
   // the copy constructor for a non-const lvalue.  Prevent circular check
   // clang diagnoses the cycle where GCC accepts it.
   template <typename V>
-    requires(!std::same_as<std::remove_cvref_t<V>, RTExpression> &&
+    requires(!std::same_as<std::remove_cvref_t<V>, Expression> &&
              impl::Numeric<V>)
-  constexpr RTExpression(V v) : lit_{static_cast<T>(std::move(v))} {}
+  constexpr Expression(V v) : lit_{static_cast<T>(std::move(v))} {}
 
-  constexpr RTExpression(Builder<T> &b, NodeId id) noexcept
+  constexpr Expression(Builder<T> &b, NodeId id) noexcept
       : builder_{&b}, id_{id},
         width_{tensor_valued(b.op_of(id)) ? width_of(b, id) : 0} {}
 
@@ -115,12 +115,12 @@ public:
   }
 
   // One element of a vector, as a scalar.
-  [[nodiscard]] constexpr RTExpression operator[](std::size_t i) const {
+  [[nodiscard]] constexpr Expression operator[](std::size_t i) const {
     if (why_) {
       return poison(*why_);
     }
     if (pending()) {
-      return RTExpression{lit_};
+      return Expression{lit_};
     }
     if (i >= width_) {
       return poison(errc::tensor_shape);
@@ -132,35 +132,35 @@ public:
   // Two pending literals fold without reaching a graph, so the constants the
   // derivative rules produce never become nodes.  A vector operand makes the
   // node elementwise: a Map carrying `op`.
-  [[nodiscard]] static constexpr RTExpression form(OpCode op,
-                                                   const RTExpression &u) {
+  [[nodiscard]] static constexpr Expression form(OpCode op,
+                                                 const Expression &u) {
     if (u.why_) {
       return poison(*u.why_);
     }
     Builder<T> *const b = u.builder();
     if (b == nullptr) {
-      return RTExpression{apply<T>(op, u.literal())};
+      return Expression{apply<T>(op, u.literal())};
     }
     if (u.is_matrix()) {
       return poison(errc::tensor_shape);
     }
     return u.width_ == 0
-               ? RTExpression{*b, b->make(op, u.id(*b))}
-               : RTExpression{*b, b->make(OpCode::Map, u.id(*b), no_node,
-                                          no_node, std::to_underlying(op))};
+               ? Expression{*b, b->make(op, u.id(*b))}
+               : Expression{*b, b->make(OpCode::Map, u.id(*b), no_node, no_node,
+                                        std::to_underlying(op))};
   }
 
   // Two vectors zip elementwise at one width; a literal takes the vector's.
   // A scalar *node* meets a vector only as a factor -- a Scale, one node
   // rather than a broadcast and a Zip -- so anything else is a shape error.
-  [[nodiscard]] static constexpr RTExpression
-  form(OpCode op, const RTExpression &l, const RTExpression &r) {
+  [[nodiscard]] static constexpr Expression form(OpCode op, const Expression &l,
+                                                 const Expression &r) {
     if (l.why_ || r.why_) {
       return poison(l.why_ ? *l.why_ : *r.why_);
     }
     Builder<T> *const b = l.builder() ? l.builder() : r.builder();
     if (b == nullptr) {
-      return RTExpression{apply<T>(op, l.literal(), r.literal())};
+      return Expression{apply<T>(op, l.literal(), r.literal())};
     }
     if (l.is_matrix() || r.is_matrix()) {
       return poison(errc::tensor_shape);
@@ -172,15 +172,15 @@ public:
     if (l.width_ != 0 && r.width_ != 0 && l.width_ != r.width_) {
       return poison(errc::tensor_shape);
     }
-    const RTExpression &vec = l.width_ ? l : r;
-    const RTExpression &other = l.width_ ? r : l;
+    const Expression &vec = l.width_ ? l : r;
+    const Expression &other = l.width_ ? r : l;
     if (other.width_ == 0) {
       if (op == OpCode::Mul) {
         return {*b, b->make(OpCode::Scale, other.id(*b), vec.id(*b))};
       }
       if (op == OpCode::Div && &other == &r) {
-        return {*b, b->make(OpCode::Scale, (RTExpression{1} / r).id(*b),
-                            vec.id(*b))};
+        return {*b,
+                b->make(OpCode::Scale, (Expression{1} / r).id(*b), vec.id(*b))};
       }
       if (!other.pending()) { // a scalar node meets a vector only as a scale
         return poison(errc::tensor_shape);
@@ -193,17 +193,16 @@ public:
   // A select over vector arms is a mask: each arm scaled by the chosen 1 or
   // 0, an arm that is a literal zero dropped.  A vector condition is the
   // mask itself, elementwise.
-  [[nodiscard]] static constexpr RTExpression form(OpCode op,
-                                                   const RTExpression &c,
-                                                   const RTExpression &t,
-                                                   const RTExpression &f) {
+  [[nodiscard]] static constexpr Expression form(OpCode op, const Expression &c,
+                                                 const Expression &t,
+                                                 const Expression &f) {
     if (c.why_ || t.why_ || f.why_) {
       return poison(c.why_ ? *c.why_ : (t.why_ ? *t.why_ : *f.why_));
     }
     Builder<T> *const b =
         c.builder() ? c.builder() : (t.builder() ? t.builder() : f.builder());
     if (b == nullptr) {
-      return RTExpression{apply<T>(op, c.literal(), t.literal(), f.literal())};
+      return Expression{apply<T>(op, c.literal(), t.literal(), f.literal())};
     }
     if (c.is_matrix() || t.is_matrix() || f.is_matrix()) {
       return poison(errc::tensor_shape);
@@ -211,11 +210,11 @@ public:
     if (c.width_ == 0 && t.width_ == 0 && f.width_ == 0) {
       return {*b, b->make(op, c.id(*b), t.id(*b), f.id(*b))};
     }
-    const RTExpression one{1};
-    const RTExpression zero{0};
-    const RTExpression on = c.width_ ? c : select(c, one, zero);
-    const RTExpression off = c.width_ ? one - c : select(c, zero, one);
-    const auto dead = [](const RTExpression &arm) {
+    const Expression one{1};
+    const Expression zero{0};
+    const Expression on = c.width_ ? c : select(c, one, zero);
+    const Expression off = c.width_ ? one - c : select(c, zero, one);
+    const auto dead = [](const Expression &arm) {
       return arm.pending() && arm.lit_ == T{0};
     };
     if (dead(t)) {
@@ -227,25 +226,25 @@ public:
     return on * t + off * f;
   }
 
-  // Hidden friends: ordinary functions for a given RTExpression<T>, so `x * 2`
+  // Hidden friends: ordinary functions for a given Expression<T>, so `x * 2`
   // and `2 * x` both convert.
-  friend constexpr RTExpression operator+(const RTExpression &l,
-                                          const RTExpression &r) {
+  friend constexpr Expression operator+(const Expression &l,
+                                        const Expression &r) {
     return form(OpCode::Add, l, r);
   }
-  friend constexpr RTExpression operator*(const RTExpression &l,
-                                          const RTExpression &r) {
+  friend constexpr Expression operator*(const Expression &l,
+                                        const Expression &r) {
     return form(OpCode::Mul, l, r);
   }
-  friend constexpr RTExpression operator/(const RTExpression &l,
-                                          const RTExpression &r) {
+  friend constexpr Expression operator/(const Expression &l,
+                                        const Expression &r) {
     return form(OpCode::Div, l, r);
   }
-  friend constexpr RTExpression operator-(const RTExpression &u) {
+  friend constexpr Expression operator-(const Expression &u) {
     return form(OpCode::Neg, u);
   }
-  friend constexpr RTExpression operator-(const RTExpression &l,
-                                          const RTExpression &r) {
+  friend constexpr Expression operator-(const Expression &l,
+                                        const Expression &r) {
     return l + (-r);
   }
 
@@ -259,7 +258,7 @@ public:
   // in-place version would take a poisoned accumulator, adopt the other
   // side's arena and answer instead of refusing.  The parameter is the class
   // type rather than a Numeric auto, so += accepts exactly what + accepts.
-  constexpr RTExpression &operator+=(const RTExpression &o) {
+  constexpr Expression &operator+=(const Expression &o) {
     if (why_ || o.why_ || pending() || width_ || o.width_ || is_matrix() ||
         o.is_matrix()) {
       return *this = *this + o;
@@ -280,18 +279,16 @@ public:
     id_ = builder_->push_term(id_, t);
     return *this;
   }
-  constexpr RTExpression &operator-=(const RTExpression &o) {
-    return *this += -o;
-  }
-  constexpr RTExpression &operator*=(const RTExpression &o) {
+  constexpr Expression &operator-=(const Expression &o) { return *this += -o; }
+  constexpr Expression &operator*=(const Expression &o) {
     return *this = *this * o;
   }
-  constexpr RTExpression &operator/=(const RTExpression &o) {
+  constexpr Expression &operator/=(const Expression &o) {
     return *this = *this / o;
   }
 
 #define DDX_RT_UNFN(fn, Op, label, ...)                                        \
-  friend constexpr RTExpression fn(const RTExpression &u) {                    \
+  friend constexpr Expression fn(const Expression &u) {                        \
     return form(OpCode::Op, u);                                                \
   }
   DDX_UNARY_MATH_TABLE(DDX_RT_UNFN)
@@ -299,8 +296,7 @@ public:
 #undef DDX_RT_UNFN
 
 #define DDX_RT_BINFN(fn, Op, label, ...)                                       \
-  friend constexpr RTExpression fn(const RTExpression &l,                      \
-                                   const RTExpression &r) {                    \
+  friend constexpr Expression fn(const Expression &l, const Expression &r) {   \
     return form(OpCode::Op, l, r);                                             \
   }
   DDX_RT_BINARY_TABLE(DDX_RT_BINFN)
@@ -308,41 +304,41 @@ public:
 #undef DDX_RT_BINFN
 
   // Operators that answer an expression, not a bool.  That is what keeps
-  // RTExpression outside std::totally_ordered -- every comparison there must be
+  // Expression outside std::totally_ordered -- every comparison there must be
   // boolean-testable -- so adjoints.hpp's numeric `sign` never outranks the
   // node-building one.  Only `<` and `<=` are nodes; the rest are those two
   // read the other way round.
-  friend constexpr RTExpression operator<(const RTExpression &l,
-                                          const RTExpression &r) {
+  friend constexpr Expression operator<(const Expression &l,
+                                        const Expression &r) {
     return lt(l, r);
   }
-  friend constexpr RTExpression operator<=(const RTExpression &l,
-                                           const RTExpression &r) {
+  friend constexpr Expression operator<=(const Expression &l,
+                                         const Expression &r) {
     return le(l, r);
   }
-  friend constexpr RTExpression operator>(const RTExpression &l,
-                                          const RTExpression &r) {
+  friend constexpr Expression operator>(const Expression &l,
+                                        const Expression &r) {
     return lt(r, l);
   }
-  friend constexpr RTExpression operator>=(const RTExpression &l,
-                                           const RTExpression &r) {
+  friend constexpr Expression operator>=(const Expression &l,
+                                         const Expression &r) {
     return le(r, l);
   }
 
-  friend constexpr RTExpression operator==(const RTExpression &l,
-                                           const RTExpression &r) {
-    const RTExpression forward = le(l, r);
+  friend constexpr Expression operator==(const Expression &l,
+                                         const Expression &r) {
+    const Expression forward = le(l, r);
     return forward * le(r, l);
   }
   // rewritten `!(l == r)` is ill-formed when `==` is not bool.
-  friend constexpr RTExpression operator!=(const RTExpression &l,
-                                           const RTExpression &r) {
-    return RTExpression{1} - (l == r);
+  friend constexpr Expression operator!=(const Expression &l,
+                                         const Expression &r) {
+    return Expression{1} - (l == r);
   }
 
   // Both arms evaluate; `c` is a condition in the C sense, any nonzero value.
-  friend constexpr RTExpression
-  select(const RTExpression &c, const RTExpression &t, const RTExpression &f) {
+  friend constexpr Expression select(const Expression &c, const Expression &t,
+                                     const Expression &f) {
     return form(OpCode::Select, c, t, f);
   }
 
@@ -352,10 +348,9 @@ private:
   friend struct detail::Rooting;
   template <impl::Numeric U> friend class ExternFunction;
   template <impl::Numeric U>
-  friend RTExpression<U> named(OpCode, std::string_view) noexcept;
+  friend Expression<U> named(OpCode, std::string_view) noexcept;
   template <impl::Numeric U>
-  friend constexpr RTExpression<U> named(Builder<U> &, OpCode,
-                                         std::string_view);
+  friend constexpr Expression<U> named(Builder<U> &, OpCode, std::string_view);
 
   [[nodiscard]] constexpr Builder<T> *builder() const noexcept {
     return builder_;
@@ -363,8 +358,8 @@ private:
 
   // Not a pending literal, which would materialise into the first graph it
   // meets and put a zero where a symbol should be.
-  [[nodiscard]] static constexpr RTExpression poison(errc why) noexcept {
-    RTExpression e;
+  [[nodiscard]] static constexpr Expression poison(errc why) noexcept {
+    Expression e;
     e.why_ = why;
     return e;
   }
@@ -392,21 +387,21 @@ private:
 // like a parameter, and a root of the residual implicit() names, so no
 // derivative treats it as fixed and every one carries dz/dx = -F_x / F_z.
 template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> named(Builder<T> &b, OpCode op,
-                                              std::string_view name) {
+[[nodiscard]] constexpr Expression<T> named(Builder<T> &b, OpCode op,
+                                            std::string_view name) {
   const NodeId id = b.input(op, name);
-  return id == no_node ? RTExpression<T>::poison(errc::name_clash)
-                       : RTExpression<T>{b, id};
+  return id == no_node ? Expression<T>::poison(errc::name_clash)
+                       : Expression<T>{b, id};
 }
 // The implicit input `name` and the residual `residual(z)` it is a root of:
 // F(z, x) = 0 at every point the caller supplies.  ddx never solves it; it
 // differentiates as though it held.
-template <impl::Numeric T, std::invocable<const RTExpression<T> &> F>
-[[nodiscard]] constexpr RTExpression<T>
+template <impl::Numeric T, std::invocable<const Expression<T> &> F>
+[[nodiscard]] constexpr Expression<T>
 implicit(Builder<T> &b, std::string_view name, F &&residual) {
-  const RTExpression<T> z = named(b, OpCode::Implicit, name);
+  const Expression<T> z = named(b, OpCode::Implicit, name);
   if (!detail::Rooting::why(z)) {
-    const RTExpression<T> f = std::invoke(DDX_FWD(residual), z);
+    const Expression<T> f = std::invoke(DDX_FWD(residual), z);
     const auto why = detail::Rooting::why(f);
     b.close(z.id(b), why ? no_node : f.id(b), why);
   }
@@ -414,13 +409,12 @@ implicit(Builder<T> &b, std::string_view name, F &&residual) {
 }
 // The direction a seeded product is taken along
 template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> seed(Builder<T> &b,
-                                             std::uint32_t slot) {
-  return RTExpression<T>{b, b.seed_node(slot)};
+[[nodiscard]] constexpr Expression<T> seed(Builder<T> &b, std::uint32_t slot) {
+  return Expression<T>{b, b.seed_node(slot)};
 }
 template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> lit(Builder<T> &b, const T &v) {
-  return RTExpression<T>{b, b.constant(v)};
+[[nodiscard]] constexpr Expression<T> lit(Builder<T> &b, const T &v) {
+  return Expression<T>{b, b.constant(v)};
 }
 
 // extern_fn()'s answer: called on expressions, it puts the function into their
@@ -431,34 +425,33 @@ public:
       : b_{b}, index_{index} {}
   constexpr explicit ExternFunction(errc why) noexcept : why_{why} {}
 
-  [[nodiscard]] constexpr RTExpression<T>
-  operator()(std::span<const RTExpression<T>> args) const {
+  [[nodiscard]] constexpr Expression<T>
+  operator()(std::span<const Expression<T>> args) const {
     if (why_) {
-      return RTExpression<T>::poison(*why_);
+      return Expression<T>::poison(*why_);
     }
     if (args.size() != b_->externs()[index_].arity) {
-      return RTExpression<T>::poison(errc::wrong_argument_count);
+      return Expression<T>::poison(errc::wrong_argument_count);
     }
     for (const auto &a : args) {
       if (a.why_) {
-        return RTExpression<T>::poison(*a.why_);
+        return Expression<T>::poison(*a.why_);
       }
       if (a.size() != 0 || a.is_matrix()) {
-        return RTExpression<T>::poison(errc::tensor_shape);
+        return Expression<T>::poison(errc::tensor_shape);
       }
     }
     const auto ids =
         args |
         std::views::transform([this](const auto &a) { return a.id(*b_); }) |
         impl::to<boost::container::small_vector<NodeId, 8>>();
-    return RTExpression<T>{*b_, b_->extern_call(index_, ids)};
+    return Expression<T>{*b_, b_->extern_call(index_, ids)};
   }
   template <typename... A>
-    requires(std::convertible_to<A, RTExpression<T>> && ...)
-  [[nodiscard]] constexpr RTExpression<T> operator()(const A &...args) const {
-    const std::array<RTExpression<T>, sizeof...(A)> all{
-        RTExpression<T>{args}...};
-    return (*this)(std::span<const RTExpression<T>>{all});
+    requires(std::convertible_to<A, Expression<T>> && ...)
+  [[nodiscard]] constexpr Expression<T> operator()(const A &...args) const {
+    const std::array<Expression<T>, sizeof...(A)> all{Expression<T>{args}...};
+    return (*this)(std::span<const Expression<T>>{all});
   }
 
 private:
@@ -490,7 +483,7 @@ extern_fn(Builder<T> &b, ExternRecord record,
 namespace detail {
 
 // Spell one type N times in a pack expansion.
-template <std::size_t, impl::Numeric T> using Repeat = RTExpression<T>;
+template <std::size_t, impl::Numeric T> using Repeat = Expression<T>;
 
 template <impl::Numeric T>
 inline thread_local Builder<T> *current_arena = nullptr;
@@ -506,16 +499,16 @@ template <impl::Numeric T>
 
 // The spelling a model uses: named in the arena its callback runs in.
 template <impl::Numeric T>
-[[nodiscard]] RTExpression<T> named(OpCode op, std::string_view name) noexcept {
+[[nodiscard]] Expression<T> named(OpCode op, std::string_view name) noexcept {
   return (detail::current_arena<T> == nullptr)
-             ? RTExpression<T>::poison(errc::no_arena)
+             ? Expression<T>::poison(errc::outside_equation)
              : named(*detail::current_arena<T>, op, name);
 }
 template <impl::Numeric T = double>
 [[nodiscard]] ExternFunction<T>
 extern_fn(ExternRecord record, std::type_identity_t<ExternFn<T>> fn) {
   return detail::current_arena<T> == nullptr
-             ? ExternFunction<T>{errc::no_arena}
+             ? ExternFunction<T>{errc::outside_equation}
              : extern_fn(*detail::current_arena<T>, std::move(record),
                          std::move(fn));
 }
@@ -525,19 +518,19 @@ extern_fn(ExternRecord record, std::type_identity_t<ExternFn<T>> fn) {
 #define DDX_RT_INPUT(fn, Op, ...)                                              \
   template <impl::Numeric T>                                                   \
     requires(OpCode::Op != OpCode::Implicit)                                   \
-  [[nodiscard]] constexpr RTExpression<T> fn(Builder<T> &b,                    \
-                                             std::string_view name) {          \
+  [[nodiscard]] constexpr Expression<T> fn(Builder<T> &b,                      \
+                                           std::string_view name) {            \
     return named(b, OpCode::Op, name);                                         \
   }                                                                            \
   template <impl::Numeric T = double>                                          \
     requires(OpCode::Op != OpCode::Implicit)                                   \
-  [[nodiscard]] RTExpression<T> fn(std::string_view name) noexcept {           \
+  [[nodiscard]] Expression<T> fn(std::string_view name) noexcept {             \
     return named<T>(OpCode::Op, name);                                         \
   }
 DDX_RT_NAMED_TABLE(DDX_RT_INPUT)
 #undef DDX_RT_INPUT
-template <impl::Numeric T = double, std::invocable<const RTExpression<T> &> F>
-[[nodiscard]] RTExpression<T> implicit(std::string_view name, F &&residual) {
+template <impl::Numeric T = double, std::invocable<const Expression<T> &> F>
+[[nodiscard]] Expression<T> implicit(std::string_view name, F &&residual) {
   return detail::current_arena<T> == nullptr
              ? named<T>(OpCode::Implicit, name)
              : implicit(*detail::current_arena<T>, name, DDX_FWD(residual));
@@ -547,6 +540,6 @@ template <impl::Numeric T = double, std::invocable<const RTExpression<T> &> F>
 
 namespace ddx::impl {
 template <Numeric S>
-inline constexpr bool is_commutative_multiply_v<rt::RTExpression<S>> =
+inline constexpr bool is_commutative_multiply_v<rt::Expression<S>> =
     is_commutative_multiply_v<S>;
 } // namespace ddx::impl

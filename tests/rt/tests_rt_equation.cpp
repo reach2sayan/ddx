@@ -96,7 +96,7 @@ TEST(RtEquation, NamesAndPointsBothComeFromRunTimeStrings) {
 
   // 1 * beta + 2 * alpha, weighted in the order the names were read.
   const auto eq = ddx::rt::equation([&] {
-    ddx::rt::RTExpression<double> acc = 0.0;
+    ddx::rt::Expression<double> acc = 0.0;
     double weight = 1.0;
     for (const std::string &n : names) {
       acc += weight++ * ddx::rt::var(n);
@@ -245,14 +245,14 @@ TEST(RtEquation, HessianColoursReflectTheCoupling) {
   const auto z = var(b, "z");
 
   const auto coupled = ddx::rt::equation(x * y + y * z + x * z);
-  EXPECT_EQ(coupled.hessian_colors(), 3u) << "every pair couples";
+  EXPECT_EQ(coupled.hessian_colours(), 3u) << "every pair couples";
 
   ddx::rt::Builder<> b2;
   const auto a = var(b2, "a");
   const auto c = var(b2, "c");
   const auto d = var(b2, "d");
   const auto separable = ddx::rt::equation(sin(a) + exp(c) + d * d);
-  EXPECT_EQ(separable.hessian_colors(), 1u) << "nothing couples: one sweep";
+  EXPECT_EQ(separable.hessian_colours(), 1u) << "nothing couples: one sweep";
 }
 
 } // namespace
@@ -328,7 +328,7 @@ TEST(RtEquation, BlockSweepAgreesWithTheScalarSweepToTheBit) {
   const auto z = var(b, "z");
   const auto expr = sqrt(abs(x * y + z)) * exp(-(y * z) + x) + x * x * y;
   const auto root = expr.id(b);
-  std::ignore = ddx::rt::build_jacobian_impl(b, root);
+  std::ignore = ddx::rt::derive_jacobian(b, root);
 
   const auto schedule = ddx::rt::detail::schedule_of(
       b, std::views::iota(ddx::rt::NodeId{0},
@@ -521,19 +521,19 @@ TEST(RtEquation, TheArenaIsInvisible) {
   const auto poisoned = ddx::rt::equation(stray * 2.0);
   EXPECT_TRUE(poisoned.poisoned());
   ASSERT_TRUE(poisoned.status().has_value());
-  EXPECT_EQ(poisoned.status()->code, ddx::errc::no_arena);
+  EXPECT_EQ(poisoned.status()->code, ddx::errc::outside_equation);
 
   // Every call spends the error rather than reading a graph that is not there.
-  EXPECT_EQ(poisoned.evaluate(1.0).error().code, ddx::errc::no_arena);
-  EXPECT_EQ(poisoned.jacobian(1.0).error().code, ddx::errc::no_arena);
-  EXPECT_EQ(poisoned.point(1.0).error().code, ddx::errc::no_arena);
+  EXPECT_EQ(poisoned.evaluate(1.0).error().code, ddx::errc::outside_equation);
+  EXPECT_EQ(poisoned.jacobian(1.0).error().code, ddx::errc::outside_equation);
+  EXPECT_EQ(poisoned.point(1.0).error().code, ddx::errc::outside_equation);
   // nullopt, never a 0 a caller could loop over by accident.
   EXPECT_FALSE(poisoned.arity().has_value());
   EXPECT_FALSE(poisoned.symbols().has_value());
   EXPECT_FALSE(poisoned.jacobian_columns().has_value());
   EXPECT_FALSE(poisoned.value_columns().has_value());
   EXPECT_FALSE(poisoned.hessian_columns().has_value());
-  EXPECT_FALSE(poisoned.hessian_colors().has_value());
+  EXPECT_FALSE(poisoned.hessian_colours().has_value());
 }
 
 // An equation copies the arena it is lent, so the caller goes on building in
@@ -574,9 +574,9 @@ TEST(RtEquation, ASealedArenaStillNamesTheSymbolsItHas) {
   EXPECT_NEAR(*second.evaluate(2.0, 3.0), 11.0, 1e-12);
 }
 
-// A bare literal names no builder -- distinct from no_arena.
+// A bare literal names no builder -- distinct from outside_equation.
 TEST(RtEquation, ALiteralNamesNoGraph) {
-  const auto eq = ddx::rt::equation(ddx::rt::RTExpression<double>{2.0});
+  const auto eq = ddx::rt::equation(ddx::rt::Expression<double>{2.0});
   ASSERT_TRUE(eq.status().has_value());
   EXPECT_EQ(eq.status()->code, ddx::errc::no_graph);
   EXPECT_EQ(eq.evaluate(1.0).error().code, ddx::errc::no_graph);
@@ -676,8 +676,8 @@ TEST(RtEquation, ScalarAccessorsAgreeWithTheArenaWalkToTheBit) {
 
   // Before the equation, so interning lands its own sweeps on these same nodes.
   const auto root = expr.id(b);
-  const auto row = ddx::rt::build_jacobian_impl(b, root);
-  const auto hess = ddx::rt::build_hessian_impl(b, root);
+  const auto row = ddx::rt::derive_jacobian(b, root);
+  const auto hess = ddx::rt::derive_hessian(b, root);
   const auto eq = ddx::rt::equation(expr);
 
   const std::vector<double> at{0.7, 1.3, 2.1};
@@ -710,7 +710,7 @@ TEST(RtEquation, ScalarAccessorsAgreeWithTheArenaWalkToTheBit) {
 TEST(RtEquation, ShortSpinesSurviveTheSwitchoverToTheBit) {
   const auto spine = [](std::size_t terms) {
     return ddx::rt::equation([terms] {
-      ddx::rt::RTExpression<double> acc = 0.0;
+      ddx::rt::Expression<double> acc = 0.0;
       for (const std::size_t i : std::views::iota(0uz, terms)) {
         acc = acc + ddx::rt::var(std::format("x{:03d}", i)) *
                         (1.0 / (1.0 + static_cast<double>(i)));
@@ -1153,7 +1153,7 @@ TEST(RtEquation, DroppingAMidFlightCompileDoesNotBlock) {
   // Wide enough that the compile is milliseconds: one that finishes first would
   // pass without proving anything.
   ddx::rt::Builder<> b;
-  std::vector<ddx::rt::RTExpression<double>> v;
+  std::vector<ddx::rt::Expression<double>> v;
   for (std::size_t i = 0; i < 48; ++i) {
     v.push_back(ddx::rt::var(b, "x" + std::to_string(i)));
   }
@@ -1169,7 +1169,7 @@ TEST(RtEquation, DroppingAMidFlightCompileDoesNotBlock) {
   // once.
   const ddx::jit::Options one_rung{
       .backend = ddx::rt::Backend::Compile,
-      .codegen = {.codegen_level = ddx::rt::Level::O0}};
+      .codegen = {.codegen_level = ddx::rt::OptLevel::O0}};
 
   // Calibrated against this machine: a fixed threshold above the compile would
   // pass whether or not the future joined.
@@ -1263,7 +1263,7 @@ TEST(RtEquation, ConcurrentConstCallsAgreeWithOneThread) {
 }
 
 // Two equations over ONE borrowed Builder, each asked for a Hessian from its
-// own thread.  rt::build_hessian_impl appends to the arena, so no per-Equation
+// own thread.  rt::derive_hessian appends to the arena, so no per-Equation
 // lock could make this safe if the sweep were not in the constructor.
 TEST(RtEquation, TwoEquationsSharingAnArenaDoNotRaceIt) {
   ddx::rt::Builder<> b;
@@ -1449,7 +1449,7 @@ namespace {
 // disagree, and enough nodes that the top rung does not land first.
 auto ladder_model() {
   return ddx::rt::equation([] {
-    std::vector<ddx::rt::RTExpression<double>> v;
+    std::vector<ddx::rt::Expression<double>> v;
     for (std::size_t i = 0; i < 24; ++i) {
       v.push_back(ddx::rt::var("x" + std::to_string(i)));
     }
@@ -1490,12 +1490,12 @@ TEST(RtEquation, EveryRungOfTheLadderAgreesToTheBit) {
 
   auto cheap = ladder_model();
   cheap.options({.backend = ddx::rt::Backend::Compile,
-                 .codegen = {.codegen_level = ddx::rt::Level::O0}});
+                 .codegen = {.codegen_level = ddx::rt::OptLevel::O0}});
   ASSERT_TRUE(cheap.wait_for_kernel());
 
   auto top = ladder_model();
   top.options({.backend = ddx::rt::Backend::Compile,
-               .codegen = {.codegen_level = ddx::rt::Level::O1}});
+               .codegen = {.codegen_level = ddx::rt::OptLevel::O1}});
   ASSERT_TRUE(top.wait_for_kernel());
 
   // Rung against rung, still to the bit: both rungs compile the same graph, and
@@ -1523,12 +1523,12 @@ TEST(RtEquation, TheLadderClimbsAndTheAnswersDoNotMove) {
 
   auto eq = ladder_model();
   eq.options({.backend = ddx::rt::Backend::Compile,
-              .codegen = {.codegen_level = ddx::rt::Level::O1}});
+              .codegen = {.codegen_level = ddx::rt::OptLevel::O1}});
 
   // wait_for_kernel() waits for the *first* rung, so the cheap one is in hand.
   ASSERT_TRUE(eq.wait_for_kernel());
   ASSERT_TRUE(eq.kernel_level().has_value());
-  EXPECT_EQ(*eq.kernel_level(), ddx::rt::Level::O0)
+  EXPECT_EQ(*eq.kernel_level(), ddx::rt::OptLevel::O0)
       << "wait_for_kernel() waited for the top rung, not the first";
 
   const auto expected = ladder_gradient(eq, n);
@@ -1536,7 +1536,7 @@ TEST(RtEquation, TheLadderClimbsAndTheAnswersDoNotMove) {
   // Bounded: a failure to climb must fail the test, not hang it.
   using namespace std::chrono_literals;
   const auto deadline = std::chrono::steady_clock::now() + 30s;
-  auto seen = ddx::rt::Level::O0;
+  auto seen = ddx::rt::OptLevel::O0;
   bool climbed = false;
   while (std::chrono::steady_clock::now() < deadline) {
     const auto level = eq.kernel_level();
@@ -1545,7 +1545,7 @@ TEST(RtEquation, TheLadderClimbsAndTheAnswersDoNotMove) {
     seen = *level;
     EXPECT_EQ(ladder_gradient(eq, n), expected)
         << "an answer moved at rung " << std::to_underlying(seen);
-    if (seen == ddx::rt::Level::O1) {
+    if (seen == ddx::rt::OptLevel::O1) {
       climbed = true;
       break;
     }
@@ -1558,10 +1558,10 @@ TEST(RtEquation, TheLadderClimbsAndTheAnswersDoNotMove) {
 TEST(RtEquation, CodegenZeroIsASingleRung) {
   auto eq = ladder_model();
   eq.options({.backend = ddx::rt::Backend::Compile,
-              .codegen = {.codegen_level = ddx::rt::Level::O0}});
+              .codegen = {.codegen_level = ddx::rt::OptLevel::O0}});
   ASSERT_TRUE(eq.wait_for_kernel());
   ASSERT_TRUE(eq.kernel_level().has_value());
-  EXPECT_EQ(*eq.kernel_level(), ddx::rt::Level::O0);
+  EXPECT_EQ(*eq.kernel_level(), ddx::rt::OptLevel::O0);
 }
 
 // With a warm cache both rungs link instead of compiling.  Each rung keys
@@ -1573,12 +1573,12 @@ TEST(RtEquation, AWarmCacheServesBothRungs) {
   const auto climb = [&dir] {
     auto eq = ladder_model();
     eq.options({.backend = ddx::rt::Backend::Compile,
-                .codegen = {.codegen_level = ddx::rt::Level::O1},
+                .codegen = {.codegen_level = ddx::rt::OptLevel::O1},
                 .cache_dir = dir.string()});
     EXPECT_TRUE(eq.wait_for_kernel());
     using namespace std::chrono_literals;
     const auto deadline = std::chrono::steady_clock::now() + 30s;
-    while (eq.kernel_level() != ddx::rt::Level::O1 &&
+    while (eq.kernel_level() != ddx::rt::OptLevel::O1 &&
            std::chrono::steady_clock::now() < deadline) {
       std::this_thread::sleep_for(1ms);
     }
@@ -1613,7 +1613,7 @@ TEST(RtEquation, InterpretHasNoRung) {
 TEST(RtEquation, AdaptCompilesNothingUntilTheBatchPaysForIt) {
   auto eq = ladder_model();
   eq.options({.backend = ddx::rt::Backend::Adapt,
-              .codegen = {.codegen_level = ddx::rt::Level::O1},
+              .codegen = {.codegen_level = ddx::rt::OptLevel::O1},
               .warm_points = 1000});
 
   for (int i = 0; i < 3; ++i) {
@@ -1651,7 +1651,7 @@ TEST(RtEquation, AdaptBuysTheCheapRungThenTheTop) {
 
   auto eq = ladder_model();
   eq.options({.backend = ddx::rt::Backend::Adapt,
-              .codegen = {.codegen_level = ddx::rt::Level::O1},
+              .codegen = {.codegen_level = ddx::rt::OptLevel::O1},
               .warm_points = 1,
               .hot_points = 1});
 
@@ -1659,7 +1659,7 @@ TEST(RtEquation, AdaptBuysTheCheapRungThenTheTop) {
   EXPECT_EQ(ladder_gradient(eq, n), expected);
   ASSERT_TRUE(eq.wait_for_kernel()) << "the first point bought no rung";
   ASSERT_TRUE(eq.kernel_level().has_value());
-  EXPECT_EQ(*eq.kernel_level(), ddx::rt::Level::O0)
+  EXPECT_EQ(*eq.kernel_level(), ddx::rt::OptLevel::O0)
       << "the top rung was bought too early";
 
   // The next buys the top one.  Bounded: a failure to climb must fail the test
@@ -1670,7 +1670,7 @@ TEST(RtEquation, AdaptBuysTheCheapRungThenTheTop) {
   while (std::chrono::steady_clock::now() < deadline) {
     EXPECT_EQ(ladder_gradient(eq, n), expected)
         << "an answer moved as it climbed";
-    if (eq.kernel_level() == ddx::rt::Level::O1) {
+    if (eq.kernel_level() == ddx::rt::OptLevel::O1) {
       climbed = true;
       break;
     }
@@ -1687,12 +1687,12 @@ TEST(RtEquation, AdaptBuysTheCheapRungThenTheTop) {
 TEST(RtEquation, AdaptAtCodegenZeroBuysOneRung) {
   auto eq = ladder_model();
   eq.options({.backend = ddx::rt::Backend::Adapt,
-              .codegen = {.codegen_level = ddx::rt::Level::O0},
+              .codegen = {.codegen_level = ddx::rt::OptLevel::O0},
               .warm_points = 1});
   (void)ladder_gradient(eq, 24);
   ASSERT_TRUE(eq.wait_for_kernel());
   ASSERT_TRUE(eq.kernel_level().has_value());
-  EXPECT_EQ(*eq.kernel_level(), ddx::rt::Level::O0);
+  EXPECT_EQ(*eq.kernel_level(), ddx::rt::OptLevel::O0);
   EXPECT_FALSE(eq.warming().has_value())
       << "still counting toward a second rung";
 }
@@ -1702,7 +1702,7 @@ TEST(RtEquation, AdaptAtCodegenZeroBuysOneRung) {
 TEST(RtEquation, AdaptWithNoThresholdBuysOnTheFirstCall) {
   auto eq = ladder_model();
   eq.options({.backend = ddx::rt::Backend::Adapt,
-              .codegen = {.codegen_level = ddx::rt::Level::O1},
+              .codegen = {.codegen_level = ddx::rt::OptLevel::O1},
               .warm_points = 0,
               .hot_points = 0});
   (void)ladder_gradient(eq, 24);

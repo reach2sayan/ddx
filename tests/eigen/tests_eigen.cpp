@@ -27,7 +27,8 @@ TEST(RtEigen, ABatchThroughColumnMajorMatrices) {
   constexpr Eigen::Index n = 50;
   Eigen::MatrixXd X(n, 3);
   for (const Eigen::Index i : std::views::iota(Eigen::Index{0}, n)) {
-    X.row(i) << 0.01 * static_cast<double>(i), 1.0 - 0.02 * static_cast<double>(i),
+    X.row(i) << 0.01 * static_cast<double>(i),
+        1.0 - 0.02 * static_cast<double>(i),
         0.5 + std::sin(static_cast<double>(i));
   }
   Eigen::MatrixXd F(n, 3);
@@ -65,12 +66,11 @@ TEST(RtEigen, TheHessianBlockScattersDense) {
   Eigen::MatrixXd F(n, 1);
   Eigen::MatrixXd G(n, 2);
   Eigen::MatrixXd H(n, static_cast<Eigen::Index>(*eq.hessian_columns()));
-  ASSERT_TRUE(eq.hessian(ddx::rt::eigen::columns_of(X),
-                         ddx::rt::eigen::columns_of(F),
-                         ddx::rt::eigen::columns_of(G),
-                         ddx::rt::eigen::columns_of(H),
-                         static_cast<std::size_t>(n))
-                  .has_value());
+  ASSERT_TRUE(
+      eq.hessian(ddx::rt::eigen::columns_of(X), ddx::rt::eigen::columns_of(F),
+                 ddx::rt::eigen::columns_of(G), ddx::rt::eigen::columns_of(H),
+                 static_cast<std::size_t>(n))
+          .has_value());
   Eigen::MatrixXd dense;
   for (const Eigen::Index i : std::views::iota(Eigen::Index{0}, n)) {
     ddx::rt::eigen::scatter(eq.hessian_pattern()->get(), H, i, dense);
@@ -96,12 +96,12 @@ TEST(RtEigen, KernelsAgreeWithTheReferenceTable) {
   }
   const auto model = [&] {
     const auto x = ddx::rt::vec("x", n);
-    const auto M = ddx::rt::mat_const(n, n, m);
+    const auto M = ddx::rt::mat_constant(n, n, m);
     return dot(x, gemv(M, x)) + sum(log(x) * gemv(M, x, true)) * 0.5;
   };
   const auto reference = ddx::rt::equation(model);
   auto eigen = ddx::rt::equation(model);
-  eigen.kernels(ddx::rt::eigen::table);
+  eigen.tensor_kernels(ddx::rt::eigen::table);
   EXPECT_EQ(eigen.tensor_kernels().name, "eigen");
 
   std::vector<double> at(n);
@@ -113,7 +113,9 @@ TEST(RtEigen, KernelsAgreeWithTheReferenceTable) {
   const auto want_h = *reference.hvp(at, std::span<const double>{at});
   const auto got_h = *eigen.hvp(at, std::span<const double>{at});
   for (std::size_t i = 0; i < n; ++i) {
-    EXPECT_NEAR(got_g[i], want_g[i], 1e-13 * std::max(1.0, std::abs(want_g[i])));
-    EXPECT_NEAR(got_h[i], want_h[i], 1e-13 * std::max(1.0, std::abs(want_h[i])));
+    EXPECT_NEAR(got_g[i], want_g[i],
+                1e-13 * std::max(1.0, std::abs(want_g[i])));
+    EXPECT_NEAR(got_h[i], want_h[i],
+                1e-13 * std::max(1.0, std::abs(want_h[i])));
   }
 }

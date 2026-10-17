@@ -29,17 +29,17 @@ using ConflictGraph = boost::compressed_sparse_row_graph<boost::directedS>;
 
 // Four stages, each feeding the next off shared state; a step per member keeps
 // that state out of the parameter lists and the order in one place.
-class ColumnColoring {
+class ColumnColouring {
 public:
-  explicit ColumnColoring(const CouplingRows &rows)
+  explicit ColumnColouring(const CouplingRows &rows)
       : rows_{rows}, n_{rows.size()},
-        out_{.color = std::vector<std::size_t>(n_, 0),
+        out_{.colour = std::vector<std::size_t>(n_, 0),
              .scatter = {},
              .cell = {}} {}
 
-  [[nodiscard]] Coloring run() && {
+  [[nodiscard]] Colouring run() && {
     link_conflicts();
-    pick_colors();
+    pick_colours();
     map_scatter();
     number_cells();
     return std::move(out_);
@@ -66,7 +66,7 @@ private:
                                edges.begin(), edges.end(), n_};
   }
 
-  void pick_colors() {
+  void pick_colours() {
     // Greedy colouring is only as good as the order it walks.
     const auto order = boost::smallest_last_vertex_ordering(conflicts_);
     // clang-format off
@@ -74,7 +74,7 @@ private:
       boost::sequential_vertex_coloring(
         conflicts_,
         boost::make_iterator_property_map(order.begin(), boost::identity_property_map()),
-        boost::make_iterator_property_map(out_.color.begin(), boost::get(boost::vertex_index, conflicts_))));
+        boost::make_iterator_property_map(out_.colour.begin(), boost::get(boost::vertex_index, conflicts_))));
     // clang-format on
   }
 
@@ -82,23 +82,23 @@ private:
   // colouring guarantees at most one, so the harvest needs no search.
   void map_scatter() {
     out_.scatter.assign(count_ * n_, no_column);
-    const auto scatter = by_color(out_.scatter, count_, n_);
+    const auto scatter = by_colour(out_.scatter, count_, n_);
     for (const auto [index, row] : rows_ | std::views::enumerate) {
       const auto j = static_cast<std::size_t>(index);
-      const std::size_t color = out_.color[j];
+      const std::size_t colour = out_.colour[j];
       for (const std::size_t i : set_bits(row)) {
-        scatter[color, i] = j;
+        scatter[colour, i] = j;
       }
     }
   }
 
   // Number the owned cells in (colour, row) order, so the compressed block
   // stays deterministic.  Reads `scatter` directly rather than through the
-  // finished Coloring: the tables are still half-built here.
+  // finished Colouring: the tables are still half-built here.
   void number_cells() {
     out_.cell.assign(count_ * n_, no_column);
-    const auto scatter = by_color(out_.scatter, count_, n_);
-    const auto cell = by_color(out_.cell, count_, n_);
+    const auto scatter = by_colour(out_.scatter, count_, n_);
+    const auto cell = by_colour(out_.cell, count_, n_);
     std::size_t next = 0;
     for (const auto [c, i] : std::views::cartesian_product(
              std::views::iota(0uz, count_), std::views::iota(0uz, n_))) {
@@ -112,16 +112,16 @@ private:
   std::size_t n_;
   ConflictGraph conflicts_;
   std::size_t count_ = 0;
-  Coloring out_;
+  Colouring out_;
 };
 
 } // namespace
 
-Coloring color_columns(const CouplingRows &rows) {
+Colouring colour_columns(const CouplingRows &rows) {
   if (rows.empty()) {
     return {};
   }
-  return ColumnColoring{rows}.run();
+  return ColumnColouring{rows}.run();
 }
 
 } // namespace ddx::rt

@@ -17,7 +17,7 @@
 // of the Jacobian's columns.
 namespace {
 
-using RE = ddx::rt::RTExpression<>;
+using RE = ddx::rt::Expression<>;
 
 // f = {x^2 y, sin(xy)}, so
 //   J     = [[2xy, x^2], [y cos(xy), x cos(xy)]]
@@ -53,13 +53,13 @@ void expect_near_all(std::span<const double> got, std::span<const double> want,
   }
 }
 
-TEST(RtJacobianTangent, AlongABasisVectorIsTheAnalyticDerivative) {
+TEST(RtJacobianJvp, AlongABasisVectorIsTheAnalyticDerivative) {
   const auto eq = pair();
   expect_near_all(*eq.jacobian_jvp("x", px, py), d_dx(), 1e-14);
   expect_near_all(*eq.jacobian_jvp("y", px, py), d_dy(), 1e-14);
 }
 
-TEST(RtJacobianTangent, AlongAnyDirectionIsTheCombination) {
+TEST(RtJacobianJvp, AlongAnyDirectionIsTheCombination) {
   const auto eq = pair();
   const std::array v{0.3, -1.7};
   const auto got = *eq.jacobian_jvp(std::span<const double>{v}, px, py);
@@ -78,7 +78,7 @@ TEST(RtJacobianTangent, AlongAnyDirectionIsTheCombination) {
   }
 }
 
-TEST(RtJacobianTangent, ForOneFunctionItIsAHessianColumn) {
+TEST(RtJacobianJvp, ForOneFunctionItIsAHessianColumn) {
   const auto eq = ddx::rt::equation([] {
     const auto t = ddx::rt::var("T");
     const auto x = ddx::rt::var("x");
@@ -93,7 +93,7 @@ TEST(RtJacobianTangent, ForOneFunctionItIsAHessianColumn) {
   }
 }
 
-TEST(RtJacobianTangent, TheBatchMatchesThePointCalls) {
+TEST(RtJacobianJvp, TheBatchMatchesThePointCalls) {
   const auto eq = pair();
   constexpr std::size_t n = 11;
   const std::size_t cells = *eq.jacobian_columns();
@@ -129,7 +129,7 @@ TEST(RtJacobianTangent, TheBatchMatchesThePointCalls) {
   }
 }
 
-TEST(RtJacobianTangent, ASystemTakesItInOneSweep) {
+TEST(RtJacobianJvp, ASystemTakesItInOneSweep) {
   const auto sys = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
     const auto y = ddx::rt::var("y");
@@ -138,7 +138,7 @@ TEST(RtJacobianTangent, ASystemTakesItInOneSweep) {
   expect_near_all(*sys.jacobian_jvp("x", px, py), d_dx(), 1e-14);
 }
 
-TEST(RtJacobianTangent, AWrongDirectionOrNameIsRefused) {
+TEST(RtJacobianJvp, AWrongDirectionOrNameIsRefused) {
   const auto eq = pair();
   const std::array v{1.0};
   EXPECT_EQ(eq.jacobian_jvp(std::span<const double>{v}, px, py).error().code,

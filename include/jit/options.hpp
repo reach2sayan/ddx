@@ -23,12 +23,12 @@ namespace ddx::jit {
 // Off: glibc's vector routines are ~4 ULP where the scalar ones are ~0.5.
 enum class VecLib : std::uint8_t { None, Auto, Libmvec };
 
-struct error {
+struct compile_error {
   errc code;
   std::string detail;
 };
 
-template <typename T> using result = std::expected<T, error>;
+template <typename T> using compile_result = std::expected<T, compile_error>;
 
 #ifndef DDX_JIT_DEFAULT_OPT
 #define DDX_JIT_DEFAULT_OPT 2
@@ -38,11 +38,11 @@ template <typename T> using result = std::expected<T, error>;
 #endif
 
 // LLVM's -O0 to -O3, for the IR pipeline and for codegen.
-enum class Level : std::uint8_t { O0, O1, O2, O3 };
+enum class OptLevel : std::uint8_t { O0, O1, O2, O3 };
 
 static_assert(DDX_JIT_DEFAULT_OPT >= 0 && DDX_JIT_DEFAULT_OPT <= 3);
-inline constexpr Level default_opt_level =
-    static_cast<Level>(DDX_JIT_DEFAULT_OPT);
+inline constexpr OptLevel default_opt_level =
+    static_cast<OptLevel>(DDX_JIT_DEFAULT_OPT);
 inline constexpr bool default_contract = DDX_JIT_DEFAULT_CONTRACT != 0;
 
 // Points per loop iteration.  Derived is the host's register width in doubles
@@ -81,12 +81,12 @@ enum class Backend : std::uint8_t { Interpret, Compile, Adapt, Device };
 // is a field of both by construction.
 struct Codegen {
   Lanes lanes = Lanes::derived();
-  Level opt_level = default_opt_level;
+  OptLevel opt_level = default_opt_level;
   // Under Backend::Compile the top rung, so O0 asks for a single one.
   // Selection and register allocation are ~95% of a compile.
-  Level codegen_level = Level::O1;
+  OptLevel codegen_level = OptLevel::O1;
   // Within one point; model-dependent, hence off.
-  bool slp = false;
+  bool slp_vectorize = false;
   // Off: the body is already `lanes` wide, and past ~19 columns the alias
   // checks exceed their own budget.
   bool loop_vectorize = false;
@@ -97,8 +97,8 @@ struct Codegen {
 
   friend bool operator==(const Codegen &, const Codegen &) = default;
   BOOST_DESCRIBE_CLASS(Codegen, (),
-                       (lanes, opt_level, codegen_level, slp, loop_vectorize,
-                        veclib, contract),
+                       (lanes, opt_level, codegen_level, slp_vectorize,
+                        loop_vectorize, veclib, contract),
                        (), ())
 };
 

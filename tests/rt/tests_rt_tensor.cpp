@@ -28,7 +28,7 @@
 // threads, a file.
 namespace {
 
-using RE = ddx::rt::RTExpression<>;
+using RE = ddx::rt::Expression<>;
 using RV = RE; // a handle known to be a vector
 
 // The symbols as vec() names them, so both spellings share one point layout.
@@ -71,14 +71,14 @@ RE uniquac_tensor(const RV &x) {
       tau[j + i * n] = models::pseudo(j, i, 0.2, 1.8); // tau_ji at (j, i)
     }
   }
-  const RV rv = ddx::rt::vec_const(r);
-  const RV qv = ddx::rt::vec_const(q);
+  const RV rv = ddx::rt::vec_constant(r);
+  const RV qv = ddx::rt::vec_constant(q);
   const RE sum_r = dot(rv, x);
   const RE sum_q = dot(qv, x);
   const RV phi = (rv * x) / sum_r;
   const RV theta = (qv * x) / sum_q;
   const RE comb = sum(x * log(phi / x)) + 5.0 * sum(qv * x * log(theta / phi));
-  const RV inner = gemv(ddx::rt::mat_const(n, n, tau), theta, true);
+  const RV inner = gemv(ddx::rt::mat_constant(n, n, tau), theta, true);
   const RE res = -sum(qv * x * log(inner));
   return comb + res;
 }
@@ -94,10 +94,10 @@ RE mse_tensor(const RV &x) {
       p[i + j * n] = models::pseudo(i, j, -0.4, 0.4);
     }
   }
-  const RE ionic = dot(ddx::rt::vec_const(half_zc2), x);
+  const RE ionic = dot(ddx::rt::vec_constant(half_zc2), x);
   const RE lr = -0.3915 * sqrt(ionic) / (RE{1} + 1.2 * sqrt(ionic));
   const RE mr =
-      dot(x, gemv(ddx::rt::mat_const(n, n, p), x)) * exp(-sqrt(ionic));
+      dot(x, gemv(ddx::rt::mat_constant(n, n, p), x)) * exp(-sqrt(ionic));
   return lr + mr + uniquac_tensor(x);
 }
 
@@ -111,7 +111,8 @@ auto tensor_mse(std::size_t n) {
 void expect_close(std::span<const double> want, std::span<const double> got,
                   double tol, const char *what) {
   ASSERT_EQ(want.size(), got.size()) << what;
-  for (const auto [i, pair] : std::views::zip(want, got) | std::views::enumerate) {
+  for (const auto [i, pair] :
+       std::views::zip(want, got) | std::views::enumerate) {
     const auto [w, g] = pair;
     const double scale = std::max({1.0, std::abs(w), std::abs(g)});
     EXPECT_LE(std::abs(w - g), tol * scale) << what << " at " << i;
@@ -152,7 +153,8 @@ TEST(RtTensor, MseMatchesTheScalarGraph) {
 // Each node alone, against the same arithmetic spelled over scalars.
 namespace {
 template <typename Scalar, typename Tensor>
-void each_node(std::size_t n, Scalar scalar, Tensor tensor, double tol = 1e-12) {
+void each_node(std::size_t n, Scalar scalar, Tensor tensor,
+               double tol = 1e-12) {
   const auto want = ddx::rt::equation([&] { return scalar(symbols(n)); });
   const auto got =
       ddx::rt::equation([&] { return tensor(ddx::rt::vec("x", n)); });
@@ -231,7 +233,7 @@ TEST(RtTensor, GemvBothWays) {
         return acc;
       },
       [&](const RV &x) {
-        const auto M = ddx::rt::mat_const(rows, cols, m);
+        const auto M = ddx::rt::mat_constant(rows, cols, m);
         std::vector<RE> head;
         for (std::size_t i = 0; i < rows; ++i) {
           head.push_back(x[i]);
@@ -302,7 +304,7 @@ TEST(RtTensor, RefusesMismatchedWidthsAndVectorRoots) {
 
   const auto gemv_shape = ddx::rt::equation([] {
     const std::vector<double> m(6, 1.0);
-    return sum(gemv(ddx::rt::mat_const(2, 3, m), ddx::rt::vec("a", 2)));
+    return sum(gemv(ddx::rt::mat_constant(2, 3, m), ddx::rt::vec("a", 2)));
   });
   EXPECT_EQ(gemv_shape.status()->code, ddx::errc::tensor_shape);
 
@@ -313,11 +315,12 @@ TEST(RtTensor, RefusesMismatchedWidthsAndVectorRoots) {
   EXPECT_EQ(rooted.status()->code, ddx::errc::tensor_shape);
 
   // No arena to put a vector in.
-  EXPECT_EQ(ddx::rt::equation([] { return sum(ddx::rt::vec("x", 2)); })
-                .poisoned(),
-            false);
+  EXPECT_EQ(
+      ddx::rt::equation([] { return sum(ddx::rt::vec("x", 2)); }).poisoned(),
+      false);
   const RV orphan = ddx::rt::vec("x", 2);
-  EXPECT_EQ(ddx::rt::equation(sum(orphan)).status()->code, ddx::errc::no_arena);
+  EXPECT_EQ(ddx::rt::equation(sum(orphan)).status()->code,
+            ddx::errc::outside_equation);
 }
 
 TEST(RtTensor, UnivariateTaylorSweepsRefuseTensors) {
@@ -364,8 +367,8 @@ TEST(RtTensor, BatchesAndThreadsAreBitIdentical) {
     }
   }
 
-  ASSERT_TRUE(eq.prepare({ddx::rt::Want::Jacobian, ddx::rt::Want::Hvp})
-                  .has_value());
+  ASSERT_TRUE(
+      eq.prepare({ddx::rt::Want::Jacobian, ddx::rt::Want::Hvp}).has_value());
   const auto at = composition(n);
   const auto d = direction(n);
   const auto want_g = *eq.gradient(std::span<const double>{at});
@@ -395,17 +398,17 @@ struct Renamed : ddx::rt::reference::Kernels {
   static constexpr std::string_view name = "renamed";
 };
 static_assert(ddx::rt::TensorKernels<Renamed>);
-constexpr auto renamed_table = ddx::rt::kernel_table<Renamed>();
+constexpr auto renamed_table = ddx::rt::tensor_kernel_table<Renamed>();
 } // namespace
 
 TEST(RtTensor, TakesAKernelTable) {
   const auto &table = renamed_table;
-  EXPECT_EQ(ddx::rt::kernels().name, "reference");
+  EXPECT_EQ(ddx::rt::tensor_kernels().name, "reference");
 
   constexpr std::size_t n = 5;
   const auto plain = tensor_mse(n);
   auto own = tensor_mse(n);
-  own.kernels(table);
+  own.tensor_kernels(table);
   const auto at = composition(n);
   EXPECT_EQ(*plain.gradient(std::span<const double>{at}),
             *own.gradient(std::span<const double>{at}));
@@ -470,8 +473,10 @@ std::vector<double> hessian_by_hvp(const auto &eq, std::span<const double> at,
     vs[from + k][k] = 1.0;
   }
   std::vector<const double *> xcols(n), vcols(n);
-  std::ranges::transform(xs, xcols.begin(), [](const auto &c) { return c.data(); });
-  std::ranges::transform(vs, vcols.begin(), [](const auto &c) { return c.data(); });
+  std::ranges::transform(xs, xcols.begin(),
+                         [](const auto &c) { return c.data(); });
+  std::ranges::transform(vs, vcols.begin(),
+                         [](const auto &c) { return c.data(); });
   std::vector<double> f(count);
   std::vector<std::vector<double>> g(n, std::vector<double>(count));
   std::vector<std::vector<double>> hv(n, std::vector<double>(count));
@@ -596,13 +601,12 @@ TEST(RtTensorHvp, CostAtAThousandSpecies) {
   const auto block = hessian_by_hvp(eq, at, 0, columns);
   const auto t3 = std::chrono::steady_clock::now();
   EXPECT_EQ(block.size(), n * columns);
-  std::printf("[ ddx ] tensor mse n = %zu: hvp %.2f ms warm; %zu Hessian "
-              "columns by batch hvp %.2f ms (%.2f ms/column)\n",
-              n, std::chrono::duration<double, std::milli>(t1 - t0).count(),
-              columns,
-              std::chrono::duration<double, std::milli>(t3 - t2).count(),
-              std::chrono::duration<double, std::milli>(t3 - t2).count() /
-                  columns);
+  std::printf(
+      "[ ddx ] tensor mse n = %zu: hvp %.2f ms warm; %zu Hessian "
+      "columns by batch hvp %.2f ms (%.2f ms/column)\n",
+      n, std::chrono::duration<double, std::milli>(t1 - t0).count(), columns,
+      std::chrono::duration<double, std::milli>(t3 - t2).count(),
+      std::chrono::duration<double, std::milli>(t3 - t2).count() / columns);
 }
 
 // --- D10c: the dense Hessian in O(n^2) ---------------------------------------
@@ -651,15 +655,18 @@ TEST(RtTensorDense, EachNodeAlone) {
   const auto at = composition(n);
   const auto models = {
       std::function<RE(const RV &)>{[&](const RV &x) {
-        return dot(x, gemv(ddx::rt::mat_const(n, n, m), x));
+        return dot(x, gemv(ddx::rt::mat_constant(n, n, m), x));
       }},
-      {[&](const RV &x) { return sum(log(x) * gemv(ddx::rt::mat_const(n, n, m), x, true)); }},
+      {[&](const RV &x) {
+        return sum(log(x) * gemv(ddx::rt::mat_constant(n, n, m), x, true));
+      }},
       {[&](const RV &x) {
         const RE s = dot(x, x);
         return sum(exp(x / s)) * s + x[2] * x[3];
       }},
       {[&](const RV &x) {
-        return sum(ddx::rt::detail::add_at(x * x, x[0] * x[1], 4) * pow(x, 1.5));
+        return sum(ddx::rt::detail::add_at(x * x, x[0] * x[1], 4) *
+                   pow(x, 1.5));
       }},
       {[&](const RV &x) {
         const RE k = select(x[0] < 0.3, x[1], x[2] * x[2]);
@@ -667,15 +674,15 @@ TEST(RtTensorDense, EachNodeAlone) {
       }},
   };
   for (const auto &model : models) {
-    const auto eq = ddx::rt::equation(
-        [&] { return model(ddx::rt::vec("x", n)); });
+    const auto eq =
+        ddx::rt::equation([&] { return model(ddx::rt::vec("x", n)); });
     expect_dense_matches_coloured(eq, at, 1e-10);
   }
   // A quadratic form and a transposed product each stay in the algebra: the
   // identity through a constant matrix is that matrix, copied.
   const auto quadratic = ddx::rt::equation([&] {
     const RV x = ddx::rt::vec("x", n);
-    const auto C = ddx::rt::mat_const(n, n, m);
+    const auto C = ddx::rt::mat_constant(n, n, m);
     return dot(x, gemv(C, x)) + sum(x * gemv(C, x, true));
   });
   EXPECT_EQ(quadratic.dense_hessian_cost()->n3_terms, 0u);
@@ -693,7 +700,8 @@ TEST(RtTensorDense, BatchColumnsAreThePointsBlockColumnMajor) {
     std::ranges::fill(xs[i], at[i]);
   }
   std::vector<const double *> xcols(n);
-  std::ranges::transform(xs, xcols.begin(), [](const auto &c) { return c.data(); });
+  std::ranges::transform(xs, xcols.begin(),
+                         [](const auto &c) { return c.data(); });
   std::vector<double> f(points);
   std::vector<std::vector<double>> g(n, std::vector<double>(points));
   std::vector<std::vector<double>> h(n * n, std::vector<double>(points));
@@ -716,8 +724,9 @@ TEST(RtTensorDense, RefusesASystem) {
     const RV x = ddx::rt::vec("x", 3);
     return std::vector<RE>{sum(x * x), dot(x, x) * x[0]};
   });
-  EXPECT_EQ(sys.dense_hessian(std::span<const double>{composition(3)}).error().code,
-            ddx::errc::not_single_output);
+  EXPECT_EQ(
+      sys.dense_hessian(std::span<const double>{composition(3)}).error().code,
+      ddx::errc::not_single_output);
   EXPECT_FALSE(sys.dense_hessian_cost().has_value());
 }
 

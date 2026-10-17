@@ -163,7 +163,7 @@ template <impl::Numeric T>
 }
 
 // Templated on the scalar, so the interpreter, constant folding and the builder
-// share one definition: at double it computes, at RTExpression it builds.  The
+// share one definition: at double it computes, at Expression it builds.  The
 // operand count is the arity asked for; a row of another arity answers T{},
 // as an unsupported one does.
 template <impl::Numeric T>

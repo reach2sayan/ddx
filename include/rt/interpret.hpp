@@ -113,18 +113,18 @@ template <std::size_t W, impl::Numeric U>
 // the tensor tape -- `extent` elements per lane, laid out lane-major so each
 // lane's vector is contiguous -- and the kernel table.  Empty tensor rows is a
 // sweep with no tensor in it.
-template <typename U> struct Scratch {
+template <typename U> struct TapeView {
   // By id, the tape row a node's value sits in; empty is the ids themselves,
   // which is what an arena walk's schedule says.  The hot path reads rows off
   // the Step; this is for the reads a Step cannot carry -- an extern's or a
   // Pack's argument list.
-  std::span<const std::uint32_t> slots{};
-  std::span<const TensorRow> rows{};
+  std::span<const std::uint32_t> scalar_rows{};
+  std::span<const TensorRow> tensor_rows{};
   U *vtape = nullptr;
-  const KernelTable *kernels = nullptr;
+  const TensorKernelTable *kernels = nullptr;
 
-  [[nodiscard]] constexpr std::uint32_t slot(NodeId v) const noexcept {
-    return slots.empty() ? v : slots[v];
+  [[nodiscard]] constexpr std::uint32_t row(NodeId v) const noexcept {
+    return scalar_rows.empty() ? v : scalar_rows[v];
   }
 };
 
@@ -135,16 +135,16 @@ template <typename U> struct Scratch {
 // gives.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_NOINLINE constexpr void lanes_extern(const Builder<T> &b, NodeId v, U *out,
-                                         auto lane, const Scratch<U> &t) {
+                                         auto lane, const TapeView<U> &t) {
   if constexpr (std::same_as<U, T>) {
-    const auto [fn, component] = ExternSlot::of(b[v].slot);
+    const auto [fn, component] = extern_of(b[v]);
     const ExternEntry<T> &e = b.externs()[fn];
     const auto args = arguments(b, v);
     boost::container::small_vector<T, 8> in(args.size());
     boost::container::small_vector<T, 16> answer(e.size());
     for (std::size_t k = 0; k < W; ++k) {
       for (const auto [j, arg] : args | std::views::enumerate) {
-        in[static_cast<std::size_t>(j)] = lane(t.slot(arg))[k];
+        in[static_cast<std::size_t>(j)] = lane(t.row(arg))[k];
       }
       (*e.fn)(in, answer);
       out[k] = answer[component];
@@ -161,14 +161,14 @@ DDX_NOINLINE constexpr void lanes_extern(const Builder<T> &b, NodeId v, U *out,
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
                                          const Node<T> &n, U *out, auto lane,
-                                         const Scratch<U> &t) {
+                                         const TapeView<U> &t) {
   if constexpr (!std::same_as<U, double> || !std::same_as<T, double>) {
     std::ranges::fill_n(out, W, U{});
   } else {
-    assert(!t.rows.empty());
+    assert(!t.tensor_rows.empty());
     const auto row = [&t](NodeId u) {
-      return std::pair{t.vtape + std::size_t{t.rows[u].at} * W,
-                       std::size_t{t.rows[u].width}};
+      return std::pair{t.vtape + std::size_t{t.tensor_rows[u].at} * W,
+                       std::size_t{t.tensor_rows[u].width}};
     };
     // Lane k of node u, as the kernels read it.
     const auto in = [&row](NodeId u, std::size_t k) {
@@ -179,10 +179,10 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
     const auto mine = [self, w](std::size_t k) {
       return std::span<U>{self + k * w, w};
     };
-    const KernelTable &kt = *t.kernels;
+    const TensorKernelTable &kt = *t.kernels;
     switch (n.op) {
     case OpCode::VecConst: {
-      const auto &data = b.tensors()[n.slot].data;
+      const auto &data = b.tensors()[index_of(n)].data;
       for (std::size_t k = 0; k < W; ++k) {
         std::ranges::copy(data, mine(k).begin());
       }
@@ -192,28 +192,28 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
       const auto args = arguments(b, v);
       for (std::size_t k = 0; k < W; ++k) {
         std::ranges::transform(args, mine(k).begin(),
-                               [&](NodeId s) { return lane(t.slot(s))[k]; });
+                               [&](NodeId s) { return lane(t.row(s))[k]; });
       }
       break;
     }
     case OpCode::Gather:
       for (std::size_t k = 0; k < W; ++k) {
-        out[k] = in(n.a, k)[n.slot];
+        out[k] = in(n.a, k)[index_of(n)];
       }
       break;
     case OpCode::Map:
       for (std::size_t k = 0; k < W; ++k) {
-        kt.map(static_cast<OpCode>(n.slot), in(n.a, k), mine(k));
+        kt.map(inner_of(n), in(n.a, k), mine(k));
       }
       break;
     case OpCode::Zip:
       for (std::size_t k = 0; k < W; ++k) {
-        kt.zip(static_cast<OpCode>(n.slot), in(n.a, k), in(n.b, k), mine(k));
+        kt.zip(inner_of(n), in(n.a, k), in(n.b, k), mine(k));
       }
       break;
     case OpCode::Scale:
       for (std::size_t k = 0; k < W; ++k) {
-        kt.scale(lane(t.slot(n.a))[k], in(n.b, k), mine(k));
+        kt.scale(lane(t.row(n.a))[k], in(n.b, k), mine(k));
       }
       break;
     case OpCode::Sum:
@@ -227,9 +227,9 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
       }
       break;
     case OpCode::Gemv: {
-      const TensorConst<T> &m = b.tensors()[b[n.a].slot];
+      const TensorConst<T> &m = b.tensors()[index_of(b[n.a])];
       for (std::size_t k = 0; k < W; ++k) {
-        kt.gemv(m.rows, m.cols, m.data, in(n.b, k), mine(k), n.slot != 0);
+        kt.gemv(m.rows, m.cols, m.data, in(n.b, k), mine(k), is_transposed(n));
       }
       break;
     }
@@ -237,16 +237,16 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
       for (std::size_t k = 0; k < W; ++k) {
         const auto to = mine(k);
         std::ranges::copy(in(n.a, k), to.begin());
-        to[n.slot] += lane(t.slot(n.b))[k];
+        to[index_of(n)] += lane(t.row(n.b))[k];
       }
       break;
     // The matrix rows of the dense Hessian sweep.  Shapes come off the
     // arena, as the widths do; a matrix is column-major.
     case OpCode::MatRow: {
-      const TensorConst<T> &m = b.tensors()[b[n.a].slot];
+      const TensorConst<T> &m = b.tensors()[index_of(b[n.a])];
       for (std::size_t k = 0; k < W; ++k) {
         const auto to = mine(k);
-        if (n.slot == 0) {
+        if (!is_transposed(n)) {
           std::ranges::copy(m.data, to.begin());
         } else {
           for (std::size_t i = 0; i < m.rows; ++i) {
@@ -303,7 +303,8 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
     case OpCode::MatVec: {
       const Shape m = shape_of(b, n.a);
       for (std::size_t k = 0; k < W; ++k) {
-        kt.gemv(m.rows, m.cols, in(n.a, k), in(n.b, k), mine(k), n.slot != 0);
+        kt.gemv(m.rows, m.cols, in(n.a, k), in(n.b, k), mine(k),
+                is_transposed(n));
       }
       break;
     }
@@ -336,7 +337,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
         const auto from = in(n.a, k);
         const auto to = mine(k);
         for (std::size_t j = 0; j < m.cols; ++j) {
-          to[j] = from[n.slot + j * m.rows];
+          to[j] = from[index_of(n) + j * m.rows];
         }
       }
       break;
@@ -357,8 +358,8 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_NOINLINE constexpr void lanes_sum(const Builder<T> &b, NodeId v, bool fused,
                                       U *DDX_RESTRICT out, auto lane,
-                                      const Scratch<U> &t) {
-  const auto row = [&](NodeId u) { return lane(t.slot(u)); };
+                                      const TapeView<U> &t) {
+  const auto row = [&](NodeId u) { return lane(t.row(u)); };
   for (const auto [i, term] : arguments(b, v) | std::views::enumerate) {
     const Contraction c = fused ? product_of(b, term) : Contraction{};
     if (!c) {
@@ -388,7 +389,7 @@ DDX_NOINLINE constexpr void lanes_sum(const Builder<T> &b, NodeId v, bool fused,
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_ALWAYS_INLINE constexpr void
 lanes_opaque(const Builder<T> &b, NodeId v, const Node<T> &n, bool fused,
-             U *out, auto &&lane, const Scratch<U> &t) {
+             U *out, auto &&lane, const TapeView<U> &t) {
   switch (kind_of(n.op)) {
   case Kind::Tensor:
     lanes_tensor<W>(b, v, n, out, lane, t);
@@ -409,7 +410,7 @@ template <std::size_t W, impl::Numeric T, typename U>
 DDX_ALWAYS_INLINE constexpr void
 lanes_apply(const Builder<T> &b, NodeId i, const Node<T> &n,
             U *DDX_RESTRICT out, auto &&lane, const Step &s,
-            const Scratch<U> &t) {
+            const TapeView<U> &t) {
   const auto &in = s.in;
   const bool opaque = dispatch<U>(n.op, [&]<typename R>(R) {
     using Fn = typename R::functor;
@@ -444,7 +445,7 @@ template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_ALWAYS_INLINE constexpr void
 sweep_step(const Builder<T> &b, std::span<const Node<T>> nodes,
            const Inputs &inputs, const Step &s, auto at, auto &&lane,
-           const Scratch<U> &t) {
+           const TapeView<U> &t) {
   const NodeId i = s.node;
   const Node<T> &n = nodes[i];
   U *const out = lane(s.out);
@@ -462,7 +463,7 @@ sweep_step(const Builder<T> &b, std::span<const Node<T>> nodes,
     }
   } else if (is_leaf(n.op)) {
     const auto src = at + static_cast<std::ptrdiff_t>(
-                              input_column(inputs, n.op, n.slot) * W);
+                              input_column(inputs, n.op, index_of(n)) * W);
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }
@@ -475,21 +476,23 @@ sweep_step(const Builder<T> &b, std::span<const Node<T>> nodes,
 // schedule and the tape, handed to the sweep as a view.  The reference table
 // unless told otherwise, which is what a walk outside any equation computes
 // with; an equation passes the table it was given.
-template <impl::Numeric U> class TensorScratch {
+template <impl::Numeric U> class TensorTape {
 public:
-  constexpr TensorScratch() = default;
-  constexpr TensorScratch(const auto &s, std::span<const Step> schedule,
-                          const KernelTable &kernels)
+  constexpr TensorTape() = default;
+  constexpr TensorTape(const auto &s, std::span<const Step> schedule,
+                       const TensorKernelTable &kernels)
       : layout_{tensor_layout(s, schedule)}, tape_(layout_.extent),
         kernels_{&kernels} {}
-  [[nodiscard]] constexpr Scratch<U> view() noexcept {
-    return {.rows = layout_.rows, .vtape = tape_.data(), .kernels = kernels_};
+  [[nodiscard]] constexpr TapeView<U> view() noexcept {
+    return {.tensor_rows = layout_.rows,
+            .vtape = tape_.data(),
+            .kernels = kernels_};
   }
 
 private:
   TensorLayout layout_;
   std::vector<U> tape_;
-  const KernelTable *kernels_ = nullptr;
+  const TensorKernelTable *kernels_ = nullptr;
 };
 
 } // namespace detail
@@ -505,7 +508,7 @@ template <std::size_t W, impl::Numeric T, std::ranges::random_access_range R,
   requires impl::Numeric<std::ranges::range_value_t<R>>
 constexpr void evaluate_block(const Builder<T> &b, const R &point_lanes,
                               std::span<const Step> schedule, std::span<U> tape,
-                              const detail::Scratch<U> &tensors = {}) {
+                              const detail::TapeView<U> &tensors = {}) {
   const auto lane = detail::lanes_of<W>(tape);
   const Inputs inputs = b.inputs();
   const auto nodes = b.nodes();
@@ -542,7 +545,7 @@ template <impl::Numeric T, std::ranges::random_access_range R, impl::Numeric U>
   requires impl::Numeric<std::ranges::range_value_t<R>>
 constexpr void evaluate_into(const Builder<T> &b, const R &point,
                              std::span<const Step> schedule, std::span<U> v,
-                             const detail::Scratch<U> &tensors = {}) {
+                             const detail::TapeView<U> &tensors = {}) {
   evaluate_block<1>(b, point, schedule, v, tensors);
 }
 
@@ -551,11 +554,11 @@ namespace detail {
 template <impl::Numeric T, std::ranges::random_access_range R>
 [[nodiscard]] constexpr auto evaluate_over(const Builder<T> &b, auto ids,
                                            const R &point,
-                                           const KernelTable &kernels) {
+                                           const TensorKernelTable &kernels) {
   using U = std::ranges::range_value_t<R>;
   const auto schedule = schedule_of(b, ids);
   std::vector<U> v(b.size());
-  TensorScratch<U> scratch{b, schedule, kernels};
+  TensorTape<U> scratch{b, schedule, kernels};
   evaluate_into(b, point, schedule, std::span<U>{v}, scratch.view());
   return v;
 }
@@ -570,7 +573,7 @@ template <impl::Numeric T, std::ranges::random_access_range R>
 [[nodiscard]] constexpr auto
 evaluate_reachable(const Builder<T> &b, std::span<const NodeId> roots,
                    const R &point,
-                   const KernelTable &kernels = reference_table) {
+                   const TensorKernelTable &kernels = reference_table) {
   const auto live = detail::reachable(b, roots);
   return detail::evaluate_over(b, detail::live_ids(live), point, kernels);
 }
@@ -582,7 +585,7 @@ template <impl::Numeric T, std::ranges::random_access_range R>
   requires impl::Numeric<std::ranges::range_value_t<R>>
 [[nodiscard]] constexpr auto
 evaluate_all(const Builder<T> &b, const R &point,
-             const KernelTable &kernels = reference_table) {
+             const TensorKernelTable &kernels = reference_table) {
   return detail::evaluate_over(
       b, std::views::iota(NodeId{0}, static_cast<NodeId>(b.size())), point,
       kernels);

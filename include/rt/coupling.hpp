@@ -83,10 +83,10 @@ static_assert(std::forward_iterator<SetBits>);
 }
 
 // Always colours-major and n wide, said once so `c * n + i` is not respelled.
-[[nodiscard]] constexpr auto by_color(auto &&flat, std::size_t colors,
-                                      std::size_t n) {
+[[nodiscard]] constexpr auto by_colour(auto &&flat, std::size_t colours,
+                                       std::size_t n) {
   return impl::md::mdspan{std::ranges::data(flat),
-                          impl::md::dextents<std::size_t, 2>{colors, n}};
+                          impl::md::dextents<std::size_t, 2>{colours, n}};
 }
 
 // A stored cell of a derivative block: where it belongs in the dense matrix,
@@ -210,8 +210,8 @@ static_assert(std::random_access_iterator<Sparsity::Iterator>);
 
 // Two columns share a colour only when no row couples them, so one sweep can
 // seed all of a colour's columns and the results still separate.
-struct Coloring {
-  std::vector<std::size_t> color;   // per symbol
+struct Colouring {
+  std::vector<std::size_t> colour;  // per symbol
   std::vector<std::size_t> scatter; // count() * n; column a (colour, row) owns
   // count() * n again, but the other question: *where* (colour, row) is stored,
   // or no_column for a cell no column of that colour owns.  Those are the ones
@@ -219,28 +219,28 @@ struct Coloring {
   std::vector<std::size_t> cell;
 
   [[nodiscard]] constexpr std::size_t count() const noexcept {
-    return color.empty() ? 0 : scatter.size() / color.size();
+    return colour.empty() ? 0 : scatter.size() / colour.size();
   }
   // The compressed block's width: how many cells any column owns.
   [[nodiscard]] constexpr std::size_t width() const noexcept {
     return static_cast<std::size_t>(std::ranges::count_if(
         cell, [](std::size_t k) { return k != no_column; }));
   }
-  [[nodiscard]] constexpr auto colors() const noexcept {
+  [[nodiscard]] constexpr auto colours() const noexcept {
     return std::views::iota(0uz, count());
   }
   // The symbols one sweep of colour `c` seeds together.
   [[nodiscard]] constexpr auto columns_of(std::size_t c) const {
-    return std::views::iota(0uz, color.size()) |
+    return std::views::iota(0uz, colour.size()) |
            std::views::filter(
-               [this, c](std::size_t j) { return color[j] == c; });
+               [this, c](std::size_t j) { return colour[j] == c; });
   }
   // The cells colour `c` owns -- what one sweep's result goes into.  A row of
   // that colour that no column owns is computed for nobody, and is absent.
   [[nodiscard]] constexpr auto owned_cells(std::size_t c) const {
-    const auto n = color.size();
-    const auto owner = by_color(scatter, count(), n);
-    const auto slot = by_color(cell, count(), n);
+    const auto n = colour.size();
+    const auto owner = by_colour(scatter, count(), n);
+    const auto slot = by_colour(cell, count(), n);
     return std::views::iota(0uz, n) |
            std::views::transform([c, owner, slot](std::size_t i) {
              return Cell{.row = i, .column = owner[c, i], .slot = slot[c, i]};
@@ -251,7 +251,7 @@ struct Coloring {
   // Every stored cell, colour-major.  What a caller scatters a compressed block
   // back to (i, j) with, rather than asking `cell_of` about every pair.
   [[nodiscard]] constexpr auto entries() const {
-    return colors() | std::views::transform([this](std::size_t c) {
+    return colours() | std::views::transform([this](std::size_t c) {
              return owned_cells(c);
            }) |
            std::views::join;
@@ -259,14 +259,14 @@ struct Coloring {
   // Where H(i, j) is stored, or nullopt for a cell the colouring calls zero.
   [[nodiscard]] constexpr std::optional<std::size_t>
   cell_of(std::size_t i, std::size_t j) const {
-    const auto n = color.size();
-    const auto colors = count();
-    const std::size_t c = color[j];
-    return by_color(scatter, colors, n)[c, i] == j
-               ? std::optional{by_color(cell, colors, n)[c, i]}
+    const auto n = colour.size();
+    const auto colours = count();
+    const std::size_t c = colour[j];
+    return by_colour(scatter, colours, n)[c, i] == j
+               ? std::optional{by_colour(cell, colours, n)[c, i]}
                : std::nullopt;
   }
-  BOOST_DESCRIBE_CLASS(Coloring, (), (color, scatter, cell), (), ())
+  BOOST_DESCRIBE_CLASS(Colouring, (), (colour, scatter, cell), (), ())
 };
 
 namespace detail {
@@ -322,16 +322,16 @@ template <impl::Numeric T>
       break;
     case Kind::Input:
       if (node.op == OpCode::Var) {
-        here.set(node.slot);
+        here.set(detail::index_of(node));
       } else if (node.op == OpCode::Implicit) {
         // Whatever its residual reads, and nonlinearly: z is a root, not a
         // sum.  The sweep's dz/dx nodes are not in the arena yet, so the
         // closure is read here rather than discovered.
-        const NodeId f = b.closures()[node.slot];
+        const NodeId f = b.closures()[detail::index_of(node)];
         const auto through = detail::reachable(b, std::span{&f, 1});
         for (const auto [u, leaf] : b.nodes() | std::views::enumerate) {
           if (leaf.op == OpCode::Var && through[static_cast<NodeId>(u)]) {
-            here.set(leaf.slot);
+            here.set(detail::index_of(leaf));
           }
         }
         detail::couple(rows, here, here);
@@ -417,7 +417,7 @@ template <impl::Numeric T>
   return rows;
 }
 
-// The cells a layout stores -- a Sparsity's or a Coloring's, each answering
+// The cells a layout stores -- a Sparsity's or a Colouring's, each answering
 // entries() -- into a dense row-major block n wide, each cell `points` long:
 // cell(slot) is where a stored cell's values start, dense(i * n + j) where
 // they go.  The zeros are the caller's fill.  The one scatter the point calls
@@ -433,6 +433,6 @@ constexpr void scatter(const auto &layout, auto &&cell, auto &&dense,
 // Columns j and k conflict iff their coupling rows overlap: the CPR colouring,
 // smallest-last ordered.  Ref: Curtis, Powell & Reid, J. Inst. Math. Appl.
 // 13(1) (1974) 117; Coleman & Moré, SIAM J. Numer. Anal. 20(1) (1983) 187.
-[[nodiscard]] DDX_API Coloring color_columns(const CouplingRows &rows);
+[[nodiscard]] DDX_API Colouring colour_columns(const CouplingRows &rows);
 
 } // namespace ddx::rt

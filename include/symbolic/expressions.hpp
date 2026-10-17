@@ -99,10 +99,6 @@ template <Numeric T> struct EvalResult {
 template <Numeric T>
 inline constexpr bool is_expression_type_v<EvalResult<T>> = true;
 
-template <COperation Op> struct BaseExpression {
-  using value_type = typename Op::value_type;
-};
-
 template <CExpression T> consteval std::size_t node_count_fn() {
   using U = std::remove_cvref_t<T>;
   if constexpr (CExpressionNode<U>) {
@@ -161,11 +157,10 @@ protected:
 };
 
 template <CExpression Derived, COperation Op>
-class ExpressionOps : public BaseExpression<Op>,
-                      public EquationConvertible<Derived> {
+class ExpressionOps : public EquationConvertible<Derived> {
 public:
   using op_type = Op;
-  using value_type = typename BaseExpression<Op>::value_type;
+  using value_type = typename Op::value_type;
 
   [[nodiscard]] constexpr auto derivative() const noexcept {
     return std::apply(

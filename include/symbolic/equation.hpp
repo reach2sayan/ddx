@@ -292,7 +292,7 @@ public:
               });
             });
           } else {
-            const rt::Jacobian j = rt::build_jacobian_impl(l.arena, l.roots);
+            const rt::Jacobian j = rt::derive_jacobian(l.arena, l.roots);
             for (const std::size_t i : std::views::iota(0uz, output_dim)) {
               for (const std::size_t k : std::views::iota(0uz, input_dim)) {
                 cells[i * input_dim + k] = j.at(i, k);
@@ -330,14 +330,15 @@ public:
           std::array<rt::Hessian, output_dim> hs;
           std::vector<rt::NodeId> wanted;
           for (const std::size_t k : std::views::iota(0uz, output_dim)) {
-            hs[k] = rt::build_hessian_impl(l.arena, l.roots[k]);
+            hs[k] = rt::derive_hessian(l.arena, l.roots[k]);
             append(wanted, hs[k].compressed);
           }
           const auto v = sweep(l, wanted, vals);
           constexpr auto dims = std::views::iota(0uz, input_dim);
           if constexpr (output_dim == 1) {
             nd_tensor_t<S, input_dim, 2> H{};
-            for (const auto [i, j] : std::views::cartesian_product(dims, dims)) {
+            for (const auto [i, j] :
+                 std::views::cartesian_product(dims, dims)) {
               H[i, j] = v[hs[0].at(i, j)];
             }
             return H;
@@ -404,11 +405,12 @@ public:
     requires(input_dim == 1 && output_dim == 1 && Order > 0)
   {
     using Taylor = TaylorDual<scalar, Order>;
-    static_assert(rt::detail::computes_at_tree<
-                      Taylor, std::tuple_element_t<0, Exprs>>(),
-                  "an operation the Taylor arithmetic does not define");
+    static_assert(
+        rt::detail::computes_at_tree<Taylor, std::tuple_element_t<0, Exprs>>(),
+        "an operation the Taylor arithmetic does not define");
     const Lowered l = lower();
-    const auto v = sweep(l, l.roots, std::array<Taylor, 1>{Taylor::variable(x0)});
+    const auto v =
+        sweep(l, l.roots, std::array<Taylor, 1>{Taylor::variable(x0)});
     return v[l.roots[0]].c[Order] *
            static_cast<scalar>(detail::compile_time_factorial(Order));
   }

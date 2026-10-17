@@ -138,11 +138,11 @@ TEST(RtJvp, BatchAgreesWithThePointSpelling) {
 
 TEST(RtJvp, CostsOneColumnPerFunction) {
   ddx::rt::Builder<> b;
-  std::vector<ddx::rt::RTExpression<>> v;
+  std::vector<ddx::rt::Expression<>> v;
   for (const char *name : {"a", "b", "c", "d", "e"}) {
     v.push_back(var(b, name));
   }
-  auto acc = ddx::rt::RTExpression<>{0};
+  auto acc = ddx::rt::Expression<>{0};
   for (const auto &s : v) {
     acc = acc + exp(s) * s;
   }
@@ -161,9 +161,8 @@ TEST(RtJvp, SymbolicModeStillAgreesWithReverse) {
   const auto f = exp(x * y) + log(x) * sin(y);
 
   const auto fwd =
-      ddx::rt::build_jacobian_impl<ddx::DiffMode::Symbolic>(b, f.id(b));
-  const auto rev =
-      ddx::rt::build_jacobian_impl<ddx::DiffMode::Reverse>(b, f.id(b));
+      ddx::rt::derive_jacobian<ddx::DiffMode::Symbolic>(b, f.id(b));
+  const auto rev = ddx::rt::derive_jacobian<ddx::DiffMode::Reverse>(b, f.id(b));
 
   const std::array point{1.4, 0.9};
   const auto values = ddx::rt::evaluate_all(b, point);

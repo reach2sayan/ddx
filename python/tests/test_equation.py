@@ -92,9 +92,9 @@ def test_one_function_members_refuse_a_system(system: ddx.Equation) -> None:
     with pytest.raises(ddx.Error) as caught:
         system.hvp([1.0, 0.0], [1.0, 2.0])
     assert caught.value.code is ddx.errc.not_single_output
-    with pytest.raises(ddx.Error) as colors:
-        _ = system.hessian_colors
-    assert colors.value.code is ddx.errc.not_single_output
+    with pytest.raises(ddx.Error) as colours:
+        _ = system.hessian_colours
+    assert colours.value.code is ddx.errc.not_single_output
 
 
 def test_shapes_drop_the_axes_that_are_not_there(scalar: ddx.Equation) -> None:
@@ -177,7 +177,7 @@ def test_a_sparse_coupling_scatters_to_the_right_cells() -> None:
 
     _, _, hessian = eq.hessian([0.3, 0.7, 1.1])
 
-    assert eq.hessian_colors == 3
+    assert eq.hessian_colours == 3
     assert hessian == pytest.approx(
         np.array(
             [

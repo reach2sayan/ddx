@@ -37,7 +37,7 @@ using described_members =
 // The same bits as an unsigned of the same width: hash2 appends a float as
 // v + 0, which maps -0.0 onto +0.0, and a graph holding -0.0 must not load
 // +0.0's kernel.  A described type folds member by member, a range its length
-// then its elements -- never a memcpy, since Property has padding.
+// then its elements -- never a memcpy, since NodeRecord has padding.
 constexpr void fold(boost::hash2::fnv1a_64 &h, const auto &v) {
   using U = std::remove_cvref_t<decltype(v)>;
   if constexpr (std::same_as<U, std::string>) {
@@ -166,7 +166,7 @@ std::uint64_t digest(const rt::Graph<double> &g) {
   boost::hash2::fnv1a_64 h;
   const rt::Inputs &in = g.inputs();
   fold(h, in.by_kind);
-  fold(h, in.seeds);
+  fold(h, in.directions);
   fold(h, g.layout());
   const auto schedule = g.schedule();
   fold(h, schedule.size());

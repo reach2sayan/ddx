@@ -5,9 +5,9 @@
 
 #include "rt/builder.hpp"
 #include "rt/expressions.hpp"
+#include "rt/tensor.hpp"
 #include "rt/text/ast.hpp"
 #include "rt/text/lower.hpp"
-#include "rt/tensor.hpp"
 #include "util/ranges.hpp"
 #include "util/scope_guard.hpp"
 #include "util/version.hpp"
@@ -20,10 +20,9 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include <boost/algorithm/string/case_conv.hpp>
-
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <exception>
 #include <memory>
 #include <ranges>
@@ -51,7 +50,7 @@ pyb::handle error_class;
 // call than the branch costs.
 [[nodiscard]] PyExpression make_input(rt::OpCode kind, std::string_view name) {
   if (!current_arena) {
-    fail_with(errc::no_arena);
+    fail_with(errc::outside_equation);
   }
   const auto e = rt::named(*current_arena, kind, name);
   if (e.poisoned()) {
@@ -65,10 +64,10 @@ pyb::handle error_class;
 [[nodiscard]] PyExpression make_implicit(std::string_view name,
                                          const pyb::function &residual) {
   if (!current_arena) {
-    fail_with(errc::no_arena);
+    fail_with(errc::outside_equation);
   }
-  const auto z = rt::implicit(
-      *current_arena, name, [&](const rt::RTExpression<double> &e) {
+  const auto z =
+      rt::implicit(*current_arena, name, [&](const rt::Expression<double> &e) {
         return residual(PyExpression{e, current_arena})
             .cast<PyExpression>()
             .base();
@@ -82,7 +81,7 @@ pyb::handle error_class;
 // The model running now, for a vector that names no scalar of it.
 [[nodiscard]] PyExpression::Arena arena_now() {
   if (!current_arena) {
-    fail_with(errc::no_arena);
+    fail_with(errc::outside_equation);
   }
   return current_arena;
 }
@@ -106,7 +105,7 @@ pyb::handle error_class;
            // constant.
            const auto e = pyb::cast<PyExpression>(item);
            if (e.poisoned()) {
-             fail_with(errc::no_arena);
+             fail_with(errc::outside_equation);
            }
            return e.root_in(arena);
          }) |
@@ -175,8 +174,8 @@ PYBIND11_MODULE(_ddx, m) {
   using namespace ddx;
   using ddx::py::PyCall;
   using ddx::py::PyEquation;
-  using ddx::py::PyRestricted;
   using ddx::py::PyExpression;
+  using ddx::py::PyRestricted;
 
   m.doc() = "ddx's runtime expression graph, LLVM JIT and OpenCL device";
   m.attr("__version__") = DDX_VERSION_STRING;
@@ -381,19 +380,19 @@ PYBIND11_MODULE(_ddx, m) {
       },
       pyb::arg("scalars"));
   m.def(
-      "vec_const",
+      "vec_constant",
       [](const std::vector<double> &data) {
         const auto arena = ddx::py::arena_now();
         return PyExpression::checked(
-            rt::vec_const(*arena, std::span<const double>{data}), arena);
+            rt::vec_constant(*arena, std::span<const double>{data}), arena);
       },
       pyb::arg("data"));
   m.def(
-      "mat_const",
+      "mat_constant",
       [](std::size_t rows, std::size_t cols, const std::vector<double> &data) {
         const auto arena = ddx::py::arena_now();
         return PyExpression::checked(
-            rt::mat_const(*arena, rows, cols, std::span<const double>{data}),
+            rt::mat_constant(*arena, rows, cols, std::span<const double>{data}),
             arena);
       },
       pyb::arg("rows"), pyb::arg("cols"), pyb::arg("data"));
@@ -406,7 +405,8 @@ PYBIND11_MODULE(_ddx, m) {
   m.def(
       "dot",
       [](const PyExpression &u, const PyExpression &v) {
-        return reduce(u, v, [](const auto &a, const auto &b) { return dot(a, b); });
+        return reduce(u, v,
+                      [](const auto &a, const auto &b) { return dot(a, b); });
       },
       pyb::arg("u"), pyb::arg("v"));
   m.def(
@@ -426,34 +426,42 @@ PYBIND11_MODULE(_ddx, m) {
       .value("DEVICE", jit::Backend::Device)
       .finalize();
 
-  pyb::native_enum<jit::VecLib>(m, "VecLib", "enum.IntEnum",
-                                "Which vector math library a lane may call.")
+  pyb::native_enum<jit::VecLib>(
+      m, "VecLib", "enum.IntEnum",
+      "Which vector math library a compiled kernel may call.")
       .value("NONE", jit::VecLib::None)
       .value("AUTO", jit::VecLib::Auto)
       .value("LIBMVEC", jit::VecLib::Libmvec)
       .finalize();
 
-  pyb::native_enum<jit::Level>(m, "Level", "enum.IntEnum",
-                               "LLVM's -O0 to -O3, for the IR pipeline and "
-                               "for codegen.")
-      .value("O0", jit::Level::O0)
-      .value("O1", jit::Level::O1)
-      .value("O2", jit::Level::O2)
-      .value("O3", jit::Level::O3)
+  pyb::native_enum<jit::OptLevel>(m, "OptLevel", "enum.IntEnum",
+                                  "LLVM's -O0 to -O3, for the IR pipeline and "
+                                  "for codegen.")
+      .value("O0", jit::OptLevel::O0)
+      .value("O1", jit::OptLevel::O1)
+      .value("O2", jit::OptLevel::O2)
+      .value("O3", jit::OptLevel::O3)
       .finalize();
 
   pyb::native_enum<PyEquation::Want> want{m, "Want", "enum.IntEnum",
                                           "Which blocks a bound call fills."};
+  // JacobianJvp as JACOBIAN_JVP: an underscore before every inner capital.
   for (const rt::Want w : rt::want_values) {
-    const std::string name =
-        boost::algorithm::to_upper_copy(std::string{rt::name_of(w)});
+    std::string name;
+    for (const auto [i, c] : rt::name_of(w) | std::views::enumerate) {
+      if (i > 0 && std::isupper(static_cast<unsigned char>(c))) {
+        name.push_back('_');
+      }
+      name.push_back(
+          static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+    }
     want.value(name.c_str(), w);
   }
   want.finalize();
 
   // Bound once, called repeatedly: `x` is written into and the blocks are read
   // back.  Not constructible from Python -- Equation.buffer() is the only way
-  // to get one, because it is the equation that owns the lane behind it.
+  // to get one, because it is the equation that owns the pipeline behind it.
   pyb::class_<PyCall>(m, "Call")
       .def("__repr__", &PyCall::repr)
       .def("__call__", &PyCall::operator())
@@ -498,7 +506,7 @@ PYBIND11_MODULE(_ddx, m) {
       .def(pyb::self == pyb::self);
   codegen("opt_level", &jit::Codegen::opt_level);
   codegen("codegen_level", &jit::Codegen::codegen_level);
-  codegen("slp", &jit::Codegen::slp);
+  codegen("slp_vectorize", &jit::Codegen::slp_vectorize);
   codegen("loop_vectorize", &jit::Codegen::loop_vectorize);
   codegen("veclib", &jit::Codegen::veclib);
   codegen("contract", &jit::Codegen::contract);
@@ -540,7 +548,8 @@ PYBIND11_MODULE(_ddx, m) {
             return std::make_unique<PyCall>(self, want, x);
           },
           pyb::arg("x"), pyb::kw_only(),
-          pyb::arg("want") = PyEquation::Want::Jacobian, pyb::keep_alive<0, 1>())
+          pyb::arg("want") = PyEquation::Want::Jacobian,
+          pyb::keep_alive<0, 1>())
       .def("nodes", &PyEquation::nodes, pyb::kw_only(),
            pyb::arg("want") = PyEquation::Want::Jacobian)
       .def_property_readonly("symbols", &PyEquation::symbols_list)
@@ -551,20 +560,19 @@ PYBIND11_MODULE(_ddx, m) {
       .def_property_readonly("uses_kernel", &PyEquation::uses_kernel)
       .def_property_readonly("device_status", &PyEquation::device)
       // Colours, not n: the Hessian is stored compressed and scattered on
-      // read, so this is what the compiled lane actually computes per point.
-      .def_property_readonly("hessian_colors",
+      // read, so this is what the compiled kernel actually computes per point.
+      .def_property_readonly("hessian_colours",
                              [](const PyEquation &self) {
-                               const auto colors = self.hessian_colors();
-                               if (!colors) {
+                               const auto colours = self.hessian_colours();
+                               if (!colours) {
                                  py::fail_with(errc::not_single_output);
                                }
-                               return *colors;
+                               return *colours;
                              })
       .def("wait_for_kernel", &PyEquation::wait_for_kernel, pyb::kw_only(),
            pyb::arg("want") = PyEquation::Want::Jacobian)
       .def_property(
-          "_options",
-          [](const PyEquation &self) { return self.options(); },
+          "_options", [](const PyEquation &self) { return self.options(); },
           [](PyEquation &self, const jit::Options &opt) {
             (void)self.options(opt);
           });

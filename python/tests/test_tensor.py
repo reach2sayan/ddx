@@ -26,7 +26,7 @@ def scalar_model() -> ddx.Expression:
 
 def tensor_model() -> ddx.Expression:
     x = ddx.vec("x", N)
-    C = ddx.mat_const(N, N, M)
+    C = ddx.mat_constant(N, N, M)
     return ddx.dot(x, ddx.gemv(C, x)) + ddx.sum(x * ddx.log(x)) + 2.0 * x[0] * x[1]
 
 
@@ -58,7 +58,7 @@ def test_a_vector_knows_its_length_and_elements() -> None:
             _ = v[3]
         assert refused.value.code == ddx.errc.tensor_shape
         w = ddx.pack([v[2], v[1], v[0]])
-        C = ddx.mat_const(2, 3, [1.0] * 6)
+        C = ddx.mat_constant(2, 3, [1.0] * 6)
         assert C.shape == (2, 3)
         assert v[0].shape == ()
         head = ddx.pack([v[0], v[1]])
@@ -79,7 +79,7 @@ def test_shapes_are_refused_where_they_are_formed() -> None:
 
     with pytest.raises(ddx.Error) as outside:
         ddx.vec("x", 2)
-    assert outside.value.code == ddx.errc.no_arena
+    assert outside.value.code == ddx.errc.outside_equation
 
 
 def test_a_scalar_scales_a_vector_and_literals_broadcast() -> None:

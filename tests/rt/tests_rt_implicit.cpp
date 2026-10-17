@@ -17,7 +17,7 @@
 // the same rule applied again.
 namespace {
 
-using RE = ddx::rt::RTExpression<>;
+using RE = ddx::rt::Expression<>;
 using namespace ddx::literals;
 
 // z^2 = a, so z = sqrt(a): dz/da = 1 / (2 sqrt a), d2z/da2 = -1 / (4 a^1.5).
@@ -146,8 +146,7 @@ TEST(RtImplicit, ABatchCarriesAColumnOfRoots) {
   const auto f = cubic();
   const auto eq = with_implicit_z();
   constexpr std::size_t n = 64;
-  std::vector<std::vector<double>> columns(species + 1,
-                                           std::vector<double>(n));
+  std::vector<std::vector<double>> columns(species + 1, std::vector<double>(n));
   for (const std::size_t i : std::views::iota(0uz, n)) {
     const double t = static_cast<double>(i) / n;
     const std::vector<double> x{0.3 + 0.1 * t, 0.25, 0.25 - 0.1 * t, 0.2};
@@ -157,10 +156,9 @@ TEST(RtImplicit, ABatchCarriesAColumnOfRoots) {
     }
     columns[species][i] = z;
   }
-  const auto in = columns | std::views::transform([](const auto &c) {
-                    return c.data();
-                  }) |
-                  ddx::impl::to<std::vector<const double *>>();
+  const auto in =
+      columns | std::views::transform([](const auto &c) { return c.data(); }) |
+      ddx::impl::to<std::vector<const double *>>();
   std::vector<double> values(n);
   std::vector<std::vector<double>> g(*eq.jacobian_columns(),
                                      std::vector<double>(n));
@@ -174,8 +172,8 @@ TEST(RtImplicit, ABatchCarriesAColumnOfRoots) {
       at.push_back(column[i]);
     }
     const auto J = *eq.jacobian(at);
-    for (const auto [cell, j] : std::views::enumerate(
-             (*eq.jacobian_pattern()->get().begin()).cols)) {
+    for (const auto [cell, j] :
+         std::views::enumerate((*eq.jacobian_pattern()->get().begin()).cols)) {
       EXPECT_EQ(g[static_cast<std::size_t>(cell)][i], J[j]) << "point " << i;
     }
   }

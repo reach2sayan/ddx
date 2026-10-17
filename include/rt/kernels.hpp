@@ -1,10 +1,10 @@
 #pragma once
 
 // What computes a tensor node: a backend is a type satisfying TensorKernels,
-// a KernelTable is that type erased to function pointers, and the interpreter
-// holds one table.  The reference backend below is plain loops with nothing
-// behind it; a consumer with Eigen or a BLAS includes its own header (one
-// ships beside this: rt/eigen_kernels.hpp) and hands the table over once.
+// a TensorKernelTable is that type erased to function pointers, and the
+// interpreter holds one table.  The reference backend below is plain loops with
+// nothing behind it; a consumer with Eigen or a BLAS includes its own header
+// (one ships beside this: rt/eigen_kernels.hpp) and hands the table over once.
 //
 // Spans at the boundary, not a library's types; a matrix is column-major, and
 // every vector a kernel sees is contiguous.  Results may differ between
@@ -51,7 +51,7 @@ concept TensorKernels =
 
 // A backend as the interpreter holds it: one record of function pointers, so
 // no backend type reaches an equation's type.
-struct KernelTable {
+struct TensorKernelTable {
   using In = std::span<const double>;
   using Out = std::span<double>;
   void (*gemv)(std::size_t, std::size_t, In, In, Out, bool) = nullptr;
@@ -67,7 +67,7 @@ struct KernelTable {
 // The only way to make one: a backend that misses a member fails here, against
 // the concept, and not at the first call.
 template <TensorKernels B>
-[[nodiscard]] consteval KernelTable kernel_table() noexcept {
+[[nodiscard]] consteval TensorKernelTable tensor_kernel_table() noexcept {
   return {.gemv = &B::gemv,
           .dot = &B::dot,
           .scale = &B::scale,
@@ -85,8 +85,8 @@ namespace reference {
 // rounding per term, as the scalar sweep's contraction does.
 struct Kernels {
   static constexpr std::string_view name = "reference";
-  using In = KernelTable::In;
-  using Out = KernelTable::Out;
+  using In = TensorKernelTable::In;
+  using Out = TensorKernelTable::Out;
 
   static constexpr void gemv(std::size_t r, std::size_t c, In m, In v, Out out,
                              bool transposed) noexcept {
@@ -163,13 +163,13 @@ static_assert(TensorKernels<Kernels>);
 
 } // namespace reference
 
-inline constexpr KernelTable reference_table =
-    kernel_table<reference::Kernels>();
+inline constexpr TensorKernelTable reference_table =
+    tensor_kernel_table<reference::Kernels>();
 
 // The process default: what every equation's tensor nodes run on unless the
 // equation was handed a table of its own.  Set once, before any sweep -- a
 // race to set it is the caller's, as it is for a jit::Compiler.
-DDX_API void use_kernels(const KernelTable &table) noexcept;
-[[nodiscard]] DDX_API const KernelTable &kernels() noexcept;
+DDX_API void use_tensor_kernels(const TensorKernelTable &table) noexcept;
+[[nodiscard]] DDX_API const TensorKernelTable &tensor_kernels() noexcept;
 
 } // namespace ddx::rt

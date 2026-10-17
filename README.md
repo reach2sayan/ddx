@@ -31,7 +31,7 @@ const auto eq = rt::equation([&] {
   const auto a = rt::var("a");
   const auto b = rt::var("b");
 
-  rt::RTExpression<double> loss = 0.0;
+  rt::Expression<double> loss = 0.0;
   for (const auto &s : data) {
     const auto r = s.y - a * exp(-b * s.t);
     loss += select(abs(r) < delta, r * r, delta * (2.0 * abs(r) - delta));
@@ -97,7 +97,7 @@ evaluation order unspecified. Another scalar type: `rt::equation<T>` with
 | `rt::param(name)` | an input that is read, never differentiated |
 | `rt::implicit(name, [&](auto z) { return F; })` | an input that is a root of `F`; derivatives carry ∂z/∂x = −F_x/F_z |
 | `rt::extern_fn({.name, .arity, .order}, fn)` | your own function; `fn(in, out)` writes the value, then the partials (upper triangle of the second at `order = 2`) |
-| `rt::vec(name, n)`, `rt::vec_const(data)`, `rt::mat_const(r, c, data)`, `rt::pack({…})` | vectors (`rt/tensor.hpp`): `n` ordinary symbols as one node |
+| `rt::vec(name, n)`, `rt::vec_constant(data)`, `rt::mat_constant(r, c, data)`, `rt::pack({…})` | vectors (`rt/tensor.hpp`): `n` ordinary symbols as one node |
 
 A point supplies symbols, then parameters, then implicits. `eq.residual(point)`
 evaluates each implicit's `F`; ddx never solves it.
@@ -105,8 +105,8 @@ evaluates each implicit's `F`; ddx never solves it.
 Vectors are elementwise under every operation, with `sum`, `dot` and
 `gemv(M, v, transposed = false)`; `v[i]` reads one element. They compute at
 `double`, are never an output, and are computed by a kernel table —
-`rt::use_kernels(table)` or `eq.kernels(table)`, built with
-`rt::kernel_table<K>()` over a type satisfying `rt::TensorKernels`;
+`rt::use_tensor_kernels(table)` or `eq.tensor_kernels(table)`, built with
+`rt::tensor_kernel_table<K>()` over a type satisfying `rt::TensorKernels`;
 `rt/eigen_kernels.hpp` supplies `rt::eigen::table`.
 
 An equation can also be a string, in Python's arithmetic grammar
@@ -200,7 +200,7 @@ columns.
 A poisoned equation answers every call with its error. `errc` and `error`
 format and stream as text. Nothing throws.
 
-All members are `const` and thread-safe except `options()` and `kernels()`.
+All members are `const` and thread-safe except `options()` and `tensor_kernels(table)`.
 The equation owns everything it needs and is move-only; symbols are valid only
 inside the callback that named them.
 
@@ -229,7 +229,7 @@ eq.uses_kernel();              // true
 | `points` | `1` | the batch size one call will carry |
 | `codegen.lanes` | `Lanes::derived()` | points per iteration |
 | `codegen.opt_level`, `codegen.codegen_level` | build type, `O1` | LLVM levels; `codegen_level` moves compile time |
-| `codegen.slp`, `codegen.loop_vectorize` | `false` | extra vectorisation |
+| `codegen.slp_vectorize`, `codegen.loop_vectorize` | `false` | extra vectorisation |
 | `codegen.veclib` | `None` | `Libmvec` for vector transcendentals |
 | `codegen.contract` | `DDX_FP_FLAGS` | fuse multiply-add |
 | `warm_points`, `hot_points` | `65536`, `1048576` | `Adapt` thresholds |

@@ -30,7 +30,7 @@ using Columns = std::vector<std::vector<double>>;
   return named != nullptr ? named : "";
 }
 
-[[nodiscard]] inline const ddx::cl::result<ddx::cl::Device> &device() {
+[[nodiscard]] inline const ddx::cl::compile_result<ddx::cl::Device> &device() {
   static const auto chosen = ddx::cl::Device::create(selector());
   return chosen;
 }
@@ -63,12 +63,15 @@ protected:
 }
 
 [[nodiscard]] inline std::vector<double *> pointers(Columns &c) {
-  return c | std::views::transform([](std::vector<double> &v) { return v.data(); }) |
+  return c | std::views::transform([](std::vector<double> &v) {
+           return v.data();
+         }) |
          ddx::impl::to<std::vector<double *>>();
 }
 [[nodiscard]] inline std::vector<const double *> pointers(const Columns &c) {
-  return c |
-         std::views::transform([](const std::vector<double> &v) { return v.data(); }) |
+  return c | std::views::transform([](const std::vector<double> &v) {
+           return v.data();
+         }) |
          ddx::impl::to<std::vector<const double *>>();
 }
 
@@ -79,7 +82,7 @@ protected:
                                    std::size_t n) {
   Columns out(g.outputs().size(), std::vector<double>(n));
   std::vector<double> at(xs.size());
-  std::vector<double> tape(g.tape_slots());
+  std::vector<double> tape(g.tape_rows());
   const auto rows = ddx::rt::in_order(g.output_rows()) | std::views::join |
                     std::views::transform(&ddx::rt::TensorRow::at) |
                     ddx::impl::to<std::vector<std::uint32_t>>();
@@ -98,7 +101,7 @@ protected:
 // sentinel, so a store that went missing shows.
 inline constexpr double sentinel = -12345.678;
 
-[[nodiscard]] inline ddx::cl::result<Columns>
+[[nodiscard]] inline ddx::cl::compile_result<Columns>
 ran(const ddx::cl::Kernel &k, const Columns &xs, std::size_t n) {
   const auto &shape = k.shape();
   Columns out(shape.outputs(), std::vector<double>(n, sentinel));
@@ -116,9 +119,11 @@ ran(const ddx::cl::Kernel &k, const Columns &xs, std::size_t n) {
 inline void expect_same_bits(const Columns &want, const Columns &got,
                              std::string_view what) {
   ASSERT_EQ(want.size(), got.size()) << what;
-  for (const auto [k, pair] : std::views::enumerate(std::views::zip(want, got))) {
+  for (const auto [k, pair] :
+       std::views::enumerate(std::views::zip(want, got))) {
     const auto &[w, g] = pair;
-    for (const auto [i, values] : std::views::enumerate(std::views::zip(w, g))) {
+    for (const auto [i, values] :
+         std::views::enumerate(std::views::zip(w, g))) {
       const auto [expected, actual] = values;
       if (std::isnan(expected)) {
         EXPECT_TRUE(std::isnan(actual))

@@ -54,7 +54,7 @@ template <ddx::impl::CExpression E, std::size_t N>
 void expect_agrees_with_ddx(const E &e, std::array<double, N> pt) {
   ddx::rt::Builder<> b;
   const auto root = ddx::rt::to_graph(b, e);
-  const auto g = ddx::rt::build_jacobian_impl(b, root.id(b));
+  const auto g = ddx::rt::derive_jacobian(b, root.id(b));
   const auto values = ddx::rt::evaluate_all(b, std::span<const double>{pt});
 
   const double expected = std::apply(
@@ -89,9 +89,8 @@ TEST(RtJacobian, Arithmetic) {
 }
 
 template <typename E>
-constexpr bool bridges = requires(ddx::rt::Builder<> &b, const E &e) {
-  ddx::rt::to_graph(b, e);
-};
+constexpr bool bridges =
+    requires(ddx::rt::Builder<> &b, const E &e) { ddx::rt::to_graph(b, e); };
 
 // rt has no leaf that reads a symbol and differentiates to zero, so a frozen
 // one is refused rather than lowered live.  A Jacobian row comes back thawed,
@@ -139,13 +138,13 @@ TEST(RtJacobian, SharedAndNested) {
 // are checked against central differences on the interpreter instead.
 TEST(RtJacobian, SelectingOpsAgainstFiniteDifferences) {
   using ddx::rt::Builder;
-  using ddx::rt::RTExpression;
+  using ddx::rt::Expression;
   const auto check = [](auto build, std::array<double, 2> pt) {
     Builder<> b;
     const auto vx = var(b, "x");
     const auto vy = var(b, "y");
     const auto f = build(vx, vy);
-    const auto g = ddx::rt::build_jacobian_impl(b, f.id(b));
+    const auto g = ddx::rt::derive_jacobian(b, f.id(b));
     const auto values = ddx::rt::evaluate_all(b, std::span<const double>{pt});
     for (std::size_t i = 0; i < 2; ++i) {
       const double h = 1e-6;
@@ -158,13 +157,11 @@ TEST(RtJacobian, SelectingOpsAgainstFiniteDifferences) {
       EXPECT_NEAR(values[g.partial[i]], fd, 1e-5 * std::max(1.0, std::abs(fd)));
     }
   };
-  check([](RTExpression<> a, RTExpression<> b2) { return max(a, b2); },
+  check([](Expression<> a, Expression<> b2) { return max(a, b2); }, {1.3, 2.1});
+  check([](Expression<> a, Expression<> b2) { return min(a, b2); }, {1.3, 2.1});
+  check([](Expression<> a, Expression<> b2) { return abs(a * b2); },
         {1.3, 2.1});
-  check([](RTExpression<> a, RTExpression<> b2) { return min(a, b2); },
-        {1.3, 2.1});
-  check([](RTExpression<> a, RTExpression<> b2) { return abs(a * b2); },
-        {1.3, 2.1});
-  check([](RTExpression<> a, RTExpression<> b2) { return abs(a * b2); },
+  check([](Expression<> a, Expression<> b2) { return abs(a * b2); },
         {-1.3, 2.1});
 }
 
@@ -173,7 +170,7 @@ TEST(RtJacobian, DerivFromValueReusesThePrimalNode) {
   ddx::rt::Builder<> b;
   const auto vx = var(b, "x");
   const auto f = exp(vx);
-  const auto g = ddx::rt::build_jacobian_impl(b, f.id(b));
+  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
   EXPECT_EQ(g.partial[0], f.id(b));
 }
 
@@ -185,7 +182,7 @@ TEST(RtJacobian, DerivFromValueReusesThePrimalNode) {
   static_assert(requires(const double &a) {                                    \
     ddx::impl::detail::adjoints_of<ddx::impl::detail::Desc>(a, a);             \
   });                                                                          \
-  static_assert(requires(const ddx::rt::RTExpression<> &a) {                   \
+  static_assert(requires(const ddx::rt::Expression<> &a) {                     \
     ddx::impl::detail::adjoints_of<ddx::impl::detail::Desc>(a, a);             \
   });
 DDX_RT_UNARY_TABLE(DDX_TEST_UNARY_RULE)
@@ -195,7 +192,7 @@ DDX_RT_UNARY_TABLE(DDX_TEST_UNARY_RULE)
   static_assert(requires(const double &a) {                                    \
     ddx::impl::detail::adjoints_of<ddx::impl::detail::Desc>(a, a, a);          \
   });                                                                          \
-  static_assert(requires(const ddx::rt::RTExpression<> &a) {                   \
+  static_assert(requires(const ddx::rt::Expression<> &a) {                     \
     ddx::impl::detail::adjoints_of<ddx::impl::detail::Desc>(a, a, a);          \
   });
 DDX_RT_BINARY_TABLE(DDX_TEST_BINARY_RULE)
@@ -203,22 +200,22 @@ DDX_RT_BINARY_TABLE(DDX_TEST_BINARY_RULE)
 
 // The comparison operators answer expressions, nothing boolean-testable, so
 // neither concept holds: that is why ExtremumOp keeps a rule of its own, and
-// why AbsOpFn's unqualified sign() reaches RTExpression's hidden friend rather
-// than the one in ops/adjoints.hpp.  If either ever becomes true both facts go
-// stale silently.
-static_assert(!std::totally_ordered<ddx::rt::RTExpression<>>);
-static_assert(!std::equality_comparable<ddx::rt::RTExpression<>>);
+// why AbsOpFn's unqualified sign() reaches rt::Expression's hidden friend
+// rather than the one in ops/adjoints.hpp.  If either ever becomes true both
+// facts go stale silently.
+static_assert(!std::totally_ordered<ddx::rt::Expression<>>);
+static_assert(!std::equality_comparable<ddx::rt::Expression<>>);
 
 // A node stands for a double, so it answers the commutativity question the way
 // a double does -- which is what picks DivideOpFn's branch.
-static_assert(ddx::impl::CCommutativeMultiply<ddx::rt::RTExpression<>>);
+static_assert(ddx::impl::CCommutativeMultiply<ddx::rt::Expression<>>);
 
 TEST(RtJacobian, UnusedSymbolHasZeroPartial) {
   ddx::rt::Builder<> b;
   const auto vx = var(b, "x");
   const auto vy = var(b, "y");
   const auto f = vx * vx;
-  const auto g = ddx::rt::build_jacobian_impl(b, f.id(b));
+  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
   ASSERT_EQ(g.partial.size(), 2u);
   EXPECT_TRUE(b.is_constant(g.partial[1], 0.0));
   (void)vy;
@@ -263,9 +260,9 @@ TEST(RtJacobian, ForwardModeAgreesWithReverse) {
     const auto vy = var(b, "y");
     const auto f = build(vx, vy);
     const auto fwd =
-        ddx::rt::build_jacobian_impl<ddx::DiffMode::Symbolic>(b, f.id(b));
+        ddx::rt::derive_jacobian<ddx::DiffMode::Symbolic>(b, f.id(b));
     const auto rev =
-        ddx::rt::build_jacobian_impl<ddx::DiffMode::Reverse>(b, f.id(b));
+        ddx::rt::derive_jacobian<ddx::DiffMode::Reverse>(b, f.id(b));
     const auto values = ddx::rt::evaluate_all(b, std::span<const double>{pt});
     for (std::size_t i = 0; i < 2; ++i) {
       const double want = values[rev.partial[i]];
@@ -274,18 +271,15 @@ TEST(RtJacobian, ForwardModeAgreesWithReverse) {
           << "partial " << i;
     }
   };
-  using ddx::rt::RTExpression;
-  check([](RTExpression<> a, RTExpression<> b2) { return a * b2 + sin(a); },
+  using ddx::rt::Expression;
+  check([](Expression<> a, Expression<> b2) { return a * b2 + sin(a); },
         {0.3, 0.7});
-  check([](RTExpression<> a, RTExpression<> b2) { return a / b2; }, {1.3, 2.1});
-  check([](RTExpression<> a, RTExpression<> b2) { return pow(a, b2); },
-        {1.7, 2.3});
-  check([](RTExpression<> a, RTExpression<> b2) { return hypot(a, b2); },
+  check([](Expression<> a, Expression<> b2) { return a / b2; }, {1.3, 2.1});
+  check([](Expression<> a, Expression<> b2) { return pow(a, b2); }, {1.7, 2.3});
+  check([](Expression<> a, Expression<> b2) { return hypot(a, b2); },
         {1.3, 2.1});
-  check([](RTExpression<> a, RTExpression<> b2) { return -(a * b2); },
-        {1.3, 2.1});
-  check([](RTExpression<> a, RTExpression<> b2) { return max(a, b2); },
-        {1.3, 2.1});
+  check([](Expression<> a, Expression<> b2) { return -(a * b2); }, {1.3, 2.1});
+  check([](Expression<> a, Expression<> b2) { return max(a, b2); }, {1.3, 2.1});
 }
 
 } // namespace sym
@@ -300,14 +294,14 @@ TEST(RtJacobian, ABandedSystemKeepsOnlyTheCellsThatExist) {
   ddx::rt::Builder<> b;
 
   const auto name = [](std::size_t i) { return "x" + std::to_string(i); };
-  std::vector<ddx::rt::RTExpression<double>> x;
+  std::vector<ddx::rt::Expression<double>> x;
   for (const std::size_t i : std::views::iota(0uz, n)) {
     x.push_back(var(b, name(i)));
   }
   // r_i = x_i^2 + x_{i-1} x_{i+1}, so the band is three wide and the ends are
   // two.  Squares rather than plain sums, or every partial would be constant
   // and the sweep would fold the whole row away.
-  std::vector<ddx::rt::RTExpression<double>> rows;
+  std::vector<ddx::rt::Expression<double>> rows;
   for (const std::size_t i : std::views::iota(0uz, n)) {
     auto r = x[i] * x[i];
     if (i > 0 && i + 1 < n) {
@@ -316,7 +310,7 @@ TEST(RtJacobian, ABandedSystemKeepsOnlyTheCellsThatExist) {
     rows.push_back(r);
   }
 
-  const auto j = ddx::rt::build_jacobian_impl(b, [&] {
+  const auto j = ddx::rt::derive_jacobian(b, [&] {
     std::vector<ddx::rt::NodeId> ids;
     for (auto &r : rows) {
       ids.push_back(r.id(b));
@@ -433,7 +427,7 @@ TEST(RtJacobian, AFoldedPartialIsAStructuralHole) {
 TEST(RtJacobian, HessianCellPlacesEveryCompressedColumn) {
   static constexpr std::size_t n = 6;
   ddx::rt::Builder<> b;
-  std::vector<ddx::rt::RTExpression<double>> x;
+  std::vector<ddx::rt::Expression<double>> x;
   for (const std::size_t i : std::views::iota(0uz, n)) {
     x.push_back(var(b, "x" + std::to_string(i)));
   }
@@ -512,7 +506,7 @@ TEST(RtJacobian, SelectDiscardsTheUnchosenArmsPartials) {
   const auto clamp = [](auto arm) {
     return ddx::rt::equation([arm] {
       const auto x = ddx::rt::var("x");
-      return select(x > 0.0, arm(x), ddx::rt::RTExpression<double>{0.0});
+      return select(x > 0.0, arm(x), ddx::rt::Expression<double>{0.0});
     });
   };
   const auto log_arm = clamp([](const auto &x) { return log(x); });
@@ -555,8 +549,8 @@ TEST(RtJacobian, SelectKeepsTheChosenArmsSingularity) {
 TEST(RtJacobian, SelectReadsAnyNonzeroConditionAsTrue) {
   const auto eq = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
-    return select(x, ddx::rt::RTExpression<double>{7.0},
-                  ddx::rt::RTExpression<double>{9.0});
+    return select(x, ddx::rt::Expression<double>{7.0},
+                  ddx::rt::Expression<double>{9.0});
   });
   const std::array<double, 1> zero{0.0};
   const std::array<double, 1> two{2.0};
@@ -755,7 +749,7 @@ TEST(RtJacobian, BothArmsOfASelectOverASharedSubexpression) {
   const ddx::rt::Sparsity &pattern = eq.jacobian_pattern()->get();
   EXPECT_EQ(pattern.nonzeros(), 3u)
       << "a condition-only symbol would be absent";
-  EXPECT_EQ(*eq.hessian_colors(), 3u);
+  EXPECT_EQ(*eq.hessian_colours(), 3u);
 }
 
 // pow's exponent partial is a^b * log(a), 0 * -inf at a == 0, and its base
@@ -787,7 +781,7 @@ TEST(RtJacobian, PowAtAZeroBaseIsGuardedOnTheGraph) {
   // select to its false arm -- 3 * (x * x), no Select node anywhere in it.
   ddx::rt::Builder<> b;
   const auto x = ddx::rt::var(b, "x");
-  const auto cubic = ddx::rt::build_jacobian_impl<ddx::impl::DiffMode::Reverse>(
+  const auto cubic = ddx::rt::derive_jacobian<ddx::impl::DiffMode::Reverse>(
       b, pow(x, 3.0).id(b));
   const auto live = ddx::rt::detail::reachable(
       b.size(), std::span<const ddx::rt::NodeId>{&cubic.partial[0], 1},

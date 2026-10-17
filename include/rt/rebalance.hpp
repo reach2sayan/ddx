@@ -66,8 +66,8 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr NodeId
 blocked_sum(Builder<T> &b, std::span<const NodeId> terms, std::size_t blocks) {
   // Inline up to the default block count, so a round never touches the heap.
-  using Partials = boost::container::small_vector<RTExpression<T>, 16>;
-  const auto as_expr = [&b](NodeId t) { return RTExpression<T>{b, t}; };
+  using Partials = boost::container::small_vector<Expression<T>, 16>;
+  const auto as_expr = [&b](NodeId t) { return Expression<T>{b, t}; };
   auto partials =
       std::views::iota(0uz, blocks) | std::views::transform([&](std::size_t j) {
         return std::ranges::fold_left_first(terms | std::views::drop(j) |

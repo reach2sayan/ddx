@@ -21,7 +21,7 @@
 #include <variant>
 #include <vector>
 
-// An Ast into somebody's arena.  Every node goes through RTExpression::form,
+// An Ast into somebody's arena.  Every node goes through Expression::form,
 // which interns, folds and carries poison, so nothing here re-implements what
 // building an expression by hand already does.
 namespace ddx::rt::text {
@@ -50,10 +50,10 @@ template <std::floating_point T>
 
 // One term, with its symbols and its operands already standing.
 template <std::floating_point T>
-[[nodiscard]] constexpr result<RTExpression<T>>
-form(const Ast &ast, std::span<const RTExpression<T>> symbols,
-     std::span<const RTExpression<T>> built, const Term &t) {
-  using Expr = RTExpression<T>;
+[[nodiscard]] constexpr result<Expression<T>>
+form(const Ast &ast, std::span<const Expression<T>> symbols,
+     std::span<const Expression<T>> built, const Term &t) {
+  using Expr = Expression<T>;
   const auto at = [](std::span<const Expr> from,
                      const std::uint32_t i) -> result<Expr> {
     return i < from.size() ? result<Expr>{from[i]} : fail(errc::bad_syntax);
@@ -111,8 +111,8 @@ form(const Ast &ast, std::span<const RTExpression<T>> symbols,
 // The arena gains one symbol per free identifier and one node per term; the
 // answer is the root.
 template <std::floating_point T>
-[[nodiscard]] result<RTExpression<T>> lower(Builder<T> &arena, const Ast &ast) {
-  using Expr = RTExpression<T>;
+[[nodiscard]] result<Expression<T>> lower(Builder<T> &arena, const Ast &ast) {
+  using Expr = Expression<T>;
 
   // Every symbol before any node, in the order the text first named them: the
   // arena is then a function of the model rather than of the order the parser

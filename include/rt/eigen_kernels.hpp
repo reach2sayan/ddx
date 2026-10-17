@@ -3,8 +3,8 @@
 // Eigen under the tensor nodes.  Optional, as rt/eigen.hpp is: nothing in ddx
 // includes this, and a consumer that has Eigen does, once --
 //
-//   ddx::rt::use_kernels(ddx::rt::eigen::table);      // every equation
-//   eq.kernels(ddx::rt::eigen::table);                // this one
+//   ddx::rt::use_tensor_kernels(ddx::rt::eigen::table); // every equation
+//   eq.tensor_kernels(ddx::rt::eigen::table);          // this one
 //
 // If that Eigen is built over a BLAS (EIGEN_USE_BLAS), the gemv lands there;
 // ddx knows nothing about it.  The elementwise rows stay the reference ones:
@@ -31,8 +31,8 @@ namespace ddx::rt::eigen {
 
 struct Kernels : reference::Kernels {
   static constexpr std::string_view name = "eigen";
-  using In = KernelTable::In;
-  using Out = KernelTable::Out;
+  using In = TensorKernelTable::In;
+  using Out = TensorKernelTable::Out;
   using Vector = Eigen::Map<const Eigen::VectorXd>;
   using Matrix = Eigen::Map<const Eigen::MatrixXd>;
 
@@ -71,7 +71,7 @@ struct Kernels : reference::Kernels {
 };
 static_assert(TensorKernels<Kernels>);
 
-inline constexpr KernelTable table = kernel_table<Kernels>();
+inline constexpr TensorKernelTable table = tensor_kernel_table<Kernels>();
 
 } // namespace ddx::rt::eigen
 

@@ -54,7 +54,7 @@ def test_every_exported_unary_is_covered() -> None:
     # Not operations at all: these build or read an equation.
     not_an_op = {"equation", "implicit", "param", "var"}
     # Vectors: factories and reductions, not scalar operations.
-    vectors = {"dot", "gemv", "mat_const", "pack", "sum", "vec", "vec_const"}
+    vectors = {"dot", "gemv", "mat_constant", "pack", "sum", "vec", "vec_constant"}
     assert functions - binary - ternary - not_an_op - vectors == set(UNARY)
 
 
@@ -152,7 +152,7 @@ def test_literals_fold_without_reaching_a_graph() -> None:
 def test_var_outside_a_model_is_refused() -> None:
     with pytest.raises(ddx.Error) as caught:
         ddx.var("stray")
-    assert caught.value.code is ddx.errc.no_arena
+    assert caught.value.code is ddx.errc.outside_equation
 
 
 def test_a_raising_model_leaves_no_arena_installed() -> None:
@@ -171,7 +171,7 @@ def test_a_raising_model_leaves_no_arena_installed() -> None:
 
     with pytest.raises(ddx.Error) as caught:
         ddx.var("after")
-    assert caught.value.code is ddx.errc.no_arena
+    assert caught.value.code is ddx.errc.outside_equation
 
 
 def test_repr_names_what_it_is() -> None:

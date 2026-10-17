@@ -130,7 +130,7 @@ TEST(RtVjp, BatchAgreesWithThePointSpelling) {
 
 TEST(RtVjp, CostsFewerColumnsThanTheJacobian) {
   ddx::rt::Builder<> b;
-  std::vector<ddx::rt::RTExpression<>> v;
+  std::vector<ddx::rt::Expression<>> v;
   for (const char *name : {"a", "b", "c", "d"}) {
     v.push_back(var(b, name));
   }

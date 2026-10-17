@@ -17,7 +17,7 @@
 // graph and applies the chain rule around it, to any order its partials reach.
 namespace {
 
-using RE = ddx::rt::RTExpression<>;
+using RE = ddx::rt::Expression<>;
 
 // g(a, b) = exp(ab) sin(b) and its partials, written out by hand.
 void g_of(std::span<const double> in, std::span<double> out) {
@@ -27,11 +27,11 @@ void g_of(std::span<const double> in, std::span<double> out) {
   const double s = std::sin(b);
   const double c = std::cos(b);
   out[0] = e * s;
-  out[1] = b * e * s;                      // g_a
-  out[2] = e * (a * s + c);                // g_b
+  out[1] = b * e * s;       // g_a
+  out[2] = e * (a * s + c); // g_b
   if (out.size() > 3) {
-    out[3] = b * b * e * s;                // g_aa
-    out[4] = e * (s + a * b * s + b * c);  // g_ab
+    out[3] = b * b * e * s;                   // g_aa
+    out[4] = e * (s + a * b * s + b * c);     // g_ab
     out[5] = e * (a * a * s + 2 * a * c - s); // g_bb
   }
 }
@@ -111,9 +111,9 @@ TEST(RtExtern, AnyArityAndARepeatedArgument) {
     out[4] = 2 * z * w;
     // second, upper triangle row-major: xx xy xz xw yy yz yw zz zw ww
     std::ranges::fill(out.subspan(5), 0.0);
-    out[5 + 1] = 1.0;     // xy
-    out[5 + 8] = 2 * w;   // zw
-    out[5 + 9] = 2 * z;   // ww
+    out[5 + 1] = 1.0;   // xy
+    out[5 + 8] = 2 * w; // zw
+    out[5 + 9] = 2 * z; // ww
   };
   const auto eq = ddx::rt::equation([&f] {
     const auto x = ddx::rt::var("x");
@@ -166,8 +166,7 @@ TEST(RtExtern, AMisshapenRegistrationOrCallIsRefused) {
   });
   EXPECT_EQ(wide.status()->code, ddx::errc::extern_shape);
   for (const auto *text : {"extern(x)", "extern_d(x)", "extern_args(x, y)"}) {
-    EXPECT_EQ(ddx::rt::equation(text).error().code,
-              ddx::errc::unknown_function)
+    EXPECT_EQ(ddx::rt::equation(text).error().code, ddx::errc::unknown_function)
         << text;
   }
 }

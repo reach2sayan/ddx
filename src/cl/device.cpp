@@ -54,14 +54,15 @@ struct Kernel::Impl {
   bc::kernel kernel;
   std::size_t local;
   std::mutex mutex;
-  std::array<bc::buffer, 4> buffers{};    // xs, f, g, h
+  std::array<bc::buffer, 4> buffers{};   // xs, f, g, h
   std::array<std::size_t, 4> capacity{}; // in doubles
 };
 
 namespace {
 
-[[nodiscard]] std::unexpected<error> refused(errc code, std::string detail) {
-  return std::unexpected{error{code, std::move(detail)}};
+[[nodiscard]] std::unexpected<compile_error> refused(errc code,
+                                                     std::string detail) {
+  return std::unexpected{compile_error{code, std::move(detail)}};
 }
 
 // The pragma needs the extension, and a device that lists it but reports no
@@ -81,11 +82,12 @@ struct Candidate {
   std::vector<Candidate> out;
   for (const bc::platform &platform : bc::system::platforms()) {
     for (const bc::device &device : platform.devices()) {
-      out.push_back({.device = device,
-                     .name = std::format(
-                         "{} / {}", boost::algorithm::trim_copy(platform.name()),
-                         boost::algorithm::trim_copy(device.name())),
-                     .fp64 = doubles(device)});
+      out.push_back(
+          {.device = device,
+           .name = std::format("{} / {}",
+                               boost::algorithm::trim_copy(platform.name()),
+                               boost::algorithm::trim_copy(device.name())),
+           .fp64 = doubles(device)});
     }
   }
   return out;
@@ -135,10 +137,11 @@ void drain(bc::command_queue &queue) noexcept {
       k.get_work_group_info<std::size_t>(d, CL_KERNEL_WORK_GROUP_SIZE), 256);
   const auto step = k.get_work_group_info<std::size_t>(
       d, CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE);
-  return std::max<std::size_t>(step > 0 && most >= step ? most - most % step : most, 1);
+  return std::max<std::size_t>(
+      step > 0 && most >= step ? most - most % step : most, 1);
 }
 
-// One worker: a driver's compiler is already threaded, and the lanes of one
+// One worker: a driver's compiler is already threaded, and the pipelines of one
 // equation queue behind each other as the LLVM ladder's do.  Constructed on
 // the first compile, after the vendor runtime it calls into, so it is joined
 // before that runtime tears down.
@@ -149,7 +152,7 @@ void drain(bc::command_queue &queue) noexcept {
 
 } // namespace
 
-result<Device> Device::create(std::string_view selector) {
+compile_result<Device> Device::create(std::string_view selector) {
   try {
     const std::vector<Candidate> found = candidates();
     if (found.empty()) {
@@ -157,21 +160,22 @@ result<Device> Device::create(std::string_view selector) {
     }
     const Candidate *const chosen = choose(found, selector);
     if (chosen == nullptr) {
-      return refused(errc::no_device,
-                     selector.empty()
-                         ? std::format("no device has double precision; saw: {}",
-                                       seen(found))
-                         : std::format("nothing with double precision matches "
-                                       "'{}'; saw: {}",
-                                       selector, seen(found)));
+      return refused(
+          errc::no_device,
+          selector.empty()
+              ? std::format("no device has double precision; saw: {}",
+                            seen(found))
+              : std::format("nothing with double precision matches "
+                            "'{}'; saw: {}",
+                            selector, seen(found)));
     }
     bc::context context{chosen->device};
-    return Device{std::make_shared<Impl>(Impl{
-        .device = chosen->device,
-        .context = std::move(context),
-        .identity = std::format("{} / {} / {}", chosen->name,
-                                chosen->device.driver_version(),
-                                chosen->device.version())})};
+    return Device{std::make_shared<Impl>(
+        Impl{.device = chosen->device,
+             .context = std::move(context),
+             .identity = std::format("{} / {} / {}", chosen->name,
+                                     chosen->device.driver_version(),
+                                     chosen->device.version())})};
   } catch (const bc::opencl_error &e) {
     return refused(errc::no_device, e.error_string());
   } catch (const std::exception &e) {
@@ -179,10 +183,10 @@ result<Device> Device::create(std::string_view selector) {
   }
 }
 
-const result<Device> &Device::shared(std::string_view selector) {
+const compile_result<Device> &Device::shared(std::string_view selector) {
   struct Registry {
     std::mutex mutex;
-    std::map<std::string, result<Device>, std::less<>> devices;
+    std::map<std::string, compile_result<Device>, std::less<>> devices;
   };
   // Leaked on purpose: a context released while the program exits is what
   // vendor runtimes crash on, and nothing here needs releasing then.
@@ -198,20 +202,21 @@ const result<Device> &Device::shared(std::string_view selector) {
 
 std::string_view Device::identity() const noexcept { return impl_->identity; }
 
-result<Kernel> Device::compile(const rt::Graph<double> &g,
-                               CompileReport *report) const {
+compile_result<Kernel> Device::compile(const rt::Graph<double> &g,
+                                       CompileReport *report) const {
   using clock = std::chrono::steady_clock;
   CompileReport discard;
   CompileReport &rep = report != nullptr ? *report : discard;
   // Device code cannot call into the host, so a graph calling a function the
-  // program supplies is the sweep's: refused, and the lane interprets.
+  // program supplies is the sweep's: refused, and the pipeline interprets.
   if (g.calls_extern()) {
     return refused(errc::device_compile,
                    "an extern function runs on the host only");
   }
   if (g.has_tensors()) {
-    return refused(errc::tensor_kernel,
-                   "tensor nodes run on the sweep; no kernel is built for them");
+    return refused(
+        errc::tensor_kernel,
+        "tensor nodes run on the sweep; no kernel is built for them");
   }
   const auto start = clock::now();
   const std::string source = detail::emit_source(g);
@@ -241,20 +246,20 @@ result<Kernel> Device::compile(const rt::Graph<double> &g,
 
 // packaged_task, never std::async: only the latter's future joins in its
 // destructor, putting a compile on the critical path of whoever dropped it.
-std::shared_future<result<Kernel>>
+std::shared_future<compile_result<Kernel>>
 Device::compile_async(std::shared_ptr<const rt::Graph<double>> g) const {
-  auto task = std::make_shared<std::packaged_task<result<Kernel>()>>(
+  auto task = std::make_shared<std::packaged_task<compile_result<Kernel>()>>(
       [self = *this, graph = std::move(g)] { return self.compile(*graph); });
   auto landing = task->get_future().share();
   boost::asio::post(compiles(), [task] { std::invoke(*task); });
   return landing;
 }
 
-result<void> Kernel::operator()(std::span<const double *const> xs,
-                                std::span<double *const> f,
-                                std::span<double *const> g,
-                                std::span<double *const> h,
-                                std::size_t n) const {
+compile_result<void> Kernel::operator()(std::span<const double *const> xs,
+                                        std::span<double *const> f,
+                                        std::span<double *const> g,
+                                        std::span<double *const> h,
+                                        std::size_t n) const {
   if (!impl_) {
     return refused(errc::device_launch, "an empty kernel");
   }
@@ -276,7 +281,8 @@ result<void> Kernel::operator()(std::span<const double *const> xs,
                            cl_mem_flags flags) -> const bc::buffer & {
       const std::size_t doubles = std::max<std::size_t>(columns, 1) * n;
       if (k.capacity[slot] < doubles) {
-        k.buffers[slot] = bc::buffer{k.context, doubles * sizeof(double), flags};
+        k.buffers[slot] =
+            bc::buffer{k.context, doubles * sizeof(double), flags};
         k.capacity[slot] = doubles;
       }
       return k.buffers[slot];
@@ -284,8 +290,8 @@ result<void> Kernel::operator()(std::span<const double *const> xs,
 
     const bc::buffer &in = sized(0, xs.size(), CL_MEM_READ_ONLY);
     for (const auto [j, column] : std::views::enumerate(xs)) {
-      k.queue.enqueue_write_buffer_async(in, static_cast<std::size_t>(j) * bytes,
-                                         bytes, column);
+      k.queue.enqueue_write_buffer_async(
+          in, static_cast<std::size_t>(j) * bytes, bytes, column);
     }
     k.kernel.set_arg(0, in);
     for (const auto [slot, columns] : std::views::enumerate(outputs)) {

@@ -19,7 +19,7 @@ namespace {
 // Hessian sweep appends, so two threads may not share one Builder.
 auto model(std::size_t n) {
   return ddx::rt::equation([n] {
-    std::vector<ddx::rt::RTExpression<double>> v;
+    std::vector<ddx::rt::Expression<double>> v;
     for (std::size_t i = 0; i < n; ++i) {
       v.push_back(ddx::rt::var("x" + std::to_string(i)));
     }

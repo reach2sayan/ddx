@@ -4,14 +4,14 @@
 
 namespace ddx::rt {
 namespace {
-std::atomic<const KernelTable *> current{&reference_table};
+std::atomic<const TensorKernelTable *> current{&reference_table};
 } // namespace
 
-void use_kernels(const KernelTable &table) noexcept {
+void use_tensor_kernels(const TensorKernelTable &table) noexcept {
   current.store(&table, std::memory_order_release);
 }
 
-const KernelTable &kernels() noexcept {
+const TensorKernelTable &tensor_kernels() noexcept {
   return *current.load(std::memory_order_acquire);
 }
 

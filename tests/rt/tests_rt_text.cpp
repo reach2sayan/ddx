@@ -93,7 +93,7 @@ TEST(RtText, BuildsTheSameArenaAsTheCppSpelling) {
   // Node for node: interning makes the arena a function of the model, so equal
   // models are the same bytes and not merely the same answers.
   const auto same = [](const auto &l, const auto &r) {
-    return l.op == r.op && l.a == r.a && l.b == r.b && l.slot == r.slot &&
+    return l.op == r.op && l.a == r.a && l.b == r.b && l.aux == r.aux &&
            l.value == r.value;
   };
   EXPECT_TRUE(std::ranges::equal(written.nodes(), parsed.nodes(), same));
@@ -116,7 +116,7 @@ TEST(RtText, ComposesEqualityAsTheOperatorsDo) {
     const auto lowered = lower(parsed, *ast);
     ASSERT_TRUE(lowered.has_value()) << source;
     const auto same = [](const auto &l, const auto &r) {
-      return l.op == r.op && l.a == r.a && l.b == r.b && l.slot == r.slot &&
+      return l.op == r.op && l.a == r.a && l.b == r.b && l.aux == r.aux &&
              l.value == r.value;
     };
     EXPECT_TRUE(std::ranges::equal(written.nodes(), parsed.nodes(), same))
@@ -159,7 +159,7 @@ TEST(RtText, FoldsWhatNeverNeededAGraph) {
   ASSERT_TRUE(lowered.has_value());
 
   // A literal that has met no symbol stays pending, so a constant expression
-  // costs no node at all -- exactly as `RTExpression{3.0} + 4.0` does.
+  // costs no node at all -- exactly as `rt::Expression{3.0} + 4.0` does.
   EXPECT_EQ(arena.size(), 0U);
   EXPECT_TRUE(lowered->pending());
   EXPECT_DOUBLE_EQ(lowered->literal(), 7.0);
@@ -268,7 +268,7 @@ TEST(RtText, NamesSymbolsWhicheverFunctionFirstUsesThem) {
 
 TEST(RtText, RefusesAModelThatNamesNoSymbol) {
   // A bare constant folds to a pending literal, which names no arena -- the
-  // same refusal `ddx::rt::equation(RTExpression{7.0})` earns.
+  // same refusal `ddx::rt::equation(rt::Expression{7.0})` earns.
   const auto eq = ddx::rt::equation("3 + 4");
   ASSERT_TRUE(eq.has_value());
   EXPECT_TRUE(eq->poisoned());

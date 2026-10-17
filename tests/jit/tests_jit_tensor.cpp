@@ -10,14 +10,14 @@
 // No kernel is lowered over a tensor row: the compile is refused up front, the
 // lane keeps sweeping, and the answers are the sweep's.
 namespace {
-using RV = ddx::rt::RTExpression<>;
+using RV = ddx::rt::Expression<>;
 
 auto model() {
   return ddx::rt::equation([] {
     const RV x = ddx::rt::vec("x", 4);
-    const std::vector<double> m{1.0, 0.5, -0.25, 2.0, 0.0, 1.5, 0.75, -1.0,
-                                0.3, 0.6, 0.9,   1.2, 2.1, -0.4, 0.8, 0.1};
-    return dot(x, gemv(ddx::rt::mat_const(4, 4, m), x)) + sum(log(x));
+    const std::vector<double> m{1.0, 0.5, -0.25, 2.0, 0.0, 1.5,  0.75, -1.0,
+                                0.3, 0.6, 0.9,   1.2, 2.1, -0.4, 0.8,  0.1};
+    return dot(x, gemv(ddx::rt::mat_constant(4, 4, m), x)) + sum(log(x));
   });
 }
 } // namespace

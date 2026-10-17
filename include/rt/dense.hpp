@@ -75,8 +75,8 @@ public:
   [[nodiscard]] std::uint32_t n3() const noexcept { return n3_; }
 
 private:
-  using V = RTExpression<T>; // a handle known to be a vector
-  using E = RTExpression<T>;
+  using V = Expression<T>; // a handle known to be a vector
+  using E = Expression<T>;
 
   [[nodiscard]] V vec(NodeId id) const { return V{b_, id}; }
   [[nodiscard]] E expr(NodeId id) const { return E{b_, id}; }
@@ -243,10 +243,10 @@ private:
       return no_node;
     case Kind::Input:
       if (node.op == OpCode::Var) {
-        return unit(node.slot);
+        return unit(index_of(node));
       }
       if (node.op == OpCode::Implicit) {
-        return b_.pack(Implicits::row(b_, node.slot));
+        return b_.pack(Implicits::row(b_, index_of(node)));
       }
       return no_node;
     case Kind::Nary:
@@ -276,10 +276,10 @@ private:
       case OpCode::MatConst: // a table, which a Gemv reads: nothing moves it
         return no_node;
       case OpCode::Gather:
-        return std::ranges::fold_left(mat_[node.a], no_node,
-                                      [&](NodeId r, const Term &t) {
-                                        return add(r, row_of(t, node.slot));
-                                      });
+        return std::ranges::fold_left(
+            mat_[node.a], no_node, [&](NodeId r, const Term &t) {
+              return add(r, row_of(t, index_of(node)));
+            });
       case OpCode::Sum:
         return left(vec(ones_of(node.a)), mat_[node.a]);
       case OpCode::Dot:
@@ -332,7 +332,7 @@ private:
     }
     case OpCode::Gemv:
       out = mat_[node.b] | std::views::transform([&](const Term &t) {
-              return gemv(node.a, node.slot != 0, t);
+              return gemv(node.a, is_transposed(node), t);
             }) |
             impl::to<Terms>();
       break;
@@ -341,7 +341,7 @@ private:
       if (row_[node.b] != no_node) {
         ++n2_;
         out.push_back({.kind = Term::Kind::Outer,
-                       .a = unit(node.slot, width_of(b_, node.a)),
+                       .a = unit(index_of(node), width_of(b_, node.a)),
                        .b = row_[node.b]});
       }
       break;
@@ -361,8 +361,7 @@ private:
 } // namespace detail
 
 template <impl::Numeric T>
-[[nodiscard]] DenseHessian build_dense_hessian_impl(Builder<T> &b,
-                                                    NodeId root) {
+[[nodiscard]] DenseHessian derive_dense_hessian(Builder<T> &b, NodeId root) {
   const auto g = build_reverse_jacobian(b, root);
   detail::DenseSweep<T> sweep{b, g.partial};
   return {.value = g.value,

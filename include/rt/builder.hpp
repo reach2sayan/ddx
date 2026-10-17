@@ -32,16 +32,16 @@ namespace ddx::rt {
 using NodeId = std::uint32_t;
 inline constexpr NodeId no_node = ~NodeId{0};
 
-template <impl::Numeric T> class RTExpression;
+template <impl::Numeric T> class Expression;
 template <impl::Numeric T = double> class Builder;
 
 // Befriended by Builder: naming an input is this one primitive's alone, and
 // var(), param() and implicit() are its spellings.
 template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> named(Builder<T> &b, OpCode op,
-                                              std::string_view name);
-template <impl::Numeric T, std::invocable<const RTExpression<T> &> F>
-[[nodiscard]] constexpr RTExpression<T>
+[[nodiscard]] constexpr Expression<T> named(Builder<T> &b, OpCode op,
+                                            std::string_view name);
+template <impl::Numeric T, std::invocable<const Expression<T> &> F>
+[[nodiscard]] constexpr Expression<T>
 implicit(Builder<T> &b, std::string_view name, F &&residual);
 namespace detail {
 struct Implicits;
@@ -118,13 +118,13 @@ constexpr void extern_partials(Builder<T> &b, NodeId v, Sink &&sink);
 // A named input: which kind of leaf, and its place among that kind.
 struct Input {
   OpCode op = OpCode::Var;
-  std::uint32_t slot = 0;
+  std::uint32_t index = 0;
   constexpr bool operator==(const Input &) const = default;
 };
 
 // Befriended for symmetry with var(); a seed slot moves nothing.
 template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> seed(Builder<T> &b, std::uint32_t slot);
+[[nodiscard]] constexpr Expression<T> seed(Builder<T> &b, std::uint32_t slot);
 
 // A multiply and an add taken as one rounding: x * y + z, with x negated where
 // the multiply reached the add through a Neg, which is what a subtraction
@@ -155,9 +155,23 @@ struct Step {
 
 namespace detail {
 
+// What a node's `aux` word holds, by op -- the table in rt/opcode.hpp.  Reads
+// go through these; only a node being formed or copied spells `aux`.
+[[nodiscard]] constexpr std::uint32_t index_of(const auto &node) noexcept {
+  return node.aux;
+}
+[[nodiscard]] constexpr std::uint32_t count_of(const auto &node) noexcept {
+  return node.aux;
+}
+[[nodiscard]] constexpr bool is_transposed(const auto &node) noexcept {
+  return node.aux != 0;
+}
+[[nodiscard]] constexpr ExternRef extern_of(const auto &node) noexcept {
+  return ExternRef::of(node.aux);
+}
 // The inner opcode a Map or Zip applies elementwise.
 [[nodiscard]] constexpr OpCode inner_of(const auto &node) noexcept {
-  return static_cast<OpCode>(node.slot);
+  return static_cast<OpCode>(node.aux);
 }
 // The opcode whose rule a node follows: a Map or Zip is its inner one.
 [[nodiscard]] constexpr OpCode effective_op(const auto &node) noexcept {
@@ -194,10 +208,10 @@ template <impl::Numeric T> struct Node {
   OpCode op = OpCode::Const;
   NodeId a = no_node;
   NodeId b = no_node;
-  NodeId c = no_node;     // the third operand, which only a select has
-  T value{};              // Const
-  std::uint32_t slot = 0; // Var
-  BOOST_DESCRIBE_CLASS(Node, (), (op, a, b, c, value, slot), (), ())
+  NodeId c = no_node;    // the third operand, which only a select has
+  T value{};             // Const
+  std::uint32_t aux = 0; // per op: see rt/opcode.hpp and index_of() et al.
+  BOOST_DESCRIBE_CLASS(Node, (), (op, a, b, c, value, aux), (), ())
 };
 
 namespace detail {
@@ -207,7 +221,7 @@ template <impl::Numeric T> struct TwoOperandNode {
   NodeId a;
   NodeId b;
   T value;
-  std::uint32_t slot;
+  std::uint32_t aux;
 };
 } // namespace detail
 
@@ -286,8 +300,8 @@ template <impl::Numeric T> struct Model {
                                                           NodeId v) {
   const OpCode op = s.op_of(v);
   const std::size_t count =
-      is_extern(op) ? externs_of(s)[ExternSlot::of(s[v].slot).function].arity
-                    : s[v].slot;
+      is_extern(op) ? externs_of(s)[detail::extern_of(s[v]).function].arity
+                    : detail::count_of(s[v]);
   return lists_of(s).subspan(s.operands(v)[0], count); // `a` is the offset
 }
 
@@ -321,19 +335,20 @@ struct Shape {
     const auto [a, b, c] = s.operands(v);
     switch (s.op_of(v)) {
     case OpCode::VecConst:
-      return {.rows = tensors_of(s)[s[v].slot].rows, .cols = 1};
+      return {.rows = tensors_of(s)[detail::index_of(s[v])].rows, .cols = 1};
     case OpCode::MatConst:
       return {.rows = 0, .cols = 0};
     case OpCode::MatRow: {
-      const auto &m = tensors_of(s)[s[a].slot];
-      return s[v].slot ? Shape{.rows = m.cols, .cols = m.rows}
-                       : Shape{.rows = m.rows, .cols = m.cols};
+      const auto &m = tensors_of(s)[detail::index_of(s[a])];
+      return detail::is_transposed(s[v])
+                 ? Shape{.rows = m.cols, .cols = m.rows}
+                 : Shape{.rows = m.rows, .cols = m.cols};
     }
     case OpCode::Pack:
-      return {.rows = s[v].slot, .cols = 1};
+      return {.rows = detail::count_of(s[v]), .cols = 1};
     case OpCode::Gemv: {
-      const auto &m = tensors_of(s)[s[a].slot];
-      return {.rows = s[v].slot ? m.cols : m.rows, .cols = 1};
+      const auto &m = tensors_of(s)[detail::index_of(s[a])];
+      return {.rows = detail::is_transposed(s[v]) ? m.cols : m.rows, .cols = 1};
     }
     case OpCode::Diag: {
       const std::uint32_t w = shape_of(s, a).rows;
@@ -343,12 +358,13 @@ struct Shape {
       return {.rows = shape_of(s, a).rows, .cols = shape_of(s, b).rows};
     case OpCode::MatVec: {
       const Shape m = shape_of(s, a);
-      return {.rows = s[v].slot ? m.cols : m.rows, .cols = 1};
+      return {.rows = detail::is_transposed(s[v]) ? m.cols : m.rows, .cols = 1};
     }
     case OpCode::MatMul:
       return {.rows = shape_of(s, a).rows, .cols = shape_of(s, b).cols};
     case OpCode::StackRows:
-      return {.rows = s[v].slot, .cols = shape_of(s, arguments(s, v)[0]).rows};
+      return {.rows = detail::count_of(s[v]),
+              .cols = shape_of(s, arguments(s, v)[0]).rows};
     case OpCode::RowOf:
       return {.rows = shape_of(s, a).cols, .cols = 1};
     case OpCode::Map:
@@ -414,7 +430,7 @@ public:
       at = std::prev(model_.tensors.end());
     }
     return intern({.op = cols == 1 ? OpCode::VecConst : OpCode::MatConst,
-                   .slot = static_cast<std::uint32_t>(
+                   .aux = static_cast<std::uint32_t>(
                        std::distance(model_.tensors.begin(), at))});
   }
   [[nodiscard]] constexpr NodeId filled(std::uint32_t width, const T &v) {
@@ -436,16 +452,16 @@ public:
   }
 
   // A node with a list, a tensor node or an extern call is formed with its
-  // slot and past fold() -- no identity below reads a vector or a list -- and
-  // past the commutative swap, which is a Zip's inner op's business and not
+  // aux word and past fold() -- no identity below reads a vector or a list --
+  // and past the commutative swap, which is a Zip's inner op's business and not
   // Zip's.
   [[nodiscard]] constexpr NodeId make(OpCode op, NodeId a, NodeId b = no_node,
                                       NodeId c = no_node,
-                                      std::uint32_t slot = 0) {
+                                      std::uint32_t aux = 0) {
     if (has_list(op) || kind_of(op) == Kind::Tensor) {
-      return intern({.op = op, .a = a, .b = b, .c = c, .slot = slot});
+      return intern({.op = op, .a = a, .b = b, .c = c, .aux = aux});
     }
-    assert(slot == 0);
+    assert(aux == 0);
     // fold() and the commutative swap are both binary questions; a third
     // operand means neither applies, and asking would hand a binary functor
     // three arguments.
@@ -469,12 +485,12 @@ public:
     if (has_list(n.op)) {
       n.a = list(arguments(*this, v) | std::views::transform(remap) |
                  impl::to<std::vector<NodeId>>());
-      return make(n.op, n.a, no_node, no_node, n.slot);
+      return make(n.op, n.a, no_node, no_node, n.aux);
     }
     for (NodeId *const u : {&n.a, &n.b, &n.c}) {
       *u = *u == no_node ? no_node : remap(*u);
     }
-    return make(n.op, n.a, n.b, n.c, n.slot);
+    return make(n.op, n.a, n.b, n.c, n.aux);
   }
 
   [[nodiscard]] constexpr const Node<T> &operator[](NodeId id) const {
@@ -536,8 +552,8 @@ public:
   }
 
   // The leaf a named input is.
-  [[nodiscard]] constexpr NodeId leaf(OpCode op, std::uint32_t slot) const {
-    return ids_[*named_index(op)][slot];
+  [[nodiscard]] constexpr NodeId leaf(OpCode op, std::uint32_t index) const {
+    return ids_[*named_index(op)][index];
   }
 
   // Which input `name` is, if any.
@@ -557,7 +573,7 @@ public:
         return n.value == v;
       }
       return n.op == OpCode::VecConst &&
-             std::ranges::all_of(model_.tensors[n.slot].data,
+             std::ranges::all_of(model_.tensors[detail::index_of(n)].data,
                                  [&v](const T &x) { return x == v; });
     } else {
       return false;
@@ -570,18 +586,17 @@ private:
   // next slot of its kind and moves nothing already built.  no_node is a name
   // already taken by another kind, which named() poisons.
   template <impl::Numeric U>
-  friend constexpr RTExpression<U> named(Builder<U> &, OpCode,
-                                         std::string_view);
+  friend constexpr Expression<U> named(Builder<U> &, OpCode, std::string_view);
   [[nodiscard]] constexpr NodeId input(OpCode op, std::string_view name) {
     const auto at = std::ranges::lower_bound(by_name_, name, {}, name_of());
     if (at != by_name_.end() && name_of()(*at) == name) {
-      return at->op == op ? leaf(op, at->slot) : no_node;
+      return at->op == op ? leaf(op, at->index) : no_node;
     }
     const auto k = *named_index(op);
-    const auto slot = static_cast<std::uint32_t>(model_.names[k].size());
+    const auto index = static_cast<std::uint32_t>(model_.names[k].size());
     model_.names[k].emplace_back(name);
-    ids_[k].push_back(intern({.op = op, .slot = slot}));
-    by_name_.insert(at, {.op = op, .slot = slot});
+    ids_[k].push_back(intern({.op = op, .aux = index}));
+    by_name_.insert(at, {.op = op, .index = index});
     if (op == OpCode::Implicit) {
       model_.closures.push_back(no_node);
       closure_rows_.emplace_back();
@@ -592,11 +607,10 @@ private:
   // Implicit `z` is a root of `f`.  A misuse -- a poisoned residual, or the
   // same implicit named twice -- is kept rather than thrown: the equation
   // built over this arena refuses with it.
-  template <impl::Numeric U, std::invocable<const RTExpression<U> &> F>
-  friend constexpr RTExpression<U> implicit(Builder<U> &, std::string_view,
-                                            F &&);
+  template <impl::Numeric U, std::invocable<const Expression<U> &> F>
+  friend constexpr Expression<U> implicit(Builder<U> &, std::string_view, F &&);
   constexpr void close(NodeId z, NodeId f, std::optional<errc> why) {
-    NodeId &closure = model_.closures[model_.nodes[z].slot];
+    NodeId &closure = model_.closures[detail::index_of(model_.nodes[z])];
     if (why || closure != no_node) {
       broken_ = broken_.value_or(why.value_or(errc::closed_twice));
     } else {
@@ -610,7 +624,7 @@ private:
   friend ExternFunction<U> extern_fn(Builder<U> &, ExternRecord,
                                      std::type_identity_t<ExternFn<U>>);
   constexpr std::optional<std::uint32_t> add_extern(ExternEntry<T> e) {
-    if (!ExternSlot::fits(model_.externs.size(), e.size())) {
+    if (!ExternRef::fits(model_.externs.size(), e.size())) {
       return std::nullopt;
     }
     model_.externs.push_back(std::move(e));
@@ -623,7 +637,7 @@ private:
                                std::span<const NodeId> args) {
     return intern({.op = OpCode::Extern,
                    .a = list(args),
-                   .slot = ExternSlot{.function = function}.packed()});
+                   .aux = ExternRef{.function = function}.packed()});
   }
 
   // Where `ids` sit in the pool: the run already there that spells them, else
@@ -643,7 +657,7 @@ private:
   // accumulator keeps the value it had.  Nothing is a node until the sum is
   // read, and then once: one term is itself, two are an Add -- the chain's
   // own folds and fma -- and more a SumN over the terms in order.
-  template <impl::Numeric U> friend class RTExpression;
+  template <impl::Numeric U> friend class Expression;
   struct Pending {
     NodeId term = no_node;
     std::uint32_t prev = no_node; // the entry before, no_node for the first
@@ -678,12 +692,11 @@ private:
   friend constexpr void detail::extern_partials(Builder<U> &, NodeId, Sink &&);
   constexpr NodeId extern_component(NodeId v, std::uint32_t component) {
     const Node<T> n = model_[v]; // by value: intern() may reallocate
-    return intern(
-        {.op = OpCode::ExternD,
-         .a = n.a,
-         .slot = ExternSlot{.function = ExternSlot::of(n.slot).function,
-                            .component = component}
-                     .packed()});
+    return intern({.op = OpCode::ExternD,
+                   .a = n.a,
+                   .aux = ExternRef{.function = detail::extern_of(n).function,
+                                    .component = component}
+                              .packed()});
   }
 
   // dz/ds for each implicit, by the implicit-function theorem, built the first
@@ -694,14 +707,14 @@ private:
   // A seed slot is given rather than looked up.  Interning leaves one node per
   // slot.
   template <impl::Numeric U>
-  friend constexpr RTExpression<U> seed(Builder<U> &, std::uint32_t);
-  [[nodiscard]] constexpr NodeId seed_node(std::uint32_t slot) {
-    return intern({.op = OpCode::Seed, .slot = slot});
+  friend constexpr Expression<U> seed(Builder<U> &, std::uint32_t);
+  [[nodiscard]] constexpr NodeId seed_node(std::uint32_t index) {
+    return intern({.op = OpCode::Seed, .aux = index});
   }
 
   static constexpr std::uint64_t payload_of(const Node<T> &n) {
     if (n.op != OpCode::Const) {
-      return std::uint64_t{n.slot};
+      return std::uint64_t{n.aux};
     }
     // Anything wider than a word lands in one bucket and is separated by
     // `same` below.
@@ -716,7 +729,7 @@ private:
     if (l.op != r.op || l.a != r.a || l.b != r.b || l.c != r.c) {
       return false;
     } else if (l.op != OpCode::Const) {
-      return l.slot == r.slot;
+      return l.aux == r.aux;
     }
     return identical(l.value, r.value);
   }
@@ -938,7 +951,7 @@ private:
   // The key by_name_ is sorted on.
   [[nodiscard]] constexpr auto name_of() const {
     return [this](const Input &in) -> std::string_view {
-      return names(in.op)[in.slot];
+      return names(in.op)[in.index];
     };
   }
 };
@@ -1064,14 +1077,14 @@ last_uses(const auto &s, std::span<const Step> schedule,
 // list.  A node's own row is never one it reads this step: the frees happen
 // after the take, which is what lets the lane loops promise no aliasing.
 struct Packed {
-  std::vector<std::uint32_t> slot; // by id; no_node for a node not scheduled
+  std::vector<std::uint32_t> by_id; // no_node for a node not scheduled
   std::size_t rows = 0;
 };
-[[nodiscard]] constexpr Packed pack_slots(const auto &s,
-                                          std::span<Step> schedule,
-                                          std::span<const NodeId> outputs) {
+[[nodiscard]] constexpr Packed pack_rows(const auto &s,
+                                         std::span<Step> schedule,
+                                         std::span<const NodeId> outputs) {
   const auto last = last_uses(s, schedule, outputs);
-  Packed out{.slot = std::vector<std::uint32_t>(s.size(), no_node)};
+  Packed out{.by_id = std::vector<std::uint32_t>(s.size(), no_node)};
   std::vector<std::uint32_t> taken(s.size(), no_node); // the row, while live
   std::vector<std::uint32_t> free;
   std::uint32_t next = 0;
@@ -1084,7 +1097,7 @@ struct Packed {
       row = free.back();
       free.pop_back();
     }
-    out.slot[step.node] = row;
+    out.by_id[step.node] = row;
     step.out = row;
     for (const auto [k, u] : step.in | std::views::enumerate) {
       step.in[static_cast<std::size_t>(k)] = u == no_node ? no_node : taken[u];

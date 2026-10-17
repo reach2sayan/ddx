@@ -22,7 +22,7 @@ namespace detail {
 // The rules below are written over the one handle, which reads elementwise
 // where the node is a vector: a Map or Zip is its inner opcode's rule, built
 // through the handle, which emits a Map or Zip again.
-template <impl::Numeric T> using H = RTExpression<T>;
+template <impl::Numeric T> using H = Expression<T>;
 
 // A template, so `if constexpr` actually discards: deriv_from_value reuses the
 // primal node, and d(exp)/du becomes the exp node itself.
@@ -90,7 +90,7 @@ template <impl::Numeric T>
 
 } // namespace detail
 
-// One root's row of the Jacobian.  build_jacobian_impl() is an overload set:
+// One root's row of the Jacobian.  derive_jacobian() is an overload set:
 // the number of roots picks the shape, as output_dim does.
 struct JacobianRow {
   NodeId value = no_node;       // the node for f itself
@@ -114,11 +114,11 @@ struct Implicits {
     auto &row = b.closure_rows_[slot];
     if (!row) {
       const auto f = build_reverse_jacobian(b, b.closures()[slot], false);
-      const RTExpression<T> fz{b, f.implicit[slot]};
+      const Expression<T> fz{b, f.implicit[slot]};
       row = f.partial | std::views::transform([&](NodeId fs) {
               return b.is_constant(fs, T{0})
                          ? fs
-                         : (-(RTExpression<T>{b, fs} / fz)).id(b);
+                         : (-(Expression<T>{b, fs} / fz)).id(b);
             }) |
             impl::to<std::vector<NodeId>>();
     }
@@ -132,11 +132,11 @@ struct Implicits {
 // it, and differ only in what they do with the pair.
 template <impl::Numeric T, typename Sink>
 constexpr void extern_partials(Builder<T> &b, NodeId v, Sink &&sink) {
-  const auto [fn, at] = ExternSlot::of(b[v].slot);
+  const auto [fn, at] = detail::extern_of(b[v]);
   const ExternRecord &e = b.externs()[fn];
   for (const auto [l, arg] : arguments(b, v) | std::views::enumerate) {
     if (const auto up = e.up(at, static_cast<std::size_t>(l))) {
-      sink(arg, RTExpression<T>{b, b.extern_component(v, *up)});
+      sink(arg, Expression<T>{b, b.extern_component(v, *up)});
     }
   }
 }
@@ -155,7 +155,7 @@ template <impl::Numeric T>
   const auto live = reachable(b, wanted);
   return std::ranges::any_of(live_ids(live), [&b](NodeId v) {
     return kind_of(b[v].op) == Kind::Extern &&
-           b.externs()[ExternSlot::of(b[v].slot).function].order < 2;
+           b.externs()[detail::extern_of(b[v]).function].order < 2;
   });
 }
 
@@ -207,16 +207,16 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
   std::vector<NodeId> guard(n, no_node);
   adj[root] = b.constant(T{1});
 
-  const RTExpression<T> zero{0};
-  const RTExpression<T> one{1};
-  const auto expr = [&b](NodeId id) { return RTExpression<T>{b, id}; };
-  const auto both = [&](NodeId g, const RTExpression<T> &cond) {
+  const Expression<T> zero{0};
+  const Expression<T> one{1};
+  const auto expr = [&b](NodeId id) { return Expression<T>{b, id}; };
+  const auto both = [&](NodeId g, const Expression<T> &cond) {
     return g == no_node ? cond : select(expr(g), cond, zero);
   };
 
   // A contribution under its guard, as a node of the child's width: a
   // select, which over a vector is a Scale by the chosen 1 or 0.
-  const auto guarded = [&](NodeId child, NodeId g, const RTExpression<T> &c) {
+  const auto guarded = [&](NodeId child, NodeId g, const Expression<T> &c) {
     return both(g, c).id(b, width_of(b, child));
   };
 
@@ -224,7 +224,7 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
   // on a chosen path, by any number of guarded ones on the OR of theirs.  The
   // handle's `+` is the sum: a Zip(add) where the child is a vector.
   const auto add_to = [&](NodeId child, NodeId g,
-                          const RTExpression<T> &contribution) {
+                          const Expression<T> &contribution) {
     const NodeId c = guarded(child, g, contribution);
     // What sign(), and so abs(), hands back.  Storing it would mark the child
     // live and carry a zero adjoint down its whole cone.
@@ -252,7 +252,7 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
     }
     const auto node = b[v]; // by value: building below may reallocate
     // The adjoint has the node's shape: a vector's is a vector of its width.
-    const RTExpression<T> a = expr(adj[v]);
+    const Expression<T> a = expr(adj[v]);
     const NodeId g = guard[v];
     const OpCode op = detail::effective_op(node);
     switch (kind_of(op)) {
@@ -260,7 +260,7 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
     case Kind::Input:
       break;
     case Kind::Extern:
-      detail::extern_partials(b, v, [&](NodeId arg, const RTExpression<T> &c) {
+      detail::extern_partials(b, v, [&](NodeId arg, const Expression<T> &c) {
         add_to(arg, g, a * c);
       });
       break;
@@ -276,7 +276,7 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
       // Here rather than in ops/adjoints.hpp: two arms of different types is
       // what a type-encoded tree cannot hold, so there is no compile-time rule
       // to share with.  Nothing reaches the condition -- it chooses.
-      const RTExpression<T> cond = expr(node.a);
+      const Expression<T> cond = expr(node.a);
       add_to(node.b, both(g, cond).id(b), a);
       add_to(node.c, both(g, select(cond, zero, one)).id(b), a);
       break;
@@ -302,9 +302,9 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
         break;
       }
       case OpCode::Gather:
-        add_to(
-            node.a, g,
-            detail::add_at(expr(b.zeros(width_of(b, node.a))), a, node.slot));
+        add_to(node.a, g,
+               detail::add_at(expr(b.zeros(width_of(b, node.a))), a,
+                              detail::index_of(node)));
         break;
       case OpCode::Scale:
         add_to(node.a, g, dot(a, expr(node.b)));
@@ -321,11 +321,11 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
         // The matrix is a constant: only the vector moves, by M^T (or M).
         add_to(node.b, g,
                expr(b.make(OpCode::Gemv, node.a, adj[v], no_node,
-                           node.slot ? 0u : 1u)));
+                           detail::is_transposed(node) ? 0u : 1u)));
         break;
       case OpCode::AddAt:
         add_to(node.a, g, a);
-        add_to(node.b, g, a[node.slot]);
+        add_to(node.b, g, a[detail::index_of(node)]);
         break;
       default:
         if (!is_matrix_row(node.op)) {
@@ -358,9 +358,9 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
                 .implicit = std::vector<NodeId>(implicits, no_node)};
   for (const auto [v, node] : std::views::enumerate(b.nodes().first(n))) {
     if (node.op == OpCode::Var) {
-      g.partial[node.slot] = adj[static_cast<std::size_t>(v)];
+      g.partial[detail::index_of(node)] = adj[static_cast<std::size_t>(v)];
     } else if (node.op == OpCode::Implicit) {
-      g.implicit[node.slot] = adj[static_cast<std::size_t>(v)];
+      g.implicit[detail::index_of(node)] = adj[static_cast<std::size_t>(v)];
     }
   }
   // A symbol the expression never mentions has no leaf, so no adjoint reached
@@ -387,17 +387,17 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
     const OpCode op = detail::effective_op(node);
     switch (kind_of(op)) {
     case Kind::Extern: {
-      RTExpression<T> sum{0};
-      detail::extern_partials(b, v, [&](NodeId arg, const RTExpression<T> &c) {
-        sum = sum + c * RTExpression<T>{b, d[arg]};
+      Expression<T> sum{0};
+      detail::extern_partials(b, v, [&](NodeId arg, const Expression<T> &c) {
+        sum = sum + c * Expression<T>{b, d[arg]};
       });
       d[v] = sum.id(b);
       break;
     }
     case Kind::Nary: { // the sum of the terms' tangents, as a sum again
-      RTExpression<T> sum{0};
+      Expression<T> sum{0};
       for (const NodeId t : arguments(b, v)) {
-        sum += RTExpression<T>{b, d[t]};
+        sum += Expression<T>{b, d[t]};
       }
       d[v] = sum.id(b);
       break;
@@ -408,48 +408,48 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
     case Kind::Input:
       if (node.op == OpCode::Implicit) {
         // dz = sum_s dz/dx_s dx_s: z moves with every symbol its residual does.
-        const auto dz = detail::Implicits::row(b, node.slot);
+        const auto dz = detail::Implicits::row(b, detail::index_of(node));
         d[v] = std::ranges::fold_left(
                    std::views::zip(dz, tangent) |
                        std::views::transform([&b](const auto &pair) {
                          const auto [zs, ts] = pair;
-                         return RTExpression<T>{b, zs} * RTExpression<T>{b, ts};
+                         return Expression<T>{b, zs} * Expression<T>{b, ts};
                        }),
-                   RTExpression<T>{0}, std::plus<>{})
+                   Expression<T>{0}, std::plus<>{})
                    .id(b);
       } else {
         // A Seed is a direction, not a variable, so it carries no tangent.
-        d[v] = node.op == OpCode::Var ? tangent[node.slot] : b.constant(T{0});
+        d[v] = node.op == OpCode::Var ? tangent[detail::index_of(node)]
+                                      : b.constant(T{0});
       }
       break;
     case Kind::Unary: {
-      const RTExpression<T> u{b, node.a};
-      const RTExpression<T> self{b, v};
-      d[v] =
-          (detail::partial(op, u, self) * RTExpression<T>{b, d[node.a]}).id(b);
+      const Expression<T> u{b, node.a};
+      const Expression<T> self{b, v};
+      d[v] = (detail::partial(op, u, self) * Expression<T>{b, d[node.a]}).id(b);
       break;
     }
     case Kind::Ternary:
       // select(c, dt, df): the condition picks the derivative as it picks
       // the value.
-      d[v] = select(RTExpression<T>{b, node.a}, RTExpression<T>{b, d[node.b]},
-                    RTExpression<T>{b, d[node.c]})
+      d[v] = select(Expression<T>{b, node.a}, Expression<T>{b, d[node.b]},
+                    Expression<T>{b, d[node.c]})
                  .id(b);
       break;
     case Kind::Binary: {
-      const RTExpression<T> l{b, node.a};
-      const RTExpression<T> r{b, node.b};
+      const Expression<T> l{b, node.a};
+      const Expression<T> r{b, node.b};
       const auto [dl, dr] = detail::partials(op, l, r);
-      d[v] = (dl * RTExpression<T>{b, d[node.a]} +
-              dr * RTExpression<T>{b, d[node.b]})
-                 .id(b, width_of(b, v));
+      d[v] =
+          (dl * Expression<T>{b, d[node.a]} + dr * Expression<T>{b, d[node.b]})
+              .id(b, width_of(b, v));
       break;
     }
     case Kind::Tensor: {
       // The forward twin of each reverse rule above; a vector's tangent is a
       // vector of its width.
-      const auto expr = [&b](NodeId id) { return RTExpression<T>{b, id}; };
-      const auto dv = [&](NodeId u) { return RTExpression<T>{b, d[u]}; };
+      const auto expr = [&b](NodeId id) { return Expression<T>{b, id}; };
+      const auto dv = [&](NodeId u) { return Expression<T>{b, d[u]}; };
       switch (node.op) {
       case OpCode::VecConst:
         d[v] = b.zeros(width_of(b, v));
@@ -465,7 +465,7 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
         break;
       }
       case OpCode::Gather:
-        d[v] = dv(node.a)[node.slot].id(b);
+        d[v] = dv(node.a)[detail::index_of(node)].id(b);
         break;
       case OpCode::Scale:
         d[v] = (dv(node.a) * expr(node.b) + expr(node.a) * dv(node.b))
@@ -479,10 +479,10 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
                    .id(b);
         break;
       case OpCode::Gemv:
-        d[v] = b.make(OpCode::Gemv, node.a, d[node.b], no_node, node.slot);
+        d[v] = b.make(OpCode::Gemv, node.a, d[node.b], no_node, node.aux);
         break;
       case OpCode::AddAt:
-        d[v] = b.make(OpCode::AddAt, d[node.a], d[node.b], no_node, node.slot);
+        d[v] = b.make(OpCode::AddAt, d[node.a], d[node.b], no_node, node.aux);
         break;
       default:
         if (!is_matrix_row(node.op)) {
@@ -541,7 +541,7 @@ struct Jacobian {
 
 template <impl::Numeric T>
 [[nodiscard]] constexpr Jacobian
-build_jacobian_impl(Builder<T> &b, std::span<const NodeId> roots) {
+derive_jacobian(Builder<T> &b, std::span<const NodeId> roots) {
   Jacobian j{
       .value = {roots.begin(), roots.end()},
       .partial = {},
@@ -571,8 +571,8 @@ build_jacobian_impl(Builder<T> &b, std::span<const NodeId> roots) {
 // this and the m-root overload never compete, and DiffMode does not satisfy
 // Numeric, which keeps it clear of the plain spelling below.
 template <impl::DiffMode Mode, impl::Numeric T>
-[[nodiscard]] constexpr JacobianRow build_jacobian_impl(Builder<T> &b,
-                                                        NodeId root) {
+[[nodiscard]] constexpr JacobianRow derive_jacobian(Builder<T> &b,
+                                                    NodeId root) {
   if constexpr (Mode == impl::DiffMode::Symbolic) {
     return build_symbolic_jacobian(b, root);
   } else {
@@ -581,8 +581,8 @@ template <impl::DiffMode Mode, impl::Numeric T>
 }
 
 template <impl::Numeric T>
-[[nodiscard]] constexpr JacobianRow build_jacobian_impl(Builder<T> &b,
-                                                        NodeId root) {
+[[nodiscard]] constexpr JacobianRow derive_jacobian(Builder<T> &b,
+                                                    NodeId root) {
   return build_reverse_jacobian(b, root);
 }
 
@@ -593,48 +593,48 @@ struct Hessian {
   NodeId value = no_node;
   std::vector<NodeId> partial;    // n
   std::vector<NodeId> compressed; // colours * n
-  Coloring coloring;
+  Colouring colouring;
   NodeId zero = no_node;
 
   // Scattered on read, so a caller never sees the compressed form: a cell no
   // column owns has no storage and answers the colouring's structural zero.
   [[nodiscard]] constexpr NodeId at(std::size_t i, std::size_t j) const {
-    return coloring.cell_of(i, j)
+    return colouring.cell_of(i, j)
         .transform([this](std::size_t k) { return compressed[k]; })
         .value_or(zero);
   }
-  [[nodiscard]] constexpr std::size_t colors() const {
-    return coloring.count();
+  [[nodiscard]] constexpr std::size_t colours() const {
+    return colouring.count();
   }
   BOOST_DESCRIBE_CLASS(Hessian, (),
-                       (value, partial, compressed, coloring, zero), (), ())
+                       (value, partial, compressed, colouring, zero), (), ())
 };
 
 template <impl::Numeric T>
-[[nodiscard]] Hessian build_hessian_impl(Builder<T> &b, NodeId root) {
+[[nodiscard]] Hessian derive_hessian(Builder<T> &b, NodeId root) {
   const auto g = build_reverse_jacobian(b, root);
   const auto rows = coupling_pattern(b, root);
   Hessian h{.value = g.value,
             .partial = g.partial,
             .compressed = {},
-            .coloring = color_columns(rows),
+            .colouring = colour_columns(rows),
             .zero = b.constant(T{0})};
 
   // Only the cells a column owns: the rest cost an output column each and a
   // whole cone of nodes behind it, which on an arrow Hessian is most of it.
-  h.compressed.assign(h.coloring.width(), h.zero);
-  for (const std::size_t c : h.coloring.colors()) {
+  h.compressed.assign(h.colouring.width(), h.zero);
+  for (const std::size_t c : h.colouring.colours()) {
     // Summing a colour's partials before the sweep is what makes one sweep do
     // the work of |colour| of them.
     auto make_partial_expression = [&](std::size_t j) {
-      return RTExpression<T>{b, h.partial[j]};
+      return Expression<T>{b, h.partial[j]};
     };
     const auto seed = std::ranges::fold_left(
-        h.coloring.columns_of(c) |
+        h.colouring.columns_of(c) |
             std::views::transform(std::move(make_partial_expression)),
-        RTExpression<T>{0}, std::plus<>{});
+        Expression<T>{0}, std::plus<>{});
     const auto row = build_reverse_jacobian(b, seed.id(b));
-    for (const Cell &owned : h.coloring.owned_cells(c)) {
+    for (const Cell &owned : h.colouring.owned_cells(c)) {
       h.compressed[owned.slot] = row.partial[owned.row];
     }
   }
@@ -646,14 +646,14 @@ namespace detail {
 // structurally-zero partial is the literal zero node, so Mul/ZeroB and Add/Zero
 // drop its term before either node exists.
 template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T>
-seeded_sum(Builder<T> &b, std::span<const NodeId> ids) {
+[[nodiscard]] constexpr Expression<T> seeded_sum(Builder<T> &b,
+                                                 std::span<const NodeId> ids) {
   auto term = [&b, ids](std::size_t j) {
-    return seed(b, static_cast<std::uint32_t>(j)) * RTExpression<T>{b, ids[j]};
+    return seed(b, static_cast<std::uint32_t>(j)) * Expression<T>{b, ids[j]};
   };
   return std::ranges::fold_left(std::views::iota(0uz, ids.size()) |
                                     std::views::transform(std::move(term)),
-                                RTExpression<T>{0}, std::plus<>{});
+                                Expression<T>{0}, std::plus<>{});
 }
 } // namespace detail
 
@@ -670,8 +670,7 @@ struct HessianVector {
 };
 
 template <impl::Numeric T>
-[[nodiscard]] constexpr HessianVector build_hvp_impl(Builder<T> &b,
-                                                     NodeId root) {
+[[nodiscard]] constexpr HessianVector derive_hvp(Builder<T> &b, NodeId root) {
   const auto g = build_reverse_jacobian(b, root);
   const auto along = detail::seeded_sum(b, g.partial);
   return {.value = g.value,
@@ -691,7 +690,7 @@ struct VectorJacobian {
 
 template <impl::Numeric T>
 [[nodiscard]] constexpr VectorJacobian
-build_vjp_impl(Builder<T> &b, std::span<const NodeId> roots) {
+derive_vjp(Builder<T> &b, std::span<const NodeId> roots) {
   const auto along = detail::seeded_sum(b, roots);
   return {.value = {roots.begin(), roots.end()},
           .product = build_reverse_jacobian(b, along.id(b)).partial};
@@ -717,8 +716,8 @@ template <impl::Numeric T>
 } // namespace detail
 
 template <impl::Numeric T>
-[[nodiscard]] constexpr Tangent build_jvp_impl(Builder<T> &b,
-                                               std::span<const NodeId> roots) {
+[[nodiscard]] constexpr Tangent derive_jvp(Builder<T> &b,
+                                           std::span<const NodeId> roots) {
   return {.value = {roots.begin(), roots.end()},
           .product = tangent_sweep(b, roots, detail::seeds_along(b))};
 }
@@ -729,7 +728,7 @@ template <impl::Numeric T>
 // functions, every d2 f_i / dx_j dv in a single forward sweep.
 template <impl::Numeric T>
 [[nodiscard]] constexpr std::vector<NodeId>
-build_jacobian_tangent_impl(Builder<T> &b, const Jacobian &j) {
+derive_jacobian_tangent(Builder<T> &b, const Jacobian &j) {
   return tangent_sweep(b, j.partial, detail::seeds_along(b));
 }
 

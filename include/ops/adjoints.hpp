@@ -8,13 +8,13 @@
 
 // The reverse-mode rule for every op outside unary_math.hpp's eighteen.  Both
 // sides call these: the sweep instantiates them at a number, the graph builder
-// at RTExpression.  No rule reads its own primal, so pow and hypot recompute
+// at rt::Expression.  No rule reads its own primal, so pow and hypot recompute
 // it, which costs a graph nothing.
 namespace ddx::impl::detail {
 
 // The number for an arithmetic T, the Sign node for a graph handle: ordinary
-// lookup finds this and ADL finds RTExpression's hidden friend.  sign(0) is 0,
-// the usual subgradient convention, and a - a reaches only ±0 and NaN.
+// lookup finds this and ADL finds rt::Expression's hidden friend.  sign(0) is
+// 0, the usual subgradient convention, and a - a reaches only ±0 and NaN.
 template <Numeric T>
   requires std::totally_ordered<T>
 [[nodiscard]] constexpr T sign(const T &a) noexcept {

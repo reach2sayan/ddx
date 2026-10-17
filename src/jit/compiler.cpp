@@ -67,10 +67,11 @@ void init_native_target_once() {
 }
 
 // The one seam between LLVM's error model and ours.
-[[nodiscard]] error as_error(const errc code, const llvm::Twine &what,
-                             llvm::Error e) {
-  return error{.code = code,
-               .detail = (what + ": " + llvm::toString(std::move(e))).str()};
+[[nodiscard]] compile_error as_error(const errc code, const llvm::Twine &what,
+                                     llvm::Error e) {
+  return compile_error{.code = code,
+                       .detail =
+                           (what + ": " + llvm::toString(std::move(e))).str()};
 }
 
 // A Call row of the opcode tables as the runtime symbol its lowering names,
@@ -184,7 +185,7 @@ constexpr const char *kCodegenFlag = "ddx.codegen";
   return flag != nullptr ? std::optional{flag->getZExtValue()} : std::nullopt;
 }
 
-// The flag is written from std::to_underlying(Level), which is LLVM's own
+// The flag is written from std::to_underlying(OptLevel), which is LLVM's own
 // 0..3 scale.
 llvm::CodeGenOptLevel codegen_level_of(const llvm::Module &m) {
   return llvm::CodeGenOpt::getLevel(
@@ -320,7 +321,7 @@ host_identity_of(const llvm::orc::JITTargetMachineBuilder &machine) {
   // The loop is already emitted `lanes` wide, and the loop vectoriser pays for
   // an alias check between every pair of columns and then declines.
   llvm::PipelineTuningOptions pto;
-  pto.SLPVectorization = opt.codegen.slp;
+  pto.SLPVectorization = opt.codegen.slp_vectorize;
   pto.LoopVectorization = opt.codegen.loop_vectorize;
 
   llvm::PassBuilder pb(&tm, pto, std::nullopt, &pic);
@@ -373,27 +374,27 @@ struct Host {
 };
 
 // One graph compiled once, filling the report it was handed as it goes.
-class Compilation : private impl::pinned {
+class CompileJob : private impl::pinned {
 public:
-  Compilation(Host host, const rt::Graph<double> &g, const Options &opt,
-              std::string name, CompileReport &into)
+  CompileJob(Host host, const rt::Graph<double> &g, const Options &opt,
+             std::string name, CompileReport &into)
       : host_(std::move(host)), g_(g), opt_(opt), name_(std::move(name)),
         rep_(into) {}
 
-  [[nodiscard]] result<llvm::orc::ThreadSafeModule> prepared() {
+  [[nodiscard]] compile_result<llvm::orc::ThreadSafeModule> prepared() {
     return emitted().and_then([this](llvm::orc::ThreadSafeModule m) {
       return optimized(std::move(m));
     });
   }
 
-  [[nodiscard]] result<Kernel> operator()() {
+  [[nodiscard]] compile_result<Kernel> operator()() {
     return prepared().and_then([this](llvm::orc::ThreadSafeModule m) {
       return materialised(std::move(m));
     });
   }
 
 private:
-  [[nodiscard]] result<llvm::orc::ThreadSafeModule> emitted() {
+  [[nodiscard]] compile_result<llvm::orc::ThreadSafeModule> emitted() {
     const boost::scope::scope_exit clock{
         [this, start = Clock::now()] { rep_.emit = Clock::now() - start; }};
     auto ctx = std::make_unique<llvm::LLVMContext>();
@@ -401,8 +402,8 @@ private:
                                  host_.jit.getDataLayout(), host_.triple);
     if (!m) {
       // The emitter has already written the verifier's own diagnosis.
-      return std::unexpected{
-          error{errc::jit_verify, "the emitted module failed verification"}};
+      return std::unexpected{compile_error{
+          errc::jit_verify, "the emitted module failed verification"}};
     }
     // The object cache keys on the module and LLVM prints this in diagnostics;
     // the kernel's name is already unique per compile.
@@ -415,7 +416,7 @@ private:
         std::move(m), llvm::orc::ThreadSafeContext{std::move(ctx)}};
   }
 
-  [[nodiscard]] result<llvm::orc::ThreadSafeModule>
+  [[nodiscard]] compile_result<llvm::orc::ThreadSafeModule>
   optimized(llvm::orc::ThreadSafeModule m) {
     const boost::scope::scope_exit clock{
         [&, start = Clock::now()] { rep_.optimize = Clock::now() - start; }};
@@ -425,7 +426,7 @@ private:
       return std::unexpected{as_error(
           errc::jit_target, "creating a target machine", tm.takeError())};
     }
-    std::optional<error> refused;
+    std::optional<compile_error> refused;
     m.withModuleDo([&](llvm::Module &mod) {
       if (auto e = optimize(mod, **tm, opt_, host_.libmvec)) {
         refused = as_error(errc::jit_module, "building the pass pipeline",
@@ -441,7 +442,8 @@ private:
 
   // The backend runs on materialisation, so the lookup is inside this phase or
   // its number is wrong.
-  [[nodiscard]] result<Kernel> materialised(llvm::orc::ThreadSafeModule m) {
+  [[nodiscard]] compile_result<Kernel>
+  materialised(llvm::orc::ThreadSafeModule m) {
     const boost::scope::scope_exit clock{
         [this, start = Clock::now()] { rep_.codegen = Clock::now() - start; }};
     if (auto e = host_.jit.addIRModule(std::move(m))) {
@@ -486,20 +488,20 @@ private:
 template <typename I>
   requires requires(const std::shared_ptr<I> &impl, const rt::Graph<double> &g,
                     CompileReport &rep) {
-    { I::run(impl, g, Options{}, rep) } -> std::same_as<result<Kernel>>;
+    { I::run(impl, g, Options{}, rep) } -> std::same_as<compile_result<Kernel>>;
   }
-class Compiles : private impl::pinned {
+class CompilePool : private impl::pinned {
 public:
   // Brought up once, and never torn down before the statics its workers touch.
-  [[nodiscard]] static Compiles &shared(const std::shared_ptr<I> &impl) {
-    static Compiles instance{impl};
+  [[nodiscard]] static CompilePool &shared(const std::shared_ptr<I> &impl) {
+    static CompilePool instance{impl};
     return instance;
   }
 
   [[nodiscard]] llvm::DefaultThreadPool &threads() noexcept { return threads_; }
 
 private:
-  explicit Compiles(const std::shared_ptr<I> &impl) : warm_(impl) {}
+  explicit CompilePool(const std::shared_ptr<I> &impl) : warm_(impl) {}
 
   // Constructing one compiles something, which is what makes LLVM register;
   // any live Impl will do.
@@ -548,7 +550,7 @@ struct Compiler::Impl {
   unsigned lanes = 1;        // The host's vector width in doubles
   unsigned veclib_lanes = 1; // The widest the vector library serves
 
-  [[nodiscard]] static std::expected<std::shared_ptr<Impl>, error> bring_up() {
+  [[nodiscard]] static compile_result<std::shared_ptr<Impl>> bring_up() {
     init_native_target_once();
     auto impl = std::make_shared<Impl>();
 
@@ -619,10 +621,9 @@ struct Compiler::Impl {
   // One per adopted object: the symbol is baked into the bytes, so two objects
   // from one graph share a name and the main dylib would refuse the second.
   // The link order keeps libm and the vector-math generators reachable.
-  [[nodiscard]] static result<Kernel> link(const std::shared_ptr<Impl> &self,
-                                           std::span<const std::byte> object,
-                                           std::string_view symbol,
-                                           const rt::Graph<double> &g) {
+  [[nodiscard]] static compile_result<Kernel>
+  link(const std::shared_ptr<Impl> &self, std::span<const std::byte> object,
+       std::string_view symbol, const rt::Graph<double> &g) {
     auto &jit = *self->jit;
     auto jd =
         jit.createJITDylib("ddx_adopted_" + std::to_string(self->counter++));
@@ -669,7 +670,7 @@ struct Compiler::Impl {
 
   // On Impl, so a queued compile needs only a share of this and not a Compiler
   // that may have been moved from.
-  // What a Compilation is handed: the process-wide JIT, and a share of this,
+  // What a CompileJob is handed: the process-wide JIT, and a share of this,
   // so the code outlives any Compiler that goes away mid-compile.
   [[nodiscard]] static Host host_of(const std::shared_ptr<Impl> &self) {
     return Host{.jit = *self->jit,
@@ -682,16 +683,15 @@ struct Compiler::Impl {
                 .code = self};
   }
 
-  [[nodiscard]] static result<Kernel> run(const std::shared_ptr<Impl> &self,
-                                          const rt::Graph<double> &g,
-                                          const Options &opt,
-                                          CompileReport &rep) {
-    // No lowering computes a tensor row: the lane sweeps, through its kernel
-    // table, and uses_kernel() says so.
+  [[nodiscard]] static compile_result<Kernel>
+  run(const std::shared_ptr<Impl> &self, const rt::Graph<double> &g,
+      const Options &opt, CompileReport &rep) {
+    // No lowering computes a tensor row: the pipeline sweeps, through its
+    // kernel table, and uses_kernel() says so.
     if (g.has_tensors()) {
-      return std::unexpected{
-          error{errc::tensor_kernel,
-                "tensor nodes run on the sweep; no kernel is built for them"}};
+      return std::unexpected{compile_error{
+          errc::tensor_kernel,
+          "tensor nodes run on the sweep; no kernel is built for them"}};
     }
     Host host = host_of(self);
     const bool caching = !opt.cache_dir.empty();
@@ -718,8 +718,8 @@ struct Compiler::Impl {
       }
     }
 
-    Compilation work{std::move(host), g, opt,
-                     "ddx_kernel_" + std::to_string(self->counter++), rep};
+    CompileJob work{std::move(host), g, opt,
+                    "ddx_kernel_" + std::to_string(self->counter++), rep};
     auto kernel = work();
     if (caching && kernel && !kernel->object().empty()) {
       detail::write_entry(opt.cache_dir, key, kernel->symbol(),
@@ -736,7 +736,7 @@ std::string_view Compiler::host_identity() const noexcept {
   return impl_->host;
 }
 
-result<Compiler> Compiler::create() {
+compile_result<Compiler> Compiler::create() {
   return Impl::bring_up().transform(
       [](std::shared_ptr<Impl> impl) { return Compiler{std::move(impl)}; });
 }
@@ -744,18 +744,19 @@ Compiler::~Compiler() = default;
 Compiler::Compiler(Compiler &&) noexcept = default;
 Compiler &Compiler::operator=(Compiler &&) noexcept = default;
 
-result<Kernel> Compiler::compile(const rt::Graph<double> &g, const Options &opt,
-                                 CompileReport *report) {
+compile_result<Kernel> Compiler::compile(const rt::Graph<double> &g,
+                                         const Options &opt,
+                                         CompileReport *report) {
   CompileReport discard;
   return Impl::run(impl_, g, opt, report != nullptr ? *report : discard);
 }
 
 // packaged_task, never std::async: only the latter's future joins in its
 // destructor, putting a compile on the critical path of whoever dropped it.
-std::shared_future<result<Kernel>>
+std::shared_future<compile_result<Kernel>>
 Compiler::compile_async(std::shared_ptr<const rt::Graph<double>> g,
                         Options opt) {
-  auto task = std::make_shared<std::packaged_task<result<Kernel>()>>(
+  auto task = std::make_shared<std::packaged_task<compile_result<Kernel>()>>(
       [self = impl_, graph = std::move(g), opt] {
         CompileReport discard;
         return Impl::run(self, *graph, opt, discard);
@@ -764,21 +765,21 @@ Compiler::compile_async(std::shared_ptr<const rt::Graph<double>> g,
   // The task holds the future as well as the promise, so a caller dropping its
   // copy never tears the shared state down under a running compile.  The
   // shared_ptr is because std::function must be copyable.
-  Compiles<Impl>::shared(impl_).threads().async(
+  CompilePool<Impl>::shared(impl_).threads().async(
       [task, landing] { std::invoke(*task); });
   return landing;
 }
 
-result<Kernel> Compiler::adopt(std::span<const std::byte> object,
-                               std::string_view symbol,
-                               const rt::Graph<double> &g) {
+compile_result<Kernel> Compiler::adopt(std::span<const std::byte> object,
+                                       std::string_view symbol,
+                                       const rt::Graph<double> &g) {
   return Impl::link(impl_, object, symbol, g);
 }
 
-result<std::string> Compiler::render_ir(const rt::Graph<double> &g,
-                                        const Options &opt) const {
+compile_result<std::string> Compiler::render_ir(const rt::Graph<double> &g,
+                                                const Options &opt) const {
   CompileReport discard;
-  Compilation run{Impl::host_of(impl_), g, opt, "ddx_kernel_dump", discard};
+  CompileJob run{Impl::host_of(impl_), g, opt, "ddx_kernel_dump", discard};
   return run.prepared().transform([](llvm::orc::ThreadSafeModule m) {
     std::string out;
     llvm::raw_string_ostream os(out);

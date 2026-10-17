@@ -116,7 +116,7 @@ TEST(RtGraph, IdOrderIsTopological) {
 // kernel-against-sweep test is the proof -- so this asks only about size.
 TEST(RtGraph, PacksTheTapeByLiveness) {
   ddx::rt::Builder<> b;
-  std::vector<ddx::rt::RTExpression<>> x;
+  std::vector<ddx::rt::Expression<>> x;
   for (std::size_t i = 0; i < 64; ++i) {
     x.push_back(var(b, std::format("x{:02}", i)));
   }
@@ -125,16 +125,17 @@ TEST(RtGraph, PacksTheTapeByLiveness) {
                      .values_from(std::span<const NodeId>{&root, 1})
                      .build_jacobian()
                      .finish();
-  const double ratio = static_cast<double>(g.tape_slots()) /
-                       static_cast<double>(g.live_count());
+  const double ratio =
+      static_cast<double>(g.tape_rows()) / static_cast<double>(g.live_count());
   std::printf("[ ddx ] mse n = 64: %zu live nodes, %zu tape rows (%.3f)\n",
-              g.live_count(), g.tape_slots(), ratio);
+              g.live_count(), g.tape_rows(), ratio);
   EXPECT_LT(ratio, 0.25);
   // Every output owns a distinct row inside the tape.
-  auto rows = ddx::rt::in_order(g.output_slots()) | std::views::join |
+  auto rows = ddx::rt::in_order(g.output_blocks()) | std::views::join |
+              std::views::transform([&g](NodeId o) { return g.rows()[o]; }) |
               ddx::impl::to<std::vector<std::uint32_t>>();
   EXPECT_TRUE(std::ranges::all_of(
-      rows, [&g](std::uint32_t r) { return r < g.tape_slots(); }));
+      rows, [&g](std::uint32_t r) { return r < g.tape_rows(); }));
   std::ranges::sort(rows);
   EXPECT_EQ(std::ranges::adjacent_find(rows), rows.end());
   // No step reads the row it writes: the lane loops promise no aliasing.

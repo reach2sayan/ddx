@@ -1,5 +1,5 @@
-#include "energy_models.hpp"
 #include "dual/dual.hpp"
+#include "energy_models.hpp"
 #include "rt/derivative.hpp"
 #include "rt/graph.hpp"
 #include "rt/interpret.hpp"
@@ -77,7 +77,7 @@ TEST(RtSumN, ALoopOfPlusEqualsIsOneNode) {
   const auto root = summed(symbols(sum, 6));
   const auto &node = sum[root.id(sum)];
   EXPECT_EQ(node.op, OpCode::SumN);
-  EXPECT_EQ(node.slot, kTerms);
+  EXPECT_EQ(node.aux, kTerms);
   EXPECT_EQ(ddx::rt::arguments(sum, root.id(sum)).size(), kTerms);
 
   Builder<> chain;
@@ -138,12 +138,12 @@ TEST(RtSumN, ValueGradientHvpAndHessianMatchTheChain) {
   Builder<> sum, chain;
   const auto fs = summed(symbols(sum, n)).id(sum);
   const auto fc = chained(symbols(chain, n)).id(chain);
-  const auto gs = ddx::rt::build_jacobian_impl(sum, fs);
-  const auto gc = ddx::rt::build_jacobian_impl(chain, fc);
-  const auto hs = ddx::rt::build_hessian_impl(sum, fs);
-  const auto hc = ddx::rt::build_hessian_impl(chain, fc);
-  const auto ps = ddx::rt::build_hvp_impl(sum, fs);
-  const auto pc = ddx::rt::build_hvp_impl(chain, fc);
+  const auto gs = ddx::rt::derive_jacobian(sum, fs);
+  const auto gc = ddx::rt::derive_jacobian(chain, fc);
+  const auto hs = ddx::rt::derive_hessian(sum, fs);
+  const auto hc = ddx::rt::derive_hessian(chain, fc);
+  const auto ps = ddx::rt::derive_hvp(sum, fs);
+  const auto pc = ddx::rt::derive_hvp(chain, fc);
 
   auto at = point(n);
   for (std::size_t i = 0; i < n; ++i) {
@@ -173,13 +173,15 @@ TEST(RtSumN, FusedAndUnfusedSchedulesAgree) {
   EXPECT_LT(fused.schedule().size(), plain.schedule().size());
 
   const auto p = point(6);
-  std::vector<double> tf(fused.tape_slots()), tp(plain.tape_slots());
-  ddx::rt::evaluate_into(b, p, fused.schedule(), std::span<double>{tf},
-                         ddx::rt::detail::Scratch<double>{.slots = fused.slots()});
-  ddx::rt::evaluate_into(b, p, plain.schedule(), std::span<double>{tp},
-                         ddx::rt::detail::Scratch<double>{.slots = plain.slots()});
-  expect_close(tf[fused.slots()[f]], tp[plain.slots()[f]], 1e-14);
-  expect_close(tf[fused.slots()[f]], ddx::rt::evaluate(b, f, p), 1e-14);
+  std::vector<double> tf(fused.tape_rows()), tp(plain.tape_rows());
+  ddx::rt::evaluate_into(
+      b, p, fused.schedule(), std::span<double>{tf},
+      ddx::rt::detail::TapeView<double>{.scalar_rows = fused.rows()});
+  ddx::rt::evaluate_into(
+      b, p, plain.schedule(), std::span<double>{tp},
+      ddx::rt::detail::TapeView<double>{.scalar_rows = plain.rows()});
+  expect_close(tf[fused.rows()[f]], tp[plain.rows()[f]], 1e-14);
+  expect_close(tf[fused.rows()[f]], ddx::rt::evaluate(b, f, p), 1e-14);
 }
 
 // A sum adds at any scalar the sweep runs at, so a dual point carries its
@@ -219,7 +221,7 @@ TEST(RtSumN, MseSumsItsPairTermsInOneNode) {
   constexpr std::size_t n = 64;
   Builder<> b;
   const auto f = models::mse(symbols(b, n)).id(b);
-  const auto g = ddx::rt::build_jacobian_impl(b, f);
+  const auto g = ddx::rt::derive_jacobian(b, f);
   std::printf("[ ARENA    ] mse n=%zu: %zu nodes with the gradient\n", n,
               b.size());
   EXPECT_EQ(g.partial.size(), n);
@@ -229,7 +231,7 @@ TEST(RtSumN, MseSumsItsPairTermsInOneNode) {
       b.nodes() | std::views::filter([](const auto &node) {
         return node.op == OpCode::SumN;
       }) |
-      std::views::transform([](const auto &node) { return node.slot; }));
+      std::views::transform([](const auto &node) { return node.aux; }));
   std::printf("[ ARENA    ] widest sum: %u terms\n", widest);
   EXPECT_GT(widest, n * n * 9 / 10);
 }

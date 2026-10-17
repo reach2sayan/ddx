@@ -13,7 +13,7 @@
 
 namespace {
 using ddx::rt::Builder;
-using ddx::rt::RTExpression;
+using RE = ddx::rt::Expression<>;
 
 TEST(RtBuilder, IdenticalSubtreesInternToOneNode) {
   Builder<> b;
@@ -65,16 +65,16 @@ TEST(RtBuilder, IdentityRewrites) {
   const auto x = var(b, "x");
   const auto y = var(b, "y");
 
-  EXPECT_EQ((x + RTExpression<>{0}).id(b), x.id(b));
-  EXPECT_EQ((x * RTExpression<>{1}).id(b), x.id(b));
-  EXPECT_EQ((x / RTExpression<>{1}).id(b), x.id(b));
+  EXPECT_EQ((x + RE{0}).id(b), x.id(b));
+  EXPECT_EQ((x * RE{1}).id(b), x.id(b));
+  EXPECT_EQ((x / RE{1}).id(b), x.id(b));
   EXPECT_EQ((-(-x)).id(b), x.id(b));
-  EXPECT_EQ(pow(x, RTExpression<>{1}).id(b), x.id(b));
+  EXPECT_EQ(pow(x, RE{1}).id(b), x.id(b));
 
-  EXPECT_TRUE(b.is_constant((x * RTExpression<>{0}).id(b), 0.0));
-  EXPECT_TRUE(b.is_constant((RTExpression<>{0} / x).id(b), 0.0));
+  EXPECT_TRUE(b.is_constant((x * RE{0}).id(b), 0.0));
+  EXPECT_TRUE(b.is_constant((RE{0} / x).id(b), 0.0));
   EXPECT_TRUE(b.is_constant((x / x).id(b), 1.0));
-  EXPECT_TRUE(b.is_constant(pow(x, RTExpression<>{0}).id(b), 1.0));
+  EXPECT_TRUE(b.is_constant(pow(x, RE{0}).id(b), 1.0));
 
   // (n/d)*d -> n, the DAG form of the compile-time rule: on interned nodes the
   // denominator match is an id compare.
@@ -86,13 +86,12 @@ TEST(RtBuilder, LiteralsFoldBeforeReachingTheGraph) {
   Builder<> b;
   const auto x = var(b, "x");
   const std::size_t before = b.size();
-  const auto c = RTExpression<>{2} * RTExpression<>{3} + RTExpression<>{1};
+  const auto c = RE{2} * RE{3} + RE{1};
   EXPECT_TRUE(c.pending());
   EXPECT_DOUBLE_EQ(c.literal(), 7.0);
   EXPECT_EQ(b.size(), before);
 
-  EXPECT_TRUE(
-      b.is_constant((RTExpression<>{2} * RTExpression<>{3}).id(b), 6.0));
+  EXPECT_TRUE(b.is_constant((RE{2} * RE{3}).id(b), 6.0));
   (void)x;
 }
 
@@ -136,8 +135,8 @@ TEST(RtBuilder, SlotsAreDeclarationOrder) {
   const auto a = var(b, "a");
 
   EXPECT_EQ(b.symbols(), (std::vector<std::string>{"z", "a"}));
-  EXPECT_EQ(b[z.id(b)].slot, 0u);
-  EXPECT_EQ(b[a.id(b)].slot, 1u);
+  EXPECT_EQ(b[z.id(b)].aux, 0u);
+  EXPECT_EQ(b[a.id(b)].aux, 1u);
   EXPECT_EQ(b[s.id(b)].a, z.id(b)) << "the subexpression still names z";
 }
 
@@ -152,8 +151,8 @@ TEST(RtBuilder, ParamsShareTheNamespaceAndNumberTheirOwnSlots) {
   EXPECT_EQ(b.symbols(), (std::vector<std::string>{"x", "y"}));
   EXPECT_EQ(b.params(), (std::vector<std::string>{"k"}));
   EXPECT_EQ(b[k.id(b)].op, ddx::rt::OpCode::Param);
-  EXPECT_EQ(b[k.id(b)].slot, 0u);
-  EXPECT_EQ(b[y.id(b)].slot, 1u);
+  EXPECT_EQ(b[k.id(b)].aux, 0u);
+  EXPECT_EQ(b[y.id(b)].aux, 1u);
   EXPECT_EQ(ddx::rt::param(b, "k").id(b), k.id(b));
   EXPECT_TRUE(ddx::rt::param(b, "x").poisoned()) << "x is a symbol";
   EXPECT_TRUE(var(b, "k").poisoned()) << "k is a parameter";
@@ -193,9 +192,9 @@ TEST(RtBuilder, CompoundAssignmentTakesAScalar) {
 
   auto e = x;
   e += 2.0;
-  EXPECT_EQ(e.id(b), (x + RTExpression<>{2.0}).id(b));
+  EXPECT_EQ(e.id(b), (x + RE{2.0}).id(b));
 
-  RTExpression<> lit = 3.0;
+  RE lit = 3.0;
   lit *= 4.0;
   EXPECT_TRUE(lit.pending()) << "two literals reached the graph";
   EXPECT_EQ(lit.literal(), 12.0);

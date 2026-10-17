@@ -375,7 +375,7 @@ using ColumnValues = boost::container::small_vector<llvm::Value *, 8>;
 struct HoistedColumns {
   ColumnValues inputs;
   // f[k], g[k*n + j], h[c*n + i]
-  rt::Blocks<ColumnValues> out;
+  rt::PerBlock<ColumnValues> out;
 };
 
 HoistedColumns hoist_columns(llvm::IRBuilder<> &b, llvm::Function &fn,
@@ -420,9 +420,9 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
       value[v] = emit.constant(p.value);
       break;
     case rt::Kind::Input:
-      value[v] =
-          emit.load(cols.inputs[rt::input_column(g.inputs(), p.op, p.slot)],
-                    index, mask, "");
+      value[v] = emit.load(cols.inputs[rt::input_column(
+                               g.inputs(), p.op, rt::detail::index_of(p))],
+                           index, mask, "");
       break;
     case rt::Kind::Nary: {
       // The terms into the running sum in list order, a product term as the
@@ -446,7 +446,7 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
     case rt::Kind::Extern: {
       // One call per (function, argument list), whichever component asked
       // first; the rest are loads off the same answer.
-      const auto [fn, component] = rt::ExternSlot::of(p.slot);
+      const auto [fn, component] = rt::detail::extern_of(p);
       auto [answers, fresh] = called.try_emplace({fn, operands[0]});
       if (fresh) {
         const auto args =
@@ -479,7 +479,7 @@ void emit_stores(const Emitter &emit, const rt::Graph<double> &g,
                  const HoistedColumns &cols,
                  std::span<llvm::Value *const> value, llvm::Value *index,
                  llvm::Value *mask) {
-  const rt::Blocks<std::span<llvm::Value *const>> columns{
+  const rt::PerBlock<std::span<llvm::Value *const>> columns{
       cols.out.values, cols.out.jacobian, cols.out.hessian};
   for (const auto [block_columns, block] :
        rt::zip_blocks(columns, g.output_blocks())) {

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ._ddx import (Backend, Call, Expression, Level, Restricted, VecLib, Want, abs,  # noqa: A004  -- the opcode is spelled `abs`, as it is in C++
+from ._ddx import (Backend, Call, Expression, OptLevel, Restricted, VecLib, Want, abs,  # noqa: A004  -- the opcode is spelled `abs`, as it is in C++
                    acos, acosh, add, asin, asinh, atan, atan2, atanh,
                    cbrt, cos, cosh, div, erf, errc, exp,
                    has_jit, has_opencl, hypot, le, lt,
@@ -36,9 +36,9 @@ from ._ddx import (Backend, Call, Expression, Level, Restricted, VecLib, Want, a
                    pow,  # noqa: A004
                    implicit, param, select, sign, sin, sinh, sqrt, tan, tanh,
                    var,
-                   dot, gemv, mat_const, pack,
+                   dot, gemv, mat_constant, pack,
                    sum,  # noqa: A004
-                   vec, vec_const, )
+                   vec, vec_constant, )
 from ._options import Options
 
 if TYPE_CHECKING:
@@ -96,7 +96,7 @@ def _compile(self: Equation, **kwargs: Any) -> Equation:  # noqa: ANN401
 Equation.options = property(_get_options, _set_options)  # type: ignore[assignment]
 Equation.compile = _compile  # type: ignore[method-assign]
 
-__all__ = ["Backend", "Call", "Equation", "Error", "Expression", "Level", "Restricted",
+__all__ = ["Backend", "Call", "Equation", "Error", "Expression", "OptLevel", "Restricted",
            "Options", "VecLib", "Want", "__version__",	"abs", "acos", "acosh",	"add",
            "asin", "asinh",	"atan", "atan2", "atanh", "cbrt", "cos",
            "cosh", "div", "equation", "erf", "errc", "exp",
@@ -104,5 +104,5 @@ __all__ = ["Backend", "Call", "Equation", "Error", "Expression", "Level", "Restr
            "min", "mul", "neg", "param", "pow", "select", "sign", "sin", "sinh", "sqrt",
            "implicit",
            "tan", "tanh", "var",
-           "dot", "gemv", "mat_const", "pack",
-           "sum", "vec", "vec_const",]
+           "dot", "gemv", "mat_constant", "pack",
+           "sum", "vec", "vec_constant",]

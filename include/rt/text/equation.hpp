@@ -26,16 +26,15 @@
 // type.
 namespace ddx::rt {
 
-template <impl::Numeric T = double,
-          std::convertible_to<std::string_view>... Ss>
+template <impl::Numeric T = double, std::convertible_to<std::string_view>... Ss>
   requires std::floating_point<T>
 [[nodiscard]] auto equation(const std::string_view first, const Ss &...rest) {
   return impl::index_apply<sizeof...(Ss)>([&]<std::size_t... I>() {
-    using Eq = impl::Equation<RTExpression<T>, detail::Repeat<I, T>...>;
+    using Eq = impl::Equation<Expression<T>, detail::Repeat<I, T>...>;
     const std::array sources{first, std::string_view{rest}...};
 
     auto arena = std::make_unique<Builder<T>>();
-    std::vector<RTExpression<T>> roots;
+    std::vector<Expression<T>> roots;
     roots.reserve(sources.size());
 
     // Every source read before any of them is an equation: create() seals the
@@ -49,7 +48,7 @@ template <impl::Numeric T = double,
               return text::lower(*arena, ast);
             })
             .transform(
-                [&roots](RTExpression<T> e) { roots.push_back(std::move(e)); });
+                [&roots](Expression<T> e) { roots.push_back(std::move(e)); });
       });
     }
     return ok.transform([&] {

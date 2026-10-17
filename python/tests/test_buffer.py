@@ -151,7 +151,7 @@ def test_a_kernel_landing_mid_loop_is_picked_up(scalar: ddx.Equation) -> None:
 
 
 @pytest.mark.parametrize(
-    "want", [ddx.Want.HVP, ddx.Want.JVP, ddx.Want.VJP, ddx.Want.DENSEHESSIAN]
+    "want", [ddx.Want.HVP, ddx.Want.JVP, ddx.Want.VJP, ddx.Want.DENSE_HESSIAN]
 )
 def test_a_want_the_buffer_cannot_bind_is_refused_up_front(
     scalar: ddx.Equation, want: ddx.Want

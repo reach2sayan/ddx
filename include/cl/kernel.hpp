@@ -15,8 +15,8 @@
 // DDX_HAS_OPENCL is.
 namespace ddx::cl {
 
-using jit::error;
-template <typename T> using result = jit::result<T>;
+using jit::compile_error;
+using jit::compile_result;
 
 // `build` is the driver compiling the emitted source, which is the cost.
 struct CompileReport {
@@ -37,7 +37,7 @@ public:
   // xs[j] is the column for input j, each n long; the columns go up, the
   // outputs come back.  One call at a time per kernel: an OpenCL kernel's
   // arguments are shared state.  A refusal may leave columns part-written.
-  [[nodiscard]] DDX_API result<void>
+  [[nodiscard]] DDX_API compile_result<void>
   operator()(std::span<const double *const> xs, std::span<double *const> f,
              std::span<double *const> g, std::span<double *const> h,
              std::size_t n) const;

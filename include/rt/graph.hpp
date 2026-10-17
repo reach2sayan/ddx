@@ -22,14 +22,14 @@
 
 namespace ddx::rt {
 
-// What a lane's graph carries; each level is the one below plus a block.  The
-// columns: whether the lane is one function's (a system refuses it), whether
+// What a Want's graph carries; each level is the one below plus a block.  The
+// columns: whether the Want is one function's (a system refuses it), whether
 // it is second order (a function supplying first partials only refuses it),
-// whether its kernel may be built over the rebalanced graph, what its seeds
-// are counted in, whether it fills the values block, and the shape of its
-// Jacobian and Hessian blocks -- the pattern's cells, one per symbol or per
+// whether its kernel may be built over the rebalanced graph, what its
+// direction is counted in, whether it fills the values block, and the shape of
+// its Jacobian and Hessian blocks -- the pattern's cells, one per symbol or per
 // function, the colouring's compressed columns, or n x n dense.  The seeded
-// and second-order lanes may not rebalance: their block is swept from the
+// and second-order Wants may not rebalance: their block is swept from the
 // unblocked roots, so a rebalanced copy would answer in different last bits
 // than the sweep it is checked against.
 #define DDX_RT_WANT_TABLE(X)                                                   \
@@ -40,7 +40,7 @@ namespace ddx::rt {
   X(Vjp, false, false, false, Functions, true, Symbols, None)                  \
   X(Jvp, false, false, false, Symbols, true, Functions, None)                  \
   X(Gradient, false, false, true, None, false, Cells, None)                    \
-  X(JacobianTangent, false, true, false, Symbols, true, Cells, Cells)          \
+  X(JacobianJvp, false, true, false, Symbols, true, Cells, Cells)              \
   X(DenseHessian, true, true, false, None, true, Cells, Dense)
 
 enum class Want : std::uint8_t {
@@ -48,8 +48,8 @@ enum class Want : std::uint8_t {
   DDX_RT_WANT_TABLE(DDX_RT_WANT)
 #undef DDX_RT_WANT
 };
-enum class Seeds : std::uint8_t { None, Symbols, Functions };
-enum class Block : std::uint8_t {
+enum class Direction : std::uint8_t { None, Symbols, Functions };
+enum class BlockShape : std::uint8_t {
   None,
   Cells,
   Symbols,
@@ -62,10 +62,10 @@ struct WantInfo {
   bool single;
   bool second_order;
   bool rebalanceable;
-  Seeds seeds;
+  Direction direction;
   bool values;
-  Block jacobian;
-  Block hessian;
+  BlockShape jacobian;
+  BlockShape hessian;
 };
 inline constexpr auto want_table = [] {
   std::array<WantInfo, 0
@@ -75,16 +75,23 @@ inline constexpr auto want_table = [] {
              >
       t{};
   std::size_t i = 0;
-#define DDX_RT_WANT(Name, single, second, rebalance, seeds, values, jac, hes)  \
-  t[i++] = {#Name,        single, second,     rebalance,                       \
-            Seeds::seeds, values, Block::jac, Block::hes};
+#define DDX_RT_WANT(Name, single, second, rebalance, direction, values, jac,   \
+                    hes)                                                       \
+  t[i++] = {#Name,                                                             \
+            single,                                                            \
+            second,                                                            \
+            rebalance,                                                         \
+            Direction::direction,                                              \
+            values,                                                            \
+            BlockShape::jac,                                                   \
+            BlockShape::hes};
   DDX_RT_WANT_TABLE(DDX_RT_WANT)
 #undef DDX_RT_WANT
   return t;
 }();
 inline constexpr std::size_t want_count = want_table.size();
 
-// The lanes in Cache order, so a lane zipped against the cache needs no cast
+// The Wants in table order, so a pipeline zipped against them needs no cast
 // back from an index.
 inline constexpr auto want_values = [] {
   std::array<Want, want_count> out{};
@@ -108,40 +115,40 @@ inline constexpr auto want_values = [] {
 // ids a builder collects, the spans a frozen graph lends, the counts read off
 // them and the columns codegen loads are the same three names, said once.
 // (jit::KernelShape cannot share it: the core may not include rt/.)
-template <std::semiregular Per> struct Blocks {
+template <std::semiregular Per> struct PerBlock {
   Per values{};
   Per jacobian{};
   Per hessian{};
-  BOOST_DESCRIBE_CLASS(Blocks, (), (values, jacobian, hessian), (), ())
+  BOOST_DESCRIBE_CLASS(PerBlock, (), (values, jacobian, hessian), (), ())
 };
 
-using OutputBlocks = Blocks<std::vector<NodeId>>;    // what a freeze is handed
-using OutputSpans = Blocks<std::span<const NodeId>>; // frozen graph view
+using OutputBlocks = PerBlock<std::vector<NodeId>>; // what a freeze is handed
+using OutputSpans = PerBlock<std::span<const NodeId>>; // frozen graph view
 // The column counts, read off the blocks so no column can be miscounted:
 // `values` is m, `jacobian` is the pattern's nonzeros row-major by function,
 // and `hessian` is colours * n, compressed.
-using Layout = Blocks<std::size_t>;
+using Layout = PerBlock<std::size_t>;
 // What a sweep writes into: a triple rather than three parameters, so a block
 // and the columns it fills cannot be paired one way here and another there.
-template <impl::Numeric T> using Columns = Blocks<std::span<T *const>>;
+template <impl::Numeric T> using Columns = PerBlock<std::span<T *const>>;
 
 // The three, in the order the ABI writes them.  Said here and nowhere else.
 template <std::semiregular Per>
-[[nodiscard]] constexpr auto in_order(const Blocks<Per> &b) {
+[[nodiscard]] constexpr auto in_order(const PerBlock<Per> &b) {
   return std::array{b.values, b.jacobian, b.hessian};
 }
 
 // One triple against another, block for block.
 template <std::semiregular A, std::semiregular B>
-[[nodiscard]] constexpr auto zip_blocks(const Blocks<A> &a,
-                                        const Blocks<B> &b) {
+[[nodiscard]] constexpr auto zip_blocks(const PerBlock<A> &a,
+                                        const PerBlock<B> &b) {
   return std::views::zip(in_order(a), in_order(b));
 }
 
 // Where each output's value sits: a scalar's tape row, or a vector's tensor
 // rows, which fill `width` consecutive output columns -- the dense Hessian is
 // one such output, n^2 columns wide.
-using OutputRows = Blocks<std::span<const TensorRow>>;
+using OutputRows = PerBlock<std::span<const TensorRow>>;
 
 // `stride` is the tape's lanes per node, `width` how many this sweep filled,
 // `i` where they start in the caller's columns.  A scalar output is one copy
@@ -176,19 +183,21 @@ constexpr void scatter_blocks(const OutputRows &rows, std::span<const T> tape,
 template <impl::Numeric T = double> class Graph {
 public:
   using value_type = T;
-  struct Property {
+  struct NodeRecord {
     OpCode op = OpCode::Const;
     T value{};
-    std::uint32_t slot = 0;
-    BOOST_DESCRIBE_CLASS(Property, (), (op, value, slot), (), ())
+    std::uint32_t aux = 0;
+    BOOST_DESCRIBE_CLASS(NodeRecord, (), (op, value, aux), (), ())
   };
 
   // `contract` is settled here, not per sweep: it decides the arithmetic, so
   // changing it afterwards means freezing again.
-  // `seeds` is how many direction columns the call hands, read or not.
-  [[nodiscard]] static Graph
-  freeze(const Builder<T> &b, OutputBlocks blocks, Coloring coloring = {},
-         Sparsity jacobian = {}, bool contract = true, std::size_t seeds = 0) {
+  // `directions` is how many direction columns the call hands, read or not.
+  [[nodiscard]] static Graph freeze(const Builder<T> &b, OutputBlocks blocks,
+                                    Colouring colouring = {},
+                                    Sparsity jacobian = {},
+                                    bool contract = true,
+                                    std::size_t directions = 0) {
     Graph g;
     // Node counts per block, and the column counts: a vector output is one
     // column per element.
@@ -208,17 +217,17 @@ public:
                        g.counts_.hessian);
     impl::append(g.outputs_, blocks.jacobian);
     impl::append(g.outputs_, blocks.hessian);
-    g.coloring_ = std::move(coloring);
-    g.jacobian_ = std::move(jacobian);
+    g.colouring_ = std::move(colouring);
+    g.jacobian_pattern_ = std::move(jacobian);
     g.inputs_ = b.inputs();
-    g.inputs_.seeds = seeds;
+    g.inputs_.directions = directions;
     g.externs_.assign(b.externs().begin(), b.externs().end());
     g.lists_.assign(b.lists().begin(), b.lists().end());
     g.names_ = b.names();
     g.properties_.reserve(b.size());
     g.operands_.reserve(b.size());
     for (const Node<T> &n : b.nodes()) {
-      g.properties_.push_back({.op = n.op, .value = n.value, .slot = n.slot});
+      g.properties_.push_back({.op = n.op, .value = n.value, .aux = n.aux});
       // The operands the arity names; the rest read as no operand.
       std::array operands{n.a, n.b, n.c};
       std::ranges::fill(operands | std::views::drop(arity_of(n.op)), no_node);
@@ -226,30 +235,27 @@ public:
     }
     g.mark_live();
     g.contract(contract);
-    // Read off what survived rather than taken from the builder, so a lane
-    // that kept no seed keeps the kernel it had.
+    // Read off what survived rather than taken from the builder, so a
+    // pipeline that kept no seed keeps the kernel it had.
     for (const NodeId v : g.schedule_ | std::views::transform(&Step::node)) {
       if (g.properties_[v].op == OpCode::Seed) {
-        g.inputs_.seeds =
-            std::max(g.inputs_.seeds, std::size_t{g.properties_[v].slot} + 1);
+        g.inputs_.directions =
+            std::max(g.inputs_.directions,
+                     std::size_t{detail::index_of(g.properties_[v])} + 1);
       }
       g.calls_extern_ |= kind_of(g.properties_[v].op) == Kind::Extern;
       g.has_tensors_ |= kind_of(g.properties_[v].op) == Kind::Tensor;
     }
     // The tape packed by liveness, scalar rows and tensor rows alike; off the
     // arena, which holds the tensor table the widths come from.
-    auto packed = detail::pack_slots(b, g.schedule_, g.outputs_);
-    g.slots_ = std::move(packed.slot);
-    g.tape_slots_ = packed.rows;
-    g.output_slots_ =
-        g.outputs_ |
-        std::views::transform([&g](NodeId o) { return g.slots_[o]; }) |
-        impl::to<std::vector<std::uint32_t>>();
+    auto packed = detail::pack_rows(b, g.schedule_, g.outputs_);
+    g.rows_ = std::move(packed.by_id);
+    g.tape_rows_ = packed.rows;
     g.tensors_ = detail::tensor_layout(b, g.schedule_, g.outputs_);
     g.output_rows_ = g.outputs_ | std::views::transform([&g, &b](NodeId o) {
                        return tensor_valued(b.op_of(o))
                                   ? g.tensors_.rows[o]
-                                  : TensorRow{.at = g.slots_[o]};
+                                  : TensorRow{.at = g.rows_[o]};
                      }) |
                      impl::to<std::vector<TensorRow>>();
     return g;
@@ -265,14 +271,16 @@ public:
   }
 
   [[nodiscard]] std::size_t size() const { return properties_.size(); }
-  [[nodiscard]] const Property &operator[](NodeId v) const {
+  [[nodiscard]] const NodeRecord &operator[](NodeId v) const {
     return properties_[v];
   }
   [[nodiscard]] std::span<const NodeId> outputs() const { return outputs_; }
   [[nodiscard]] const Layout &layout() const { return layout_; }
-  [[nodiscard]] const Coloring &coloring() const { return coloring_; }
+  [[nodiscard]] const Colouring &colouring() const { return colouring_; }
   // Which (function, symbol) cells the jacobian block holds, in its order.
-  [[nodiscard]] const Sparsity &jacobian_pattern() const { return jacobian_; }
+  [[nodiscard]] const Sparsity &jacobian_pattern() const {
+    return jacobian_pattern_;
+  }
   // How many input columns of each kind `xs` carries, and the names of all
   // but the seeds, in column order.
   [[nodiscard]] const Inputs &inputs() const { return inputs_; }
@@ -316,19 +324,15 @@ public:
   [[nodiscard]] OutputSpans output_blocks() const {
     return blocks_of(std::span<const NodeId>{outputs_});
   }
-  // The same blocks as tape rows: what a sweep reads its answers off.
-  [[nodiscard]] OutputSpans output_slots() const {
-    return blocks_of(std::span<const std::uint32_t>{output_slots_});
-  }
   [[nodiscard]] OutputRows output_rows() const {
     return blocks_of(std::span<const TensorRow>{output_rows_});
   }
   // By id, the tape row each scheduled node's value sits in; how many rows the
   // tape has.  Packed by liveness, so the tape is a fraction of the arena.
-  [[nodiscard]] std::span<const std::uint32_t> slots() const noexcept {
-    return slots_;
+  [[nodiscard]] std::span<const std::uint32_t> rows() const noexcept {
+    return rows_;
   }
-  [[nodiscard]] std::size_t tape_slots() const noexcept { return tape_slots_; }
+  [[nodiscard]] std::size_t tape_rows() const noexcept { return tape_rows_; }
 
   [[nodiscard]] OpCode op_of(NodeId v) const { return properties_[v].op; }
 
@@ -340,7 +344,7 @@ public:
 
 private:
   template <typename E>
-  [[nodiscard]] Blocks<std::span<const E>>
+  [[nodiscard]] PerBlock<std::span<const E>>
   blocks_of(std::span<const E> all) const {
     return {.values = all.first(counts_.values),
             .jacobian = all.subspan(counts_.values, counts_.jacobian),
@@ -394,14 +398,14 @@ private:
                    std::views::filter([&live](NodeId v) { return live[v]; }));
   }
 
-  std::vector<Property> properties_;
+  std::vector<NodeRecord> properties_;
   std::vector<std::array<NodeId, 3>> operands_;
   std::vector<NodeId> outputs_;
-  Layout layout_;              // columns per block
-  Blocks<std::size_t> counts_; // nodes per block
+  Layout layout_;                // columns per block
+  PerBlock<std::size_t> counts_; // nodes per block
   std::vector<TensorRow> output_rows_;
-  Coloring coloring_;
-  Sparsity jacobian_;
+  Colouring colouring_;
+  Sparsity jacobian_pattern_;
   Inputs inputs_;
   std::vector<std::string> names_;
   std::vector<ExternEntry<T>> externs_;
@@ -409,9 +413,8 @@ private:
   bool calls_extern_ = false;
   bool has_tensors_ = false;
   TensorLayout tensors_;
-  std::vector<std::uint32_t> slots_;
-  std::vector<std::uint32_t> output_slots_;
-  std::size_t tape_slots_ = 0;
+  std::vector<std::uint32_t> rows_;
+  std::size_t tape_rows_ = 0;
   std::vector<bool> live_;
   std::vector<NodeId> live_order_;
   std::vector<Step> schedule_;
@@ -425,8 +428,8 @@ private:
 //   GraphBuilder{b}.value(f).build_jacobian().build_hessian().finish()
 //
 // The class template argument is deduced from the builder.
-// What a freeze may ask a lane for.  Each is fetched only on the branch that
-// wants it, so a caller whose sweeps are lazy stays lazy.
+// What a freeze may ask a pipeline for.  Each is fetched only on the branch
+// that wants it, so a caller whose sweeps are lazy stays lazy.
 template <typename S>
 concept CSweeps = requires(S &s) {
   { s.roots() } -> std::convertible_to<std::span<const NodeId>>;
@@ -450,12 +453,12 @@ public:
   explicit constexpr GraphBuilder(Builder<T> &b) noexcept : builder_{&b} {}
 
   // The function the kernel computes.
-  constexpr GraphBuilder &value(const RTExpression<T> &root) {
+  constexpr GraphBuilder &value(const Expression<T> &root) {
     return values({root});
   }
 
   // A system: m functions over the same symbols.
-  constexpr GraphBuilder &values(std::initializer_list<RTExpression<T>> roots) {
+  constexpr GraphBuilder &values(std::initializer_list<Expression<T>> roots) {
     roots_ =
         roots |
         std::views::transform([&](const auto &e) { return e.id(*builder_); }) |
@@ -483,28 +486,28 @@ public:
   // The whole sweep rather than its nodes: the pattern is what makes the block
   // readable, so the two must not travel separately.
   constexpr GraphBuilder &jacobian_from(const Jacobian &j) {
-    jacobian_ = j.pattern;
+    jacobian_pattern_ = j.pattern;
     return block(&OutputBlocks::jacobian, j.partial);
   }
 
   // Every partial, in symbol order.  One reverse sweep per function.
   constexpr GraphBuilder &build_jacobian() {
-    return jacobian_from(rt::build_jacobian_impl(*builder_, roots_));
+    return jacobian_from(rt::derive_jacobian(*builder_, roots_));
   }
 
   // Compressed by colour, not n x n: a handful of columns when banded.
   GraphBuilder &build_hessian() {
-    return hessian_from(rt::build_hessian_impl(*builder_, roots_.front()));
+    return hessian_from(rt::derive_hessian(*builder_, roots_.front()));
   }
 
   [[nodiscard]] Graph<T> finish(bool contract = true) const {
-    return Graph<T>::freeze(*builder_, blocks_, coloring_, jacobian_, contract,
-                            seeds_);
+    return Graph<T>::freeze(*builder_, blocks_, colouring_, jacobian_pattern_,
+                            contract, directions_);
   }
 
 private:
   // The Hessian an Equation already holds, so the arena is not swept again:
-  // rt::build_hessian_impl appends to the builder, and freeze() must not.
+  // rt::derive_hessian appends to the builder, and freeze() must not.
   template <impl::Numeric U>
   friend Graph<U> freeze_for(Want, Builder<U> &, CSweeps auto &, bool);
 
@@ -514,11 +517,11 @@ private:
     return *this;
   }
   constexpr GraphBuilder &hessian_from(const Hessian &h) {
-    coloring_ = h.coloring;
+    colouring_ = h.colouring;
     return block(&OutputBlocks::hessian, h.compressed);
   }
   // H v is a second-order block of one column, so the colouring stays empty
-  // and coloring() is not always a way to read that block back.
+  // and colouring() is not always a way to read that block back.
   constexpr GraphBuilder &hessian_vector_from(const HessianVector &h) {
     return block(&OutputBlocks::hessian, h.product);
   }
@@ -545,14 +548,14 @@ private:
   Builder<T> *builder_;
   std::vector<NodeId> roots_;
   OutputBlocks blocks_;
-  Coloring coloring_;
-  Sparsity jacobian_;
-  std::size_t seeds_ = 0;
+  Colouring colouring_;
+  Sparsity jacobian_pattern_;
+  std::size_t directions_ = 0;
 };
 
 template <impl::Numeric T> GraphBuilder(Builder<T> &) -> GraphBuilder<T>;
 
-// The graph one lane computes: the value block unless the want is Gradient,
+// The graph one pipeline computes: the value block unless the want is Gradient,
 // which differentiates the roots without computing them, and the one derivative
 // block that want names.  Vjp and Jvp replace the Jacobian block rather than
 // adding to it -- n columns instead of the pattern's nonzeros is the whole
@@ -563,14 +566,14 @@ template <impl::Numeric T>
   GraphBuilder<T> gb{arena};
   // Every direction column the call hands, whether or not the product reads
   // it: y's never reaches H(x*x + y) v.
-  switch (want_info(want).seeds) {
-  case Seeds::None:
+  switch (want_info(want).direction) {
+  case Direction::None:
     break;
-  case Seeds::Symbols:
-    gb.seeds_ = arena.symbols().size();
+  case Direction::Symbols:
+    gb.directions_ = arena.symbols().size();
     break;
-  case Seeds::Functions:
-    gb.seeds_ = sweeps.roots().size();
+  case Direction::Functions:
+    gb.directions_ = sweeps.roots().size();
     break;
   }
   if (want == Want::Gradient) {
@@ -598,7 +601,7 @@ template <impl::Numeric T>
     gb.jacobian_from(sweeps.jacobian())
         .hessian_vector_from(sweeps.hessian_vector());
     break;
-  case Want::JacobianTangent:
+  case Want::JacobianJvp:
     gb.jacobian_from(sweeps.jacobian())
         .jacobian_tangent_from(sweeps.jacobian_tangent());
     break;

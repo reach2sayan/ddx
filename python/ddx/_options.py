@@ -7,7 +7,7 @@ from typing import Self
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import _ddx
-from ._ddx import Backend, Level, VecLib
+from ._ddx import Backend, OptLevel, VecLib
 
 # What the build settled on: DDX_JIT_DEFAULT_OPT follows CMAKE_BUILD_TYPE and
 # DDX_JIT_DEFAULT_CONTRACT follows DDX_FP_FLAGS, so the defaults are read off the
@@ -32,8 +32,8 @@ class Options(BaseModel):
     """Points per loop iteration. ``None`` derives it from ``points`` and the
     host; ``1`` is scalar. Every width gives the same bits."""
 
-    opt_level: Level = _DEFAULTS.opt_level
-    codegen_level: Level = _DEFAULTS.codegen_level
+    opt_level: OptLevel = _DEFAULTS.opt_level
+    codegen_level: OptLevel = _DEFAULTS.codegen_level
 
     warm_points: int = Field(_DEFAULTS.warm_points, ge=0)
     """Under ``ADAPT``, the batch points a lane must be asked for before it is
@@ -44,7 +44,7 @@ class Options(BaseModel):
     top one is compiled. A Python lane has one rung, so this is read only by
     equations compiled through the C++ facade."""
 
-    slp: bool = _DEFAULTS.slp
+    slp_vectorize: bool = _DEFAULTS.slp_vectorize
     loop_vectorize: bool = _DEFAULTS.loop_vectorize
     veclib: VecLib = _DEFAULTS.veclib
     contract: bool = _DEFAULTS.contract

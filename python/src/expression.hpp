@@ -15,21 +15,21 @@
 #include <utility>
 #include <vector>
 
-// The handle Python holds: an RTExpression that owns its arena.  RTExpression
-// stores a *non-owning* Builder* because in C++ an arena's lifetime is lexical;
-// a Python closure can capture a symbol and outlive everything.  Shared
-// ownership is the whole of what this adds.
+// The handle Python holds: an rt::Expression that owns its arena.
+// rt::Expression stores a *non-owning* Builder* because in C++ an arena's
+// lifetime is lexical; a Python closure can capture a symbol and outlive
+// everything.  Shared ownership is the whole of what this adds.
 //
 // It holds one rather than deriving from one: pybind11 describes a bound type
 // as descr<N, PyExpression>, and a base class is an associated class where a
-// member's type is not.  Deriving would put RTExpression's hidden operator+
+// member's type is not.  Deriving would put rt::Expression's hidden operator+
 // into the overload set for descr + descr, instantiating Numeric<descr> whose
 // body is `{ a + b }` -- constraint recursion inside pybind11's machinery.
 namespace ddx::py {
 
 class PyExpression {
 public:
-  using Base = rt::RTExpression<double>;
+  using Base = rt::Expression<double>;
   using Arena = std::shared_ptr<rt::Builder<double>>;
 
   constexpr PyExpression() = default;
@@ -65,7 +65,7 @@ public:
       }
     }
     if (!arena) {
-      fail_with(errc::no_arena);
+      fail_with(errc::outside_equation);
     }
     const auto bases = scalars | std::views::transform(&PyExpression::base) |
                        impl::to<std::vector<Base>>();
@@ -96,7 +96,7 @@ public:
     }
     const rt::Node<double> &n = (*arena_)[expression_.id()];
     if (n.op == rt::OpCode::MatConst) {
-      const auto &t = arena_->tensors()[n.slot];
+      const auto &t = arena_->tensors()[rt::detail::index_of(n)];
       return {t.rows, t.cols};
     }
     return size() == 0 ? std::vector<std::size_t>{}
@@ -122,7 +122,8 @@ public:
     case rt::OpCode::Const:
       return std::format("Expression({})", n.value);
     case rt::OpCode::Var:
-      return std::format("Expression({})", arena_->symbols()[n.slot]);
+      return std::format("Expression({})",
+                         arena_->symbols()[rt::detail::index_of(n)]);
     default:
       // The op and the identity, not the subtree: an id *is* the identity of a
       // subexpression here.
@@ -135,7 +136,7 @@ private:
   // new handle, so the two halves of a handle are reachable there and nowhere
   // else.  Keyed by opcode rather than by name: the module registers every row
   // of the opcode table through these, so there is no friend per function.
-  // Whichever operand names a graph, mirroring RTExpression::form: a pending
+  // Whichever operand names a graph, mirroring rt::Expression::form: a pending
   // literal folds against the other rather than materialising into it.
   friend PyExpression unary(rt::OpCode op, const PyExpression &u) {
     return {Base::form(op, u.expression_), u.arena_};
@@ -167,7 +168,6 @@ public:
   [[nodiscard]] constexpr const Arena &arena() const noexcept { return arena_; }
 
 private:
-
   Base expression_;
   Arena arena_;
 };

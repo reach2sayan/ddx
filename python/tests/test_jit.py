@@ -115,6 +115,6 @@ def test_a_scalar_kernel_answers_a_single_point(scalar: ddx.Equation) -> None:
     assert np.array_equal(swept[1], compiled[1])
 
 
-def test_hessian_colors_are_read_without_compiling(scalar: ddx.Equation) -> None:
-    assert scalar.hessian_colors == 2
+def test_hessian_colours_are_read_without_compiling(scalar: ddx.Equation) -> None:
+    assert scalar.hessian_colours == 2
     assert scalar.uses_kernel is False

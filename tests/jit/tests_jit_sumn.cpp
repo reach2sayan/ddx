@@ -19,7 +19,7 @@
 namespace {
 using ddx::rt::Builder;
 using ddx::rt::Graph;
-using RE = ddx::rt::RTExpression<>;
+using RE = ddx::rt::Expression<>;
 
 RE summed(const std::vector<RE> &x) {
   RE acc{0};
@@ -53,10 +53,10 @@ void expect_bit_identical(bool contract) {
   }
   const auto f = summed(x).id(b);
   ASSERT_EQ(b[f].op, ddx::rt::OpCode::SumN);
-  const auto g = ddx::rt::build_jacobian_impl(b, f);
-  const auto graph = Graph<>::freeze(
-      b, {.values = {f}, .jacobian = g.partial, .hessian = {}}, {}, {},
-      contract);
+  const auto g = ddx::rt::derive_jacobian(b, f);
+  const auto graph =
+      Graph<>::freeze(b, {.values = {f}, .jacobian = g.partial, .hessian = {}},
+                      {}, {}, contract);
   const auto kernel = must_compile(graph);
   ASSERT_TRUE(static_cast<bool>(kernel));
 
@@ -79,7 +79,7 @@ void expect_bit_identical(bool contract) {
   double *const vs[]{value.data()};
   kernel(xs, vs, gs, {}, n);
 
-  std::vector<double> tape(graph.tape_slots());
+  std::vector<double> tape(graph.tape_rows());
   for (std::size_t i = 0; i < n; ++i) {
     std::vector<double> p(nvars);
     for (std::size_t j = 0; j < nvars; ++j) {
@@ -87,13 +87,13 @@ void expect_bit_identical(bool contract) {
     }
     ddx::rt::evaluate_into(
         b, p, graph.schedule(), std::span<double>{tape},
-        ddx::rt::detail::Scratch<double>{.slots = graph.slots()});
+        ddx::rt::detail::TapeView<double>{.scalar_rows = graph.rows()});
     EXPECT_EQ(std::bit_cast<std::uint64_t>(value[i]),
-              std::bit_cast<std::uint64_t>(tape[graph.slots()[f]]))
+              std::bit_cast<std::uint64_t>(tape[graph.rows()[f]]))
         << "value at point " << i << (contract ? " fused" : " plain");
     for (std::size_t j = 0; j < nvars; ++j) {
       EXPECT_EQ(std::bit_cast<std::uint64_t>(grad[j][i]),
-                std::bit_cast<std::uint64_t>(tape[graph.slots()[g.partial[j]]]))
+                std::bit_cast<std::uint64_t>(tape[graph.rows()[g.partial[j]]]))
           << "d/dx" << j << " at point " << i;
     }
   }

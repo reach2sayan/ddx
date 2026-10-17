@@ -61,7 +61,7 @@ std::string spelled(ddx::jit::Lanes lanes) {
 void expect_matches_interpreter(auto build, std::size_t nvars,
                                 std::size_t n = 64) {
   Builder<> b;
-  std::vector<ddx::rt::RTExpression<>> vars;
+  std::vector<ddx::rt::Expression<>> vars;
   static constexpr const char *names[] = {"x", "y", "z", "w"};
   for (std::size_t i = 0; i < nvars; ++i) {
     vars.push_back(var(b, names[i]));
@@ -355,7 +355,7 @@ TEST(JitValue, EveryCodegenLevelAgreesToTheBit) {
   const std::array cy{1.25, 0.5, 2.0, 0.75};
   const std::array<const double *, 2> xs{cx.data(), cy.data()};
 
-  const auto run = [&](ddx::jit::Level level) {
+  const auto run = [&](ddx::jit::OptLevel level) {
     ddx::jit::Options o;
     o.codegen.codegen_level = level;
     const auto kernel = must_compile(graph, o);
@@ -366,9 +366,9 @@ TEST(JitValue, EveryCodegenLevelAgreesToTheBit) {
     return std::tuple{value, dx, dy};
   };
 
-  const auto [v1, dx1, dy1] = run(ddx::jit::Level::O1);
-  for (const auto level :
-       {ddx::jit::Level::O0, ddx::jit::Level::O2, ddx::jit::Level::O3}) {
+  const auto [v1, dx1, dy1] = run(ddx::jit::OptLevel::O1);
+  for (const auto level : {ddx::jit::OptLevel::O0, ddx::jit::OptLevel::O2,
+                           ddx::jit::OptLevel::O3}) {
     const auto [v, dx, dy] = run(level);
     const auto at = std::to_underlying(level);
     for (std::size_t i = 0; i < cx.size(); ++i) {
@@ -418,8 +418,9 @@ TEST(JitValue, TheVectorisersDoNotMoveABit) {
     const auto [v0, dx0, dy0] = run({.codegen = {.lanes = lanes}});
     const std::string width = spelled(lanes);
     for (const auto &[what, o] :
-         {std::pair{"slp", ddx::jit::Options{.codegen = {.lanes = lanes,
-                                                         .slp = true}}},
+         {std::pair{"slp_vectorize",
+                    ddx::jit::Options{
+                        .codegen = {.lanes = lanes, .slp_vectorize = true}}},
           std::pair{"loop_vectorize",
                     ddx::jit::Options{.codegen = {.lanes = lanes,
                                                   .loop_vectorize = true}}}}) {
@@ -519,7 +520,7 @@ TEST(JitValue, EmptyBatchWritesNothing) {
 TEST(JitValue, ConstantFoldsToAStore) {
   Builder<> b;
   const auto x = var(b, "x");
-  const auto f = x * ddx::rt::RTExpression<>{0} + ddx::rt::RTExpression<>{7};
+  const auto f = x * ddx::rt::Expression<>{0} + ddx::rt::Expression<>{7};
   const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
   const auto kernel = must_compile(graph);
 

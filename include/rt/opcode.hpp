@@ -25,12 +25,12 @@ namespace ddx::rt {
 // being a leaf that is not a Var is what keeps a Param, an Implicit or a Seed
 // out of symbols(), out of the reverse sweep's harvest and out of the coupling
 // pattern, with no slot-range convention for any of them to agree on.  A Param
-// is a named input present in every lane; an Implicit, one the caller solved
-// for; a Seed, a seeded product's direction.  The last cell is what the slot
-// is: nothing, a place among the named inputs of that kind, or a position.
-// The named kinds are their own table, in the order a point passes them: it
-// is what the Builder keeps one name list per and what var()'s spellings,
-// the Python factories and the column layout are generated from.
+// is a named input present in every Want's graph; an Implicit, one the caller
+// solved for; a Seed, a seeded product's direction.  The last cell is what the
+// index is: nothing, a place among the named inputs of that kind, or a
+// position. The named kinds are their own table, in the order a point passes
+// them: it is what the Builder keeps one name list per and what var()'s
+// spellings, the Python factories and the column layout are generated from.
 #define DDX_RT_NAMED_TABLE(X)                                                  \
   X(var, Var, "var", Named)                                                    \
   X(param, Param, "param", Named)                                              \
@@ -86,28 +86,28 @@ namespace ddx::rt {
 #define DDX_RT_NARY_TABLE(X) X(sum_n, SumN, "sum_n", 1, Nary)
 
 // A node whose value is a vector of `width` scalars per point, or a scalar
-// read off one.  Operands are ids like any other; the slot is what the row
+// read off one.  Operands are ids like any other; `aux` is what the row
 // says -- no node carries data, and a shape is a function of the source
 // (width_of in rt/builder.hpp), never of the node alone:
-//   VecConst, MatConst  slot = index into Model::tensors; the data lives there
-//   Pack                a = list of `slot` scalars
-//   Gather              a = vec, slot = element; a scalar
-//   Map, Zip            a (, b) = vecs, slot = the elementwise opcode
+//   VecConst, MatConst  aux = index into Model::tensors; the data lives there
+//   Pack                a = list of `aux` scalars
+//   Gather              a = vec, aux = element; a scalar
+//   Map, Zip            a (, b) = vecs, aux = the elementwise opcode
 //   Scale               a = scalar, b = vec
 //   Sum, Dot            a (, b) = vecs; a scalar
-//   Gemv                a = MatConst, b = vec, slot = 1 for M^T v
-//   AddAt               a = vec, b = scalar, slot = element: a + b e_slot
+//   Gemv                a = MatConst, b = vec, aux = 1 for M^T v
+//   AddAt               a = vec, b = scalar, aux = element: a + b e_aux
 // A matrix is a row too, column-major, its shape derived from its operands
 // (shape_of in rt/builder.hpp); the dense Hessian sweep forms these:
-//   MatRow              a = MatConst, slot = 1 for M^T: the table as a row
+//   MatRow              a = MatConst, aux = 1 for M^T: the table as a row
 //   Diag                a = vec w: the w x w diagonal
 //   Outer               a = vec r, b = vec c: a b^T
 //   RowScale            a = vec r, b = matrix r x c: diag(a) M
 //   ColScale            a = matrix r x c, b = vec c: M diag(b)
-//   MatVec              a = matrix, b = vec, slot = 1 for M^T v
+//   MatVec              a = matrix, b = vec, aux = 1 for M^T v
 //   MatMul              a = matrix r x k, b = matrix k x c
-//   StackRows           a = list of `slot` vectors, each a row
-//   RowOf               a = matrix, slot = row: that row, as a vector
+//   StackRows           a = list of `aux` vectors, each a row
+//   RowOf               a = matrix, aux = row: that row, as a vector
 // The last cells are the arity and the Kind.
 #define DDX_RT_TENSOR_TABLE(X)                                                 \
   X(vec_const, VecConst, "vconst", 0, Tensor)                                  \
@@ -393,16 +393,16 @@ private:
 #endif
 };
 
-// An extern node's slot: which registered function, and which component of
+// An extern node's aux word: which registered function, and which component of
 // its answer -- 0 the value, 1..k the first partials, then the upper triangle
 // of the second, row-major.  A half-word each; fits() is the one bound.
-struct ExternSlot {
+struct ExternRef {
   std::uint32_t function = 0;
   std::uint32_t component = 0;
   static constexpr std::uint32_t limit = 1u << 16;
 
-  [[nodiscard]] static constexpr ExternSlot of(std::uint32_t slot) noexcept {
-    return {.function = slot >> 16, .component = slot & (limit - 1)};
+  [[nodiscard]] static constexpr ExternRef of(std::uint32_t aux) noexcept {
+    return {.function = aux >> 16, .component = aux & (limit - 1)};
   }
   [[nodiscard]] constexpr std::uint32_t packed() const noexcept {
     return (function << 16) | component;
@@ -417,7 +417,7 @@ struct ExternSlot {
 // them: the named kinds in table order, then a seeded product's direction.
 struct Inputs {
   std::array<std::size_t, named_count> by_kind{};
-  std::size_t seeds = 0;
+  std::size_t directions = 0;
 
   [[nodiscard]] constexpr std::size_t count(OpCode op) const noexcept {
     return by_kind[*named_index(op)];
@@ -426,7 +426,7 @@ struct Inputs {
     return std::ranges::fold_left(by_kind, 0uz, std::plus<>{});
   }
   [[nodiscard]] constexpr std::size_t total() const noexcept {
-    return named() + seeds;
+    return named() + directions;
   }
   constexpr bool operator==(const Inputs &) const = default;
 };

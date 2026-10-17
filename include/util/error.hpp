@@ -21,7 +21,7 @@ namespace ddx {
   X(wrong_column_count, "wrong number of output columns")                                     \
                                                                                               \
   /* Runtime graphs. */                                                                       \
-  X(no_arena,         "no arena is current -- name symbols inside ddx::rt::equation()")       \
+  X(outside_equation, "no equation is being built -- name symbols inside ddx::rt::equation()")\
   X(no_graph,         "the expression has no graph (a bare literal names none)")              \
   X(name_clash,       "the name is already an input of another kind")                          \
   X(closed_twice,     "an implicit input is named, with a residual, twice")                   \

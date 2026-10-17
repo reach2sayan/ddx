@@ -19,13 +19,13 @@ public:
   // Empty takes the first GPU with double precision, else the first device of
   // any type that has it.  errc::no_device where nothing answers; the detail
   // lists what was seen.
-  [[nodiscard]] static DDX_API result<Device>
+  [[nodiscard]] static DDX_API compile_result<Device>
   create(std::string_view selector = {});
 
   // One per selector for the process, created on first ask and never torn
   // down: vendor runtimes do not take kindly to a context released while the
   // program exits.  The reference outlives every caller.
-  [[nodiscard]] static DDX_API const result<Device> &
+  [[nodiscard]] static DDX_API const compile_result<Device> &
   shared(std::string_view selector = {});
 
   // "<platform> / <device> / <driver> / <OpenCL version>".
@@ -33,11 +33,11 @@ public:
 
   // The graph as OpenCL C, built by this device's compiler.
   // errc::device_compile carries the build log.
-  [[nodiscard]] DDX_API result<Kernel>
+  [[nodiscard]] DDX_API compile_result<Kernel>
   compile(const rt::Graph<double> &g, CompileReport *report = nullptr) const;
 
   // The future's destructor does not join: dropping it abandons the result.
-  [[nodiscard]] DDX_API std::shared_future<result<Kernel>>
+  [[nodiscard]] DDX_API std::shared_future<compile_result<Kernel>>
   compile_async(std::shared_ptr<const rt::Graph<double>> g) const;
 
 private:
