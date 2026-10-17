@@ -61,11 +61,12 @@ def test_a_vector_knows_its_length_and_elements() -> None:
         C = ddx.mat_const(2, 3, [1.0] * 6)
         assert C.shape == (2, 3)
         assert v[0].shape == ()
-        return ddx.dot(v, w) + ddx.sum(ddx.add_at(w, v[0], 1))
+        head = ddx.pack([v[0], v[1]])
+        return ddx.dot(v, w) + ddx.sum(ddx.gemv(C, head, transposed=True))
 
     eq = ddx.equation(model)
     v = [1.0, 2.0, 3.0]
-    assert math.isclose(eq.evaluate(v), 1 * 3 + 2 * 2 + 3 * 1 + (3 + 2 + 1) + 1.0)
+    assert math.isclose(eq.evaluate(v), 1 * 3 + 2 * 2 + 3 * 1 + 3 * (1 + 2))
 
 
 def test_shapes_are_refused_where_they_are_formed() -> None:

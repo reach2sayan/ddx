@@ -13,7 +13,7 @@
 #include <vector>
 
 // An implicit input: a value the caller solved for, differentiated as the root
-// of the residual closes() names -- dz/dx = -F_x / F_z, and second order by
+// of the residual implicit() names -- dz/dx = -F_x / F_z, and second order by
 // the same rule applied again.
 namespace {
 
@@ -24,8 +24,8 @@ using namespace ddx::literals;
 [[nodiscard]] auto root_of_a() {
   return ddx::rt::equation([] {
     const auto a = ddx::rt::var("a");
-    const auto z = ddx::rt::implicit("z");
-    ddx::rt::closes(z, z * z - a);
+    const auto z =
+        ddx::rt::implicit("z", [&](const RE &z) { return z * z - a; });
     return z;
   });
 }
@@ -82,8 +82,8 @@ constexpr std::size_t species = 4;
 [[nodiscard]] auto with_implicit_z() {
   return ddx::rt::equation([] {
     const auto x = fractions();
-    const auto z = ddx::rt::implicit("Z");
-    ddx::rt::closes(z, models::peng_robinson(x, z));
+    const auto z = ddx::rt::implicit(
+        "Z", [&](const RE &z) { return models::peng_robinson(x, z); });
     return output(x, z);
   });
 }
@@ -189,21 +189,24 @@ TEST(RtImplicit, ZIsPartOfThePoint) {
 
 // --- refusals ----------------------------------------------------------------
 
-TEST(RtImplicit, AnUnclosedImplicitIsRefused) {
-  const auto eq = ddx::rt::equation([] {
-    return ddx::rt::var("a") * ddx::rt::implicit("z");
-  });
-  ASSERT_TRUE(eq.poisoned());
-  EXPECT_EQ(eq.status()->code, ddx::errc::unclosed_implicit);
-}
-
-TEST(RtImplicit, ClosingTwiceIsRefused) {
+TEST(RtImplicit, APoisonedResidualIsRefused) {
   const auto eq = ddx::rt::equation([] {
     const auto a = ddx::rt::var("a");
-    const auto z = ddx::rt::implicit("z");
-    ddx::rt::closes(z, z * z - a);
-    ddx::rt::closes(z, z - a);
-    return z;
+    return ddx::rt::implicit(
+        "z", [&](const RE &z) { return z * ddx::rt::param("a") - a; });
+  });
+  ASSERT_TRUE(eq.poisoned());
+  EXPECT_EQ(eq.status()->code, ddx::errc::name_clash);
+}
+
+TEST(RtImplicit, NamingTwiceIsRefused) {
+  const auto eq = ddx::rt::equation([] {
+    const auto a = ddx::rt::var("a");
+    const auto z =
+        ddx::rt::implicit("z", [&](const RE &z) { return z * z - a; });
+    const auto again =
+        ddx::rt::implicit("z", [&](const RE &z) { return z - a; });
+    return z + again;
   });
   ASSERT_TRUE(eq.poisoned());
   EXPECT_EQ(eq.status()->code, ddx::errc::closed_twice);
@@ -212,32 +215,29 @@ TEST(RtImplicit, ClosingTwiceIsRefused) {
 TEST(RtImplicit, AResidualOverAnotherImplicitIsRefused) {
   const auto eq = ddx::rt::equation([] {
     const auto a = ddx::rt::var("a");
-    const auto y = ddx::rt::implicit("y");
-    const auto z = ddx::rt::implicit("z");
-    ddx::rt::closes(y, y - a);
-    ddx::rt::closes(z, z * y - a);
+    const auto y = ddx::rt::implicit("y", [&](const RE &y) { return y - a; });
+    const auto z =
+        ddx::rt::implicit("z", [&](const RE &z) { return z * y - a; });
     return z;
   });
   ASSERT_TRUE(eq.poisoned());
   EXPECT_EQ(eq.status()->code, ddx::errc::nested_implicit);
 }
 
-TEST(RtImplicit, ClosingASymbolIsRefused) {
+TEST(RtImplicit, AnImplicitNamedLikeASymbolIsRefused) {
   const auto eq = ddx::rt::equation([] {
     const auto a = ddx::rt::var("a");
-    ddx::rt::closes(a, a * a - 2.0);
-    return a;
+    return a * ddx::rt::implicit("a", [&](const RE &z) { return z - a; });
   });
   ASSERT_TRUE(eq.poisoned());
-  EXPECT_EQ(eq.status()->code, ddx::errc::not_implicit);
+  EXPECT_EQ(eq.status()->code, ddx::errc::name_clash);
 }
 
 // An output that never reaches z differentiates as if it were not there.
 TEST(RtImplicit, AnOutputNotThroughZIsUnaffected) {
   const auto eq = ddx::rt::equation([] {
     const auto a = ddx::rt::var("a");
-    const auto z = ddx::rt::implicit("z");
-    ddx::rt::closes(z, z * z - a);
+    (void)ddx::rt::implicit("z", [&](const RE &z) { return z * z - a; });
     return a * a;
   });
   ASSERT_FALSE(eq.poisoned());
@@ -248,8 +248,8 @@ TEST(RtImplicit, AnOutputNotThroughZIsUnaffected) {
 TEST(RtImplicit, ASystemOfOutputsThroughZ) {
   const auto sys = ddx::rt::equation([] {
     const auto a = ddx::rt::var("a");
-    const auto z = ddx::rt::implicit("z");
-    ddx::rt::closes(z, z * z - a);
+    const auto z =
+        ddx::rt::implicit("z", [&](const RE &z) { return z * z - a; });
     return std::vector<RE>{z, z * a};
   });
   // d(z a)/da = z + a dz/da = 2 + 4 * 0.25.

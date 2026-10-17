@@ -24,10 +24,8 @@ namespace ddx {
   X(no_arena,         "no arena is current -- name symbols inside ddx::rt::equation()")       \
   X(no_graph,         "the expression has no graph (a bare literal names none)")              \
   X(name_clash,       "the name is already an input of another kind")                          \
-  X(unclosed_implicit, "an implicit input has no rt::closes() residual")                     \
-  X(closed_twice,     "an implicit input is closed by two residuals")                         \
+  X(closed_twice,     "an implicit input is named, with a residual, twice")                   \
   X(nested_implicit,  "a residual reaches an implicit input other than its own")              \
-  X(not_implicit,     "rt::closes() names something that is not an implicit input")           \
   X(extern_order,     "an extern function does not supply the partials this call needs")       \
   X(extern_shape,     "an extern function's arity or order cannot be represented")            \
   X(not_univariate,   "needs exactly one symbol")                                             \

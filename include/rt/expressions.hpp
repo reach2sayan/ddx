@@ -3,6 +3,7 @@
 #include "rt/apply.hpp"
 #include "rt/builder.hpp"
 #include "rt/opcode.hpp"
+#include "util/config.hpp"
 #include "util/error.hpp"
 #include "util/scope_guard.hpp"
 
@@ -10,6 +11,7 @@
 #include <array>
 #include <concepts> // std::same_as
 #include <cstdint>
+#include <functional> // std::invoke
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -87,9 +89,7 @@ public:
     return builder_ == nullptr;
   }
   // Elements per point: zero for a scalar node or a pending literal.
-  [[nodiscard]] constexpr std::uint32_t size() const noexcept {
-    return width_;
-  }
+  [[nodiscard]] constexpr std::uint32_t size() const noexcept { return width_; }
 
   // Whether the input named no leaf -- no arena current, or a name another
   // kind of input has -- which surfaces as an errc out of equation() rather
@@ -363,9 +363,6 @@ private:
   template <impl::Numeric U>
   friend constexpr RTExpression<U> named(Builder<U> &, OpCode,
                                          std::string_view);
-  template <impl::Numeric U>
-  friend constexpr void closes(const RTExpression<U> &,
-                               const RTExpression<U> &);
 
   [[nodiscard]] constexpr Builder<T> *builder() const noexcept {
     return builder_;
@@ -399,7 +396,7 @@ private:
 // The one way a named input enters a graph.  A Var is differentiated; a Param
 // is read and never differentiated, no Jacobian column and a value in every
 // call; an Implicit is one the caller solved for -- a value in every call,
-// like a parameter, and a root of the residual closes() names, so no
+// like a parameter, and a root of the residual implicit() names, so no
 // derivative treats it as fixed and every one carries dz/dx = -F_x / F_z.
 template <impl::Numeric T>
 [[nodiscard]] constexpr RTExpression<T> named(Builder<T> &b, OpCode op,
@@ -408,18 +405,19 @@ template <impl::Numeric T>
   return id == no_node ? RTExpression<T>::poison(errc::name_clash)
                        : RTExpression<T>{b, id};
 }
-// `z` is a root of `f`: F(z, x) = 0 at every point the caller supplies.  ddx
-// never solves it; it differentiates as though it held.
-template <impl::Numeric T>
-constexpr void closes(const RTExpression<T> &z, const RTExpression<T> &f) {
-  if (z.why_ || f.why_) {
-    return; // the poison reaches the equation through its outputs
+// The implicit input `name` and the residual `residual(z)` it is a root of:
+// F(z, x) = 0 at every point the caller supplies.  ddx never solves it; it
+// differentiates as though it held.
+template <impl::Numeric T, std::invocable<const RTExpression<T> &> F>
+[[nodiscard]] constexpr RTExpression<T>
+implicit(Builder<T> &b, std::string_view name, F &&residual) {
+  const RTExpression<T> z = named(b, OpCode::Implicit, name);
+  if (!detail::Rooting::why(z)) {
+    const RTExpression<T> f = std::invoke(DDX_FWD(residual), z);
+    const auto why = detail::Rooting::why(f);
+    b.close(z.id(b), why ? no_node : f.id(b), why);
   }
-  Builder<T> *const b = z.builder_ ? z.builder_ : f.builder_;
-  if (b == nullptr) {
-    return; // two literals: nothing names an arena to refuse in
-  }
-  b->close(z.builder_ ? z.id(*b) : no_node, f.id(*b));
+  return z;
 }
 // The direction a seeded product is taken along
 template <impl::Numeric T>
@@ -456,10 +454,10 @@ public:
         return RTExpression<T>::poison(errc::tensor_shape);
       }
     }
-    const auto ids = args | std::views::transform([this](const auto &a) {
-                       return a.id(*b_);
-                     }) |
-                     impl::to<boost::container::small_vector<NodeId, 8>>();
+    const auto ids =
+        args |
+        std::views::transform([this](const auto &a) { return a.id(*b_); }) |
+        impl::to<boost::container::small_vector<NodeId, 8>>();
     return RTExpression<T>{*b_, b_->extern_call(index_, ids)};
   }
   template <typename... A>
@@ -529,20 +527,28 @@ extern_fn(ExternRecord record, std::type_identity_t<ExternFn<T>> fn) {
                          std::move(fn));
 }
 
-// var(), param() and implicit(), in both spellings, off the table of named
-// kinds.
+// var() and param(), in both spellings, off the table of named kinds; an
+// implicit is named with its residual, above.
 #define DDX_RT_INPUT(fn, Op, ...)                                              \
   template <impl::Numeric T>                                                   \
+    requires(OpCode::Op != OpCode::Implicit)                                   \
   [[nodiscard]] constexpr RTExpression<T> fn(Builder<T> &b,                    \
                                              std::string_view name) {          \
     return named(b, OpCode::Op, name);                                         \
   }                                                                            \
   template <impl::Numeric T = double>                                          \
+    requires(OpCode::Op != OpCode::Implicit)                                   \
   [[nodiscard]] RTExpression<T> fn(std::string_view name) noexcept {           \
     return named<T>(OpCode::Op, name);                                         \
   }
 DDX_RT_NAMED_TABLE(DDX_RT_INPUT)
 #undef DDX_RT_INPUT
+template <impl::Numeric T = double, std::invocable<const RTExpression<T> &> F>
+[[nodiscard]] RTExpression<T> implicit(std::string_view name, F &&residual) {
+  return detail::current_arena<T> == nullptr
+             ? named<T>(OpCode::Implicit, name)
+             : implicit(*detail::current_arena<T>, name, DDX_FWD(residual));
+}
 
 } // namespace ddx::rt
 

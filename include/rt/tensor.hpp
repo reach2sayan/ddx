@@ -3,9 +3,9 @@
 // Vectors in a runtime graph: the factories and reductions over a handle that
 // is itself vector-valued (RTExpression::size() > 0).
 //
-//   auto x = rt::vec("x", n);                 // n symbols x[0] .. x[n-1], packed
-//   auto C = rt::mat_const(n, n, data);       // column-major
-//   auto g = rt::dot(x, rt::gemv(C, x)) + rt::sum(log(x) * x);
+//   auto x = rt::vec("x", n);                 // n symbols x[0] .. x[n-1],
+//   packed auto C = rt::mat_const(n, n, data);       // column-major auto g =
+//   rt::dot(x, rt::gemv(C, x)) + rt::sum(log(x) * x);
 //
 // The arithmetic is RTExpression's own: elementwise over a vector, a Scale
 // for a scalar times one, and a literal takes the width of the vector it
@@ -54,7 +54,8 @@ template <impl::Numeric T>
 // Whether `v` is a vector node of this arena, poisoned, or neither: a pending
 // literal has no width and a scalar node is not a vector.
 template <impl::Numeric T>
-[[nodiscard]] constexpr std::optional<errc> not_a_vector(const RTExpression<T> &v) {
+[[nodiscard]] constexpr std::optional<errc>
+not_a_vector(const RTExpression<T> &v) {
   if (const auto why = Rooting::why(v)) {
     return why;
   }
@@ -78,10 +79,9 @@ pack(Builder<T> &b, std::span<const RTExpression<T>> scalars) {
       return detail::refused<T>(errc::tensor_shape);
     }
   }
-  const auto ids = scalars | std::views::transform([&b](const auto &s) {
-                     return s.id(b);
-                   }) |
-                   impl::to<boost::container::small_vector<NodeId, 8>>();
+  const auto ids =
+      scalars | std::views::transform([&b](const auto &s) { return s.id(b); }) |
+      impl::to<boost::container::small_vector<NodeId, 8>>();
   return detail::tensor(b, b.pack(ids));
 }
 template <impl::Numeric T = double>
@@ -95,7 +95,8 @@ pack(std::initializer_list<RTExpression<T>> scalars) {
   return pack(std::span<const RTExpression<T>>{scalars});
 }
 template <impl::Numeric T>
-[[nodiscard]] RTExpression<T> pack(const std::vector<RTExpression<T>> &scalars) {
+[[nodiscard]] RTExpression<T>
+pack(const std::vector<RTExpression<T>> &scalars) {
   return pack(std::span<const RTExpression<T>>{scalars});
 }
 
@@ -103,11 +104,11 @@ template <impl::Numeric T>
 template <impl::Numeric T>
 [[nodiscard]] RTExpression<T> vec(Builder<T> &b, std::string_view name,
                                   std::size_t n) {
-  const auto symbols =
-      std::views::iota(0uz, n) | std::views::transform([&](std::size_t i) {
-        return var(b, std::format("{}[{}]", name, i));
-      }) |
-      impl::to<std::vector<RTExpression<T>>>();
+  const auto symbols = std::views::iota(0uz, n) |
+                       std::views::transform([&](std::size_t i) {
+                         return var(b, std::format("{}[{}]", name, i));
+                       }) |
+                       impl::to<std::vector<RTExpression<T>>>();
   return pack(b, std::span<const RTExpression<T>>{symbols});
 }
 template <impl::Numeric T = double>
@@ -140,16 +141,15 @@ template <impl::Numeric T = double>
 }
 
 template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> mat_const(Builder<T> &b,
-                                                  std::size_t rows,
-                                                  std::size_t cols,
-                                                  std::span<const T> data) {
+[[nodiscard]] constexpr RTExpression<T>
+mat_const(Builder<T> &b, std::size_t rows, std::size_t cols,
+          std::span<const T> data) {
   if (rows == 0 || cols == 0 || data.size() != rows * cols) {
     return detail::refused<T>(errc::tensor_shape);
   }
-  return detail::tensor(b, b.tensor_const(static_cast<std::uint32_t>(rows),
-                                          static_cast<std::uint32_t>(cols),
-                                          data));
+  return detail::tensor(b,
+                        b.tensor_const(static_cast<std::uint32_t>(rows),
+                                       static_cast<std::uint32_t>(cols), data));
 }
 template <impl::Numeric T = double>
 [[nodiscard]] RTExpression<T>
@@ -178,56 +178,47 @@ template <impl::Numeric T>
     }
   }
   // Either side may be a literal, which takes the other's width.
-  Builder<T> *const b = detail::Rooting::builder(u) ? detail::Rooting::builder(u)
-                                                     : detail::Rooting::builder(v);
+  Builder<T> *const b = detail::Rooting::builder(u)
+                            ? detail::Rooting::builder(u)
+                            : detail::Rooting::builder(v);
   const std::uint32_t w = std::max(u.size(), v.size());
-  if (b == nullptr || w == 0 || (u.size() != 0 && v.size() != 0 && u.size() != v.size()) ||
+  if (b == nullptr || w == 0 ||
+      (u.size() != 0 && v.size() != 0 && u.size() != v.size()) ||
       (!u.pending() && u.size() == 0) || (!v.pending() && v.size() == 0)) {
     return detail::refused<T>(errc::tensor_shape);
   }
   return {*b, b->make(OpCode::Dot, u.id(*b, w), v.id(*b, w))};
 }
 
-// M v, and M^T v.  The matrix is a constant, so neither differentiates
+// M v, or M^T v.  The matrix is a constant, so neither differentiates
 // through it.
-namespace detail {
 template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> gemv_impl(const RTExpression<T> &m,
-                                                  const RTExpression<T> &v,
-                                                  bool transposed) {
+[[nodiscard]] constexpr RTExpression<T> gemv(const RTExpression<T> &m,
+                                             const RTExpression<T> &v,
+                                             bool transposed = false) {
   for (const auto *e : {&m, &v}) {
-    if (const auto why = Rooting::why(*e)) {
-      return refused<T>(*why);
+    if (const auto why = detail::Rooting::why(*e)) {
+      return detail::refused<T>(*why);
     }
   }
-  Builder<T> *const b = Rooting::builder(m);
+  Builder<T> *const b = detail::Rooting::builder(m);
   if (b == nullptr || b->op_of(m.id()) != OpCode::MatConst || v.size() == 0 ||
-      Rooting::builder(v) != b) {
-    return refused<T>(errc::tensor_shape);
+      detail::Rooting::builder(v) != b) {
+    return detail::refused<T>(errc::tensor_shape);
   }
   const auto &table = b->tensors()[(*b)[m.id()].slot];
   if (v.size() != (transposed ? table.rows : table.cols)) {
-    return refused<T>(errc::tensor_shape);
+    return detail::refused<T>(errc::tensor_shape);
   }
   return {*b, b->make(OpCode::Gemv, m.id(), v.id(), no_node, transposed)};
 }
-} // namespace detail
-template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> gemv(const RTExpression<T> &m,
-                                             const RTExpression<T> &v) {
-  return detail::gemv_impl(m, v, false);
-}
-template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> gemv_t(const RTExpression<T> &m,
-                                               const RTExpression<T> &v) {
-  return detail::gemv_impl(m, v, true);
-}
 
-// v + s e_i: the vector with one element moved by a scalar.
+namespace detail {
+// v + s e_i: the vector with one element moved by a scalar -- the adjoint of
+// v[i].
 template <impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> add_at(const RTExpression<T> &v,
-                                               const RTExpression<T> &s,
-                                               std::size_t i) {
+[[nodiscard]] constexpr RTExpression<T>
+add_at(const RTExpression<T> &v, const RTExpression<T> &s, std::size_t i) {
   if (const auto why = detail::not_a_vector(v)) {
     return detail::refused<T>(*why);
   }
@@ -241,5 +232,6 @@ template <impl::Numeric T>
   return {b, b.make(OpCode::AddAt, v.id(), s.id(b), no_node,
                     static_cast<std::uint32_t>(i))};
 }
+} // namespace detail
 
 } // namespace ddx::rt

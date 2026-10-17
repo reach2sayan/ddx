@@ -12,7 +12,7 @@ __all__: list[str] = ['Backend', 'Call', 'Equation', 'Error', 'Expression',
                       'lt',
                       'max', 'min', 'mul', 'neg', 'pow', 'select', 'sign',
                       'sin', 'sinh', 'sqrt', 'tan', 'tanh', 'var',
-                      'add_at', 'dot', 'gemv', 'gemv_t',
+                      'dot', 'gemv',
                       'mat_const', 'pack', 'sum', 'vec', 'vec_const']
 class Backend(enum.IntEnum):
     """
@@ -258,28 +258,26 @@ class errc(enum.IntEnum):
     no_arena: typing.ClassVar[errc]  # value = <errc.no_arena: 6>
     no_graph: typing.ClassVar[errc]  # value = <errc.no_graph: 7>
     name_clash: typing.ClassVar[errc]  # value = <errc.name_clash: 8>
-    unclosed_implicit: typing.ClassVar[errc]  # value = <errc.unclosed_implicit: 9>
-    closed_twice: typing.ClassVar[errc]  # value = <errc.closed_twice: 10>
-    nested_implicit: typing.ClassVar[errc]  # value = <errc.nested_implicit: 11>
-    not_implicit: typing.ClassVar[errc]  # value = <errc.not_implicit: 12>
-    extern_order: typing.ClassVar[errc]  # value = <errc.extern_order: 13>
-    extern_shape: typing.ClassVar[errc]  # value = <errc.extern_shape: 14>
-    not_univariate: typing.ClassVar[errc]  # value = <errc.not_univariate: 15>
-    not_single_output: typing.ClassVar[errc]  # value = <errc.not_single_output: 16>
-    unsupported_scalar: typing.ClassVar[errc]  # value = <errc.unsupported_scalar: 17>
-    tensor_shape: typing.ClassVar[errc]  # value = <errc.tensor_shape: 18>
-    tensor_kernel: typing.ClassVar[errc]  # value = <errc.tensor_kernel: 19>
-    jit_target: typing.ClassVar[errc]  # value = <errc.jit_target: 20>
-    jit_module: typing.ClassVar[errc]  # value = <errc.jit_module: 21>
-    jit_object: typing.ClassVar[errc]  # value = <errc.jit_object: 22>
-    jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 23>
-    jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 24>
-    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 25>
-    unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 26>
-    wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 27>
-    no_device: typing.ClassVar[errc]  # value = <errc.no_device: 28>
-    device_compile: typing.ClassVar[errc]  # value = <errc.device_compile: 29>
-    device_launch: typing.ClassVar[errc]  # value = <errc.device_launch: 30>
+    closed_twice: typing.ClassVar[errc]  # value = <errc.closed_twice: 9>
+    nested_implicit: typing.ClassVar[errc]  # value = <errc.nested_implicit: 10>
+    extern_order: typing.ClassVar[errc]  # value = <errc.extern_order: 11>
+    extern_shape: typing.ClassVar[errc]  # value = <errc.extern_shape: 12>
+    not_univariate: typing.ClassVar[errc]  # value = <errc.not_univariate: 13>
+    not_single_output: typing.ClassVar[errc]  # value = <errc.not_single_output: 14>
+    unsupported_scalar: typing.ClassVar[errc]  # value = <errc.unsupported_scalar: 15>
+    tensor_shape: typing.ClassVar[errc]  # value = <errc.tensor_shape: 16>
+    tensor_kernel: typing.ClassVar[errc]  # value = <errc.tensor_kernel: 17>
+    jit_target: typing.ClassVar[errc]  # value = <errc.jit_target: 18>
+    jit_module: typing.ClassVar[errc]  # value = <errc.jit_module: 19>
+    jit_object: typing.ClassVar[errc]  # value = <errc.jit_object: 20>
+    jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 21>
+    jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 22>
+    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 23>
+    unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 24>
+    wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 25>
+    no_device: typing.ClassVar[errc]  # value = <errc.no_device: 26>
+    device_compile: typing.ClassVar[errc]  # value = <errc.device_compile: 27>
+    device_launch: typing.ClassVar[errc]  # value = <errc.device_launch: 28>
     @classmethod
     def __new__(cls, value):
         ...
@@ -360,22 +358,16 @@ def tan(x: Expression) -> Expression:
     ...
 def tanh(x: Expression) -> Expression:
     ...
-def closes(z: Expression, f: Expression) -> None:
-    ...
-def implicit(name: str) -> Expression:
-    ...
+def implicit(name: str, residual: typing.Callable[[Expression], Expression | float]) -> Expression:
+    """An input the caller solved for, a root of residual(z)."""
 def param(name: str) -> Expression:
     ...
 def var(name: str) -> Expression:
     ...
-def add_at(v: Expression, s: Expression, i: typing.SupportsInt | typing.SupportsIndex) -> Expression:
-    """v + s * e_i: the vector with element i moved by a scalar."""
 def dot(u: Expression, v: Expression) -> Expression:
     ...
-def gemv(matrix: Expression, v: Expression) -> Expression:
-    """M v."""
-def gemv_t(matrix: Expression, v: Expression) -> Expression:
-    """M^T v."""
+def gemv(matrix: Expression, v: Expression, transposed: bool = False) -> Expression:
+    """M v, or M^T v when transposed."""
 def mat_const(rows: typing.SupportsInt | typing.SupportsIndex, cols: typing.SupportsInt | typing.SupportsIndex, data: typing.Sequence[typing.SupportsFloat]) -> Expression:
     """A constant rows x cols matrix from column-major data."""
 def pack(scalars: typing.Sequence[Expression]) -> Expression:

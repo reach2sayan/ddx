@@ -34,9 +34,9 @@ from ._ddx import (Backend, Call, Expression, Level, Restricted, VecLib, Want, a
                    min,  # noqa: A004
                    mul, neg,
                    pow,  # noqa: A004
-                   closes, implicit, param, select, sign, sin, sinh, sqrt, tan, tanh,
+                   implicit, param, select, sign, sin, sinh, sqrt, tan, tanh,
                    var,
-                   add_at, dot, gemv, gemv_t, mat_const, pack,
+                   dot, gemv, mat_const, pack,
                    sum,  # noqa: A004
                    vec, vec_const, )
 from ._options import Options
@@ -102,7 +102,7 @@ __all__ = ["Backend", "Call", "Equation", "Error", "Expression", "Level", "Restr
            "cosh", "div", "equation", "erf", "errc", "exp",
            "has_jit", "has_opencl", "hypot", "le", "log", "log10", "lt", "max",
            "min", "mul", "neg", "param", "pow", "select", "sign", "sin", "sinh", "sqrt",
-           "closes", "implicit",
+           "implicit",
            "tan", "tanh", "var",
-           "add_at", "dot", "gemv", "gemv_t", "mat_const", "pack",
+           "dot", "gemv", "mat_const", "pack",
            "sum", "vec", "vec_const",]

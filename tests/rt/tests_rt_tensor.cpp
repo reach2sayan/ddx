@@ -78,7 +78,7 @@ RE uniquac_tensor(const RV &x) {
   const RV phi = (rv * x) / sum_r;
   const RV theta = (qv * x) / sum_q;
   const RE comb = sum(x * log(phi / x)) + 5.0 * sum(qv * x * log(theta / phi));
-  const RV inner = gemv_t(ddx::rt::mat_const(n, n, tau), theta);
+  const RV inner = gemv(ddx::rt::mat_const(n, n, tau), theta, true);
   const RE res = -sum(qv * x * log(inner));
   return comb + res;
 }
@@ -237,7 +237,7 @@ TEST(RtTensor, GemvBothWays) {
           head.push_back(x[i]);
         }
         const RV y = gemv(M, x);
-        return sum(y * y) + dot(gemv_t(M, ddx::rt::pack(head)), x);
+        return sum(y * y) + dot(gemv(M, ddx::rt::pack(head), true), x);
       });
 }
 
@@ -255,7 +255,7 @@ TEST(RtTensor, GatherAndAddAtRoundTrip) {
         return acc + v[2] * x[4];
       },
       [](const RV &x) {
-        const RV v = add_at(x, x[0] * x[1], 2);
+        const RV v = ddx::rt::detail::add_at(x, x[0] * x[1], 2);
         return sum(v * v) + v[2] * x[4];
       });
 }
@@ -653,13 +653,13 @@ TEST(RtTensorDense, EachNodeAlone) {
       std::function<RE(const RV &)>{[&](const RV &x) {
         return dot(x, gemv(ddx::rt::mat_const(n, n, m), x));
       }},
-      {[&](const RV &x) { return sum(log(x) * gemv_t(ddx::rt::mat_const(n, n, m), x)); }},
+      {[&](const RV &x) { return sum(log(x) * gemv(ddx::rt::mat_const(n, n, m), x, true)); }},
       {[&](const RV &x) {
         const RE s = dot(x, x);
         return sum(exp(x / s)) * s + x[2] * x[3];
       }},
       {[&](const RV &x) {
-        return sum(add_at(x * x, x[0] * x[1], 4) * pow(x, 1.5));
+        return sum(ddx::rt::detail::add_at(x * x, x[0] * x[1], 4) * pow(x, 1.5));
       }},
       {[&](const RV &x) {
         const RE k = select(x[0] < 0.3, x[1], x[2] * x[2]);
@@ -676,7 +676,7 @@ TEST(RtTensorDense, EachNodeAlone) {
   const auto quadratic = ddx::rt::equation([&] {
     const RV x = ddx::rt::vec("x", n);
     const auto C = ddx::rt::mat_const(n, n, m);
-    return dot(x, gemv(C, x)) + sum(x * gemv_t(C, x));
+    return dot(x, gemv(C, x)) + sum(x * gemv(C, x, true));
   });
   EXPECT_EQ(quadratic.dense_hessian_cost()->n3_terms, 0u);
 }

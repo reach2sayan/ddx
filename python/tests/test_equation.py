@@ -270,9 +270,7 @@ def test_restrict_keeps_the_chosen_columns() -> None:
 def test_an_implicit_input_carries_dz_dx() -> None:
     def model():
         a = ddx.var("a")
-        z = ddx.implicit("z")
-        ddx.closes(z, z * z - a)
-        return z
+        return ddx.implicit("z", lambda z: z * z - a)
 
     eq = ddx.equation(model)
     assert eq.symbols == ["a"]
@@ -284,7 +282,11 @@ def test_an_implicit_input_carries_dz_dx() -> None:
     assert eq.residual([4.0, 3.0]) == [5.0]
 
 
-def test_an_unclosed_implicit_is_refused() -> None:
+def test_an_implicit_named_twice_is_refused() -> None:
+    def model():
+        a = ddx.var("a")
+        return ddx.implicit("z", lambda z: z * z - a) + ddx.implicit("z", lambda z: z - a)
+
     with pytest.raises(ddx.Error) as caught:
-        ddx.equation(lambda: ddx.var("a") * ddx.implicit("z"))
-    assert caught.value.code is ddx.errc.unclosed_implicit
+        ddx.equation(model)
+    assert caught.value.code is ddx.errc.closed_twice

@@ -146,9 +146,8 @@ constexpr void extern_partials(Builder<T> &b, NodeId v, Sink &&sink) {
 template <impl::Numeric T>
 [[nodiscard]] constexpr bool first_order_only(const Builder<T> &b,
                                               std::span<const NodeId> roots) {
-  if (std::ranges::all_of(b.externs(), [](const ExternEntry<T> &e) {
-        return e.order >= 2;
-      })) {
+  if (std::ranges::all_of(
+          b.externs(), [](const ExternEntry<T> &e) { return e.order >= 2; })) {
     return false;
   }
   std::vector<NodeId> wanted(roots.begin(), roots.end());
@@ -163,8 +162,8 @@ template <impl::Numeric T>
 }
 
 // Why the implicits cannot be differentiated, if they cannot: a misuse of
-// closes(), an implicit nothing closed, or a residual reaching another
-// implicit -- which would need a linear solve, not a quotient.
+// implicit(), or a residual reaching another implicit -- which would need a
+// linear solve, not a quotient.
 template <impl::Numeric T>
 [[nodiscard]] constexpr std::optional<errc> unclosed(const Builder<T> &b) {
   if (b.broken()) {
@@ -174,9 +173,6 @@ template <impl::Numeric T>
       std::views::iota(0u, static_cast<std::uint32_t>(b.closures().size()));
   for (const std::uint32_t slot : implicits) {
     const NodeId f = b.closures()[slot];
-    if (f == no_node) {
-      return errc::unclosed_implicit;
-    }
     const auto live = reachable(b, std::span{&f, 1});
     if (std::ranges::any_of(implicits, [&](std::uint32_t other) {
           return other != slot && live[b.leaf(OpCode::Implicit, other)];
@@ -188,8 +184,8 @@ template <impl::Numeric T>
 }
 } // namespace detail
 
-// The reverse sweep, accumulating *nodes*.  It appends to the builder it reads: new
-// nodes land above the snapshot, so reverse id order stays topological.
+// The reverse sweep, accumulating *nodes*.  It appends to the builder it reads:
+// new nodes land above the snapshot, so reverse id order stays topological.
 //
 // Beside each adjoint rides a guard: the condition under which the node lies on
 // a chosen path (no_node: always).  Below a select's unchosen arm the adjoint
@@ -203,9 +199,8 @@ template <impl::Numeric T>
 // Second order needs nothing more: the partial then contains z, and the next
 // sweep over it reaches z and applies the same rule.
 template <impl::Numeric T>
-[[nodiscard]] constexpr JacobianRow build_reverse_jacobian(Builder<T> &b,
-                                                           NodeId root,
-                                                           bool ift) {
+[[nodiscard]] constexpr JacobianRow
+build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
   const auto n = static_cast<NodeId>(b.size());
   const auto live = detail::reachable(b, std::span{&root, 1});
   // Two nodes per node of the cone is what a reverse pass comes to.
@@ -310,8 +305,9 @@ template <impl::Numeric T>
         break;
       }
       case OpCode::Gather:
-        add_to(node.a, g,
-               add_at(expr(b.zeros(width_of(b, node.a))), a, node.slot));
+        add_to(
+            node.a, g,
+            detail::add_at(expr(b.zeros(width_of(b, node.a))), a, node.slot));
         break;
       case OpCode::Scale:
         add_to(node.a, g, dot(a, expr(node.b)));
@@ -356,14 +352,14 @@ template <impl::Numeric T>
 
   const auto implicits = b.inputs().count(OpCode::Implicit);
   if (ift) {
-    for (const auto slot : std::views::iota(0u, static_cast<std::uint32_t>(
-                                                    implicits))) {
+    for (const auto slot :
+         std::views::iota(0u, static_cast<std::uint32_t>(implicits))) {
       const NodeId z = b.leaf(OpCode::Implicit, slot);
       if (z >= n || adj[z] == no_node || b.is_constant(adj[z], T{0})) {
         continue;
       }
-      for (const auto [s, dz] : detail::Implicits::row(b, slot) |
-                                    std::views::enumerate) {
+      for (const auto [s, dz] :
+           detail::Implicits::row(b, slot) | std::views::enumerate) {
         add_to(b.leaf(OpCode::Var, static_cast<std::uint32_t>(s)), guard[z],
                expr(adj[z]) * expr(dz));
       }
@@ -430,8 +426,7 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
                    std::views::zip(dz, tangent) |
                        std::views::transform([&b](const auto &pair) {
                          const auto [zs, ts] = pair;
-                         return RTExpression<T>{b, zs} *
-                                RTExpression<T>{b, ts};
+                         return RTExpression<T>{b, zs} * RTExpression<T>{b, ts};
                        }),
                    RTExpression<T>{0}, std::plus<>{})
                    .id(b);
@@ -443,8 +438,8 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
     case Kind::Unary: {
       const RTExpression<T> u{b, node.a};
       const RTExpression<T> self{b, v};
-      d[v] = (detail::partial(op, u, self) * RTExpression<T>{b, d[node.a]})
-                 .id(b);
+      d[v] =
+          (detail::partial(op, u, self) * RTExpression<T>{b, d[node.a]}).id(b);
       break;
     }
     case Kind::Ternary:

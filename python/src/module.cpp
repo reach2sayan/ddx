@@ -60,6 +60,25 @@ pyb::handle error_class;
   return {e, current_arena};
 }
 
+// An implicit input and the residual `residual(z)` it is a root of; a
+// poisoned residual is kept on the arena for the equation.
+[[nodiscard]] PyExpression make_implicit(std::string_view name,
+                                         const pyb::function &residual) {
+  if (!current_arena) {
+    fail_with(errc::no_arena);
+  }
+  const auto z = rt::implicit(
+      *current_arena, name, [&](const rt::RTExpression<double> &e) {
+        return residual(PyExpression{e, current_arena})
+            .cast<PyExpression>()
+            .base();
+      });
+  if (z.poisoned()) {
+    fail_with(errc::name_clash);
+  }
+  return {z, current_arena};
+}
+
 // The model running now, for a vector that names no scalar of it.
 [[nodiscard]] PyExpression::Arena arena_now() {
   if (!current_arena) {
@@ -299,18 +318,18 @@ PYBIND11_MODULE(_ddx, m) {
       pyb::arg("source"));
   m.def("equation", &ddx::py::make_equation, pyb::arg("model"));
 #define DDX_PY_INPUT(fn, Op, ...)                                              \
-  m.def(                                                                       \
-      #fn,                                                                     \
-      [](std::string_view name) {                                              \
-        return ddx::py::make_input(rt::OpCode::Op, name);                      \
-      },                                                                       \
-      pyb::arg("name"));
+  if constexpr (rt::OpCode::Op != rt::OpCode::Implicit) {                      \
+    m.def(                                                                     \
+        #fn,                                                                   \
+        [](std::string_view name) {                                            \
+          return ddx::py::make_input(rt::OpCode::Op, name);                    \
+        },                                                                     \
+        pyb::arg("name"));                                                     \
+  }
   DDX_RT_NAMED_TABLE(DDX_PY_INPUT)
 #undef DDX_PY_INPUT
-  m.def(
-      "closes",
-      [](const PyExpression &z, const PyExpression &f) { closes(z, f); },
-      pyb::arg("z"), pyb::arg("f"));
+  m.def("implicit", &ddx::py::make_implicit, pyb::arg("name"),
+        pyb::arg("residual"));
 
   // Off the opcode table, by each row's factory spelling, so an opcode added
   // there reaches Python without this file changing; select, the one ternary,
@@ -392,25 +411,12 @@ PYBIND11_MODULE(_ddx, m) {
       pyb::arg("u"), pyb::arg("v"));
   m.def(
       "gemv",
-      [](const PyExpression &M, const PyExpression &v) {
-        return reduce(M, v, [](const auto &a, const auto &b) { return gemv(a, b); });
-      },
-      pyb::arg("matrix"), pyb::arg("v"));
-  m.def(
-      "gemv_t",
-      [](const PyExpression &M, const PyExpression &v) {
-        return reduce(M, v,
-                      [](const auto &a, const auto &b) { return gemv_t(a, b); });
-      },
-      pyb::arg("matrix"), pyb::arg("v"));
-  m.def(
-      "add_at",
-      [](const PyExpression &v, const PyExpression &s, std::size_t i) {
-        return reduce(v, s, [i](const auto &a, const auto &b) {
-          return add_at(a, b, i);
+      [](const PyExpression &M, const PyExpression &v, bool transposed) {
+        return reduce(M, v, [transposed](const auto &a, const auto &b) {
+          return gemv(a, b, transposed);
         });
       },
-      pyb::arg("v"), pyb::arg("s"), pyb::arg("i"));
+      pyb::arg("matrix"), pyb::arg("v"), pyb::arg("transposed") = false);
 
   pyb::native_enum<jit::Backend>(m, "Backend", "enum.IntEnum",
                                  "Whether an equation compiles its graph.")

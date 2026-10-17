@@ -97,7 +97,7 @@ TEST(RtEigen, KernelsAgreeWithTheReferenceTable) {
   const auto model = [&] {
     const auto x = ddx::rt::vec("x", n);
     const auto M = ddx::rt::mat_const(n, n, m);
-    return dot(x, gemv(M, x)) + sum(log(x) * gemv_t(M, x)) * 0.5;
+    return dot(x, gemv(M, x)) + sum(log(x) * gemv(M, x, true)) * 0.5;
   };
   const auto reference = ddx::rt::equation(model);
   auto eigen = ddx::rt::equation(model);

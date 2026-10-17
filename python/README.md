@@ -51,9 +51,9 @@ are named in. `f.symbols` lists them, `f.arity` counts them, `f.outputs`
 counts the model's outputs. `ddx.param(name)` is an input that is never
 differentiated — no Jacobian column — and is supplied with every point after
 the symbols; `f.params` lists the parameters and `f.inputs` everything a point
-supplies. `ddx.implicit(name)` is an input the caller solved for and
-`ddx.closes(z, F)` names the residual it is a root of: every derivative then
-carries `dz/dx = −F_x / F_z`, and `f.residual(x)` evaluates `F` at a point. A bare number mixes into an expression without
+supplies. `ddx.implicit(name, residual)` is an input the caller solved for,
+a root of `residual(z)` — `ddx.implicit("z", lambda z: z * z - a)` — and every
+derivative then carries `dz/dx = −F_x / F_z`, and `f.residual(x)` evaluates `F` at a point. A bare number mixes into an expression without
 wrapping, so an accumulator can start at `0.0`:
 
 ```python
@@ -74,7 +74,7 @@ def fit():
 | Comparison | `<` `<=` `>` `>=` `==` `!=` — each answers `1.0` or `0.0` |
 | Conditional | `select(cond, if_true, if_false)` |
 
-`add`, `mul`, `div` and `neg` are the operators spelled as functions.
+`add`, `mul`, `div`, `neg`, `lt` and `le` are the operators spelled as functions.
 
 Where a rule has a choice to make, it is made the same way everywhere: `abs`
 differentiates to `0` at zero and `sign` to `0` throughout, `max` and `min`
@@ -100,6 +100,32 @@ differentiated**, so the symbols it tests get no partial through it. A
 condition is any nonzero value; a comparison against `NaN` is false, while a
 `NaN` used directly as a condition is true. A range test is
 `(a < b) * (b < c)`.
+
+### Vectors
+
+An expression can hold a vector or a matrix, one graph node for the whole
+operation rather than one per element:
+
+```python
+@ddx.equation
+def quad():
+    x = ddx.vec("x", 3)                         # symbols x[0], x[1], x[2]
+    C = ddx.mat_const(3, 3, coefficients)       # column-major
+    return ddx.dot(x, ddx.gemv(C, x)) + ddx.sum(x * ddx.log(x))
+```
+
+| Function | Is |
+|---|---|
+| `vec(name, n)` | `n` symbols `name[0]` … `name[n-1]`, packed |
+| `pack(scalars)`, `vec_const(data)`, `mat_const(rows, cols, data)` | a vector of expressions, a constant vector, a constant matrix |
+| `sum(v)`, `dot(u, v)` | the reductions to a scalar |
+| `gemv(M, v)`, `gemv(M, v, transposed=True)` | `M·v` and `Mᵀ·v` |
+
+Arithmetic and the unary functions apply elementwise, and a scalar or a bare
+number broadcasts. `len(v)` and `v.shape` give the shape and `v[i]` an element.
+Shapes are checked where an expression is formed: a mismatch, or an index past
+the end, raises `errc.tensor_shape`. A model holding vector nodes is
+interpreted — no kernel is compiled for it, and `uses_kernel` stays `False`.
 
 ### Written down instead
 
@@ -145,6 +171,7 @@ never costs a second evaluation:
 | `jvp(v, x)` | `(f, J·v)` — the directional derivative of `f` along `v` |
 | `vjp(w, x)` | `(f, wᵀJ)` — the gradient of `w · f` |
 | `hvp(v, x)` | `(f, ∇f, H·v)` — the directional derivative of `∇f` along `v` |
+| `dense_hessian(x)` | `(f, J, H)` — `H` from one sweep, without colouring |
 
 ```python
 value, gradient = f.jacobian([2.0, 3.0])
@@ -167,6 +194,11 @@ take a direction over symbols, so it accepts the same spellings a point does —
 a sequence, a dict, or a `(symbols, points)` batch alongside a batched point.
 `wᵀJ` takes one weight per *function*, so it is positional only. `hvp` needs a
 single-output model, and raises `errc.not_single_output` on a system.
+
+`dense_hessian(x)` is for a Hessian whose coupling is dense, such as
+`dot(x, gemv(C, x))`, where colouring needs one sweep per symbol: it carries
+matrix-valued derivatives forward in one pass instead, and also needs a
+single-output model.
 
 `jacobian_jvp(v, x)` answers `(f, J, dJ/dv)`: the Jacobian and its derivative
 along `v`, from one forward sweep, for a system as for one function.
@@ -230,8 +262,9 @@ is the spelling.
 | `no_arena` | a symbol was named outside a model |
 | `no_graph` | the model is a bare number, naming no function |
 | `name_clash` | one name used for both a symbol and a parameter |
-| `unclosed_implicit`, `closed_twice`, `nested_implicit`, `not_implicit` | an implicit input with no residual, with two, with one reading another implicit, or `closes` on something that is not one |
-| `not_single_output` | `hvp` or `hessian_colors` on a system |
+| `closed_twice`, `nested_implicit` | an implicit input named twice, or a residual reading another implicit |
+| `not_single_output` | `hvp`, `dense_hessian` or `hessian_colors` on a system |
+| `tensor_shape` | vector operands of mismatched shapes, or an element index past the end |
 | `bad_syntax` | a string the grammar does not accept |
 | `unknown_function` | a string calls a function that does not exist |
 | `wrong_argument_count` | a string calls one with the wrong arity |
@@ -290,6 +323,8 @@ carries the device backend; a source build asks for it with
 | `jacobian_jvp(v, x)` | `(f, J, dJ/dv)` |
 | `restrict(names)` | a `Restricted` view: `jacobian`, `jacobian_jvp`, `symbols`, `jacobian_columns` |
 | `hessian(x)` | `(f, J, H)`, dense |
+| `dense_hessian(x)` | `(f, J, H)`, from one sweep without colouring |
+| `residual(x)` | each implicit's residual `F` at one point |
 | `options` | property — read or assign an `Options` |
 | `compile(**fields)` | set `Options`, block for the kernel, return self |
 | `uses_kernel`, `wait_for_kernel(*, want)` | whether a call runs compiled code, and blocking for it — for the Jacobian lane unless `want` names another |

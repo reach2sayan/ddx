@@ -16,9 +16,9 @@
 #include <cassert>
 #include <concepts>
 #include <cstdint>
+#include <functional>
 #include <iterator>
 #include <map>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -41,8 +41,9 @@ template <impl::Numeric T = double> class Builder;
 template <impl::Numeric T>
 [[nodiscard]] constexpr RTExpression<T> named(Builder<T> &b, OpCode op,
                                               std::string_view name);
-template <impl::Numeric T>
-constexpr void closes(const RTExpression<T> &z, const RTExpression<T> &f);
+template <impl::Numeric T, std::invocable<const RTExpression<T> &> F>
+[[nodiscard]] constexpr RTExpression<T>
+implicit(Builder<T> &b, std::string_view name, F &&residual);
 namespace detail {
 struct Implicits;
 }
@@ -513,15 +514,13 @@ public:
     return model_.names | std::views::join |
            impl::to<std::vector<std::string>>();
   }
-  // The residual whose root each implicit input is, by slot; no_node for one
-  // nothing closed.  And the first misuse of closes(), which no expression
-  // can carry, for the equation to refuse with.
+  // The residual whose root each implicit input is, by slot; no_node only
+  // beside a broken() arena.  And the first misuse of implicit(), which no
+  // expression can carry, for the equation to refuse with.
   [[nodiscard]] constexpr std::span<const NodeId> closures() const {
     return model_.closures;
   }
-  [[nodiscard]] constexpr std::optional<errc> broken() const {
-    return broken_;
-  }
+  [[nodiscard]] constexpr std::optional<errc> broken() const { return broken_; }
   [[nodiscard]] constexpr std::span<const ExternEntry<T>> externs() const {
     return model_.externs;
   }
@@ -547,9 +546,8 @@ public:
   [[nodiscard]] constexpr std::optional<Input>
   lookup(std::string_view name) const {
     const auto at = std::ranges::lower_bound(by_name_, name, {}, name_of());
-    return at != by_name_.end() && name_of()(*at) == name
-               ? std::optional{*at}
-               : std::nullopt;
+    return at != by_name_.end() && name_of()(*at) == name ? std::optional{*at}
+                                                          : std::nullopt;
   }
 
   // A Const of `v`, or a VecConst of nothing but `v`: what a cancelled term
@@ -593,17 +591,18 @@ private:
     return ids_[k].back();
   }
 
-  // Implicit `z` is a root of `f`.  A misuse is kept rather than thrown: the
-  // equation built over this arena refuses with it.
-  template <impl::Numeric U>
-  friend constexpr void closes(const RTExpression<U> &, const RTExpression<U> &);
-  constexpr void close(NodeId z, NodeId f) {
-    if (z == no_node || model_.nodes[z].op != OpCode::Implicit) {
-      broken_ = broken_.value_or(errc::not_implicit);
-    } else if (model_.closures[model_.nodes[z].slot] != no_node) {
-      broken_ = broken_.value_or(errc::closed_twice);
+  // Implicit `z` is a root of `f`.  A misuse -- a poisoned residual, or the
+  // same implicit named twice -- is kept rather than thrown: the equation
+  // built over this arena refuses with it.
+  template <impl::Numeric U, std::invocable<const RTExpression<U> &> F>
+  friend constexpr RTExpression<U> implicit(Builder<U> &, std::string_view,
+                                            F &&);
+  constexpr void close(NodeId z, NodeId f, std::optional<errc> why) {
+    NodeId &closure = model_.closures[model_.nodes[z].slot];
+    if (why || closure != no_node) {
+      broken_ = broken_.value_or(why.value_or(errc::closed_twice));
     } else {
-      model_.closures[model_.nodes[z].slot] = f;
+      closure = f;
     }
   }
 
@@ -667,9 +666,9 @@ private:
       terms.push_back(pending_[i].term);
     }
     std::ranges::reverse(terms);
-    const NodeId node =
-        terms.size() == 1   ? terms[0]
-        : terms.size() == 2 ? make(OpCode::Add, terms[0], terms[1])
+    const NodeId node = terms.size() == 1 ? terms[0]
+                        : terms.size() == 2
+                            ? make(OpCode::Add, terms[0], terms[1])
                             : make(OpCode::SumN, list(terms), no_node, no_node,
                                    static_cast<std::uint32_t>(terms.size()));
     pending_[entry].node = node;
@@ -681,11 +680,12 @@ private:
   friend constexpr void detail::extern_partials(Builder<U> &, NodeId, Sink &&);
   constexpr NodeId extern_component(NodeId v, std::uint32_t component) {
     const Node<T> n = model_[v]; // by value: intern() may reallocate
-    return intern({.op = OpCode::ExternD,
-                   .a = n.a,
-                   .slot = ExternSlot{.function = ExternSlot::of(n.slot).function,
-                                      .component = component}
-                               .packed()});
+    return intern(
+        {.op = OpCode::ExternD,
+         .a = n.a,
+         .slot = ExternSlot{.function = ExternSlot::of(n.slot).function,
+                            .component = component}
+                     .packed()});
   }
 
   // dz/ds for each implicit, by the implicit-function theorem, built the first
@@ -872,7 +872,8 @@ private:
     if (unary && ca) {
       return constant(apply<T>(op, model_.nodes[a].value));
     } else if (!unary && ca && cb) {
-      return constant(apply<T>(op, model_.nodes[a].value, model_.nodes[b].value));
+      return constant(
+          apply<T>(op, model_.nodes[a].value, model_.nodes[b].value));
     }
 
     const auto kind = rule_op_of(op);
@@ -997,9 +998,8 @@ schedule_of(const CNodeSource auto &nodes,
            const OpCode op = nodes.op_of(v);
            const Contraction c = on ? contraction_at(nodes, v) : Contraction{};
            // A list is read off the arena, not the Step.
-           const auto ops = has_list(op)
-                                ? std::array{no_node, no_node, no_node}
-                                : nodes.operands(v);
+           const auto ops = has_list(op) ? std::array{no_node, no_node, no_node}
+                                         : nodes.operands(v);
            return Step{.node = v,
                        .fma = c,
                        .out = v,
