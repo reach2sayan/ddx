@@ -119,16 +119,6 @@ template <CExpression T>
 inline constexpr std::size_t node_count_v =
     node_count_fn<std::remove_cvref_t<T>>();
 
-// Preorder cache slot of the I-th child of a node at `Base1
-template <std::size_t Base, CTupleLike Kids, std::size_t I>
-consteval std::size_t child_base_at() {
-  std::size_t off = Base + 1;
-  static_for<I>([&]<std::size_t K>() {
-    off += node_count_v<std::tuple_element_t<K, Kids>>;
-  });
-  return off;
-}
-
 // One element of a point: a number, a range, a ValueMap, or a named value.
 template <typename T>
 concept CEvalArg = Numeric<T> || std::ranges::input_range<T> || requires {

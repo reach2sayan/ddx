@@ -18,7 +18,6 @@
 #include <cstdint>
 #include <functional>
 #include <iterator>
-#include <map>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -54,11 +53,7 @@ struct Implicits;
 template <impl::Numeric T>
 using ExternFn = std::function<void(std::span<const T>, std::span<T>)>;
 
-// Functions to bind by name when a saved equation is read back.
-template <impl::Numeric T>
-using ExternFns = std::map<std::string, ExternFn<T>, std::less<>>;
-
-// What extern_fn() registers and a file keeps: a name to bind by, how many
+// What extern_fn() registers: a name, how many
 // arguments, and how many orders of partials the function fills -- 1 or 2,
 // since no call ddx answers asks for a third.  The answer's layout is this
 // type's alone: 0 the value, 1..k the first partials, then the upper triangle
@@ -407,7 +402,7 @@ public:
     if constexpr (std::equality_comparable<T>) {
       at = std::ranges::find_if(model_.tensors, [&](const TensorConst<T> &t) {
         return t.rows == rows && t.cols == cols &&
-               std::ranges::equal(t.data, data);
+               std::ranges::equal(t.data, data, identical);
       });
     }
     if (at == model_.tensors.end()) {
@@ -720,9 +715,15 @@ private:
     } else if (l.op != OpCode::Const) {
       return l.slot == r.slot;
     }
-    // CFieldLike promises arithmetic, not equality.
-    if constexpr (std::equality_comparable<T>) {
-      return l.value == r.value;
+    return identical(l.value, r.value);
+  }
+  // By the bits where T is a word, as the hash is: -0.0 and +0.0 stay two
+  // constants and a NaN is one.  CFieldLike promises arithmetic, not equality.
+  static constexpr bool identical(const T &l, const T &r) {
+    if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 8) {
+      return std::bit_cast<std::uint64_t>(l) == std::bit_cast<std::uint64_t>(r);
+    } else if constexpr (std::equality_comparable<T>) {
+      return l == r;
     } else {
       return false;
     }

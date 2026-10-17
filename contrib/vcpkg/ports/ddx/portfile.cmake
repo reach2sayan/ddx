@@ -18,7 +18,6 @@ vcpkg_cmake_configure(
     OPTIONS
         "-DDDX_BOOST_INCLUDEDIR=${CURRENT_INSTALLED_DIR}/include"
         -DDDX_BUILD_TESTS=OFF
-        -DDDX_BUILD_BENCHMARKS=OFF
         -DENABLE_NATIVE_ARCH=OFF
 )
 

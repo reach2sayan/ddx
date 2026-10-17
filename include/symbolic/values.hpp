@@ -172,10 +172,6 @@ public:
     return Lit<T, 0>{};
   }
 
-  template <std::size_t Base = 0>
-  constexpr void backward(const auto &, T, auto &,
-                          const auto &) const noexcept {}
-
   // At its own type the value passes through; deeper, ConstantEmbedder<U>
   // embeds it with zero dual parts.
   template <CSymbolList Syms, Numeric U, std::size_t N>
@@ -243,20 +239,6 @@ public:
 
   [[nodiscard]] constexpr auto derivative() const noexcept {
     return Lit<T, frozen ? 0 : 1>{};
-  }
-
-  template <std::size_t Base = 0>
-  constexpr void backward(const auto &syms, T adj, auto &grads,
-                          const auto &) const noexcept {
-    if constexpr (!frozen) {
-      using Syms = std::decay_t<decltype(syms)>;
-      constexpr auto idx = symbol_index<symbol, Syms>();
-      static_assert(idx < mp::mp_size<Syms>::value,
-                    "backward: this symbol is not in the list swept");
-      // `+` and assignment, not `+=`: CFieldLike promises only a + b.  Do not
-      // "simplify" this back to `+=`.
-      grads[idx] = std::move(grads[idx]) + adj;
-    }
   }
 
   // A frozen symbol takes the seed's value and drops its derivative slots.

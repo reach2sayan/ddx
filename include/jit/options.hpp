@@ -73,8 +73,7 @@ private:
 // codegen_level replaces it, bit-identically; calls before the first rung lands
 // are swept.  Adapt asks for a rung once the batch has paid for it.  Device
 // builds the graph as OpenCL C for the device Options::device names -- one
-// rung, and the sweep answers until it lands.  Appended, so a saved byte keeps
-// its meaning.
+// rung, and the sweep answers until it lands.
 enum class Backend : std::uint8_t { Interpret, Compile, Adapt, Device };
 
 // What decides the machine code, and nothing else: the identity a stored
@@ -118,12 +117,10 @@ struct Options {
   std::size_t hot_points = 1uz << 20;
   bool time_passes = false; // Per-pass timing to stderr
   // Object cache directory, empty for none; keyed by graph, options and host.
-  // Not serialised: a path is this machine's.
   std::string cache_dir{};
   // Under Backend::Device, which OpenCL device: a case-insensitive substring of
   // "<platform> / <device>".  Empty is the first GPU with double precision,
-  // else the first double-precision device of any type.  Not serialised, for
-  // the reason cache_dir is not: which devices exist is this machine's.
+  // else the first double-precision device of any type.
   std::string device{};
 
   friend bool operator==(const Options &, const Options &) = default;

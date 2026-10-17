@@ -118,6 +118,22 @@ TEST(RtEquation, NamesAndPointsBothComeFromRunTimeStrings) {
   EXPECT_DOUBLE_EQ(*eq.evaluate(pairs), *eq.evaluate(vm));
 }
 
+// equation(expr) copies the arena; a `+=` still pending is materialised in the
+// copy, not in the caller's.
+TEST(RtEquation, APendingSumRootsInTheCopiedArena) {
+  ddx::rt::Builder<> b;
+  const auto x = var(b, "x");
+  const auto y = var(b, "y");
+  auto acc = x * y;
+  acc += sin(x);
+  acc += y;
+  const auto eq = ddx::rt::equation(acc);
+  ASSERT_FALSE(eq.poisoned());
+  EXPECT_DOUBLE_EQ(*eq.evaluate(2.0, 3.0), 6.0 + std::sin(2.0) + 3.0);
+  EXPECT_TRUE(std::ranges::equal(*eq.jacobian(2.0, 3.0),
+                                 std::array{3.0 + std::cos(2.0), 3.0}));
+}
+
 TEST(RtEquation, EveryNamedPointMustNameEverySymbolAndOnlyRealOnes) {
   ddx::rt::Builder<> b;
   const auto x = var(b, "x");
@@ -1546,7 +1562,7 @@ TEST(RtEquation, CodegenZeroIsASingleRung) {
 // separately, being different machine code, so a warm run gets the good kernel
 // rather than the cheap one.
 TEST(RtEquation, AWarmCacheServesBothRungs) {
-  const Scratch dir{"rt_ladder_cache", ""};
+  const Scratch dir{"rt_ladder_cache"};
 
   const auto climb = [&dir] {
     auto eq = ladder_model();

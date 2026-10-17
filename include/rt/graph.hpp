@@ -171,8 +171,8 @@ constexpr void scatter_blocks(const OutputRows &rows, std::span<const T> tape,
   }
 }
 
-// A builder frozen into CSR, the form codegen walks.  Operand position rides
-// along as an edge attribute, because a CSR row is a set.
+// A builder frozen into per-node arrays, the form codegen walks: three operand
+// slots each, so position is the index, and lists for the n-ary nodes.
 template <impl::Numeric T = double> class Graph {
 public:
   using value_type = T;

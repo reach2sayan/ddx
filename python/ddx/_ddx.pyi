@@ -196,6 +196,7 @@ class Want(enum.IntEnum):
     """
     Which blocks a bound call fills.
     """
+    DENSEHESSIAN: typing.ClassVar[Want]  # value = <Want.DENSEHESSIAN: 8>
     GRADIENT: typing.ClassVar[Want]  # value = <Want.GRADIENT: 6>
     HESSIAN: typing.ClassVar[Want]  # value = <Want.HESSIAN: 2>
     HVP: typing.ClassVar[Want]  # value = <Want.HVP: 3>

@@ -8,8 +8,8 @@
 //
 // Spans at the boundary, not a library's types; a matrix is column-major, and
 // every vector a kernel sees is contiguous.  Results may differ between
-// backends in the last bits -- a summation order is the only thing a table
-// chooses -- which is why a saved file records the table's name.
+// backends in the last bits: a summation order is the only thing a table
+// chooses.
 
 #include "rt/apply.hpp"
 #include "rt/opcode.hpp"

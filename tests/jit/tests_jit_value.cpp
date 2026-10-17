@@ -541,7 +541,7 @@ TEST(JitValue, AnObjectAdoptsBackIntoTheSameKernel) {
 // The second compile of the same graph does no codegen at all.  The report is
 // the assertion, not timing: a hit does not run the phases at all.
 TEST(JitValue, ACachedObjectSkipsTheWholeCompile) {
-  const Scratch dir{"jit_skips", ""};
+  const Scratch dir{"jit_skips"};
 
   const auto build = [] {
     Builder<> b;
@@ -580,7 +580,7 @@ TEST(JitValue, ACachedObjectSkipsTheWholeCompile) {
 // The checksum is what stands between a corrupt file and machine code being
 // jumped into.
 TEST(JitValue, ACorruptCacheEntryIsAMissNotACrash) {
-  const Scratch dir{"jit_corrupt", ""};
+  const Scratch dir{"jit_corrupt"};
 
   ddx::jit::Options opt;
   opt.cache_dir = dir.string();
@@ -618,7 +618,7 @@ TEST(JitValue, ACorruptCacheEntryIsAMissNotACrash) {
 // a hand-picked corrupt case proves nothing.  Every prologue byte, a stride
 // through the payload and every truncation: each must degrade to a miss.
 TEST(JitValue, ACacheEntrySurvivesCorruptionAndTruncation) {
-  const Scratch dir{"jit_fuzz", ""};
+  const Scratch dir{"jit_fuzz"};
 
   ddx::jit::Options opt;
   opt.cache_dir = dir.string();
@@ -719,7 +719,7 @@ TEST(JitValue, ACacheEntrySurvivesCorruptionAndTruncation) {
 // find at any size, rename being atomic.  What it covers is the end of the
 // pipe: whatever the writers did, one whole entry loads afterwards.
 TEST(JitValue, ConcurrentCompilesLeaveOneWholeCacheEntry) {
-  const Scratch dir{"jit_writers", ""};
+  const Scratch dir{"jit_writers"};
 
   ddx::jit::Options opt;
   opt.cache_dir = dir.string();
@@ -796,7 +796,7 @@ TEST(JitValue, ConcurrentCompilesLeaveOneWholeCacheEntry) {
 
 // No directory named, nothing written.
 TEST(JitValue, NoCacheDirectoryWritesNothing) {
-  const Scratch dir{"jit_absent", ""};
+  const Scratch dir{"jit_absent"};
 
   Builder<> b;
   const auto x = var(b, "x");

@@ -8,9 +8,8 @@
 
 // The reverse-mode rule for every op outside unary_math.hpp's eighteen.  Both
 // sides call these: the sweep instantiates them at a number, the graph builder
-// at RTExpression.  No rule reads its own primal -- the compile-time cache
-// never stores a node's own slot -- so pow and hypot recompute it, which costs
-// a graph nothing.  max/min are the one pair not shared; see ExtremumOpFn.
+// at RTExpression.  No rule reads its own primal, so pow and hypot recompute
+// it, which costs a graph nothing.  max/min are the one pair not shared; see ExtremumOpFn.
 namespace ddx::impl::detail {
 
 // The number for an arithmetic T, the Sign node for a graph handle: ordinary
@@ -128,8 +127,8 @@ template <Numeric T> struct SignOpFn {
 };
 
 // The one rule the two sides do not share: a node has no comparisons, so the
-// kink is a sign -- exact away from the tie, NaN at it.  ExtremumOp keeps a
-// branching rule for numbers, which is cheaper and can halve a tie.
+// kink is a sign -- exact away from the tie, half to each side at it, as
+// ExtremumOp's symbolic derivative spells the same expansion.
 template <Numeric T, bool IsMax> struct ExtremumOpFn {
   [[nodiscard]] static constexpr std::array<T, 2>
   adjoints(const auto &adj, const auto &l, const auto &r) noexcept {

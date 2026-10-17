@@ -11,8 +11,8 @@
 #include <ranges>
 #include <vector>
 
-// A CSR row is a set, so what matters is that operand *position* survives the
-// compression and that nothing reachable is dropped.
+// What matters is that operand *position* survives the freeze and that
+// nothing reachable is dropped.
 
 namespace {
 using ddx::rt::Graph;
