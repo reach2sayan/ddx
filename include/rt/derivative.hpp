@@ -209,7 +209,7 @@ template <impl::Numeric T>
   const auto n = static_cast<NodeId>(b.size());
   const auto live = detail::reachable(b, std::span{&root, 1});
   // Two nodes per node of the cone is what a reverse pass comes to.
-  b.reserve(n + 2 * std::ranges::count(live, true));
+  b.reserve(n + 2 * static_cast<std::size_t>(std::ranges::count(live, true)));
   std::vector<NodeId> adj(n, no_node);
   std::vector<NodeId> guard(n, no_node);
   adj[root] = b.constant(T{1});
@@ -396,7 +396,7 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
               std::span<const NodeId> tangent) {
   const auto n = static_cast<NodeId>(b.size());
   const auto live = detail::reachable(b, roots);
-  b.reserve(n + 2 * std::ranges::count(live, true));
+  b.reserve(n + 2 * static_cast<std::size_t>(std::ranges::count(live, true)));
   std::vector<NodeId> d(n, no_node);
 
   for (const NodeId v : detail::live_ids(live)) {

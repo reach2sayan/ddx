@@ -2,9 +2,6 @@
 
 #include "ops/numeric.hpp"
 
-#include <boost/mp11/algorithm.hpp>
-#include <boost/mp11/list.hpp>
-
 #include <concepts>
 #include <cstddef>
 #include <type_traits>
@@ -44,10 +41,23 @@ concept DualCompatible = DualLike<A> && DualLike<B> &&
 // component is the Nth derivative -- what extract_nth reads and
 // make_mixed_seed seeds for.  Ref: Fike & Alonso, AIAA 2011-886;
 // docs/hyperdual_nth_order_by_example.md draws the lattice.
-template <typename Inner, typename> using wrap_dual = Dual<Inner>;
+//
+// A recursion rather than an mp_fold, because every level has to be a
+// *complete* type before the next one names it.  `Dual<T>` asks Numeric<T>,
+// Numeric asks whether T is destructible, and MSVC answers that from a
+// Dual it has not instantiated yet instead of instantiating one: the tower
+// then collapses at depth two, where the inner Dual is the first that had to
+// be built rather than merely named.  sizeof() completes each level in turn.
+template <Numeric T, std::size_t N> struct nth_dual {
+  using inner = typename nth_dual<T, N - 1>::type;
+  static_assert(sizeof(inner) > 0);
+  using type = Dual<inner>;
+};
+template <Numeric T> struct nth_dual<T, 0> {
+  using type = T;
+};
 template <Numeric T, std::size_t N>
-using nth_dual_t = boost::mp11::mp_fold<
-    boost::mp11::mp_repeat_c<boost::mp11::mp_list<void>, N>, T, wrap_dual>;
+using nth_dual_t = typename nth_dual<T, N>::type;
 
 template <Numeric T> inline constexpr std::size_t dual_depth_v = 0;
 template <Numeric T>

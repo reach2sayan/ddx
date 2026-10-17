@@ -418,16 +418,21 @@ lanes_apply(const Builder<T> &b, NodeId i, const Node<T> &n,
     using Fn = typename R::functor;
     if constexpr (std::is_void_v<Fn>) {
       return true;
-    } else if constexpr (R::arity == 1) {
-      lanes<W, Fn, U, R::ok>(out, lane(in[0]));
-    } else if constexpr (R::arity == 2) {
-      lanes<W, Fn, U, R::ok>(out, lane(in[0]), lane(in[1]));
-    } else if constexpr (R::arity == 3) {
-      lanes<W, Fn, U, R::ok>(out, lane(in[0]), lane(in[1]), lane(in[2]));
     } else {
-      std::unreachable();
+      // The arities the tables spell.  A `std::unreachable()` in a trailing
+      // `else` would leave the `return false` below it unreachable on the
+      // instance that took it, which MSVC reports as C4702; the assert says
+      // the same thing where it costs no code.
+      static_assert(R::arity >= 1 && R::arity <= 3);
+      if constexpr (R::arity == 1) {
+        lanes<W, Fn, U, R::ok>(out, lane(in[0]));
+      } else if constexpr (R::arity == 2) {
+        lanes<W, Fn, U, R::ok>(out, lane(in[0]), lane(in[1]));
+      } else {
+        lanes<W, Fn, U, R::ok>(out, lane(in[0]), lane(in[1]), lane(in[2]));
+      }
+      return false;
     }
-    return false;
   });
   if (opaque) {
     lanes_opaque<W>(b, i, n, s.fused, out, lane, t);
