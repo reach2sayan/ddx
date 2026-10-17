@@ -193,8 +193,8 @@ private:
   // transposed afterwards; a block per symbol or per function is laid out as
   // the array already.
   struct Out {
-    std::optional<Scratch> cells;
-    std::optional<Block> block;
+    std::optional<Scratch> cells{};
+    std::optional<Block> block{};
     [[nodiscard]] std::span<double *const> rows() {
       return cells ? cells->rows() : block ? block->rows()
                                            : std::span<double *const>{};

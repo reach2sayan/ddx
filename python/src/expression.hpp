@@ -4,6 +4,7 @@
 #include "rt/builder.hpp"
 #include "rt/expressions.hpp"
 #include "rt/opcode.hpp"
+#include "rt/tensor.hpp" // pack
 #include "util/ranges.hpp"
 
 #include <cstddef>
