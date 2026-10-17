@@ -41,7 +41,10 @@ llvm::Intrinsic::ID intrinsic_for(rt::OpCode op) {
       const auto &[how, name] = rt::lowering_of(static_cast<rt::OpCode>(i));
       llvm::SmallString<32> spelled{"llvm."};
       spelled += name;
-      t[i] = how == rt::Lower::Call
+      // Not pow: the library-call simplifier rewrites llvm.pow with a constant
+      // operand -- 1/x for -1, sqrt for 0.5 -- and libm's pow is not
+      // correctly rounded, so the kernel would leave the sweep by an ulp.
+      t[i] = how == rt::Lower::Call && i != std::to_underlying(rt::OpCode::Pow)
                  ? llvm::Intrinsic::lookupIntrinsicID(spelled)
                  : llvm::Intrinsic::not_intrinsic;
     }
@@ -258,7 +261,17 @@ private:
         scalarise = lanes_.vector();
       }
     }
-    return scalarise ? scalarised(fn, args) : b_.CreateCall(fn, args);
+    return scalarise ? scalarised(fn, args) : libm_call(fn, args);
+  }
+  // A libm call stays that call: nobuiltin keeps the simplifier from trading
+  // it for another function that rounds differently.
+  llvm::Value *libm_call(llvm::Function *fn,
+                         llvm::ArrayRef<llvm::Value *> args) const {
+    llvm::CallInst *const c = b_.CreateCall(fn, args);
+    if (!fn->isIntrinsic()) {
+      c->addFnAttr(llvm::Attribute::NoBuiltin);
+    }
+    return c;
   }
 
   llvm::Value *scalarised(llvm::Function *fn,
@@ -266,7 +279,7 @@ private:
     std::vector<llvm::Value *> answers(lanes_.width);
     per_lane(std::span{args.data(), args.size()},
              [&](unsigned lane, llvm::ArrayRef<llvm::Value *> scalars) {
-               answers[lane] = b_.CreateCall(fn, scalars);
+               answers[lane] = libm_call(fn, scalars);
              });
     return gathered([&](unsigned lane) { return answers[lane]; });
   }
