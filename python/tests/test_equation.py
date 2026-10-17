@@ -159,12 +159,6 @@ def test_symbols_are_in_the_order_a_point_is_read_in(scalar: ddx.Equation) -> No
     assert scalar.symbols == ["x", "y"]
 
 
-def test_to_dot_renders_the_frozen_graph(scalar: ddx.Equation) -> None:
-    live = scalar.to_dot()
-    assert live.startswith("digraph")
-    assert len(scalar.to_dot(all=True)) >= len(live)
-
-
 def test_a_sparse_coupling_scatters_to_the_right_cells() -> None:
     """The compressed Hessian is indexed by colour and row, not as colours x n.
 

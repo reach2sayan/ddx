@@ -25,6 +25,29 @@ TEST(RtBuilder, IdenticalSubtreesInternToOneNode) {
   EXPECT_EQ(b.size(), after_first);
 }
 
+TEST(RtBuilder, ReserveChangesNeitherIdsNorInterning) {
+  const auto build = [](Builder<> &b) {
+    const auto x = var(b, "x");
+    const auto y = var(b, "y");
+    auto f = exp(x) * sin(y);
+    for (int k = 1; k < 200; ++k) {
+      f += pow(x, k) / (y + k);
+    }
+    return f.id(b);
+  };
+  Builder<> plain;
+  Builder<> reserved;
+  reserved.reserve(4096);
+  EXPECT_EQ(reserved.size(), 0u);
+  const auto f = build(plain);
+  const auto g = build(reserved);
+
+  EXPECT_EQ(f, g);
+  EXPECT_EQ(plain.size(), reserved.size());
+  EXPECT_EQ(exp(var(plain, "x")).id(plain), exp(var(reserved, "x")).id(reserved));
+  EXPECT_EQ(plain.size(), reserved.size());
+}
+
 TEST(RtBuilder, CommutativeOperandsCanonicalise) {
   Builder<> b;
   const auto x = var(b, "x");
@@ -123,6 +146,8 @@ TEST(RtBuilder, ParamsShareTheNamespaceAndNumberTheirOwnSlots) {
 // Compound assignment rebinds the handle through the same operators, so an
 // accumulator written either way lands on the same node -- which interning
 // makes an id comparison.
+// Two terms are the long form's own Add; the other compound operators build
+// what their operator builds.  Past two terms `+=` is a SumN: tests_rt_sumn.
 TEST(RtBuilder, CompoundAssignmentBuildsWhatTheLongFormBuilds) {
   Builder<> b;
   const auto x = var(b, "x");
@@ -130,13 +155,14 @@ TEST(RtBuilder, CompoundAssignmentBuildsWhatTheLongFormBuilds) {
 
   auto acc = x;
   acc += y;
-  acc -= sin(x);
   acc *= exp(y);
   acc /= (x + y);
+  acc -= sin(x);
+  const auto id = acc.id(b); // a sum is formed when it is first read
   const std::size_t after = b.size();
 
-  const auto spelled = (((x + y) - sin(x)) * exp(y)) / (x + y);
-  EXPECT_EQ(acc.id(b), spelled.id(b));
+  const auto spelled = ((x + y) * exp(y)) / (x + y) - sin(x);
+  EXPECT_EQ(id, spelled.id(b));
   EXPECT_EQ(b.size(), after)
       << "the long form built a node the short one did not";
 }

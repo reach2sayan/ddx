@@ -8,6 +8,7 @@
 #include <cassert>
 #include <cstdint>
 #include <functional>
+#include <numeric>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -68,16 +69,67 @@ namespace ddx::rt {
 #define DDX_RT_TERNARY_TABLE(X)                                                \
   X(select, Select, "select", impl::detail::select_impl)
 
+// A node over a list of ids rather than over operands: `a` is where the list
+// starts in Model::lists (has_list below), its length the function's arity
+// for an extern, else the slot.  The last cells are the arity and the Kind.
+//
 // A function the caller supplies with its own partials, of any number of
-// arguments.  Extern (the value) and ExternD (one partial -- which, and of
-// which function, packed into the slot) take one operand: the argument list.
-// A list of one is the argument itself; a longer one is ExternArgs(first,
-// rest), the same rule all the way down, so every node holds only real
-// operands.  The last cells are the arity and the Kind.
+// arguments: Extern is the value, ExternD one partial -- which, and of which
+// function, packed into the slot.
 #define DDX_RT_EXTERN_TABLE(X)                                                 \
   X(extern_call, Extern, "extern", 1, Extern)                                  \
-  X(extern_partial, ExternD, "extern_d", 1, Extern)                            \
-  X(extern_args, ExternArgs, "extern_args", 2, Args)
+  X(extern_partial, ExternD, "extern_d", 1, Extern)
+// A sum of `slot` terms in list order: what a chain of += builds, one node
+// where a chain of Add would be one per term.  Every product term is fused
+// into the running sum as an Add fuses its one (contraction_at), so a sum of
+// products is a loop of fma.
+#define DDX_RT_NARY_TABLE(X) X(sum_n, SumN, "sum_n", 1, Nary)
+
+// A node whose value is a vector of `width` scalars per point, or a scalar
+// read off one.  Operands are ids like any other; the slot is what the row
+// says -- no node carries data, and a shape is a function of the source
+// (width_of in rt/builder.hpp), never of the node alone:
+//   VecConst, MatConst  slot = index into Model::tensors; the data lives there
+//   Pack                a = list of `slot` scalars
+//   Gather              a = vec, slot = element; a scalar
+//   Map, Zip            a (, b) = vecs, slot = the elementwise opcode
+//   Scale               a = scalar, b = vec
+//   Sum, Dot            a (, b) = vecs; a scalar
+//   Gemv                a = MatConst, b = vec, slot = 1 for M^T v
+//   AddAt               a = vec, b = scalar, slot = element: a + b e_slot
+// A matrix is a row too, column-major, its shape derived from its operands
+// (shape_of in rt/builder.hpp); the dense Hessian sweep forms these:
+//   MatRow              a = MatConst, slot = 1 for M^T: the table as a row
+//   Diag                a = vec w: the w x w diagonal
+//   Outer               a = vec r, b = vec c: a b^T
+//   RowScale            a = vec r, b = matrix r x c: diag(a) M
+//   ColScale            a = matrix r x c, b = vec c: M diag(b)
+//   MatVec              a = matrix, b = vec, slot = 1 for M^T v
+//   MatMul              a = matrix r x k, b = matrix k x c
+//   StackRows           a = list of `slot` vectors, each a row
+//   RowOf               a = matrix, slot = row: that row, as a vector
+// The last cells are the arity and the Kind.
+#define DDX_RT_TENSOR_TABLE(X)                                                 \
+  X(vec_const, VecConst, "vconst", 0, Tensor)                                  \
+  X(mat_const, MatConst, "mconst", 0, Tensor)                                  \
+  X(pack, Pack, "pack", 1, Tensor)                                             \
+  X(gather, Gather, "gather", 1, Tensor)                                       \
+  X(vmap, Map, "vmap", 1, Tensor)                                              \
+  X(vzip, Zip, "vzip", 2, Tensor)                                              \
+  X(vscale, Scale, "vscale", 2, Tensor)                                        \
+  X(vsum, Sum, "vsum", 1, Tensor)                                              \
+  X(vdot, Dot, "vdot", 2, Tensor)                                              \
+  X(gemv, Gemv, "gemv", 2, Tensor)                                             \
+  X(add_at, AddAt, "add_at", 2, Tensor)                                        \
+  X(mat_row, MatRow, "mrow", 1, Tensor)                                        \
+  X(diag, Diag, "diag", 1, Tensor)                                             \
+  X(outer, Outer, "outer", 2, Tensor)                                          \
+  X(row_scale, RowScale, "row_scale", 2, Tensor)                               \
+  X(col_scale, ColScale, "col_scale", 2, Tensor)                               \
+  X(matvec, MatVec, "matvec", 2, Tensor)                                       \
+  X(matmul, MatMul, "matmul", 2, Tensor)                                       \
+  X(stack_rows, StackRows, "stack_rows", 1, Tensor)                            \
+  X(row_of, RowOf, "row_of", 1, Tensor)
 
 #define DDX_RT_OP_TABLE(X)                                                     \
   DDX_RT_LEAF_TABLE(X)                                                         \
@@ -86,7 +138,9 @@ namespace ddx::rt {
   DDX_RT_BINARY_TABLE(X)                                                       \
   DDX_RT_COMPARE_TABLE(X)                                                      \
   DDX_RT_TERNARY_TABLE(X)                                                      \
-  DDX_RT_EXTERN_TABLE(X)
+  DDX_RT_EXTERN_TABLE(X)                                                       \
+  DDX_RT_NARY_TABLE(X)                                                         \
+  DDX_RT_TENSOR_TABLE(X)
 
 enum class OpCode : std::uint8_t {
 #define DDX_RT_ENUMERATOR(fn, Op, label, ...) Op,
@@ -105,7 +159,9 @@ inline constexpr std::size_t op_count = [] {
 // What a walker does with a node: the one classification every sweep, emitter
 // and checker switches on, so none tests an opcode ahead of its arity.  A
 // Const is a literal, an Input reads a column, an Extern calls the program's
-// function (its value or one partial), an Args node is an argument list.
+// function (its value or one partial), a Nary node reduces a list of any
+// length, a Tensor node computes over or into a vector row
+// (DDX_RT_TENSOR_TABLE).
 enum class Kind : std::uint8_t {
   Const,
   Input,
@@ -113,7 +169,8 @@ enum class Kind : std::uint8_t {
   Binary,
   Ternary,
   Extern,
-  Args
+  Nary,
+  Tensor
 };
 
 namespace detail {
@@ -155,6 +212,8 @@ inline constexpr std::array op_info = [] {
 #define DDX_RT_ROW(fn, Op, label, arity, kind)                                 \
   t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, arity, Kind::kind};
   DDX_RT_EXTERN_TABLE(DDX_RT_ROW)
+  DDX_RT_NARY_TABLE(DDX_RT_ROW)
+  DDX_RT_TENSOR_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
   return t;
 }();
@@ -216,16 +275,37 @@ template <impl::Numeric T>
                                 op == OpCode::Min || op == OpCode::Hypot);
 }
 
+// The leaf table opens the op table, so a leaf is one compare: the sweep asks
+// on every step, and a kind_of() here is a table load ahead of its dispatch.
 [[nodiscard]] constexpr bool is_leaf(OpCode op) noexcept {
-  return kind_of(op) == Kind::Const || kind_of(op) == Kind::Input;
+  return op <= OpCode::Seed;
 }
+static_assert(std::ranges::all_of(std::views::iota(0uz, op_count), [](auto i) {
+  const auto op = static_cast<OpCode>(i);
+  return is_leaf(op) ==
+         (kind_of(op) == Kind::Const || kind_of(op) == Kind::Input);
+}));
 [[nodiscard]] constexpr bool is_extern(OpCode op) noexcept {
-  return kind_of(op) == Kind::Extern || kind_of(op) == Kind::Args;
+  return kind_of(op) == Kind::Extern;
 }
-// What text and Python may call by name: an operation on operands, not a
-// leaf and not a function the program registered.
+// Whether `a` is where the node's list starts in Model::lists rather than an
+// operand: an extern's arguments, a Pack's or StackRows' items, a sum's terms.
+[[nodiscard]] constexpr bool has_list(OpCode op) noexcept {
+  return is_extern(op) || kind_of(op) == Kind::Nary || op == OpCode::Pack ||
+         op == OpCode::StackRows;
+}
+// What text and Python may call by name: a scalar operation on operands, not
+// a leaf, not a function the program registered, not a list and not a tensor
+// row.
 [[nodiscard]] constexpr bool callable(OpCode op) noexcept {
-  return !is_leaf(op) && !is_extern(op);
+  return !is_leaf(op) && !has_list(op) && kind_of(op) != Kind::Tensor;
+}
+// Whether a node's value is a vector row rather than a scalar: the tensor ops
+// that read vectors into a scalar -- Gather, Sum, Dot -- are not, and MatConst
+// is a table a Gemv reads, not a row anything sweeps.
+[[nodiscard]] constexpr bool tensor_valued(OpCode op) noexcept {
+  return kind_of(op) == Kind::Tensor && op != OpCode::Gather &&
+         op != OpCode::Sum && op != OpCode::Dot && op != OpCode::MatConst;
 }
 
 // Which kind of named input a leaf is, in table order.
@@ -350,10 +430,11 @@ struct Inputs {
 // have to agree.
 [[nodiscard]] constexpr std::size_t input_column(const Inputs &in, OpCode op,
                                                  std::uint32_t slot) noexcept {
-  const auto before = named_index(op).value_or(named_count);
-  return std::ranges::fold_left(std::span{in.by_kind}.first(before), 0uz,
-                                std::plus<>{}) +
-         slot;
+  // A scan of fixed length: a fold over a prefix of variable length
+  // vectorises, and the sweep's leaf step pays for the loop.
+  std::array<std::size_t, named_count + 1> start{};
+  std::inclusive_scan(in.by_kind.begin(), in.by_kind.end(), start.begin() + 1);
+  return start[named_index(op).value_or(named_count)] + slot;
 }
 
 } // namespace ddx::rt

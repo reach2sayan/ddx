@@ -1,6 +1,6 @@
 #include "codegen.hpp"
 
-#include "rt/archive/archive.hpp"
+#include "cache.hpp"
 #include "rt/derivative.hpp"
 #include "rt/expressions.hpp"
 #include "rt/lowering.hpp"
@@ -172,17 +172,12 @@ llvm::TargetLibraryInfoImpl target_library_info(const llvm::Triple &triple,
 // On the module rather than the JIT, so one JIT serves compiles at different
 // levels.
 constexpr const char *kCodegenFlag = "ddx.codegen";
-constexpr const char *kRetainFlag = "ddx.retain_object";
 
 [[nodiscard]] std::optional<std::uint64_t> flag_of(const llvm::Module &m,
                                                    const char *key) {
   const auto *const flag =
       llvm::mdconst::extract_or_null<llvm::ConstantInt>(m.getModuleFlag(key));
   return flag != nullptr ? std::optional{flag->getZExtValue()} : std::nullopt;
-}
-
-[[nodiscard]] bool retains_object(const llvm::Module &m) {
-  return flag_of(m, kRetainFlag).value_or(0) != 0;
 }
 
 // The flag is written from std::to_underlying(Level), which is LLVM's own
@@ -209,10 +204,8 @@ public:
     auto machine = machine_;
     machine.setCodeGenOptLevel(codegen_level_of(m));
     auto tm = machine.createTargetMachine();
-    // Handed over only where the compile asked to keep its object.
     return (!tm) ? tm.takeError()
-                 : llvm::orc::SimpleCompiler{
-                       **tm, retains_object(m) ? objects_ : nullptr}(m);
+                 : llvm::orc::SimpleCompiler{**tm, objects_}(m);
   }
 
 private:
@@ -412,8 +405,6 @@ private:
     m->setModuleIdentifier(name_);
     m->addModuleFlag(llvm::Module::Error, kCodegenFlag,
                      std::to_underlying(opt_.codegen.codegen_level));
-    m->addModuleFlag(llvm::Module::Error, kRetainFlag,
-                     static_cast<unsigned>(opt_.retain_object));
     rep_.nodes = g_.live_count();
     rep_.instructions = m->getInstructionCount();
     return llvm::orc::ThreadSafeModule{
@@ -477,105 +468,6 @@ private:
 // Not compiling the same graph twice dominates every other optimisation here: a
 // compile costs seconds against a graph's microseconds.
 //
-// The lookup does *not* go through llvm::ObjectCache, whose hook fires after
-// emission and the pass pipeline and so would skip codegen alone; keyed on the
-// graph, the whole compile is skipped.  Content-addressed, so a stale entry is
-// a miss, and nothing here fails a compile -- every failure is "compile it".
-constexpr std::string_view kCacheMagic = "ddxjitob";
-constexpr std::uint32_t kCacheFormat = 2;
-
-// Bumped by hand for what neither the digest nor the entry's shape can see: the
-// emitter, the pass pipeline, the ABI.  Folded into the key, so a bump misses
-// rather than refuses.
-constexpr std::uint32_t kCacheEpoch = 1;
-
-// The identity, with the width *emitted* in place of the one asked for: a
-// derived `Lanes` means the host's, so the raw request would give one graph two
-// keys that never hit each other.
-[[nodiscard]] std::uint64_t
-cache_key(std::uint64_t graph, std::string_view host, const Codegen &emitted) {
-  boost::hash2::fnv1a_64 h;
-  boost::hash2::hash_append(h, rt::detail::wire_flavor{}, host);
-  rt::detail::fold(h, graph);
-  rt::detail::fold(h, kCacheEpoch);
-  rt::detail::fold(h, emitted);
-  return h.result();
-}
-
-[[nodiscard]] std::filesystem::path entry_path(std::string_view dir,
-                                               std::uint64_t key) {
-  return std::filesystem::path{dir} / std::format("{:016x}.ddxjit", key);
-}
-
-// Chosen by the compile that produced the bytes, and underivable, so it travels
-// with them.  Described, so the same codec that writes a graph writes this: the
-// length prefix and its bounds are the archive's, not a second hand-rolled
-// pair.
-struct Entry {
-  std::string symbol;
-  std::vector<std::byte> code;
-};
-BOOST_DESCRIBE_STRUCT(Entry, (), (symbol, code))
-
-// The prologue's shape and the entry's, so a field added to either refuses the
-// old entries by itself.
-constexpr std::uint32_t kCacheSchema = rt::detail::Container::stamp<Entry>();
-
-[[nodiscard]] std::optional<Entry> read_entry(std::string_view dir,
-                                              std::uint64_t key) {
-  auto bytes = rt::detail::Container::read(entry_path(dir, key));
-  if (!bytes) {
-    return std::nullopt; // absent, unreadable: both are a miss
-  }
-  // unpack has cleared the checksum before this sees a payload byte.  Every
-  // prologue field written is checked and none is written that is not: the
-  // prologue is the one part no checksum covers.  `model_nodes` belongs to the
-  // graph half of the format and is written as zero.
-  const auto opened = rt::detail::Container::unpack(*bytes, kCacheMagic);
-  if (!opened) {
-    return std::nullopt;
-  }
-  const auto &[head, payload] = *opened;
-  if (head.format != kCacheFormat || head.schema != kCacheSchema ||
-      head.scalar_size != sizeof(double) ||
-      head.scalar_kind != rt::detail::ScalarKind::Floating ||
-      head.model_nodes != 0 || head.model_digest != key) {
-    return std::nullopt;
-  }
-  // A forged length is the codec's problem now: it bounds every one against the
-  // bytes actually left, so the 4 + symbol_bytes wrap this used to widen for
-  // cannot be spelled.
-  auto entry = rt::detail::Container::decode<Entry>(payload);
-  if (!entry || entry->symbol.empty() || entry->code.empty()) {
-    return std::nullopt;
-  }
-  return std::move(*entry);
-}
-
-void write_entry(std::string_view dir, std::uint64_t key,
-                 std::string_view symbol, std::span<const std::byte> code) {
-  std::error_code ec;
-  std::filesystem::create_directories(dir, ec);
-  if (ec) {
-    return; // A cache that cannot be written is a cache that always misses.
-  }
-  const Entry entry{.symbol = std::string{symbol},
-                    .code = {code.begin(), code.end()}};
-  const rt::detail::FileHeader h{.magic = kCacheMagic,
-                                 .format = kCacheFormat,
-                                 .schema = kCacheSchema,
-                                 .scalar_size = sizeof(double),
-                                 .scalar_kind =
-                                     rt::detail::ScalarKind::Floating,
-                                 .model_digest = key};
-  // Staged inside the cache directory: a rename is only atomic within one
-  // filesystem.
-  (void)rt::detail::Container::write(
-      entry_path(dir, key),
-      rt::detail::Container::pack(kCacheMagic, h,
-                                  rt::detail::Container::encode(entry)));
-}
-
 // Where a background compile runs.  Not a member of Impl: a Kernel holds a
 // share of the Impl it came from, so the last share can be dropped on a worker,
 // and a pool joined from its own thread deadlocks.
@@ -785,14 +677,21 @@ struct Compiler::Impl {
                                           const rt::Graph<double> &g,
                                           const Options &opt,
                                           CompileReport &rep) {
+    // No lowering computes a tensor row: the lane sweeps, through its kernel
+    // table, and uses_kernel() says so.
+    if (g.has_tensors()) {
+      return std::unexpected{
+          error{errc::tensor_kernel,
+                "tensor nodes run on the sweep; no kernel is built for them"}};
+    }
     Host host = host_of(self);
     const bool caching = !opt.cache_dir.empty();
     Codegen emitted = opt.codegen;
     emitted.lanes = *Lanes::exactly(host.lanes_for(opt));
     const std::uint64_t key =
-        caching ? cache_key(rt::digest(g), self->host, emitted) : 0;
+        caching ? detail::cache_key(detail::digest(g), self->host, emitted) : 0;
     if (caching) {
-      if (const auto entry = read_entry(opt.cache_dir, key)) {
+      if (const auto entry = detail::read_entry(opt.cache_dir, key)) {
         // The shape comes from the live graph, never the file: a forged entry
         // supplies code and a symbol, never a column count.
         if (auto adopted = link(self, entry->code, entry->symbol, g);
@@ -806,15 +705,12 @@ struct Compiler::Impl {
       }
     }
 
-    Options effective = opt;
-    // A compile whose object will be stored has to keep it, whatever was asked.
-    effective.retain_object = effective.retain_object || caching;
-
-    Compilation work{std::move(host), g, effective,
+    Compilation work{std::move(host), g, opt,
                      "ddx_kernel_" + std::to_string(self->counter++), rep};
     auto kernel = work();
     if (caching && kernel && !kernel->object().empty()) {
-      write_entry(opt.cache_dir, key, kernel->symbol(), kernel->object());
+      detail::write_entry(opt.cache_dir, key, kernel->symbol(),
+                          kernel->object());
     }
     return kernel;
   }

@@ -78,7 +78,7 @@ public:
   }
   [[nodiscard]] const KernelShape &shape() const noexcept { return shape_; }
 
-  // Empty only where Options::retain_object was turned off.
+  // The bytes the compile produced, which the object cache stores.
   [[nodiscard]] std::span<const std::byte> object() const noexcept {
     return object_ ? std::span<const std::byte>{*object_}
                    : std::span<const std::byte>{};
@@ -120,7 +120,7 @@ public:
   compile_async(std::shared_ptr<const rt::Graph<double>> g, Options opt = {});
 
   // Links an object compiled earlier.  Nothing beyond the link is verified --
-  // rt::Object carries the host, Options and graph digest for that -- and a
+  // the cache key carries the host, options and graph digest for that -- and a
   // corrupt object is an error, not an abort.  The graph is what the object
   // was lowered from: its shape and its extern functions are read off it, never
   // claimed by the bytes.

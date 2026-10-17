@@ -1,5 +1,4 @@
 #include "ddx.hpp"
-#include "rt/archive/snapshot.hpp"
 #include "rt/bridge.hpp"
 #include "rt/derivative.hpp"
 #include "rt/equation.hpp"
@@ -757,49 +756,6 @@ TEST(RtJacobian, BothArmsOfASelectOverASharedSubexpression) {
   EXPECT_EQ(pattern.nonzeros(), 3u)
       << "a condition-only symbol would be absent";
   EXPECT_EQ(*eq.hessian_colors(), 3u);
-}
-
-// `make` folds select(c, s, s) to s, so the factories cannot build one -- but
-// `restore` installs a node array verbatim, so a file written before the fold,
-// or a forged one, still can.  The rule has to keep summing there: both
-// contributions land on the one child, and either alone answers the arm the
-// condition happens to name rather than the derivative.
-TEST(RtJacobian, SharedArmsThroughTheLoaderStillSum) {
-  using ddx::rt::Node;
-  ddx::rt::Snapshot<double> snap;
-  snap.model.names[*ddx::rt::named_index(ddx::rt::OpCode::Var)] = {"x", "y"};
-  // select(x < y, x, x), which is x -- and which make() would never form.
-  snap.model.nodes = {
-      Node<double>{.op = ddx::rt::OpCode::Var, .slot = 0},
-      Node<double>{.op = ddx::rt::OpCode::Var, .slot = 1},
-      Node<double>{.op = ddx::rt::OpCode::Lt, .a = 0, .b = 1},
-      Node<double>{.op = ddx::rt::OpCode::Select, .a = 2, .b = 0, .c = 0}};
-  snap.roots = {3};
-  snap.model_nodes = 4;
-  // What a file carries beside the model: the loader admits nothing less.
-  snap.model.nodes.push_back(
-      Node<double>{.op = ddx::rt::OpCode::Const, .value = 0.0});
-  snap.jacobian = {.value = {3},
-                   .partial = {},
-                   .pattern = {.rowptr = {0, 0}, .col = {}, .columns = 2},
-                   .zero = 4};
-
-  auto sound = ddx::rt::verified(std::move(snap));
-  ASSERT_TRUE(sound.has_value()) << "a shared arm is a sound file";
-  const auto [arena, rest] = std::move(*sound).rebuild();
-  ASSERT_EQ(arena->size(), 5u) << "restore installs the array as written";
-  ASSERT_EQ((*arena)[3].b, (*arena)[3].c) << "the shared arm survived the load";
-
-  const auto j = ddx::rt::build_jacobian_impl(*arena, rest.roots);
-  // Both conditions, since a rule keeping one contribution answers the arm the
-  // condition names and would be right at exactly one of these points.
-  for (const auto &at :
-       {std::array<double, 2>{1.0, 2.0}, std::array<double, 2>{2.0, 1.0}}) {
-    const auto values = ddx::rt::evaluate_all(*arena, at);
-    EXPECT_DOUBLE_EQ(values[j.at(0, 0)], 1.0)
-        << "d select(c, x, x)/dx at (" << at[0] << ", " << at[1] << ")";
-    EXPECT_DOUBLE_EQ(values[j.at(0, 1)], 0.0);
-  }
 }
 
 // pow's exponent partial is a^b * log(a), 0 * -inf at a == 0, and its base

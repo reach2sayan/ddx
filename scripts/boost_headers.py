@@ -14,7 +14,7 @@ Usage:
     python3 boost_headers.py --check         # exit 1 if the list is stale
     python3 boost_headers.py --cxx clang++   # ask a different compiler
 
-Expected output today: 202 directories, 3234 files.
+Expected output today: 130 directories, 2109 files.
 """
 
 import argparse

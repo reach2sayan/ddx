@@ -1,9 +1,15 @@
 #include "ddx.hpp"
+#include "energy_models.hpp"
 #include "rt/bridge.hpp"
 #include "rt/derivative.hpp"
 #include "rt/graph.hpp"
 
 #include <gtest/gtest.h>
+
+#include <cstdio>
+#include <format>
+#include <ranges>
+#include <vector>
 
 // A CSR row is a set, so what matters is that operand *position* survives the
 // compression and that nothing reachable is dropped.
@@ -103,3 +109,38 @@ TEST(RtGraph, IdOrderIsTopological) {
 }
 
 } // namespace
+
+// The tape is the live set, not the arena: a row is freed after its last
+// reader and taken by the next node, so a dense model's gradient sweeps over a
+// fraction of the ids it schedules.  The arithmetic is untouched -- every
+// kernel-against-sweep test is the proof -- so this asks only about size.
+TEST(RtGraph, PacksTheTapeByLiveness) {
+  ddx::rt::Builder<> b;
+  std::vector<ddx::rt::RTExpression<>> x;
+  for (std::size_t i = 0; i < 64; ++i) {
+    x.push_back(var(b, std::format("x{:02}", i)));
+  }
+  const NodeId root = models::mse(x).id(b);
+  const auto g = ddx::rt::GraphBuilder{b}
+                     .values_from(std::span<const NodeId>{&root, 1})
+                     .build_jacobian()
+                     .finish();
+  const double ratio = static_cast<double>(g.tape_slots()) /
+                       static_cast<double>(g.live_count());
+  std::printf("[ ddx ] mse n = 64: %zu live nodes, %zu tape rows (%.3f)\n",
+              g.live_count(), g.tape_slots(), ratio);
+  EXPECT_LT(ratio, 0.25);
+  // Every output owns a distinct row inside the tape.
+  auto rows = ddx::rt::in_order(g.output_slots()) | std::views::join |
+              ddx::impl::to<std::vector<std::uint32_t>>();
+  EXPECT_TRUE(std::ranges::all_of(
+      rows, [&g](std::uint32_t r) { return r < g.tape_slots(); }));
+  std::ranges::sort(rows);
+  EXPECT_EQ(std::ranges::adjacent_find(rows), rows.end());
+  // No step reads the row it writes: the lane loops promise no aliasing.
+  for (const ddx::rt::Step &s : g.schedule()) {
+    for (const std::uint32_t in : s.in) {
+      EXPECT_NE(in, s.out);
+    }
+  }
+}

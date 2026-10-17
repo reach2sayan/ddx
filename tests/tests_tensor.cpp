@@ -23,33 +23,6 @@ TEST(MdLayout, SimplexPackedIsABijectionOnSortedMultiIndices) {
   }
   EXPECT_EQ(slots.size(), T::size()); // the packing wastes no cell
 }
-TEST(MdLayout, SparsePatternSendsStructuralZerosToTheSink) {
-  // f = x*y + z*z couples {x,y} and {z,z}, but never x with z or y with z.
-  ddx::impl::Variable<double, ddx::impl::FixedString{"x"}> x;
-  ddx::impl::Variable<double, ddx::impl::FixedString{"y"}> y;
-  ddx::impl::Variable<double, ddx::impl::FixedString{"z"}> z;
-  using E = decltype(x * y + z * z);
-  using L = ddx::impl::layout_sparse_pattern<E>;
-
-  const typename L::template mapping<ddx::impl::md::extents<std::size_t, 3, 3>>
-      m{};
-  EXPECT_EQ(static_cast<std::size_t>(m.required_span_size()), L::kNnz + 1);
-
-  // Symbols are alphabetical: x=0, y=1, z=2.
-  EXPECT_TRUE(m.contains(0, 1));  // d2/dx dy is in the pattern
-  EXPECT_TRUE(m.contains(2, 2));  // d2/dz2 too
-  EXPECT_FALSE(m.contains(0, 2)); // x and z never meet
-  EXPECT_FALSE(m.contains(1, 2));
-  // Every structural zero shares the one sink cell.
-  EXPECT_EQ(static_cast<std::size_t>(m(0, 2)), L::kNnz);
-  EXPECT_EQ(static_cast<std::size_t>(m(1, 2)), L::kNnz);
-  // ...and every nonzero has its own slot.
-  EXPECT_NE(static_cast<std::size_t>(m(0, 1)),
-            static_cast<std::size_t>(m(2, 2)));
-}
-// The constexpr half of the contract: every mapping and the tensor itself must
-// survive constant evaluation, or the symbolic path silently stops being
-// constexpr and only the ConstexprContract suite would notice, much later.
 TEST(ConstexprContract, MdspanLayerIsConstantEvaluated) {
   constexpr auto simplex = [] {
     ddx::impl::nd_tensor_t<double, 3, 3> t{};

@@ -973,45 +973,6 @@ TEST(DualScalarContract, ImplicitConstantFromScalarAtDepth) {
   EXPECT_DOUBLE_EQ(b.get<0>().get<1>(), 0.0);
   EXPECT_DOUBLE_EQ(b.get<1>().get<1>(), 0.0);
 }
-TEST(ForwardDriver, JacobianAndHessianCrossTerm) {
-  auto f = [](auto x) { return x[0] * x[0] * x[1] + x[1] * x[1] * x[1]; };
-  const std::array<double, 2> x{2.0, 3.0};
-  const std::span<const double> xs{x.data(), x.size()};
-
-  const auto H = ddx::impl::hessian(f, xs);
-  EXPECT_DOUBLE_EQ(val_of(H), 39.0); // 4*3 + 27
-  ASSERT_EQ(hess_n(H), 2u);
-  EXPECT_DOUBLE_EQ(grad_at(H, 0), 12.0);   // 2 x0 x1
-  EXPECT_DOUBLE_EQ(grad_at(H, 1), 31.0);   // x0^2 + 3 x1^2
-  EXPECT_DOUBLE_EQ(hess_at(H, 0, 0), 6.0); // 2 x1
-  EXPECT_DOUBLE_EQ(hess_at(H, 0, 1), 4.0); // 2 x0
-  EXPECT_DOUBLE_EQ(hess_at(H, 1, 0), 4.0);
-  EXPECT_DOUBLE_EQ(hess_at(H, 1, 1), 18.0); // 6 x1
-
-  const auto g = ddx::impl::jacobian(f, xs);
-  EXPECT_DOUBLE_EQ(g[0], 12.0);
-  EXPECT_DOUBLE_EQ(g[1], 31.0);
-}
-TEST(ForwardDriver, IdealMixingHessianMatchesClosedForm) {
-  // Mirrors the downstream CALPHAD oracle: G = R T (y0 ln y0 + y1 ln y1).
-  const double R = 8.31446261815324;
-  const double T = 1000.0;
-  auto f = [R, T](auto y) {
-    using std::log; // ADL still picks ddx::impl::log for the dual argument
-    return R * T * (y[0] * log(y[0]) + y[1] * log(y[1]));
-  };
-  const std::array<double, 2> y{0.3, 0.7};
-  const auto H =
-      ddx::impl::hessian(f, std::span<const double>{y.data(), y.size()});
-
-  EXPECT_NEAR(val_of(H), R * T * (0.3 * std::log(0.3) + 0.7 * std::log(0.7)),
-              1e-6);
-  EXPECT_NEAR(grad_at(H, 0), R * T * (std::log(0.3) + 1.0), 1e-6);
-  EXPECT_NEAR(grad_at(H, 1), R * T * (std::log(0.7) + 1.0), 1e-6);
-  EXPECT_NEAR(hess_at(H, 0, 0), R * T / 0.3, 1e-3);
-  EXPECT_NEAR(hess_at(H, 1, 1), R * T / 0.7, 1e-3);
-  EXPECT_NEAR(hess_at(H, 0, 1), 0.0, 1e-6); // no cross term
-}
 TEST(ScopedValue, NestedGuardsOverSiblingScalarsOfOneDual) {
   // Two independently scoped guards over the SAME dual2nd's seeds.
   dual2nd d{Dual<double>{2.0, 0.0}, Dual<double>{0.0, 0.0}};
@@ -1044,25 +1005,4 @@ TEST(ScopedValue, UsableDuringConstantEvaluation) {
   static_assert(probe[0] == 1.0);
   static_assert(probe[1] == 3.0);
   SUCCEED();
-}
-TEST(ForwardDriver, RepeatedCallsDoNotLeakSeeds) {
-  // A seed left behind by one sweep would show up as a wrong second answer.
-  auto f = [](auto x) { return x[0] * x[0] * x[1] + x[1] * x[1] * x[1]; };
-  const std::array<double, 2> x{2.0, 3.0};
-  const std::span<const double> xs{x.data(), x.size()};
-
-  const auto g1 = ddx::impl::jacobian(f, xs);
-  const auto g2 = ddx::impl::jacobian(f, xs);
-  EXPECT_DOUBLE_EQ(g1[0], g2[0]);
-  EXPECT_DOUBLE_EQ(g1[1], g2[1]);
-
-  const auto H1 = ddx::impl::hessian(f, xs);
-  const auto H2 = ddx::impl::hessian(f, xs);
-  EXPECT_DOUBLE_EQ(val_of(H1), val_of(H2));
-  for (std::size_t i = 0; i < hess_n(H1); ++i) {
-    EXPECT_DOUBLE_EQ(grad_at(H1, i), grad_at(H2, i));
-    for (std::size_t j = 0; j < hess_n(H1); ++j) {
-      EXPECT_DOUBLE_EQ(hess_at(H1, i, j), hess_at(H2, i, j));
-    }
-  }
 }

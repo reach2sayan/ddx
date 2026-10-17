@@ -4,7 +4,6 @@
 #include "rt/text/ast.hpp"
 #include "rt/text/equation.hpp"
 #include "rt/text/lower.hpp"
-#include "scratch.hpp"
 
 #include <gtest/gtest.h>
 
@@ -170,9 +169,9 @@ TEST(RtText, SpellsEveryOpcodeTheTablesName) {
   for (const auto &label : ddx::rt::opcode_labels()) {
     const auto op = ddx::rt::opcode_of(label);
     ASSERT_TRUE(op.has_value()) << label;
-    // The leaves and the externs are not callable, and the operators have
-    // their own syntax.
-    if (ddx::rt::is_leaf(*op) || ddx::rt::is_extern(*op) || !callable(label)) {
+    // What the library says text may not name -- leaves, externs, tensor rows
+    // -- and the operators, which have their own syntax.
+    if (!ddx::rt::callable(*op) || !callable(label)) {
       continue;
     }
     const auto args = ddx::rt::arity_of(*op);
@@ -264,17 +263,6 @@ TEST(RtText, RefusesAModelThatNamesNoSymbol) {
   ASSERT_TRUE(eq.has_value());
   EXPECT_TRUE(eq->poisoned());
   EXPECT_EQ(eq->status()->code, errc::no_graph);
-}
-
-TEST(RtText, SavesAndLoadsLikeAnyOtherEquation) {
-  const Scratch path{"text"};
-  const auto eq = ddx::rt::equation("exp(x) * sin(y)");
-  ASSERT_TRUE(eq.has_value());
-  ASSERT_TRUE(eq->save(path).has_value());
-
-  const auto back = ddx::rt::load<double, 1>(path);
-  ASSERT_TRUE(back.has_value());
-  EXPECT_DOUBLE_EQ(*back->evaluate(0.3, 1.1), *eq->evaluate(0.3, 1.1));
 }
 
 } // namespace

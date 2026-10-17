@@ -1,5 +1,6 @@
 #include "ddx.hpp"
 #include "jit/kernel.hpp"
+#include "jit/tests_jit_common.hpp"
 #include "rt/bridge.hpp"
 #include "rt/derivative.hpp"
 #include "rt/graph.hpp"
@@ -20,20 +21,6 @@ namespace {
 using ddx::rt::Builder;
 using ddx::rt::Graph;
 
-// No native target means no JIT to test; bring it up once and name the reason.
-ddx::jit::Compiler &compiler() {
-  static ddx::jit::result<ddx::jit::Compiler> c = ddx::jit::Compiler::create();
-  EXPECT_TRUE(c.has_value()) << (c ? "" : c.error().detail);
-  return *c;
-}
-
-// compile() answers with result<Kernel>; name LLVM's reason here rather than
-// meeting an empty Kernel three lines later.
-ddx::jit::Kernel must_compile(auto &&...args) {
-  auto k = compiler().compile(static_cast<decltype(args) &&>(args)...);
-  EXPECT_TRUE(k.has_value()) << (k ? std::string{} : k.error().detail);
-  return k ? std::move(*k) : ddx::jit::Kernel{};
-}
 
 void expect_jacobian_matches_interpreter(auto build, std::size_t nvars,
                                          std::size_t n = 32) {

@@ -55,16 +55,18 @@ jobs:
       # The vendored mdspan is the one genuine exception.
       #
       # What still holds: a quoted include resolves inside include/, and the
-      # core must not depend on rt/ in either direction.
+      # core reaches rt/ only where symbolic Equation lowers onto its builder
+      # layer -- header-only, so ddx::ddx still links without libddx.
       - name: Header dependencies stay declared
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          # rt/eigen.hpp is exempt: an optional extension nothing in ddx includes,
-          # wrapped in `#if __has_include(<Eigen/Core>)` so it is inert without Eigen.
+          # rt/eigen.hpp and rt/eigen_kernels.hpp are exempt: optional extensions
+          # nothing in ddx includes, behind `__has_include(<Eigen/Core>)` (probed
+          # once, as DDX_HAS_EIGEN) so they are inert without Eigen.
           angled=$(grep -rnE '#[[:space:]]*include[[:space:]]*<[^>]*/' include --include='*.hpp' \
                    | grep -v third_party | grep -v '<boost/' \
-                   | grep -v '^include/rt/eigen\.hpp:' || true)
+                   | grep -vE '^include/rt/eigen(_kernels)?\.hpp:' || true)
           # A quoted include is one of ours and must resolve inside include/,
           # as a header or as the .in template CMake configures into the build
           # tree; one that does not is a bundled dependency under another spelling.
@@ -75,14 +77,17 @@ jobs:
                        [ -e "$(dirname "$f")/$h" ] || [ -e "include/$h" ] || [ -e "include/$h.in" ] \
                          || echo "$f:$n: $h"
                      done)
-          # The core must never reach into rt/.
+          # The core reaches into rt/ through symbolic/equation.hpp alone, and only
+          # for the builder layer it lowers onto.
           core=$(grep -rnE '#[[:space:]]*include[[:space:]]*"rt/' include --include='*.hpp' \
-                 | grep -v '^include/rt/' || true)
+                 | grep -v '^include/rt/' \
+                 | grep -vE '^include/symbolic/equation\.hpp:[0-9]+:#include "rt/(bridge|derivative|interpret)\.hpp"' \
+                 || true)
           if [ -n "$angled$quoted$core" ]; then
             echo "a third-party header leaked into include/:"
             [ -n "$angled" ] && echo "$angled"
             [ -n "$quoted" ] && echo "$quoted"
-            [ -n "$core" ] && echo "the core must not depend on rt/:" && echo "$core"
+            [ -n "$core" ] && echo "the core reaches into rt/ beyond Equation's lowering:" && echo "$core"
             exit 1
           fi
           echo "include/ depends on the standard library and Boost only"

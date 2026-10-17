@@ -54,7 +54,7 @@ const auto eq = rt::equation([&] {
 [Batches](#batches) · [Errors](#errors) ·
 [Ownership and threads](#ownership-and-threads) · [Compiling](#compiling) ·
 [Running on a GPU](#running-on-a-gpu) ·
-[Saving and loading](#saving-and-loading) · [Reference](#reference) ·
+[Reference](#reference) ·
 [Python](#python) · [Compile-time expressions](#compile-time-expressions) ·
 [Printing](#printing)
 
@@ -365,13 +365,9 @@ calls `fn` as often as it needs,
 from any thread that sweeps, so it must be re-entrant and must not throw.
 
 A compiled kernel calls the function back once per point, through a table the
-equation hands it, so the kernel holds no address of its own and is cached and
-saved like any other; under `Backend::Device` the lane is interpreted, since
-device code cannot call into the host. Saving keeps the graph and the
-function's name:
-`rt::equation(path, model)` binds it again by running the model, and
-`rt::load(path, memo, fns)` takes it from `fns`, a map from name to function —
-a file whose function is missing answers `errc::unbound_extern`.
+equation hands it, so the kernel holds no address of its own and is cached like
+any other; under `Backend::Device` the lane is interpreted, since device code
+cannot call into the host.
 
 ### Implicit inputs
 
@@ -406,6 +402,51 @@ parameters and itself but no other implicit — a coupled set of them would need
 linear solve, not a quotient. The equation is refused otherwise:
 `errc::unclosed_implicit`, `errc::closed_twice`, `errc::nested_implicit`, and
 `errc::not_implicit` for a `closes` on something that is not an implicit input.
+
+### Vectors
+
+A model over many species writes the same term once per pair, and the graph
+grows with the square of the species count. A vector is one node for all of
+them. Include `rt/tensor.hpp`:
+
+```cpp
+#include "rt/tensor.hpp"
+
+const auto eq = rt::equation([&] {
+  const auto x = rt::vec("x", n);                     // n symbols x[0] .. x[n-1]
+  const auto C = rt::mat_const(n, n, c);              // column-major, n*n values
+  const auto ionic = dot(rt::vec_const(z), x);
+  return dot(x, gemv(C, x)) * exp(-sqrt(ionic)) + sum(x * log(x));
+});
+```
+
+`rt::vec(name, n)` is `n` ordinary symbols, named `name[0]` … `name[n-1]`, so
+`symbols()`, points and every derivative are what they would be had the model
+been written out — a vector is a spelling, not a new kind of input. A vector is
+an ordinary expression whose node holds `n` values: `v.size()` is its width,
+zero for a scalar, and `v[i]` reads one element back. `rt::pack({a, b, c})`
+makes one from scalars you already have. The arithmetic between vectors is
+elementwise, every function in [Expressions](#expressions) applies elementwise
+(`log(x)`, `pow(x, y)`, `abs(x)`), a number or a scalar expression times a
+vector scales it, and a number where a vector is expected broadcasts
+(`x + 1.0`); a scalar *expression* added to a vector is a shape error, since
+there is no broadcast node. The reductions are `sum(v)` and `dot(u, v)`;
+`gemv(M, v)` and `gemv_t(M, v)` are $Mv$ and $M^{\top}v$ over a constant
+matrix; `add_at(v, s, i)` is $v + s\,e_i$.
+
+Every derivative goes through a vector node as a vector: the gradient of the
+model above is a handful of nodes however large `n` is, and `hvp` is two or
+three matrix-vector products. The graph is checked as it is built — a `dot` of
+two widths, a `gemv` over the wrong length, an index past the end — and a
+mistake poisons the equation with `errc::tensor_shape`.
+
+What a vector is not: an output (`rt::equation` takes scalars; a system over a
+vector is `{v[0], v[1], …}`) or something `univariate_derivative` sweeps
+(`errc::unsupported_scalar`). A comparison between vectors is an elementwise
+0/1 vector, and a `select` over vector arms is a mask over them.
+Vectors compute at `double` only. A kernel is never compiled over one — the
+equation sweeps instead, and `uses_kernel()` says so; see
+[Kernel backends](#kernel-backends) for what computes them.
 
 ### Written down instead
 
@@ -474,8 +515,13 @@ for (const auto &s : data) {
 | Conditional | `select(cond, if_true, if_false)` |
 
 They are found by argument-dependent lookup, so they work whether or not `rt` is
-in scope. The compound forms are members, and rebind the handle rather than
-mutating what other expressions already refer to.
+in scope. `*=` and `/=` build what `*` and `/` build. `+=` and `-=` accumulate:
+a loop of `acc += term` is one node holding every term, where `acc = acc + term`
+is a chain of one node per term. The sum is formed when it is first read, two
+terms as the plain `+`, more as one n-ary sum, and a copy taken part-way keeps
+the value it had. A term that is a product is fused into the running sum the way
+`x * y + z` is, so the sum rounds once per term in term order; against the same
+terms spelled with `+` the last bits can differ.
 
 Where a rule has a choice to make, it is made the same way everywhere: `abs`
 differentiates to `0` at zero and `sign` to `0` throughout, `max` and `min` give
@@ -675,47 +721,30 @@ zero.
 Values, gradient and Hessian are prepared separately, each the first time it is
 asked for. A caller who only ever evaluates never pays for a gradient.
 
-### Remembering the last call
+### The dense Hessian in one sweep
 
-Hand the factory a cache and an equation keeps its last call per kind. Ask again
-at the same point and the answer comes back off it; move one symbol and only the
-part of the graph that symbol reaches is computed again. Nothing else changes:
-the numbers are the ones the sweep gives, bit for bit, and there is no call to
-make -- a point already answered is simply answered.
-
-```cpp
-const auto eq = ddx::rt::equation(model);                      // off
-const auto eq = ddx::rt::equation(model, ddx::rt::LastValue{}); // on
-```
-
-It is off by default, and it earns its place where points repeat or arrive one
-coordinate at a time -- a line search, a finite difference, a minimiser asking
-for the value and then the gradient at the same `x`:
+`hessian()` colours the symbols and sweeps once per colour, so on a model where
+every symbol couples every other -- a vector model with `dot(x, gemv(C, x))` in
+it -- that is $n + 1$ sweeps and $n$ matrix-vector products per point.
+`dense_hessian(point)` answers the same $n \times n$ block, dense and row-major,
+from one forward sweep that carries matrix-valued tangents through the
+gradient: the derivative of $Cx$ is $C$, a copy, and that of $g(s)\,\nabla s$ an
+outer product, so the Hessian of such a model is a short sum of shaped terms and
+costs $O(n^2)$.
 
 ```cpp
-const auto f = *eq.evaluate(x);   // swept
-const auto g = *eq.gradient(x);   // its own lane, so its own first call
-const auto h = *eq.evaluate(x);   // nothing swept at all
+const auto h = *eq.dense_hessian(x);           // n*n, H[i*n + j]
+const auto c = *eq.dense_hessian_cost();       // {n2_terms, n3_terms}
 ```
 
-Every spelling that takes a point is covered; a batch is not, being amortised
-already. A lane a kernel answers keeps the point but not the tape, so it serves
-a repeat and computes a moved point whole -- compiled code has no way to run
-part of itself.
-
-`LastValue` holds one slot per kind behind a shared lock: any number of threads
-can be served the same point at once, and one that arrives while another is
-writing sweeps for itself rather than waiting. The object is copied in, so it
-may be a temporary.
-
-To supply your own, model `ddx::rt::CValueCache`: answer `active()`, and hand out
-a read lease and a write lease per `Want`, each lending the point, the output
-values and the tape of one remembered call. `active()` is asked before anything
-else and is how a cache says no call of yours can hit -- a `false` there costs
-the equation nothing at all, not even reading the point. `ddx::rt::Extent` says
-what a slot has to hold and which frozen graph it holds it for; two calls belong
-to the same entry only where their whole `Extent` matches, so a re-freeze or a
-grown arena parts them without the cache having to know why.
+`dense_hessian_cost()` says how many terms the sweep kept quadratic and how
+many fell back to a dense product. A fallback is still right, just not
+$O(n^2)$: $\log(\tau^{\top}\theta)$ has the Hessian $\tau\,\mathrm{diag}(\cdot)\,\tau^{\top}$,
+one dense product that no algebra avoids. One output only; a system answers
+`errc::not_single_output`. The batch spelling is
+`dense_hessian(xs, f, g, h, n)` with `h` $n^2$ columns, column-major:
+$H(i, j)$ is column $i + jn$. It is a sweep, never a kernel: `uses_kernel()`
+is unaffected and the lane interprets.
 
 ## Batches
 
@@ -914,17 +943,14 @@ if (!j) {
 | `not_implicit` | `rt::closes` on something that is not an implicit input |
 | `extern_order` | a second-order call through an `rt::extern_fn` that supplies first partials only |
 | `extern_shape` | an `rt::extern_fn` registration ddx cannot hold: `arity` 0, an `order` other than 1 or 2, no function, or past 65536 functions or components |
-| `unbound_extern` | a loaded file names an extern function `fns` did not supply |
 | `not_univariate` | `univariate_derivative` on more than one symbol |
 | `not_single_output` | a member about one function's Hessian, asked of a system |
 | `unsupported_scalar` | `univariate_derivative` over an operation its Taylor arithmetic does not define |
+| `tensor_shape` | a vector's width does not fit the operation — a `dot` of two widths, a `gemv` over the wrong length, an index past the end — or a vector sits where a scalar must, as an output or beside a scalar expression in a sum |
+| `tensor_kernel` | a compile was asked for a graph holding vectors; none is built, and the equation sweeps |
 | `bad_syntax` | a text equation the grammar does not accept |
 | `unknown_function` | a text equation calls a function that does not exist |
 | `wrong_argument_count` | a text equation calls one with the wrong arity |
-| `archive_io` | the file could not be read or written |
-| `bad_archive` | not a ddx file, or a format this build does not read |
-| `archive_corrupt` | the file's checksum or structure does not hold |
-| `archive_mismatch` | the file loads, but does not describe this equation |
 | `jit_target`, `jit_module`, `jit_object`, `jit_verify`, `jit_lookup` | the compiler could not produce or link a kernel |
 
 An `errc` and an `error` both format and stream as their text, so
@@ -1090,14 +1116,12 @@ if (const auto w = eq.warming()) {
 | `codegen.contract` | follows `DDX_FP_FLAGS` | fold a multiply feeding an add into one rounding |
 | `warm_points` | `65536` | batch points that buy the first step, under `Adapt` |
 | `hot_points` | `1048576` | further points that buy the top one, under `Adapt` |
-| `retain_object` | `true` | keep the compiled object so [`save`](#saving-and-loading) can write it |
 | `cache_dir` | *(empty)* | keep compiled objects here between runs; a second run links instead of compiling |
 | `time_passes` | `false` | per-pass timing to stderr |
-| `device` | *(empty)* | under `Device`, which OpenCL device — [Running on a GPU](#running-on-a-gpu). Not saved with the equation: which devices exist is the machine's |
+| `device` | *(empty)* | under `Device`, which OpenCL device — [Running on a GPU](#running-on-a-gpu) |
 
-`codegen` is everything the emitter reads, and so the identity a stored kernel
-is matched against and the object cache is keyed on; the fields around it are
-policy and change no machine code.
+`codegen` is everything the emitter reads, and so what the object cache is
+keyed on; the fields around it are policy and change no machine code.
 
 `points` decides the lane width and nothing else: a call carrying some other
 number is answered correctly, just not by the kernel that number would have
@@ -1117,6 +1141,55 @@ three orders of magnitude quicker. Failing that, `codegen.codegen_level` — not
 ```cpp
 eq.options({.backend = rt::Backend::Compile, .points = 4096, .cache_dir = "/var/cache/ddx"});
 ```
+
+### Kernel backends
+
+The vector nodes of [Vectors](#vectors) are computed by a *kernel table*: one
+record of functions — `gemv`, `dot`, `scale`, `sum`, and the elementwise `map`
+and `zip` — over plain spans of `double`, column-major for a matrix. ddx ships
+one, the reference table, and tests against it; a program with Eigen, a BLAS or
+kernels of its own hands over another. Include `rt/kernels.hpp`:
+
+```cpp
+#include "rt/kernels.hpp"
+
+struct Mine {
+  static constexpr std::string_view name = "mine";
+  static void gemv(std::size_t rows, std::size_t cols, std::span<const double> m,
+                   std::span<const double> v, std::span<double> out, bool transposed);
+  static double dot(std::span<const double>, std::span<const double>);
+  static void scale(double, std::span<const double>, std::span<double>);
+  static void map(rt::OpCode, std::span<const double>, std::span<double>);
+  static void zip(rt::OpCode, std::span<const double>, std::span<const double>, std::span<double>);
+  static double sum(std::span<const double>);
+};
+static_assert(rt::TensorKernels<Mine>);
+inline constexpr auto mine = rt::kernel_table<Mine>();   // a constant
+
+rt::use_kernels(mine);        // every equation from here on
+eq.kernels(mine);             // this one; its lanes start over
+```
+
+`rt::TensorKernels` is the concept a backend satisfies, `rt::kernel_table`
+the only way to make a table from one — a backend missing a member fails
+there, at compile time — and the two scopes are the process default
+(`rt::use_kernels`, set once before any sweep) and one equation
+(`eq.kernels(table)`). `eq.tensor_kernels()` answers which table an equation
+runs on, and `ddx::rt::reference::Kernels` is the shipped one, to inherit from
+when only some members are yours.
+
+Eigen is one header away. Nothing in ddx includes it; a program that has Eigen
+does:
+
+```cpp
+#include "rt/eigen_kernels.hpp"
+
+rt::use_kernels(rt::eigen::table);
+```
+
+If that Eigen is built over a BLAS, that is where the matrix-vector products
+land. A table decides a summation order and nothing else, so two tables may
+differ in the last bits.
 
 ## Running on a GPU
 
@@ -1183,78 +1256,6 @@ large batches, where its arithmetic outweighs the copy.
 The device is usable without an equation as well: `cl::Device::create(selector)`
 picks one, `compile(graph)` builds a `cl::Kernel` with the batch calls' column
 layout, and `cl::source_of(graph)` is the OpenCL C a graph lowers to.
-
-## Saving and loading
-
-Preparing an equation for derivatives is work you can do once. `save` writes it
-to a file, and `load` reads it back without a model:
-
-```cpp
-const auto eq = rt::equation([] { return exp(rt::var("x")) * rt::var("y"); });
-eq.save("f.ddx");
-
-const auto same = *rt::load("f.ddx");                     // no model, nothing rebuilt
-const auto sys  = *rt::load<double, 3>("s.ddx");          // three functions
-const auto any  = *rt::load<double, rt::dynamic>("s.ddx"); // a System: any count
-```
-
-The output count is a template parameter because it is part of the type, and a
-file holding some other number is refused rather than adapted to. A `System`
-has no count in its type, so `rt::load<double, rt::dynamic>` takes whatever the
-file holds.
-
-Pair a model with a file and it becomes a cache — the lambda is the model as you
-would write it anyway, and the path is only where the result is kept:
-
-```cpp
-const auto eq = rt::equation("f.ddx", [] {
-  const auto x = rt::var("x");
-  return exp(x) * x;
-});
-```
-
-The first run builds and writes the file. A later one finds the file still
-describes the model and takes the work off disk. Editing the model rebuilds and
-overwrites rather than trusting a stale file, and it never refuses: an absent
-file is the first run, a stale one is a rebuild. `loaded()` says which happened.
-
-Two questions about a file, and they are different:
-
-```cpp
-rt::verify("f.ddx");     // result<void> — can this build read it at all?
-eq.verify("f.ddx");      // result<void> — ...and is it *this* equation?
-```
-
-Files are binary and little-endian, checked before anything in them is used, so
-one written by a different version of ddx is refused rather than misread.
-
-Compiled code travels in the file too:
-
-```cpp
-eq.options({.backend = rt::Backend::Compile});
-eq.wait_for_kernel();
-eq.save("f.ddx");                 // the kernel goes with it
-
-const auto warm = *rt::load("f.ddx");
-warm.uses_kernel();               // true, with nothing having compiled
-```
-
-Measured at 64, 128 and 256 variables: 38/79/179 ms to build and compile against
-0.40/0.63/1.12 ms to load. `retain_object` is on by default so the code is there
-when a save comes; a caller that never saves turns it off, and the file then
-carries the equation and no code.
-
-Stored code runs only where the equation, the host and the options it was built
-under all still agree. Anything else compiles instead — a mismatch is answered
-by compiling, never by running the wrong code.
-
-| Member | Answers |
-|---|---|
-| `save(path)` | `result<void>` — write this equation |
-| `verify(path)` | `result<void>` — does `path` hold *this* equation? |
-| `Equation::load(path)` | `result<Equation>` — read one |
-| `loaded()` | whether this equation came off disk |
-| `rt::verify<T>(path)` | `result<void>` — is `path` readable by this build? |
 
 ---
 
@@ -1338,6 +1339,8 @@ the output count outside it — when the callback returns a vector. All of it is
 | `vjp(w, point)` | `result<std::vector<T>>`, $n$ long — $w^{\top}J$ |
 | `hvp(v, point)` | `result<std::vector<T>>`, $n$ long — $Hv$, one output only |
 | `hvp(name, point)` | the same, along the basis vector for that symbol |
+| `dense_hessian(point)` | `result<std::vector<T>>`, dense row-major n × n from one $O(n^2)$ sweep — one output only |
+| `dense_hessian_cost()` | `std::optional<DenseCost>` — `{n2_terms, n3_terms}`: what the sweep kept quadratic and what fell back to a dense product |
 | `jacobian_jvp(v, point)`, `jacobian_jvp(name, point)` | `result<std::vector<T>>`, dense m × n — $\partial J / \partial v$ |
 | `restrict(names)` | `result<rt::Restricted<…>>` — a view with those symbols' Jacobian columns only |
 | `evaluate(xs, f, n)` | `result<void>` — a batch of `n` |
@@ -1347,21 +1350,22 @@ the output count outside it — when the callback returns a vector. All of it is
 | `jvp(xs, vs, f, p, n)` | `result<void>` |
 | `vjp(xs, ws, f, p, n)` | `result<void>` |
 | `hvp(xs, vs, f, g, p, n)` | `result<void>`, one output only — `g` gets $\nabla f$ |
+| `dense_hessian(xs, f, g, h, n)` | `result<void>`, one output only — `h` is $n^2$ columns, $H(i, j)$ at $i + jn$ |
 | `jacobian_jvp(xs, vs, f, g, dg, n)` | `result<void>` — `g` and `dg` both `jacobian_columns()` wide, read with `jacobian_pattern()` |
 | `value_columns()`, `jacobian_columns()`, `hessian_columns()` | `std::optional<std::size_t>` — what sizes the batch buffers |
 | `jvp_columns()`, `vjp_columns()`, `hvp_columns()` | the same, for the seeded products — `m`, `n`, `n` |
+| `dense_hessian_columns()` | the same for the dense block — $n^2$ |
 | `jacobian_pattern()` | `std::optional<std::reference_wrapper<const rt::Sparsity>>` — which (function, symbol) cell each Jacobian column is |
 | `hessian_pattern()` | `std::optional<std::reference_wrapper<const rt::Coloring>>` — which (row, column) cell each Hessian column holds; one output only |
 | `hessian_cell(i, j)` | `std::optional<std::size_t>` — which Hessian column holds H(i, j), or none |
 | `hessian_colors()` | `std::optional<std::size_t>` — groups in the Hessian's compression |
 | `prepare({wants…})` | `result<void>` — build those lanes now, so the calls that follow never wait on one |
 | `options(opts)`, `options()` | set or read the compile options; setting returns `*this` |
+| `kernels(table)`, `tensor_kernels()` | set or read the [kernel table](#kernel-backends) the vector nodes compute with; setting returns `*this` |
 | `uses_kernel()`, `kernel_level()` | whether a batch call runs compiled code, and at which level |
 | `warming()` | under `Adapt`, points seen against the next threshold |
 | `wait_for_kernel(want)` | block until the compile in flight for a lane has landed — the Jacobian's unless `want` names another |
 | `device_status()` | under `Device`, the device answering or why none is; empty under any other backend |
-| `save(path)`, `verify(path)` | write this equation; ask whether a file holds it |
-| `load(path, memo, fns)`, `loaded()` | read one, binding its extern functions from `fns` by name; whether this one was read — `rt::load<double, rt::dynamic>(path, …)` for a `System` |
 
 ---
 
@@ -1421,18 +1425,23 @@ It is the runtime above with Python's conventions: a model is a callable or a
 string in the [same grammar](#written-down-instead), a point is a sequence, a
 dict or a `(symbols, points)` NumPy batch, answers are arrays with the Hessian
 dense, errors raise `ddx.Error` carrying the same `errc`, and `Options` is a
-pydantic model of `jit::Options`. A file saved on either side loads on the
-other. [python/README.md](python/README.md) — the page PyPI shows — documents
-the module.
+pydantic model of `jit::Options`. [Vectors](#vectors) are `ddx.vec`,
+`ddx.pack`, `ddx.vec_const` and `ddx.mat_const`, with `ddx.sum`, `ddx.dot`,
+`ddx.gemv`, `ddx.gemv_t` and `ddx.add_at` over them, and `dense_hessian(x)`
+answers `(value, gradient, H)` from the one-sweep block; the kernel table is
+not exposed. [python/README.md](python/README.md) — the page PyPI shows —
+documents the module.
 
 ---
 
 ## Compile-time expressions
 
 The same derivatives are available on expressions whose shape is known when you
-compile, header-only and `constexpr` throughout — `#include "ddx.hpp"`, link
-`ddx::ddx`. Symbols are named by template argument, and `Equation` carries the
-whole API:
+compile, header-only and `constexpr` throughout but for `hessian`, whose
+colouring is libddx's — `#include "ddx.hpp"`, link `ddx::rt`. Symbols are named
+by template argument, and `Equation` carries the whole API; under it every
+number comes from the runtime graph the expression lowers to, built per call,
+so a model swept in a loop goes through `rt::equation` instead:
 
 ```cpp
 constexpr auto x = var<"x">;
@@ -1452,19 +1461,16 @@ has to be checked at run time.
 |---|---|
 | `evaluate(point)` | f at the point |
 | `jacobian(point)` | J, `J[i, j] = ∂fᵢ/∂xⱼ`; ∇f itself when m == 1 |
-| `hessian(point)` | ∇²f — on symbols declared `var<"x", dual>` |
+| `hessian(point)` | ∇²f, dense — the one member that is not constant-evaluated |
 | `derivative_tensor<K>(point)` | all K-th order partials, any `K ≥ 1` |
 | `univariate_derivative<K>(x0)` | the K-th derivative of a one-symbol function |
 
 ```cpp
-constexpr auto H = Equation{var<"a", dual> * var<"b", dual>}.hessian(2.0, 3.0);
+const auto H = Equation{x * y}.hessian(2.0, 3.0);
 H[0, 1];                                          // 1.0
 
 Equation{x * y}.derivative_tensor<3>(1.0, 2.0);   // rank 3
 ```
-
-`record(named<"n">(3), named<"x">(1.5))` collects keyword arguments into a value
-with the keys in its type, readable with `m.get<"n">()` or `m["x"_s]`.
 
 ## Printing
 

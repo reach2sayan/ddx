@@ -4,11 +4,8 @@
 #include "error.hpp"
 #include "expression.hpp"
 
-#include "rt/archive/archive.hpp"
-#include "rt/cache.hpp"
 #include "rt/coupling.hpp"
 #include "rt/derivative.hpp"
-#include "rt/dot.hpp"
 #include "rt/graph.hpp"
 #include "rt/interpret.hpp"
 #include "rt/lanes.hpp"
@@ -27,7 +24,6 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
-#include <filesystem>
 #include <format>
 #include <future>
 #include <memory>
@@ -54,12 +50,9 @@ inline void scatter(const auto &layout, Columns &cells, Dense &dense,
       [&dense](std::size_t c) { return dense.at(c); }, n, points);
 }
 
-// A Python caller cannot name a C++ type, so the only choice is whether there
-// is one.
-using PyCache = rt::LastValue<double>;
-// Every sweep gives up the GIL while it runs, and only the sweep: the lanes,
-// the cache and the arena's lock are all touched holding it.
-using PyCore = rt::detail::Core<double, PyCache, pyb::gil_scoped_release>;
+// Every sweep gives up the GIL while it runs, and only the sweep: the lanes
+// and the arena's lock are touched holding it.
+using PyCore = rt::detail::Core<double, pyb::gil_scoped_release>;
 
 // rt::detail::Core, spelled in arrays: the output count a number, a point a
 // dict or an array, and a refusal an exception.
@@ -69,21 +62,9 @@ public:
 
   // The arena is copied: the expressions that built it stay usable.
   PyEquation(const std::shared_ptr<rt::Builder<double>> &arena,
-             std::vector<rt::NodeId> roots, bool remember = false)
-      : PyCore{std::make_unique<rt::Builder<double>>(*arena),
-               std::move(roots), PyCache{remember}},
+             std::vector<rt::NodeId> roots)
+      : PyCore{std::make_unique<rt::Builder<double>>(*arena), std::move(roots)},
         symbols_{*sound().symbols()}, inputs_{*inputs()} {}
-
-  // From a file: the sweeps it carries arrive built.  Binding an extern
-  // function by name has no Python spelling, so a file naming one is refused.
-  explicit PyEquation(rt::Verified<double> snap, bool remember = false)
-      : PyCore{std::move(snap).rebuild(), PyCache{remember}},
-        symbols_{*sound().symbols()}, inputs_{*inputs()} {}
-
-  // The same struct the C++ equations fill: one serialiser, and what the cache
-  // path in module.cpp writes and keys on.
-  using PyCore::describes;
-  using PyCore::snapshot;
 
 private:
   // What C++ poisons is raised here, before anything reads the core.
@@ -109,99 +90,47 @@ public:
   // What a point supplies: the symbols, then the parameters.
   [[nodiscard]] pyb::list inputs_list() const { return inputs_.listed(); }
 
+  // Each call is one lane run through run<W>(); the tuple's members are the
+  // blocks the table says the lane fills, in order.
   [[nodiscard]] pyb::object evaluate(const pyb::handle &x) {
-    const Point at{x, inputs_};
-    const auto l = lane(Want::Value);
-    if (scalar(at)) {
-      Cell f;
-      run(Want::Value, at, {.values = f.rows()});
-      return pyb::float_(f.value);
-    }
-    Block f{shape_of({ssize(height())}, at),
-            count(*l, &rt::OutputSpans::values), at.size()};
-    run(Want::Value, at, {.values = f.rows()});
-    return std::move(f).array();
+    return run<Want::Value>(x)[0];
   }
-
   [[nodiscard]] pyb::tuple jacobian(const pyb::handle &x) {
-    const Point at{x, inputs_};
-    const auto l = lane(Want::Jacobian);
-    Scratch cells{count(*l, &rt::OutputSpans::jacobian), at.size()};
-    Dense g{shape_of({ssize(height()), ssize(width())}, at), at.size()};
-    Cell cell;
-    auto f = values_block(*l, at);
-    run(Want::Jacobian, at,
-        {.values = f ? f->rows() : cell.rows(), .jacobian = cells.rows()});
-    scatter_jacobian(cells, g, at.size());
-    return pyb::make_tuple(value_of(f, cell), std::move(g).array());
+    return run<Want::Jacobian>(x);
   }
-
   // The Jacobian alone, from a lane with no value block.
   [[nodiscard]] pyb::object gradient(const pyb::handle &x) {
-    const Point at{x, inputs_};
-    const auto l = lane(Want::Gradient);
-    Scratch cells{count(*l, &rt::OutputSpans::jacobian), at.size()};
-    Dense g{shape_of({ssize(height()), ssize(width())}, at), at.size()};
-    run(Want::Gradient, at, {.jacobian = cells.rows()});
-    scatter_jacobian(cells, g, at.size());
-    return std::move(g).array();
+    return run<Want::Gradient>(x)[0];
   }
-
+  // One function: the lane holds it compressed by colour.  A system: Core's
+  // walk over the arena, which is a point at a time and says so.
   [[nodiscard]] pyb::tuple hessian(const pyb::handle &x) {
-    const Point at{x, inputs_};
     unwrap(orders(Want::Hessian));
-    return height() == 1 ? hessian_from_lane(at) : hessian_from_arena(at);
+    return height() == 1 ? run<Want::Hessian>(x)
+                         : hessian_from_arena(Point{x, inputs_});
   }
-
   [[nodiscard]] pyb::tuple jvp(const pyb::handle &v, const pyb::handle &x) {
-    const Point at{x, inputs_};
-    const Point dir{v, symbols_};
-    const auto l = lane(Want::Jvp);
-    Block out{shape_of({ssize(height())}, at),
-              count(*l, &rt::OutputSpans::jacobian), at.size()};
-    Cell cell;
-    auto f = values_block(*l, at);
-    run_seeded(Want::Jvp, at, dir,
-               {.values = f ? f->rows() : cell.rows(), .jacobian = out.rows()});
-    return pyb::make_tuple(value_of(f, cell), std::move(out).array());
+    return run<Want::Jvp>(x, &v);
   }
-
   [[nodiscard]] pyb::tuple vjp(const pyb::handle &w, const pyb::handle &x) {
-    const Point at{x, inputs_};
-    // By position: the covector is indexed by function, and a dict would have
-    // nothing to key on.
-    const Point dir{w, height()};
-    const auto l = lane(Want::Vjp);
-    Block out{symbol_shape(at), count(*l, &rt::OutputSpans::jacobian),
-              at.size()};
-    Cell cell;
-    auto f = values_block(*l, at);
-    run_seeded(Want::Vjp, at, dir,
-               {.values = f ? f->rows() : cell.rows(), .jacobian = out.rows()});
-    return pyb::make_tuple(value_of(f, cell), std::move(out).array());
+    return run<Want::Vjp>(x, &w);
   }
-
-  // (value, gradient, H v): the gradient comes off the same sweep.  One
-  // output only, as hessian() is.
+  // (value, gradient, H v): the gradient comes off the same sweep.
   [[nodiscard]] pyb::tuple hvp(const pyb::handle &v, const pyb::handle &x) {
     unwrap(ready(Want::Hvp));
-    const Point at{x, inputs_};
-    const Point dir{v, symbols_};
-    const auto l = lane(Want::Hvp);
-    const std::size_t n = width();
-
-    Scratch partials{count(*l, &rt::OutputSpans::jacobian), at.size()};
-    Dense g{shape_of({ssize(height()), ssize(n)}, at), at.size()};
-    Block out{symbol_shape(at), count(*l, &rt::OutputSpans::hessian), at.size()};
-    Cell cell;
-    auto f = values_block(*l, at);
-    run_seeded(Want::Hvp, at, dir,
-               {.values = f ? f->rows() : cell.rows(),
-                .jacobian = partials.rows(),
-                .hessian = out.rows()});
-    scatter_jacobian(partials, g, at.size());
-    return pyb::make_tuple(value_of(f, cell), std::move(g).array(),
-                           std::move(out).array());
+    return run<Want::Hvp>(x, &v);
+  }
+  // (value, gradient, H): the dense n x n from one O(n^2) sweep over matrix
+  // rows, where hessian() colours.
+  [[nodiscard]] pyb::tuple dense_hessian(const pyb::handle &x) {
+    unwrap(ready(Want::DenseHessian));
+    return run<Want::DenseHessian>(x);
+  }
+  // (value, J, dJ/dv): the Jacobian and its derivative along `v`, both dense,
+  // from one forward sweep.
+  [[nodiscard]] pyb::tuple jacobian_jvp(const pyb::handle &v,
+                                        const pyb::handle &x) {
+    return run<Want::JacobianTangent>(x, &v);
   }
 
   // F(z, x) for each implicit's residual at one point.
@@ -214,30 +143,6 @@ public:
     std::ranges::transform(at.columns(), point.begin(),
                            [](const double *c) { return *c; });
     return unwrap(residual(point));
-  }
-
-  // (value, J, dJ/dv): the Jacobian and its derivative along `v`, both dense,
-  // from one forward sweep.
-  [[nodiscard]] pyb::tuple jacobian_jvp(const pyb::handle &v,
-                                        const pyb::handle &x) const {
-    const Point at{x, inputs_};
-    const Point dir{v, symbols_};
-    const auto l = lane(Want::JacobianTangent);
-    const auto shape = shape_of({ssize(height()), ssize(width())}, at);
-    Scratch cells{count(*l, &rt::OutputSpans::jacobian), at.size()};
-    Scratch moved{count(*l, &rt::OutputSpans::hessian), at.size()};
-    Dense g{shape, at.size()};
-    Dense dg{shape, at.size()};
-    Cell cell;
-    auto f = values_block(*l, at);
-    run_seeded(Want::JacobianTangent, at, dir,
-               {.values = f ? f->rows() : cell.rows(),
-                .jacobian = cells.rows(),
-                .hessian = moved.rows()});
-    scatter_jacobian(cells, g, at.size());
-    scatter_jacobian(moved, dg, at.size());
-    return pyb::make_tuple(value_of(f, cell), std::move(g).array(),
-                           std::move(dg).array());
   }
 
   // Under Backend.DEVICE the device answering, None under any other backend.
@@ -267,20 +172,14 @@ public:
                        height() == 1 ? "" : "s");
   }
 
-  [[nodiscard]] std::string to_dot(bool all) const {
-    return rt::Dot<double>{*lane(Want::Jacobian)->graph,
-                           all ? rt::Scope::All : rt::Scope::Live}
-        .str();
-  }
-
 private:
   friend class PyCall;
   friend class PyRestricted;
 
-  using BlockMember = std::span<const rt::NodeId> rt::OutputSpans::*;
+  using BlockMember = std::size_t rt::Layout::*;
   [[nodiscard]] static std::size_t count(const Compiled &c,
                                          BlockMember which) {
-    return (c.graph->output_blocks().*which).size();
+    return c.graph->layout().*which;
   }
 
   // --- running -------------------------------------------------------------
@@ -289,49 +188,125 @@ private:
     unwrap(dispatch(want, at.columns(), out, at.size()));
   }
 
-  // The point's columns and the direction's, in one array: symbols first, then
-  // the seeds, which is the order input_column() states.
-  void run_seeded(Want want, const Point &at, const Point &dir,
-                  const rt::Columns<double> &out) const {
-    if (dir.size() != at.size()) {
-      fail_with(errc::wrong_direction);
+  // The storage one derivative block is swept into, and the array it becomes.
+  // The pattern's cells, a coloured block and a dense n x n are scattered or
+  // transposed afterwards; a block per symbol or per function is laid out as
+  // the array already.
+  struct Out {
+    std::optional<Scratch> cells{};
+    std::optional<Block> block{};
+    [[nodiscard]] std::span<double *const> rows() {
+      return cells ? cells->rows() : block ? block->rows()
+                                           : std::span<double *const>{};
     }
-    const auto xs = widen(at.columns(), dir.columns());
-    unwrap(dispatch(want, as_columns(xs), out, at.size()));
+  };
+  [[nodiscard]] Out out_for(rt::Block shape, std::size_t columns,
+                            const Point &at) const {
+    switch (shape) {
+    case rt::Block::None:
+      return {};
+    case rt::Block::Cells:
+    case rt::Block::Colours:
+    case rt::Block::Dense:
+      return {.cells = Scratch{columns, at.size()}};
+    case rt::Block::Symbols:
+      return {.block = Block{symbol_shape(at), columns, at.size()}};
+    case rt::Block::Functions:
+      return {.block = Block{shape_of({ssize(height())}, at), columns,
+                             at.size()}};
+    }
+    std::unreachable();
   }
-
-  // This side always hands back the dense matrix, so the zeros go back in
-  // here.
-  void scatter_jacobian(Scratch &cells, Dense &dense,
-                        std::size_t points) const {
-    const rt::Sparsity &pattern = derivative().pattern;
-    py::scatter(pattern, cells, dense, pattern.columns, pattern.size(),
-                points);
-  }
-
-  // --- the Hessian ---------------------------------------------------------
-
-  // One function: the lane holds it compressed by colour, and the colouring
-  // says which (colour, row) column owns a given (i, j).
-  [[nodiscard]] pyb::tuple hessian_from_lane(const Point &at) const {
-    const auto l = lane(Want::Hessian);
+  // `pattern` is what scatters the cells -- a restrict() view's own, since it
+  // keeps a subset of the columns -- and `coloring` the Hessian lane's.
+  [[nodiscard]] pyb::object finish(rt::Block shape, Out &o, const Point &at,
+                                   const rt::Sparsity &pattern,
+                                   const rt::Coloring *coloring) const {
+    const std::size_t m = height();
     const std::size_t n = width();
-    Dense g{shape_of({ssize(height()), ssize(n)}, at), at.size()};
-    Scratch partials{count(*l, &rt::OutputSpans::jacobian), at.size()};
-    Scratch compressed{count(*l, &rt::OutputSpans::hessian), at.size()};
-    Cell cell;
-    auto f = values_block(*l, at);
-    run(Want::Hessian, at,
-        {.values = f ? f->rows() : cell.rows(),
-         .jacobian = partials.rows(),
-         .hessian = compressed.rows()});
-    scatter_jacobian(partials, g, at.size());
+    switch (shape) {
+    case rt::Block::None:
+      return pyb::none();
+    case rt::Block::Symbols:
+    case rt::Block::Functions:
+      return std::move(*o.block).array();
+    case rt::Block::Cells: {
+      Dense g{shape_of({ssize(m), ssize(pattern.columns)}, at), at.size()};
+      py::scatter(pattern, *o.cells, g, pattern.columns, pattern.size(),
+                  at.size());
+      return std::move(g).array();
+    }
+    case rt::Block::Colours: {
+      Dense h{shape_of({ssize(m), ssize(n), ssize(n)}, at), at.size()};
+      py::scatter(*coloring, *o.cells, h, n, n, at.size());
+      return std::move(h).array();
+    }
+    case rt::Block::Dense: {
+      // The lane's block is column-major and the array row-major.
+      Dense h{shape_of({ssize(m), ssize(n), ssize(n)}, at), at.size()};
+      for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t j = 0; j < n; ++j) {
+          std::ranges::copy_n(o.cells->rows()[i + j * n],
+                              static_cast<std::ptrdiff_t>(at.size()),
+                              h.at(i * n + j));
+        }
+      }
+      return std::move(h).array();
+    }
+    }
+    std::unreachable();
+  }
 
-    Dense dense{shape_of({ssize(height()), ssize(n), ssize(n)}, at),
-                at.size()};
-    py::scatter(l->graph->coloring(), compressed, dense, n, n, at.size());
-    return pyb::make_tuple(value_of(f, cell), std::move(g).array(),
-                           std::move(dense).array());
+  // One call of `W` at `x`, seeded along `*v` where the lane takes a
+  // direction -- one value per symbol, or per function for a covector, by
+  // position: functions have no names for a dict to key on.  The point's
+  // columns and the direction's go in one array, symbols first, which is the
+  // order input_column() states.
+  template <Want W>
+  [[nodiscard]] pyb::tuple run(const pyb::handle &x,
+                               const pyb::handle *v = nullptr) {
+    constexpr rt::WantInfo w = rt::want_info(W);
+    const Point at{x, inputs_};
+    const auto l = lane(W);
+    Cell cell;
+    auto f = w.values ? values_block(*l, at) : std::nullopt;
+    Out g = out_for(w.jacobian, count(*l, &rt::Layout::jacobian), at);
+    Out h = out_for(w.hessian, count(*l, &rt::Layout::hessian), at);
+    const rt::Columns<double> columns{
+        .values = w.values ? (f ? f->rows() : cell.rows())
+                           : std::span<double *const>{},
+        .jacobian = g.rows(),
+        .hessian = h.rows()};
+    if constexpr (w.seeds == rt::Seeds::None) {
+      unwrap(dispatch(W, at.columns(), columns, at.size()));
+    } else {
+      // Built in place: Point is pinned, and its positional constructor is
+      // ours alone -- optional::emplace would construct it from outside.
+      const Point dir = [&] {
+        if constexpr (w.seeds == rt::Seeds::Functions) {
+          return Point(*v, height());
+        } else {
+          return Point(*v, symbols_);
+        }
+      }();
+      if (dir.size() != at.size()) {
+        fail_with(errc::wrong_direction);
+      }
+      const auto xs = widen(at.columns(), dir.columns());
+      unwrap(dispatch(W, as_columns(xs), columns, at.size()));
+    }
+    pyb::list parts;
+    if (w.values) {
+      parts.append(value_of(f, cell));
+    }
+    if (w.jacobian != rt::Block::None) {
+      parts.append(finish(w.jacobian, g, at, derivative().pattern, nullptr));
+    }
+    if (w.hessian != rt::Block::None) {
+      parts.append(
+          finish(w.hessian, h, at, derivative().pattern, &l->graph->coloring()));
+    }
+    return pyb::tuple(parts);
   }
 
   // A system: Core's walk over the arena, which is a point at a time and says
@@ -407,7 +382,7 @@ private:
     return scalar(at) ? std::nullopt
                       : std::optional<Block>{
                             std::in_place, shape_of({ssize(height())}, at),
-                            count(c, &rt::OutputSpans::values), at.size()};
+                            count(c, &rt::Layout::values), at.size()};
   }
 
   [[nodiscard]] static pyb::object value_of(std::optional<Block> &f,
@@ -438,18 +413,16 @@ public:
     return view_.jacobian_columns();
   }
 
-  // (value, J): J is outputs x the kept symbols.
+  // (value, J): J is outputs x the kept symbols, scattered through the view's
+  // own pattern -- it keeps a subset of the columns.
   [[nodiscard]] pyb::tuple jacobian(const pyb::handle &x) const {
     const Point at{x, eq_->inputs_};
-    Scratch cells{view_.jacobian_columns(), at.size()};
-    Dense g{shape(at), at.size()};
     PyEquation::Cell cell;
     auto f = values(at);
-    unwrap(view_.jacobian(at.columns(), f ? f->rows() : cell.rows(),
-                          cells.rows(), at.size()));
-    scatter_jacobian(cells, g, at.size());
-    return pyb::make_tuple(PyEquation::value_of(f, cell),
-                           std::move(g).array());
+    auto g = eq_->out_for(rt::Block::Cells, view_.jacobian_columns(), at);
+    unwrap(view_.jacobian(at.columns(), f ? f->rows() : cell.rows(), g.rows(),
+                          at.size()));
+    return pyb::make_tuple(PyEquation::value_of(f, cell), kept(g, at));
   }
 
   // (value, J, dJ/dv) over the kept columns; `v` is over every symbol.
@@ -460,36 +433,21 @@ public:
     if (dir.size() != at.size()) {
       fail_with(errc::wrong_direction);
     }
-    Scratch cells{view_.jacobian_columns(), at.size()};
-    Scratch moved{view_.jacobian_columns(), at.size()};
-    Dense g{shape(at), at.size()};
-    Dense dg{shape(at), at.size()};
     PyEquation::Cell cell;
     auto f = values(at);
+    auto g = eq_->out_for(rt::Block::Cells, view_.jacobian_columns(), at);
+    auto dg = eq_->out_for(rt::Block::Cells, view_.jacobian_columns(), at);
     unwrap(view_.jacobian_jvp(at.columns(), dir.columns(),
-                              f ? f->rows() : cell.rows(), cells.rows(),
-                              moved.rows(), at.size()));
-    scatter_jacobian(cells, g, at.size());
-    scatter_jacobian(moved, dg, at.size());
-    return pyb::make_tuple(PyEquation::value_of(f, cell), std::move(g).array(),
-                           std::move(dg).array());
+                              f ? f->rows() : cell.rows(), g.rows(),
+                              dg.rows(), at.size()));
+    return pyb::make_tuple(PyEquation::value_of(f, cell), kept(g, at),
+                           kept(dg, at));
   }
 
 private:
-  // PyEquation::scatter_jacobian, over this view's own pattern.  It cannot be
-  // shared with the equation's: a restricted view keeps a subset of the
-  // columns, so its Sparsity is a different one and is the only thing that
-  // describes the block `view_.jacobian` just filled.
-  void scatter_jacobian(Scratch &cells, Dense &dense,
-                        std::size_t points) const {
-    const rt::Sparsity &pattern = view_.jacobian_pattern();
-    py::scatter(pattern, cells, dense, pattern.columns, pattern.size(),
-                points);
-  }
-
-  [[nodiscard]] Shape shape(const Point &at) const {
-    return eq_->shape_of(
-        {ssize(eq_->height()), ssize(view_.symbols().size())}, at);
+  [[nodiscard]] pyb::object kept(PyEquation::Out &o, const Point &at) const {
+    return eq_->finish(rt::Block::Cells, o, at, view_.jacobian_pattern(),
+                       nullptr);
   }
   [[nodiscard]] std::optional<Block> values(const Point &at) const {
     return eq_->scalar(at) ? std::nullopt
@@ -548,7 +506,9 @@ public:
          .hessian =
              compressed_ ? compressed_->rows() : std::span<double *const>{}});
     if (g_) {
-      eq_->scatter_jacobian(*partials_, *g_, at_.size());
+      const rt::Sparsity &pattern = eq_->derivative().pattern;
+      py::scatter(pattern, *partials_, *g_, pattern.columns, pattern.size(),
+                  at_.size());
     }
     if (h_) {
       scatter(*l);

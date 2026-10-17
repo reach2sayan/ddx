@@ -392,7 +392,8 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
            const HoistedColumns &cols, llvm::Value *index, llvm::Value *mask) {
   std::vector<llvm::Value *> value(g.size(), nullptr);
   std::map<std::pair<std::uint32_t, rt::NodeId>, Emitter::Answers> called;
-  for (const auto &[v, c] : g.schedule()) {
+  for (const rt::Step &s : g.schedule()) {
+    const auto &[v, c] = std::pair{s.node, s.fma};
     const auto &p = g[v];
     if (c) {
       value[v] = emit.fma(c, value[c.x], value[c.y], value[c.z]);
@@ -408,16 +409,32 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
           cols.inputs[rt::input_column(g.inputs(), p.op, p.slot)], index, mask,
           "");
       break;
-    case rt::Kind::Args: // a list's value is its first argument
-      value[v] = value[operands[0]];
+    case rt::Kind::Nary: {
+      // The terms into the running sum in list order, a product term as the
+      // fma the sweep takes where the step is fused; the first term is formed.
+      llvm::Value *acc = nullptr;
+      for (const rt::NodeId t : rt::arguments(g, v)) {
+        const rt::Contraction c =
+            s.fused ? rt::product_of(g, t) : rt::Contraction{};
+        if (!c) {
+          acc = acc ? emit.binary(rt::OpCode::Add, acc, value[t]) : value[t];
+        } else if (acc) {
+          acc = emit.fma(c, value[c.x], value[c.y], acc);
+        } else {
+          acc = emit.binary(rt::OpCode::Mul, value[c.x], value[c.y]);
+          acc = c.negated ? emit.unary(rt::OpCode::Neg, acc) : acc;
+        }
+      }
+      value[v] = acc;
       break;
+    }
     case rt::Kind::Extern: {
       // One call per (function, argument list), whichever component asked
       // first; the rest are loads off the same answer.
       const auto [fn, component] = rt::ExternSlot::of(p.slot);
       auto [answers, fresh] = called.try_emplace({fn, operands[0]});
       if (fresh) {
-        const auto args = *rt::extern_arguments(g, v) |
+        const auto args = rt::arguments(g, v) |
                           std::views::transform([&value](rt::NodeId a) {
                             return value[a];
                           }) |
@@ -437,6 +454,8 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
     case rt::Kind::Binary:
       value[v] = emit.binary(p.op, value[operands[0]], value[operands[1]]);
       break;
+    case rt::Kind::Tensor:
+      std::unreachable(); // Compiler::compile refuses a graph with tensor rows
     }
   }
   return value;

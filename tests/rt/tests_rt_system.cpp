@@ -1,6 +1,5 @@
 #include "energy_models.hpp"
 #include "rt/equation.hpp"
-#include "scratch.hpp"
 
 #include <gtest/gtest.h>
 
@@ -146,21 +145,6 @@ TEST(RtSystem, AnEmptyRangeIsNoGraph) {
   ASSERT_TRUE(sys.poisoned());
   EXPECT_EQ(sys.status()->code, ddx::errc::no_graph);
   EXPECT_FALSE(sys.outputs().has_value());
-}
-
-TEST(RtSystem, SavesAndLoadsAnyCount) {
-  const Scratch path{"system"};
-  const auto sys = five_system();
-  ASSERT_TRUE(sys.save(path).has_value());
-  const auto loaded = ddx::rt::load<double, ddx::rt::dynamic>(path);
-  ASSERT_TRUE(loaded.has_value());
-  EXPECT_TRUE(loaded->loaded());
-  EXPECT_EQ(loaded->outputs(), 5u);
-  EXPECT_EQ(*loaded->jacobian(point), *sys.jacobian(point));
-  EXPECT_EQ(*loaded->hessian(point), *sys.hessian(point));
-  EXPECT_TRUE(sys.verify(path).has_value());
-  // A fixed-count Equation refuses a file holding another count.
-  EXPECT_EQ(ddx::rt::load(path).error().code, ddx::errc::archive_mismatch);
 }
 
 // Construction sweeps the Jacobian and nothing else: at n = 128 the coloured

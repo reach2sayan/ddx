@@ -205,21 +205,6 @@ output at one point is a `float`, and everything else is an array. The point is
 bound as an array whatever was passed, so `call.x` is writable even when the
 argument was a list.
 
-## Remembering the last call
-
-`remember=True` keeps the last call: a repeated point is answered off the last
-one, a point one symbol away sweeps only what that symbol reaches, and the
-numbers are unchanged.
-
-```python
-f = ddx.equation(model, remember=True)
-value = f(x)              # swept
-grad = f.gradient(x)      # its own lane
-again = f(x)              # nothing swept
-```
-
-It applies to a point at a time and not to an array of them.
-
 ## Errors
 
 `ddx.Error` is a `RuntimeError` carrying a code:
@@ -250,10 +235,6 @@ is the spelling.
 | `bad_syntax` | a string the grammar does not accept |
 | `unknown_function` | a string calls a function that does not exist |
 | `wrong_argument_count` | a string calls one with the wrong arity |
-| `archive_io` | the file could not be read or written |
-| `bad_archive` | not a ddx file, or a format this build does not read |
-| `archive_corrupt` | the file's checksum or structure does not hold |
-| `archive_mismatch` | the file loads, but does not describe this equation |
 | `no_device`, `device_compile`, `device_launch` | no OpenCL device answered, its compiler refused the kernel, or a launch failed |
 | `jit_target`, `jit_module`, `jit_object`, `jit_verify`, `jit_lookup` | the compiler could not produce or link a kernel |
 
@@ -296,27 +277,6 @@ carries the device backend; a source build asks for it with
 `-C cmake.define.DDX_BUILD_OPENCL=ON`. Where it is missing, `ddx.has_opencl` is
 `False`, `DEVICE` interprets, and `device_status` raises `errc.no_device`.
 
-## Saving and loading
-
-```python
-eq.save("f.ddx")
-same = ddx.load("f.ddx")          # no model runs, nothing is rebuilt
-
-@ddx.equation                      # or pair a model with a file, as a cache
-def model() -> ddx.Expression:
-    x, y = ddx.var("x"), ddx.var("y")
-    return ddx.exp(x) * y
-
-cached = ddx.equation(model, cache="f.ddx")
-cached.loaded                      # False the first run, True after
-```
-
-A string model caches the same way: `ddx.equation("exp(x) * y", cache="f.ddx")`.
-
-`save`, `load` and `verify` raise `ddx.Error` rather than answering `False`:
-unreadable, unloadable and "a different equation" are three different `errc`
-values, and only the code says which.
-
 ## Reference
 
 | Member | Is |
@@ -336,13 +296,7 @@ values, and only the code says which.
 | `device_status` | property — under `DEVICE`, the device answering; `None` otherwise; raises when none answers |
 | `hessian_colors` | groups in the Hessian's compression; raises on a system |
 | `buffer(x, *, want)` | a `Call` bound to its buffers, for a loop |
-| `to_dot(*, all=False)` | the expression in Graphviz form; `all=True` draws the pruned nodes too |
 | `nodes(*, want)` | how many nodes a call for `want` evaluates |
-| `save(path)`, `verify(path)` | write this equation; raise unless `path` holds it |
-| `loaded` | property — whether this equation was read rather than built |
-
-`ddx.load(path)` reads one, and `ddx.equation(model, cache=path)` builds or
-reads as the file allows.
 
 ## License
 

@@ -91,8 +91,7 @@ static_assert(std::forward_iterator<SetBits>);
 
 // A stored cell of a derivative block: where it belongs in the dense matrix,
 // and where it is actually kept.  CSR by row and colour-major are two ways of
-// leaving cells out, and both answer this -- `slot` as the compile-time twin
-// names it (symbolic/coupling.hpp's `compressed_entry`).
+// leaving cells out, and both answer this.
 struct Cell {
   std::size_t row;
   std::size_t column;
@@ -301,17 +300,28 @@ template <impl::Numeric T>
   // otherwise contribute couplings this one does not have.
   const auto live = detail::reachable(b, std::span{&root, 1});
 
-  std::vector<SymbolSet> support(b.size());
+  // One set per node of the cone, by rank among its ids; operands come first,
+  // so theirs are always ranked by the time a node reads them.
+  std::vector<NodeId> rank(b.size(), no_node);
+  std::vector<SymbolSet> support;
+  support.reserve(static_cast<std::size_t>(std::ranges::count(live, true)));
+  const auto of = [&](NodeId u) -> const SymbolSet & {
+    return support[rank[u]];
+  };
   for (const NodeId v : detail::live_ids(live)) {
+    rank[v] = static_cast<NodeId>(support.size());
+    SymbolSet &here = support.emplace_back();
     const auto &node = b[v];
-    switch (kind_of(node.op)) {
+    // A Map or Zip couples as its inner op does, over the whole vector.
+    const OpCode op = detail::effective_op(node);
+    switch (kind_of(op)) {
     case Kind::Const:
-      support[v] = SymbolSet(n);
+      here = SymbolSet(n);
       break;
     case Kind::Input:
-      support[v] = SymbolSet(n);
+      here = SymbolSet(n);
       if (node.op == OpCode::Var) {
-        support[v].set(node.slot);
+        here.set(node.slot);
       } else if (node.op == OpCode::Implicit) {
         // Whatever its residual reads, and nonlinearly: z is a root, not a
         // sum.  The sweep's dz/dx nodes are not in the arena yet, so the
@@ -320,55 +330,97 @@ template <impl::Numeric T>
         const auto through = detail::reachable(b, std::span{&f, 1});
         for (const auto [u, leaf] : b.nodes() | std::views::enumerate) {
           if (leaf.op == OpCode::Var && through[static_cast<NodeId>(u)]) {
-            support[v].set(leaf.slot);
+            here.set(leaf.slot);
           }
         }
-        detail::couple(rows, support[v], support[v]);
+        detail::couple(rows, here, here);
       }
       break;
     case Kind::Unary:
-      support[v] = support[node.a];
+      here = of(node.a);
       // Negation is linear; anything else couples its argument with itself.
-      if (node.op != OpCode::Neg) {
-        detail::couple(rows, support[v], support[v]);
+      if (op != OpCode::Neg) {
+        detail::couple(rows, here, here);
       }
       break;
     case Kind::Extern:
-      // Nonlinear in every argument the list carries.
-      support[v] = support[node.a];
-      detail::couple(rows, support[v], support[v]);
+      // Nonlinear in every argument.
+      here = SymbolSet(n);
+      for (const NodeId arg : arguments(b, v)) {
+        here |= of(arg);
+      }
+      detail::couple(rows, here, here);
       break;
-    case Kind::Args:
-      // A list carries its arguments' support; the call couples it.
-      support[v] = support[node.a];
-      support[v] |= support[node.b];
+    case Kind::Nary:
+      // A sum is as linear as an Add: the terms' union, no coupling.
+      here = SymbolSet(n);
+      for (const NodeId t : arguments(b, v)) {
+        here |= of(t);
+      }
       break;
     case Kind::Ternary:
       // As linear as an Add: it chooses between two derivatives rather than
       // combining them.
-      support[v] = support[node.b];
-      support[v] |= support[node.c];
+      here = of(node.b);
+      here |= of(node.c);
       break;
     case Kind::Binary:
       // Zero derivative everywhere it exists, so no support and no coupling --
       // the conservative arm below cost a colour or two per tested quantity.
-      if (node.op == OpCode::Lt || node.op == OpCode::Le) {
-        support[v] = SymbolSet(n);
+      if (op == OpCode::Lt || op == OpCode::Le) {
+        here = SymbolSet(n);
         break;
       }
-      support[v] = support[node.a];
-      support[v] |= support[node.b];
-      if (node.op == OpCode::Add) {
+      here = of(node.a);
+      here |= of(node.b);
+      if (op == OpCode::Add) {
         break; // linear: contributes nothing
-      } else if (node.op == OpCode::Mul) {
-        detail::couple(rows, support[node.a], support[node.b]);
-      } else if (node.op == OpCode::Div) {
-        detail::couple(rows, support[node.a], support[node.b]);
-        detail::couple(rows, support[node.b], support[node.b]);
+      } else if (op == OpCode::Mul) {
+        detail::couple(rows, of(node.a), of(node.b));
+      } else if (op == OpCode::Div) {
+        detail::couple(rows, of(node.a), of(node.b));
+        detail::couple(rows, of(node.b), of(node.b));
       } else {
-        detail::couple(rows, support[v], support[v]);
+        detail::couple(rows, here, here);
       }
       break;
+    case Kind::Tensor: {
+      // One support for the whole vector, conservatively: the union of what
+      // its operands read.  Linear ops -- Pack, Gather, Sum, Gemv over a
+      // constant matrix, AddAt -- couple nothing; a Map or Zip took its inner
+      // op's arm above, and Scale and Dot couple as a product does.
+      here = SymbolSet(n);
+      switch (node.op) {
+      case OpCode::VecConst:
+      case OpCode::MatConst:
+        break;
+      case OpCode::Pack:
+        for (const NodeId s : arguments(b, v)) {
+          here |= of(s);
+        }
+        break;
+      case OpCode::Gather:
+      case OpCode::Sum:
+        here = of(node.a);
+        break;
+      case OpCode::Gemv:
+        here = of(node.b);
+        break;
+      case OpCode::AddAt:
+        here = of(node.a);
+        here |= of(node.b);
+        break;
+      case OpCode::Scale:
+      case OpCode::Dot:
+        here = of(node.a);
+        here |= of(node.b);
+        detail::couple(rows, of(node.a), of(node.b));
+        break;
+      default: // the dense Hessian's matrix rows, never under a root
+        std::unreachable();
+      }
+      break;
+    }
     }
   }
   return rows;
@@ -387,8 +439,9 @@ constexpr void scatter(const auto &layout, auto &&cell, auto &&dense,
   }
 }
 
-// Columns j and k conflict iff their coupling rows overlap -- the CPR colouring
-// symbolic/coupling.hpp runs at compile time, and carries the citations.
+// Columns j and k conflict iff their coupling rows overlap: the CPR colouring,
+// smallest-last ordered.  Ref: Curtis, Powell & Reid, J. Inst. Math. Appl.
+// 13(1) (1974) 117; Coleman & Moré, SIAM J. Numer. Anal. 20(1) (1983) 187.
 [[nodiscard]] DDX_API Coloring color_columns(const CouplingRows &rows);
 
 } // namespace ddx::rt

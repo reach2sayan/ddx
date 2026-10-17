@@ -1,15 +1,21 @@
 #include "ddx.hpp"
 #include "jit/kernel.hpp"
-#include "rt/archive/archive.hpp"
+#include "jit/tests_jit_common.hpp"
 #include "rt/bridge.hpp"
 #include "rt/graph.hpp"
 #include "rt/interpret.hpp"
 #include "scratch.hpp"
 
+#include <boost/crc.hpp>
+#include <boost/endian/conversion.hpp>
+
 #include <gtest/gtest.h>
 
 #include <bit>
 #include <cstdint>
+#include <cstring>
+#include <iterator>
+#include <span>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -29,25 +35,26 @@ namespace {
 using ddx::rt::Builder;
 using ddx::rt::Graph;
 
-// No native target means no JIT to test; bring it up once and name the reason.
-ddx::jit::Compiler &compiler() {
-  static ddx::jit::result<ddx::jit::Compiler> c = ddx::jit::Compiler::create();
-  EXPECT_TRUE(c.has_value()) << (c ? "" : c.error().detail);
-  return *c;
+// The cache entry's prologue: tag, format, key, CRC, then the two lengths.  The
+// one region no checksum covers, which is what the corruption sweep walks.
+constexpr std::size_t kHeaderBytes = 8 + 4 + 8 + 4 + 4 + 8;
+
+std::vector<std::byte> slurp(const std::filesystem::path &path) {
+  std::ifstream in{path, std::ios::binary};
+  const std::vector<char> raw{std::istreambuf_iterator<char>{in}, {}};
+  const auto bytes = std::as_bytes(std::span{raw});
+  return {bytes.begin(), bytes.end()};
+}
+void dump(const std::filesystem::path &path, std::span<const std::byte> bytes) {
+  std::ofstream out{path, std::ios::binary | std::ios::trunc};
+  out.write(reinterpret_cast<const char *>(bytes.data()),
+            static_cast<std::streamsize>(bytes.size()));
 }
 
-// compile() answers with result<Kernel>; name LLVM's reason here rather than
-// meeting an empty Kernel three lines later.
 // For a failure message: the stated width, or that there is none.
 std::string spelled(ddx::jit::Lanes lanes) {
   const auto w = lanes.stated();
   return w ? std::to_string(*w) : "derived";
-}
-
-ddx::jit::Kernel must_compile(auto &&...args) {
-  auto k = compiler().compile(static_cast<decltype(args) &&>(args)...);
-  EXPECT_TRUE(k.has_value()) << (k ? std::string{} : k.error().detail);
-  return k ? std::move(*k) : ddx::jit::Kernel{};
 }
 
 // Compile `build` and compare a batch against the interpreter.
@@ -502,10 +509,9 @@ TEST(JitValue, AnObjectAdoptsBackIntoTheSameKernel) {
                          .build_jacobian()
                          .finish();
 
-  const auto compiled =
-      must_compile(graph, ddx::jit::Options{.retain_object = true});
+  const auto compiled = must_compile(graph);
   ASSERT_TRUE(compiled);
-  ASSERT_FALSE(compiled.object().empty()) << "retain_object kept nothing";
+  ASSERT_FALSE(compiled.object().empty()) << "the compile kept no object";
 
   // Unguessable, which is why the kernel carries it: whoever stores the bytes
   // stores the symbol beside them.
@@ -589,8 +595,7 @@ TEST(JitValue, ACorruptCacheEntryIsAMissNotACrash) {
   for (const auto &e : std::filesystem::directory_iterator{dir}) {
     std::fstream f{e.path(), std::ios::in | std::ios::out | std::ios::binary};
     ASSERT_TRUE(f.is_open());
-    f.seekp(static_cast<std::streamoff>(
-        ddx::rt::detail::Container::header_bytes + 8));
+    f.seekp(static_cast<std::streamoff>(kHeaderBytes + 8));
     f.put('\xff');
     ++damaged;
   }
@@ -628,8 +633,8 @@ TEST(JitValue, ACacheEntrySurvivesCorruptionAndTruncation) {
     entry = e.path();
   }
   ASSERT_FALSE(entry.empty()) << "the cold compile cached nothing";
-  const auto pristine = *ddx::rt::detail::Container::read(entry);
-  ASSERT_GT(pristine.size(), ddx::rt::detail::Container::header_bytes);
+  const auto pristine = slurp(entry);
+  ASSERT_GT(pristine.size(), kHeaderBytes);
 
   const std::array c{0.7};
   const std::array<const double *, 1> xs{c.data()};
@@ -662,7 +667,7 @@ TEST(JitValue, ACacheEntrySurvivesCorruptionAndTruncation) {
   // recompile. Three is adequate only because every field is checked by exact
   // `!=`; a field added with a range check needs the exhaustive sweep again.
   const std::size_t stride = std::max<std::size_t>(1, pristine.size() / 64);
-  for (std::size_t i = 0; i < ddx::rt::detail::Container::header_bytes; ++i) {
+  for (std::size_t i = 0; i < kHeaderBytes; ++i) {
     for (const std::byte mask :
          {std::byte{0xff}, std::byte{0x01}, std::byte{0x80}}) {
       auto damaged = pristine;
@@ -670,23 +675,19 @@ TEST(JitValue, ACacheEntrySurvivesCorruptionAndTruncation) {
       if (damaged[i] == pristine[i]) {
         continue;
       }
-      ASSERT_TRUE(
-          ddx::rt::detail::Container::write(entry, damaged).has_value());
+      dump(entry, damaged);
       rejected("a flipped prologue byte", i);
     }
   }
-  for (std::size_t i = ddx::rt::detail::Container::header_bytes;
-       i < pristine.size(); i += stride) {
+  for (std::size_t i = kHeaderBytes; i < pristine.size(); i += stride) {
     auto damaged = pristine;
     damaged[i] = ~damaged[i];
-    ASSERT_TRUE(ddx::rt::detail::Container::write(entry, damaged).has_value());
+    dump(entry, damaged);
     rejected("a flipped payload byte", i);
   }
 
   for (std::size_t n = 0; n < pristine.size(); n += stride) {
-    ASSERT_TRUE(ddx::rt::detail::Container::write(
-                    entry, std::span<const std::byte>{pristine}.first(n))
-                    .has_value());
+    dump(entry, std::span<const std::byte>{pristine}.first(n));
     rejected("a truncation to", n);
   }
 
@@ -695,18 +696,13 @@ TEST(JitValue, ACacheEntrySurvivesCorruptionAndTruncation) {
   // with a CRC that agrees -- which is what makes this not vacuous.  CRC32
   // detects accidents, it does not sign anything.
   {
-    const auto opened =
-        ddx::rt::detail::Container::unpack(pristine, "ddxjitob");
-    ASSERT_TRUE(opened.has_value());
-    const auto &[head, was] = *opened;
-    std::vector<std::byte> payload(was.begin(), was.end());
-    ASSERT_GT(payload.size(), 8u);
-    std::ranges::fill_n(payload.begin(), 8, std::byte{0xff}); // the length
-
-    ASSERT_TRUE(
-        ddx::rt::detail::Container::write(
-            entry, ddx::rt::detail::Container::pack("ddxjitob", head, payload))
-            .has_value());
+    auto forged = pristine;
+    std::ranges::fill_n(forged.begin() + 24, 4, std::byte{0xff}); // the length
+    boost::crc_32_type crc;
+    crc.process_bytes(forged.data() + 24, forged.size() - 24);
+    const auto sum = boost::endian::native_to_little(crc.checksum());
+    std::memcpy(forged.data() + 20, &sum, sizeof sum);
+    dump(entry, forged);
     rejected("an impossible symbol length whose CRC agrees", 0);
   }
 }
@@ -715,7 +711,7 @@ TEST(JitValue, ACacheEntrySurvivesCorruptionAndTruncation) {
 // missing together and writing one path at once.  Each must get a correct
 // kernel, one whole entry must be left, and nothing may be left staged.
 //
-// It is *not* a regression test for Container::write's per-writer staging name.
+// It is *not* a regression test for the cache's per-writer staging name.
 // Measured against the shared ".tmp" it replaced, this passes 0/10 while 120 of
 // 160 cache writes fail -- so the writers collide constantly, and what hides it
 // is that `write_entry` discards a losing rename's error by design: a cache
@@ -810,32 +806,11 @@ TEST(JitValue, NoCacheDirectoryWritesNothing) {
   EXPECT_FALSE(std::filesystem::exists(dir));
 }
 
-// Kept by default, and dropped only where a caller says it will never save.
-TEST(JitValue, AnObjectIsKeptUnlessRefused) {
-  Builder<> b;
-  const auto x = var(b, "x");
-  const auto g = Graph<>::freeze(b, std::array{(x * x).id(b)});
-  EXPECT_FALSE(must_compile(g).object().empty());
-  EXPECT_TRUE(must_compile(g, ddx::jit::Options{.retain_object = false})
-                  .object()
-                  .empty());
-}
-
-// The symbol is the one thing adopt() takes from the caller and cannot check
-// against the object, so what stops a forged one is the lookup being scoped to
-// the object's own dylib.  Through the link order a forged name would find some
-// *other* function and be called under the kernel ABI -- which on SysV neither
-// crashes nor writes, so the caller gets untouched buffers and no diagnostic.
-//
-// This exists because widening the lookup would look like a simplification.
-// `memcpy` is the case doing the work: under `lookup(symbol)` the process
-// generator resolves it, where the libm names do not resolve by bare name.
 TEST(JitValue, AForgedSymbolCannotReachThroughTheLinkOrder) {
   Builder<> b;
   const auto x = var(b, "x");
   const auto graph = Graph<>::freeze(b, std::array{(x * x + exp(x)).id(b)});
-  const auto compiled =
-      must_compile(graph, ddx::jit::Options{.retain_object = true});
+  const auto compiled = must_compile(graph);
   ASSERT_TRUE(compiled);
   ASSERT_FALSE(compiled.object().empty());
 

@@ -130,6 +130,10 @@ TEST_F(ClEquation, EveryLaneAnswersOnTheDeviceToTheBit) {
   auto dev = arithmetic();
   dev.options(on_device());
   for (const Want want : ddx::rt::want_values) {
+    // The dense Hessian is a sweep over matrix rows, which no kernel computes.
+    if (want == Want::DenseHessian) {
+      continue;
+    }
     EXPECT_TRUE(dev.wait_for_kernel(want)) << ddx::rt::name_of(want);
   }
   EXPECT_TRUE(dev.uses_kernel());

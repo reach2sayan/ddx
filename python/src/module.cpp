@@ -7,6 +7,7 @@
 #include "rt/expressions.hpp"
 #include "rt/text/ast.hpp"
 #include "rt/text/lower.hpp"
+#include "rt/tensor.hpp"
 #include "util/ranges.hpp"
 #include "util/scope_guard.hpp"
 #include "util/version.hpp"
@@ -18,7 +19,6 @@
 #include <pybind11/operators.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include <pybind11/stl/filesystem.h>
 
 #include <boost/algorithm/string/case_conv.hpp>
 
@@ -60,6 +60,14 @@ pyb::handle error_class;
   return {e, current_arena};
 }
 
+// The model running now, for a vector that names no scalar of it.
+[[nodiscard]] PyExpression::Arena arena_now() {
+  if (!current_arena) {
+    fail_with(errc::no_arena);
+  }
+  return current_arena;
+}
+
 // One root, or m of them from a tuple or list.  The count is a runtime value
 // throughout, which is why these bindings sit below impl::Equation.
 [[nodiscard]] std::vector<rt::NodeId> roots_of(const pyb::object &built,
@@ -86,47 +94,12 @@ pyb::handle error_class;
          impl::to<std::vector<rt::NodeId>>();
 }
 
-// The model as built, or what a cache file holds if it still describes it.
-// Best effort throughout: an absent file is the first run and a stale one is a
-// rebuild, so neither raises -- Equation.loaded is how a caller tells.
-[[nodiscard]] pyb::object
-built_or_loaded(const std::optional<std::filesystem::path> &cache,
-                std::shared_ptr<rt::Builder<double>> arena,
-                std::vector<rt::NodeId> roots, bool remember) {
-  if (cache) {
-    if (auto snap = rt::load_snapshot<double>(*cache);
-        snap &&
-        PyEquation::describes(**snap, *arena, roots, arena->size())) {
-      return pyb::cast(PyEquation{std::move(*snap), remember});
-    }
-  }
-  pyb::object eq =
-      pyb::cast(PyEquation{std::move(arena), std::move(roots), remember});
-  if (cache) {
-    // A cache that cannot be written is still a working equation.
-    (void)eq.cast<PyEquation &>().save(*cache);
-  }
-  return eq;
-}
-
-// An equation from a file and nothing else: no model runs and nothing is
-// swept.  The output count is a number here, so unlike the C++ side there is
-// nothing to state and nothing to refuse.
-[[nodiscard]] pyb::object load_equation(const std::filesystem::path &path,
-                                        bool remember) {
-  return pyb::cast(
-      PyEquation{unwrap(rt::load_snapshot<double>(path)), remember});
-}
-
 // ddx.equation over sources rather than a callback: the same three steps, with
 // the model read instead of run.  The roots go through roots_of, so a model
 // naming no symbol is refused exactly as `lambda: 2.0` is, and every source is
 // read before any of them is an equation -- a symbol the second function
 // introduces still wants a slot.
-[[nodiscard]] pyb::object
-text_equation(std::span<const std::string> sources,
-              const std::optional<std::filesystem::path> &cache,
-              bool remember) {
+[[nodiscard]] pyb::object text_equation(std::span<const std::string> sources) {
   auto arena = std::make_shared<rt::Builder<double>>();
   pyb::list built;
   for (const std::string &source : sources) {
@@ -138,16 +111,13 @@ text_equation(std::span<const std::string> sources,
                                         arena}));
   }
   auto roots = roots_of(built, *arena);
-  return built_or_loaded(cache, std::move(arena), std::move(roots), remember);
+  return pyb::cast(PyEquation{std::move(arena), std::move(roots)});
 }
 
 // The whole of ddx.equation: install an arena, run the model in it, take what
 // comes back -- rt::equation(assemble)'s three steps, with the output count a
 // number rather than a template parameter.
-[[nodiscard]] pyb::object
-make_equation(const pyb::object &model,
-              const std::optional<std::filesystem::path> &cache,
-              bool remember) {
+[[nodiscard]] pyb::object make_equation(const pyb::object &model) {
   auto arena = std::make_shared<rt::Builder<double>>();
   pyb::object built;
   {
@@ -159,8 +129,7 @@ make_equation(const pyb::object &model,
   }
 
   auto roots = roots_of(built, *arena);
-  pyb::object eq =
-      built_or_loaded(cache, std::move(arena), std::move(roots), remember);
+  pyb::object eq = pyb::cast(PyEquation{std::move(arena), std::move(roots)});
 
   // What functools.wraps would do, without a Python wrapper to do it: the
   // equation answers help() and repr() with the model's own name and docstring.
@@ -254,9 +223,25 @@ PYBIND11_MODULE(_ddx, m) {
             pyb::is_operator());
   };
   expression.def(pyb::init<double>(), pyb::arg("value"))
-      .def("__repr__", &PyExpression::repr);
+      .def("__repr__", &PyExpression::repr)
+      // A vector: its length, one element as a scalar, and its shape.
+      .def("__len__", &PyExpression::size)
+      .def("__getitem__", &PyExpression::at, pyb::arg("i"))
+      .def_property_readonly("shape", [](const PyExpression &e) {
+        return pyb::tuple(pyb::cast(e.shape()));
+      });
   binop("__add__", [](const auto &l, const auto &r) { return l + r; });
   binop("__radd__", [](const auto &l, const auto &r) { return r + l; });
+  // On a copy, so `y = acc; acc += t` leaves y alone; a loop of += is one
+  // node of all its terms.
+  binop("__iadd__", [](const auto &l, const auto &r) {
+    PyExpression acc = l;
+    return acc += r;
+  });
+  binop("__isub__", [](const auto &l, const auto &r) {
+    PyExpression acc = l;
+    return acc += -r;
+  });
   binop("__sub__", [](const auto &l, const auto &r) { return l - r; });
   binop("__rsub__", [](const auto &l, const auto &r) { return r - l; });
   binop("__mul__", [](const auto &l, const auto &r) { return l * r; });
@@ -302,24 +287,17 @@ PYBIND11_MODULE(_ddx, m) {
   // matches too, and pybind11 tries these in the order they are registered.
   m.def(
       "equation",
-      [](const std::string &source,
-         const std::optional<std::filesystem::path> &cache, bool remember) {
-        return ddx::py::text_equation(std::span{&source, 1}, cache, remember);
+      [](const std::string &source) {
+        return ddx::py::text_equation(std::span{&source, 1});
       },
-      pyb::arg("source"), pyb::kw_only(), pyb::arg("cache") = pyb::none(),
-      pyb::arg("remember") = false);
+      pyb::arg("source"));
   m.def(
       "equation",
-      [](const std::vector<std::string> &sources,
-         const std::optional<std::filesystem::path> &cache, bool remember) {
-        return ddx::py::text_equation(sources, cache, remember);
+      [](const std::vector<std::string> &sources) {
+        return ddx::py::text_equation(sources);
       },
-      pyb::arg("source"), pyb::kw_only(), pyb::arg("cache") = pyb::none(),
-      pyb::arg("remember") = false);
-  m.def("equation", &ddx::py::make_equation, pyb::arg("model"), pyb::kw_only(),
-        pyb::arg("cache") = pyb::none(), pyb::arg("remember") = false);
-  m.def("load", &ddx::py::load_equation, pyb::arg("path"), pyb::kw_only(),
-        pyb::arg("remember") = false);
+      pyb::arg("source"));
+  m.def("equation", &ddx::py::make_equation, pyb::arg("model"));
 #define DDX_PY_INPUT(fn, Op, ...)                                              \
   m.def(                                                                       \
       #fn,                                                                     \
@@ -367,6 +345,72 @@ PYBIND11_MODULE(_ddx, m) {
         return ddx::py::select(c, t, f);
       },
       pyb::arg("cond"), pyb::arg("if_true"), pyb::arg("if_false"));
+
+  // The vector factories and reductions: an Expression with a width is a
+  // vector, and the arithmetic above is elementwise over one.
+  m.def(
+      "vec",
+      [](std::string_view name, std::size_t n) {
+        const auto arena = ddx::py::arena_now();
+        return PyExpression::checked(rt::vec(*arena, name, n), arena);
+      },
+      pyb::arg("name"), pyb::arg("n"));
+  m.def(
+      "pack",
+      [](const std::vector<PyExpression> &scalars) {
+        return PyExpression::pack(scalars, ddx::py::current_arena);
+      },
+      pyb::arg("scalars"));
+  m.def(
+      "vec_const",
+      [](const std::vector<double> &data) {
+        const auto arena = ddx::py::arena_now();
+        return PyExpression::checked(
+            rt::vec_const(*arena, std::span<const double>{data}), arena);
+      },
+      pyb::arg("data"));
+  m.def(
+      "mat_const",
+      [](std::size_t rows, std::size_t cols, const std::vector<double> &data) {
+        const auto arena = ddx::py::arena_now();
+        return PyExpression::checked(
+            rt::mat_const(*arena, rows, cols, std::span<const double>{data}),
+            arena);
+      },
+      pyb::arg("rows"), pyb::arg("cols"), pyb::arg("data"));
+  m.def(
+      "sum",
+      [](const PyExpression &v) {
+        return reduce(v, [](const auto &a) { return sum(a); });
+      },
+      pyb::arg("v"));
+  m.def(
+      "dot",
+      [](const PyExpression &u, const PyExpression &v) {
+        return reduce(u, v, [](const auto &a, const auto &b) { return dot(a, b); });
+      },
+      pyb::arg("u"), pyb::arg("v"));
+  m.def(
+      "gemv",
+      [](const PyExpression &M, const PyExpression &v) {
+        return reduce(M, v, [](const auto &a, const auto &b) { return gemv(a, b); });
+      },
+      pyb::arg("matrix"), pyb::arg("v"));
+  m.def(
+      "gemv_t",
+      [](const PyExpression &M, const PyExpression &v) {
+        return reduce(M, v,
+                      [](const auto &a, const auto &b) { return gemv_t(a, b); });
+      },
+      pyb::arg("matrix"), pyb::arg("v"));
+  m.def(
+      "add_at",
+      [](const PyExpression &v, const PyExpression &s, std::size_t i) {
+        return reduce(v, s, [i](const auto &a, const auto &b) {
+          return add_at(a, b, i);
+        });
+      },
+      pyb::arg("v"), pyb::arg("s"), pyb::arg("i"));
 
   pyb::native_enum<jit::Backend>(m, "Backend", "enum.IntEnum",
                                  "Whether an equation compiles its graph.")
@@ -443,9 +487,6 @@ PYBIND11_MODULE(_ddx, m) {
       .def_readwrite("warm_points", &jit::Options::warm_points)
       .def_readwrite("hot_points", &jit::Options::hot_points)
       .def_readwrite("time_passes", &jit::Options::time_passes)
-      // Policy rather than identity: neither changes what a compile emits, so
-      // neither belongs in a key that decides whether stored code may be run.
-      .def_readwrite("retain_object", &jit::Options::retain_object)
       .def_readwrite("cache_dir", &jit::Options::cache_dir)
       .def_readwrite("device", &jit::Options::device)
       .def(pyb::self == pyb::self);
@@ -476,6 +517,7 @@ PYBIND11_MODULE(_ddx, m) {
       .def("jvp", &PyEquation::jvp, pyb::arg("v"), pyb::arg("x"))
       .def("vjp", &PyEquation::vjp, pyb::arg("w"), pyb::arg("x"))
       .def("hvp", &PyEquation::hvp, pyb::arg("v"), pyb::arg("x"))
+      .def("dense_hessian", &PyEquation::dense_hessian, pyb::arg("x"))
       .def("jacobian_jvp", &PyEquation::jacobian_jvp, pyb::arg("v"),
            pyb::arg("x"))
       .def("residual", &PyEquation::residual_at, pyb::arg("x"))
@@ -493,26 +535,8 @@ PYBIND11_MODULE(_ddx, m) {
           },
           pyb::arg("x"), pyb::kw_only(),
           pyb::arg("want") = PyEquation::Want::Jacobian, pyb::keep_alive<0, 1>())
-      .def("to_dot", &PyEquation::to_dot, pyb::kw_only(),
-           pyb::arg("all") = false)
       .def("nodes", &PyEquation::nodes, pyb::kw_only(),
            pyb::arg("want") = PyEquation::Want::Jacobian)
-      .def(
-          "save",
-          [](const PyEquation &self, const std::filesystem::path &path) {
-            py::unwrap(self.save(path));
-          },
-          pyb::arg("path"))
-      // Raises rather than answering false: "no" has three reasons --
-      // unreadable, unloadable, a different equation -- and only the errc
-      // says which.
-      .def(
-          "verify",
-          [](const PyEquation &self, const std::filesystem::path &path) {
-            py::unwrap(self.verify(path));
-          },
-          pyb::arg("path"))
-      .def_property_readonly("loaded", &PyEquation::loaded)
       .def_property_readonly("symbols", &PyEquation::symbols_list)
       .def_property_readonly("params", &PyEquation::params_list)
       .def_property_readonly("inputs", &PyEquation::inputs_list)

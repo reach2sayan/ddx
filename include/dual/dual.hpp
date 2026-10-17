@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ops/adjoints.hpp"
+#include "ops/operations.hpp" // the value functors
 #include "ops/scalar.hpp"
 #include "ops/unary_math.hpp"
 #include "symbolic/expressions.hpp"
@@ -259,116 +260,60 @@ constexpr bool operator==(const A &a,
   return val(a) == val(b);
 }
 
-// Each all-dual form is followed by its scalar-mixed forms.  The inner call is
-// unqualified, so ADL makes these work at any nesting depth.
-
-// pow(a, b) = a^b.  d(a^b) = a^b (b' ln a + b a'/a).
-template <DualLike A>
-constexpr auto pow(A &&a, DualCompatible<A> auto &&b) noexcept {
-  using std::log, std::pow;
-  const auto &[av, ad] = a;
-  const auto &[bv, bd] = b;
-  using DT = std::remove_cvref_t<A>;
-  using T = std::remove_cvref_t<decltype(av)>;
-  const T p = pow(av, bv);
-  // A constant exponent arrives here too, embedded with a zero derivative, and
-  // its b' ln a term would still be 0 * log(0) = NaN at av <= 0.  At bv == 0
-  // the b a^(b-1) term is 0 * a^-1, 0 * inf at av == 0, for what is the
-  // constant 1.
-  if (all_zero(bd)) {
-    return bv == T{} ? DT{p, T{}} : DT{p, pow(av, bv - T{1}) * (bv * ad)};
+// The binary chain rule off the shared descriptor, f' = da a' + db b', with
+// the primal from the value functor.  A term whose operand has a zero
+// derivative -- a constant, or a constant exponent handed over embedded in a
+// dual -- is left out rather than multiplied by zero: at a <= 0 pow's exponent
+// partial is 0 * log(a), which is NaN, not nothing.  The descriptor is
+// instantiated at the component, so a nested dual's rule recurses.
+template <template <Numeric> class Desc, typename Value>
+struct binary_dual_combine {
+  template <DualLike DT>
+  DDX_ALWAYS_INLINE constexpr DT operator()(const DT &x,
+                                            const DT &y) const noexcept {
+    const auto &[xv, xd] = x;
+    const auto &[yv, yd] = y;
+    using Comp = std::remove_cvref_t<decltype(xv)>;
+    const Comp f = Value{}(xv, yv);
+    if (all_zero(xd) && all_zero(yd)) {
+      return DT{f};
+    }
+    const auto [dx, dy] = detail::adjoints_of<Desc, Comp>(Comp{1}, xv, yv);
+    if (all_zero(xd)) {
+      return DT{f, dy * yd};
+    }
+    if (all_zero(yd)) {
+      return DT{f, dx * xd};
+    }
+    return DT{f, dx * xd + dy * yd};
   }
-  return DT{p, p * (bd * log(av) + bv * ad / av)};
-}
+};
 
-// pow(a, s), s constant.  d(a^s) = s a^(s-1) a', a second pow rather than
-// a^s (s a'/a): the quotient is 0/0 at av == 0 where this is exact, and with no
-// log a negative av with an integral exponent stays finite.
-constexpr auto pow(DualLike auto &&a, CArithmetic auto s) noexcept {
-  using std::pow;
-  if constexpr (std::unsigned_integral<decltype(s)>) {
-    // Signed, so the s - 1 below cannot wrap at s == 0.
-    return pow(DDX_FWD(a), static_cast<long long>(s));
-  } else {
-    const auto &[av, ad] = a;
-    using DT = std::remove_cvref_t<decltype(a)>;
-    using T = std::remove_cvref_t<decltype(av)>;
-    using U = decltype(s);
-    const T p = pow(av, s);
-    // s == 0: a^0 is the constant 1, and s * a^(s-1) is 0 * inf at av == 0.
-    return s == U{} ? DT{p, T{}}
-                    : DT{p, pow(av, s - U{1}) * (static_cast<T>(s) * ad)};
+// Each in three shapes: all-dual, and a constant on either side, which
+// arrives embedded with a zero derivative.  The inner calls are unqualified,
+// so ADL makes these work at any nesting depth.
+#define DDX_DUAL_BINARY(FN, Desc, Value)                                       \
+  template <DualLike A>                                                        \
+  constexpr auto FN(A &&a, DualCompatible<A> auto &&b) noexcept {              \
+    using DT = std::remove_cvref_t<A>;                                         \
+    return binary_dual_combine<Desc, Value>{}(DT{a}, DT{b});                   \
+  }                                                                            \
+  template <DualLike A>                                                        \
+  constexpr auto FN(A &&a, CArithmetic auto s) noexcept {                      \
+    using DT = std::remove_cvref_t<A>;                                         \
+    return binary_dual_combine<Desc, Value>{}(DT{a}, DT{s});                   \
+  }                                                                            \
+  template <DualLike A>                                                        \
+  constexpr auto FN(CArithmetic auto s, A &&a) noexcept {                      \
+    using DT = std::remove_cvref_t<A>;                                         \
+    return binary_dual_combine<Desc, Value>{}(DT{s}, DT{a});                   \
   }
-}
-
-// pow(s, a), s a constant base.  d(s^a) = s^a ln(s) a'.  ln(s) is a scalar log
-// of a constant, so one libm call however deeply the dual is nested.
-constexpr auto pow(CArithmetic auto s, DualLike auto &&a) noexcept {
-  using std::log, std::pow;
-  const auto &[av, ad] = a;
-  using DT = std::remove_cvref_t<decltype(a)>;
-  using T = std::remove_cvref_t<decltype(av)>;
-  const T p = pow(s, av);
-  return DT{p, p * (log(s) * ad)};
-}
-
-namespace detail {
-// A tie averages and an unordered pair is (a-b)*0, NaN from either side: both
-// symmetric, hence stable under the builder's commutative reordering.  The dual
-// is always the left operand, so neither depends on which spelling was used.
-template <bool IsMax>
-constexpr auto extremum(DualLike auto &&a, const auto &other) noexcept {
-  using DT = std::remove_cvref_t<decltype(a)>;
-  if (val(a) == val(other)) {
-    return DT{a + (other - a) / 2};
-  }
-  if (IsMax ? val(a) < val(other) : val(other) < val(a)) {
-    return DT{other};
-  }
-  if (IsMax ? val(other) < val(a) : val(a) < val(other)) {
-    return DT{a};
-  }
-  return DT{(a - other) * DT{}};
-}
-} // namespace detail
-
-constexpr auto max(DualLike auto &&a,
-                   DualCompatible<decltype(a)> auto &&b) noexcept {
-  return detail::extremum<true>(DDX_FWD(a), b);
-}
-
-constexpr auto min(DualLike auto &&a,
-                   DualCompatible<decltype(a)> auto &&b) noexcept {
-  return detail::extremum<false>(DDX_FWD(a), b);
-}
-
-// max/min otherwise select an operand whole, so the bound stays a scalar; at
-// a tie against the constant the derivative halves.
-constexpr auto max(DualLike auto &&a, CArithmetic auto s) noexcept {
-  return detail::extremum<true>(DDX_FWD(a), s);
-}
-constexpr auto max(CArithmetic auto s, DualLike auto &&a) noexcept {
-  return detail::extremum<true>(DDX_FWD(a), s);
-}
-constexpr auto min(DualLike auto &&a, CArithmetic auto s) noexcept {
-  return detail::extremum<false>(DDX_FWD(a), s);
-}
-constexpr auto min(CArithmetic auto s, DualLike auto &&a) noexcept {
-  return detail::extremum<false>(DDX_FWD(a), s);
-}
-
-// atan2(y, x), numerator first:
-//   d atan2 = ((x/h)*dy - (y/h)*dx) / h  with h = hypot(x, y).
-// Scaled by hypot rather than divided by x² + y², which overflows past 1e154.
-template <DualLike A>
-constexpr auto atan2(A &&y, DualCompatible<A> auto &&x) noexcept {
-  using std::atan2, std::hypot;
-  const auto &[yv, yd] = y;
-  const auto &[xv, xd] = x;
-  using DT = std::remove_cvref_t<A>;
-  const auto h = hypot(xv, yv);
-  return DT{atan2(yv, xv), ((xv / h) * yd - (yv / h) * xd) / h};
-}
+DDX_DUAL_BINARY(pow, detail::PowOpFn, detail::pow_impl)
+DDX_DUAL_BINARY(atan2, detail::Atan2OpFn, detail::atan2_impl)
+DDX_DUAL_BINARY(hypot, detail::HypotOpFn, detail::hypot_impl)
+DDX_DUAL_BINARY(max, detail::MaxOpFn, detail::max_impl)
+DDX_DUAL_BINARY(min, detail::MinOpFn, detail::min_impl)
+#undef DDX_DUAL_BINARY
 
 // Linear, so it is its own derivative rule.  std::midpoint takes arithmetic
 // types only, which is why max/min go through midpoint_impl instead.
@@ -379,18 +324,6 @@ constexpr auto midpoint(A &&a, DualCompatible<A> auto &&b) noexcept {
   const auto &[yv, yd] = b;
   using DT = std::remove_cvref_t<A>;
   return DT{midpoint(xv, yv), midpoint(xd, yd)};
-}
-
-// hypot(x, y) = sqrt(x² + y²).  d hypot = (x/h)*dx + (y/h)*dy: the quotients
-// live in [-1, 1], so the derivative cannot overflow where h does not.
-template <DualLike A>
-constexpr auto hypot(A &&a, DualCompatible<A> auto &&b) noexcept {
-  using std::hypot;
-  const auto &[xv, xd] = a;
-  const auto &[yv, yd] = b;
-  using DT = std::remove_cvref_t<A>;
-  const auto h = hypot(xv, yv);
-  return DT{h, (xv / h) * xd + (yv / h) * yd};
 }
 
 // 3-argument hypot, all-dual only.
@@ -405,39 +338,6 @@ constexpr auto hypot(A &&a, DualCompatible<A> auto &&b,
   const auto &[zv, zd] = z;
   const T h = hypot(xv, yv, zv);
   return Dual<T>{h, (xv / h) * xd + (yv / h) * yd + (zv / h) * zd};
-}
-
-// Against a constant: the zero term is absent rather than added.
-constexpr auto atan2(DualLike auto &&y, CArithmetic auto s) noexcept {
-  using std::atan2, std::hypot;
-  const auto &[yv, yd] = y;
-  using DT = std::remove_cvref_t<decltype(y)>;
-  const auto h = hypot(yv, s);
-  return DT{atan2(yv, s), ((s / h) * yd) / h};
-}
-
-constexpr auto atan2(CArithmetic auto s, DualLike auto &&x) noexcept {
-  using std::atan2, std::hypot;
-  const auto &[xv, xd] = x;
-  using DT = std::remove_cvref_t<decltype(x)>;
-  const auto h = hypot(xv, s);
-  return DT{atan2(s, xv), -((s / h) * xd) / h};
-}
-
-constexpr auto hypot(DualLike auto &&a, CArithmetic auto s) noexcept {
-  using std::hypot;
-  const auto &[av, ad] = a;
-  using DT = std::remove_cvref_t<decltype(a)>;
-  const auto h = hypot(av, s);
-  return DT{h, (av / h) * ad};
-}
-
-constexpr auto hypot(CArithmetic auto s, DualLike auto &&a) noexcept {
-  using std::hypot;
-  const auto &[av, ad] = a;
-  using DT = std::remove_cvref_t<decltype(a)>;
-  const auto h = hypot(s, av);
-  return DT{h, (av / h) * ad};
 }
 
 static_assert(Numeric<Dual<double>>);

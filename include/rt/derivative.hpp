@@ -3,6 +3,7 @@
 #include "ops/mode.hpp" // DiffMode
 #include "rt/coupling.hpp"
 #include "rt/expressions.hpp"
+#include "rt/tensor.hpp"
 #include "util/ranges.hpp"
 
 #include <boost/describe/class.hpp>
@@ -18,12 +19,16 @@ namespace ddx::rt {
 
 namespace detail {
 
+// The rules below are written over the one handle, which reads elementwise
+// where the node is a vector: a Map or Zip is its inner opcode's rule, built
+// through the handle, which emits a Map or Zip again.
+template <impl::Numeric T> using H = RTExpression<T>;
+
 // A template, so `if constexpr` actually discards: deriv_from_value reuses the
 // primal node, and d(exp)/du becomes the exp node itself.
 template <typename Fn, impl::Numeric T>
-[[nodiscard]] constexpr RTExpression<T> rule(const RTExpression<T> &u,
-                                             const RTExpression<T> &fu) {
-  if constexpr (impl::detail::has_deriv_from_value_v<Fn, RTExpression<T>>) {
+[[nodiscard]] constexpr H<T> rule(const H<T> &u, const H<T> &fu) {
+  if constexpr (impl::detail::has_deriv_from_value_v<Fn, H<T>>) {
     return Fn::deriv_from_value(u, fu);
   } else {
     return Fn::deriv(u);
@@ -32,11 +37,9 @@ template <typename Fn, impl::Numeric T>
 
 // Nothing here passes `f` to a binary rule: the descriptors recompute it, which
 // is free on a graph since Builder::make interns it back onto the primal.
-template <impl::Numeric S>
-[[nodiscard]] constexpr RTExpression<S>
-contribution(OpCode op, const RTExpression<S> &adj, const RTExpression<S> &u,
-             const RTExpression<S> &f) {
-  using T = RTExpression<S>;
+template <impl::Numeric T>
+[[nodiscard]] constexpr H<T> contribution(OpCode op, const H<T> &adj,
+                                          const H<T> &u, const H<T> &f) {
   switch (op) {
 #define DDX_RT_CONTRIB(fn, Op, label, functor, Desc)                           \
   case OpCode::Op:                                                             \
@@ -47,20 +50,18 @@ contribution(OpCode op, const RTExpression<S> &adj, const RTExpression<S> &u,
     // adjoints() uses.
 #define DDX_RT_CONTRIB(fn, Op, label)                                          \
   case OpCode::Op:                                                             \
-    return adj * rule<impl::detail::Op##Fn<T>>(u, f);
+    return adj * rule<impl::detail::Op##Fn<H<T>>>(u, f);
     DDX_UNARY_MATH_TABLE(DDX_RT_CONTRIB)
 #undef DDX_RT_CONTRIB
   default:
-    return T{0};
+    return H<T>{0};
   }
 }
 
 // The pair reaching a two-argument op's operands.
-template <impl::Numeric S>
-[[nodiscard]] constexpr std::pair<RTExpression<S>, RTExpression<S>>
-contributions(OpCode op, const RTExpression<S> &adj, const RTExpression<S> &l,
-              const RTExpression<S> &r) {
-  using T = RTExpression<S>;
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::pair<H<T>, H<T>>
+contributions(OpCode op, const H<T> &adj, const H<T> &l, const H<T> &r) {
   switch (op) {
 #define DDX_RT_CONTRIB(fn, Op, label, functor, Desc)                           \
   case OpCode::Op: {                                                           \
@@ -70,22 +71,21 @@ contributions(OpCode op, const RTExpression<S> &adj, const RTExpression<S> &l,
     DDX_RT_BINARY_TABLE(DDX_RT_CONTRIB)
 #undef DDX_RT_CONTRIB
   default:
-    return {T{0}, T{0}};
+    return {H<T>{0}, H<T>{0}};
   }
 }
 
 // The same rule seeded with a unit adjoint: Builder::make fires the x*1 rule
 // before a node exists, so this is the partial and not a multiply by one.
-template <impl::Numeric S>
-[[nodiscard]] constexpr RTExpression<S>
-partial(OpCode op, const RTExpression<S> &u, const RTExpression<S> &f) {
-  return contribution(op, RTExpression<S>{1}, u, f);
+template <impl::Numeric T>
+[[nodiscard]] constexpr H<T> partial(OpCode op, const H<T> &u, const H<T> &f) {
+  return contribution(op, H<T>{1}, u, f);
 }
 
-template <impl::Numeric S>
-[[nodiscard]] constexpr std::pair<RTExpression<S>, RTExpression<S>>
-partials(OpCode op, const RTExpression<S> &l, const RTExpression<S> &r) {
-  return contributions(op, RTExpression<S>{1}, l, r);
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::pair<H<T>, H<T>> partials(OpCode op, const H<T> &l,
+                                                       const H<T> &r) {
+  return contributions(op, H<T>{1}, l, r);
 }
 
 } // namespace detail
@@ -134,7 +134,7 @@ template <impl::Numeric T, typename Sink>
 constexpr void extern_partials(Builder<T> &b, NodeId v, Sink &&sink) {
   const auto [fn, at] = ExternSlot::of(b[v].slot);
   const ExternRecord &e = b.externs()[fn];
-  for (const auto [l, arg] : *extern_arguments(b, v) | std::views::enumerate) {
+  for (const auto [l, arg] : arguments(b, v) | std::views::enumerate) {
     if (const auto up = e.up(at, static_cast<std::size_t>(l))) {
       sink(arg, RTExpression<T>{b, b.extern_component(v, *up)});
     }
@@ -188,7 +188,7 @@ template <impl::Numeric T>
 }
 } // namespace detail
 
-// reverse_sweep, accumulating *nodes*.  It appends to the builder it reads: new
+// The reverse sweep, accumulating *nodes*.  It appends to the builder it reads: new
 // nodes land above the snapshot, so reverse id order stays topological.
 //
 // Beside each adjoint rides a guard: the condition under which the node lies on
@@ -207,6 +207,9 @@ template <impl::Numeric T>
                                                            NodeId root,
                                                            bool ift) {
   const auto n = static_cast<NodeId>(b.size());
+  const auto live = detail::reachable(b, std::span{&root, 1});
+  // Two nodes per node of the cone is what a reverse pass comes to.
+  b.reserve(n + 2 * std::ranges::count(live, true));
   std::vector<NodeId> adj(n, no_node);
   std::vector<NodeId> guard(n, no_node);
   adj[root] = b.constant(T{1});
@@ -218,13 +221,19 @@ template <impl::Numeric T>
     return g == no_node ? cond : select(expr(g), cond, zero);
   };
 
+  // A contribution under its guard, as a node of the child's width: a
+  // select, which over a vector is a Scale by the chosen 1 or 0.
+  const auto guarded = [&](NodeId child, NodeId g, const RTExpression<T> &c) {
+    return (g == no_node ? c : select(expr(g), c, zero))
+        .id(b, width_of(b, child));
+  };
+
   // `g` is the edge's guard; a child reached by an unguarded edge is always
-  // on a chosen path, by any number of guarded ones on the OR of theirs.
+  // on a chosen path, by any number of guarded ones on the OR of theirs.  The
+  // handle's `+` is the sum: a Zip(add) where the child is a vector.
   const auto add_to = [&](NodeId child, NodeId g,
                           const RTExpression<T> &contribution) {
-    const NodeId c =
-        (g == no_node ? contribution : select(expr(g), contribution, zero))
-            .id(b);
+    const NodeId c = guarded(child, g, contribution);
     // What sign(), and so abs(), hands back.  Storing it would mark the child
     // live and carry a zero adjoint down its whole cone.
     if (b.is_constant(c, T{0})) {
@@ -243,28 +252,33 @@ template <impl::Numeric T>
     }
   };
 
-  for (NodeId v = n; v-- > 0;) {
+  for (const NodeId v : detail::live_ids(live) | std::views::reverse) {
     // no_node is "nothing reached it", a folded Const 0 is "what reached it
     // cancelled"; neither contributes below.
     if (adj[v] == no_node || b.is_constant(adj[v], T{0})) {
       continue;
     }
     const auto node = b[v]; // by value: building below may reallocate
+    // The adjoint has the node's shape: a vector's is a vector of its width.
     const RTExpression<T> a = expr(adj[v]);
     const NodeId g = guard[v];
-    switch (kind_of(node.op)) {
+    const OpCode op = detail::effective_op(node);
+    switch (kind_of(op)) {
     case Kind::Const:
     case Kind::Input:
-    case Kind::Args: // never reached: a call hands adjoints to its arguments
       break;
     case Kind::Extern:
       detail::extern_partials(b, v, [&](NodeId arg, const RTExpression<T> &c) {
         add_to(arg, g, a * c);
       });
       break;
+    case Kind::Nary: // linear: every term takes the adjoint whole
+      for (const NodeId t : arguments(b, v)) {
+        add_to(t, g, a);
+      }
+      break;
     case Kind::Unary:
-      add_to(node.a, g,
-             detail::contribution(node.op, a, expr(node.a), expr(v)));
+      add_to(node.a, g, detail::contribution(op, a, expr(node.a), expr(v)));
       break;
     case Kind::Ternary: {
       // Here rather than in ops/adjoints.hpp: two arms of different types is
@@ -277,9 +291,64 @@ template <impl::Numeric T>
     }
     case Kind::Binary: {
       const auto [cl, cr] =
-          detail::contributions(node.op, a, expr(node.a), expr(node.b));
+          detail::contributions(op, a, expr(node.a), expr(node.b));
       add_to(node.a, g, cl);
       add_to(node.b, g, cr);
+      break;
+    }
+    case Kind::Tensor: {
+      // The ops with a rule of their own; a Map or Zip took the arm above.
+      switch (node.op) {
+      case OpCode::VecConst:
+      case OpCode::MatConst:
+        break;
+      case OpCode::Pack: {
+        const auto args = arguments(b, v);
+        for (const auto [i, s] : args | std::views::enumerate) {
+          add_to(s, g, a[static_cast<std::size_t>(i)]);
+        }
+        break;
+      }
+      case OpCode::Gather:
+        add_to(node.a, g,
+               add_at(expr(b.zeros(width_of(b, node.a))), a, node.slot));
+        break;
+      case OpCode::Scale:
+        add_to(node.a, g, dot(a, expr(node.b)));
+        add_to(node.b, g, expr(node.a) * a);
+        break;
+      case OpCode::Sum:
+        add_to(node.a, g, a * expr(b.ones(width_of(b, node.a))));
+        break;
+      case OpCode::Dot:
+        add_to(node.a, g, a * expr(node.b));
+        add_to(node.b, g, a * expr(node.a));
+        break;
+      case OpCode::Gemv:
+        // The matrix is a constant: only the vector moves, by M^T (or M).
+        add_to(node.b, g,
+               expr(b.make(OpCode::Gemv, node.a, adj[v], no_node,
+                           node.slot ? 0u : 1u)));
+        break;
+      case OpCode::AddAt:
+        add_to(node.a, g, a);
+        add_to(node.b, g, a[node.slot]);
+        break;
+      // The dense Hessian's matrix rows are never under a root; nothing
+      // differentiates through them.
+      case OpCode::MatRow:
+      case OpCode::Diag:
+      case OpCode::Outer:
+      case OpCode::RowScale:
+      case OpCode::ColScale:
+      case OpCode::MatVec:
+      case OpCode::MatMul:
+      case OpCode::StackRows:
+      case OpCode::RowOf:
+        break;
+      default:
+        std::unreachable();
+      }
       break;
     }
     }
@@ -327,11 +396,13 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
               std::span<const NodeId> tangent) {
   const auto n = static_cast<NodeId>(b.size());
   const auto live = detail::reachable(b, roots);
+  b.reserve(n + 2 * std::ranges::count(live, true));
   std::vector<NodeId> d(n, no_node);
 
   for (const NodeId v : detail::live_ids(live)) {
     const auto node = b[v]; // by value: building below may reallocate
-    switch (kind_of(node.op)) {
+    const OpCode op = detail::effective_op(node);
+    switch (kind_of(op)) {
     case Kind::Extern: {
       RTExpression<T> sum{0};
       detail::extern_partials(b, v, [&](NodeId arg, const RTExpression<T> &c) {
@@ -340,9 +411,14 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
       d[v] = sum.id(b);
       break;
     }
-    case Kind::Args: // a list's value is its first argument
-      d[v] = d[node.a];
+    case Kind::Nary: { // the sum of the terms' tangents, as a sum again
+      RTExpression<T> sum{0};
+      for (const NodeId t : arguments(b, v)) {
+        sum += RTExpression<T>{b, d[t]};
+      }
+      d[v] = sum.id(b);
       break;
+    }
     case Kind::Const:
       d[v] = b.constant(T{0});
       break;
@@ -367,7 +443,7 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
     case Kind::Unary: {
       const RTExpression<T> u{b, node.a};
       const RTExpression<T> self{b, v};
-      d[v] = (detail::partial(node.op, u, self) * RTExpression<T>{b, d[node.a]})
+      d[v] = (detail::partial(op, u, self) * RTExpression<T>{b, d[node.a]})
                  .id(b);
       break;
     }
@@ -381,10 +457,64 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
     case Kind::Binary: {
       const RTExpression<T> l{b, node.a};
       const RTExpression<T> r{b, node.b};
-      const auto [dl, dr] = detail::partials(node.op, l, r);
+      const auto [dl, dr] = detail::partials(op, l, r);
       d[v] = (dl * RTExpression<T>{b, d[node.a]} +
               dr * RTExpression<T>{b, d[node.b]})
-                 .id(b);
+                 .id(b, width_of(b, v));
+      break;
+    }
+    case Kind::Tensor: {
+      // The forward twin of each reverse rule above; a vector's tangent is a
+      // vector of its width.
+      const auto expr = [&b](NodeId id) { return RTExpression<T>{b, id}; };
+      const auto dv = [&](NodeId u) { return RTExpression<T>{b, d[u]}; };
+      switch (node.op) {
+      case OpCode::VecConst:
+        d[v] = b.zeros(width_of(b, v));
+        break;
+      case OpCode::MatConst: // a table, never read as a value
+        break;
+      case OpCode::Pack: {
+        const auto args = arguments(b, v);
+        const auto tangents =
+            args | std::views::transform([&d](NodeId s) { return d[s]; }) |
+            impl::to<boost::container::small_vector<NodeId, 8>>();
+        d[v] = b.pack(tangents);
+        break;
+      }
+      case OpCode::Gather:
+        d[v] = dv(node.a)[node.slot].id(b);
+        break;
+      case OpCode::Scale:
+        d[v] = (dv(node.a) * expr(node.b) + expr(node.a) * dv(node.b))
+                   .id(b, width_of(b, v));
+        break;
+      case OpCode::Sum:
+        d[v] = sum(dv(node.a)).id(b);
+        break;
+      case OpCode::Dot:
+        d[v] = (dot(dv(node.a), expr(node.b)) + dot(expr(node.a), dv(node.b)))
+                   .id(b);
+        break;
+      case OpCode::Gemv:
+        d[v] = b.make(OpCode::Gemv, node.a, d[node.b], no_node, node.slot);
+        break;
+      case OpCode::AddAt:
+        d[v] = b.make(OpCode::AddAt, d[node.a], d[node.b], no_node, node.slot);
+        break;
+      case OpCode::MatRow:
+      case OpCode::Diag:
+      case OpCode::Outer:
+      case OpCode::RowScale:
+      case OpCode::ColScale:
+      case OpCode::MatVec:
+      case OpCode::MatMul:
+      case OpCode::StackRows:
+      case OpCode::RowOf:
+        break; // never under a root
+      default:
+        std::unreachable();
+      }
       break;
     }
     }

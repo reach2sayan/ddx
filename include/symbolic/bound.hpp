@@ -1,7 +1,6 @@
 #pragma once
 
 #include "symbolic/entry.hpp"
-#include "symbolic/sweep.hpp"
 #include "symbolic/traits.hpp"
 #include "util/config.hpp" // DDX_KEYED_ACCESSORS
 #include "util/error.hpp"
@@ -170,6 +169,15 @@ template <FixedString... Syms, Numeric... Vs>
   return bind(DDX_FWD(e), values(nv...));
 }
 
+// The value-array APIs take CANONICAL (alphabetical) order.
+template <CExpression Expr>
+[[nodiscard]] consteval auto symbol_order() noexcept {
+  using SymList = detail::expr_symbols_t<std::remove_cvref_t<Expr>>;
+  constexpr std::size_t N = mp::mp_size<SymList>::value;
+  return index_apply<N>([]<std::size_t... I>() {
+    return std::array<std::string_view, N>{mp::mp_at_c<SymList, I>::name...};
+  });
+}
 template <CExpression Expr>
 [[nodiscard]] consteval auto symbol_order(const Expr &) noexcept {
   return symbol_order<std::remove_cvref_t<Expr>>();

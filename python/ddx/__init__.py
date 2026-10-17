@@ -35,15 +35,16 @@ from ._ddx import (Backend, Call, Expression, Level, Restricted, VecLib, Want, a
                    mul, neg,
                    pow,  # noqa: A004
                    closes, implicit, param, select, sign, sin, sinh, sqrt, tan, tanh,
-                   var, )
+                   var,
+                   add_at, dot, gemv, gemv_t, mat_const, pack,
+                   sum,  # noqa: A004
+                   vec, vec_const, )
 from ._options import Options
 
 if TYPE_CHECKING:
 	from collections.abc import Callable
-	from os import PathLike
 	import ddx._ddx as _extension
 	
-	StrPath = str | PathLike[str]
 	
 	# What the runtime adds and a generated stub cannot see: the exception
 	# translator's code, the pydantic-facing members installed below, and the
@@ -62,22 +63,12 @@ if TYPE_CHECKING:
 	
 	Model = Callable[[], Expression | tuple[Expression, ...]]
 	
-	def equation(
-		model: Model | str | list[str],
-		*,
-		cache: StrPath | None = None,
-		remember: bool = False,
-	) -> Equation:
+	def equation(model: Model | str | list[str]) -> Equation:
 		"""Build an equation from a model, or from expressions written as text --
-		one string per function.  ``cache`` is a file to keep it in, and
-		``remember`` makes a call at a point already asked come back off the
-		last one."""
-
-	def load(path: StrPath, *, remember: bool = False) -> Equation:
-		"""Read an equation from a file, running no model and sweeping nothing."""
+		one string per function."""
 
 else:
-	from ._ddx import Equation, Error, equation, load
+	from ._ddx import Equation, Error, equation
 
 # From the extension, which was built from CMake's project() line: the same
 # number an installed package's metadata carries, and there for an in-tree
@@ -109,7 +100,9 @@ __all__ = ["Backend", "Call", "Equation", "Error", "Expression", "Level", "Restr
            "Options", "VecLib", "Want", "__version__",	"abs", "acos", "acosh",	"add",
            "asin", "asinh",	"atan", "atan2", "atanh", "cbrt", "cos",
            "cosh", "div", "equation", "erf", "errc", "exp",
-           "has_jit", "has_opencl", "hypot", "le", "load", "log", "log10", "lt", "max",
+           "has_jit", "has_opencl", "hypot", "le", "log", "log10", "lt", "max",
            "min", "mul", "neg", "param", "pow", "select", "sign", "sin", "sinh", "sqrt",
            "closes", "implicit",
-           "tan", "tanh", "var",]
+           "tan", "tanh", "var",
+           "add_at", "dot", "gemv", "gemv_t", "mat_const", "pack",
+           "sum", "vec", "vec_const",]

@@ -354,19 +354,13 @@ TEST(ForwardTangentSweep, IsConstexpr) {
   static_assert(t.deriv() == 7.0, "2x + 3 at x = 2");
   EXPECT_DOUBLE_EQ(t.deriv(), 7.0);
 }
-// A frozen symbol is a constant: same value lookup, zero derivative, in all
-// three engines.
-TEST(FrozenVariable, EveryEngineSeesZeroDerivative) {
+// A frozen symbol is a constant: same value lookup, zero derivative.  A tree
+// holding one is a partial's row, not a model: Equation refuses to lower it.
+TEST(FrozenVariable, EvaluatesAndSeesZeroDerivative) {
   auto e =
       make_const_variable<ddx::impl::FixedString{"x"}>(var<"x"> * var<"y">);
-  const std::array<double, 2> pt{2.0, 3.0};
 
   EXPECT_DOUBLE_EQ(e.eval(2.0, 3.0), 6.0);
-
-  const auto g = Equation{e}.template derivative_tensor<1>(pt);
-  EXPECT_DOUBLE_EQ(g.data()[0], 0.0); // d/dx — frozen
-  EXPECT_DOUBLE_EQ(g.data()[1], 2.0); // d/dy — still live
-
   EXPECT_DOUBLE_EQ(e.eval_with_tangent<"x">(2.0, 3.0).deriv(), 0.0);
   EXPECT_DOUBLE_EQ(e.eval_with_tangent<"y">(2.0, 3.0).deriv(), 2.0);
 }

@@ -4,11 +4,16 @@
 #include "rt/builder.hpp"
 #include "rt/expressions.hpp"
 #include "rt/opcode.hpp"
+#include "rt/tensor.hpp" // pack
+#include "util/ranges.hpp"
 
+#include <cstddef>
 #include <format>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
+#include <vector>
 
 // The handle Python holds: an RTExpression that owns its arena.  RTExpression
 // stores a *non-owning* Builder* because in C++ an arena's lifetime is lexical;
@@ -41,6 +46,63 @@ public:
     return expression_.poisoned();
   }
 
+  // A factory or reduction raises where it refused -- a shape, a missing
+  // arena -- rather than carrying the poison on to equation().
+  [[nodiscard]] static PyExpression checked(const Base &e, Arena arena) {
+    if (const auto why = rt::detail::Rooting::why(e)) {
+      fail_with(*why);
+    }
+    return {e, std::move(arena)};
+  }
+  // The arena the scalars name, else `fallback`: the model running now.
+  [[nodiscard]] static PyExpression pack(std::span<const PyExpression> scalars,
+                                         const Arena &fallback) {
+    Arena arena = fallback;
+    for (const PyExpression &e : scalars) {
+      if (e.arena_) {
+        arena = e.arena_;
+        break;
+      }
+    }
+    if (!arena) {
+      fail_with(errc::no_arena);
+    }
+    const auto bases = scalars | std::views::transform(&PyExpression::base) |
+                       impl::to<std::vector<Base>>();
+    return checked(rt::pack(*arena, std::span<const Base>{bases}), arena);
+  }
+
+  // The base's accumulating `+=`, with the arena put back: what a loop of
+  // `acc += term` builds as one node.  Python's `+=` rebinds the name to what
+  // __iadd__ answers, so this is called on a copy and no other reference to
+  // the old handle moves.
+  PyExpression &operator+=(const PyExpression &o) {
+    expression_ += o.expression_;
+    if (!arena_) {
+      arena_ = o.arena_;
+    }
+    return *this;
+  }
+
+  // Elements per point: zero for a scalar.
+  [[nodiscard]] std::size_t size() const noexcept { return expression_.size(); }
+  [[nodiscard]] PyExpression at(std::size_t i) const {
+    return checked(expression_[i], arena_);
+  }
+  // (), (n,) for a vector, (rows, cols) for a constant matrix.
+  [[nodiscard]] std::vector<std::size_t> shape() const {
+    if (!arena_) {
+      return {};
+    }
+    const rt::Node<double> &n = (*arena_)[expression_.id()];
+    if (n.op == rt::OpCode::MatConst) {
+      const auto &t = arena_->tensors()[n.slot];
+      return {t.rows, t.cols};
+    }
+    return size() == 0 ? std::vector<std::size_t>{}
+                       : std::vector<std::size_t>{size()};
+  }
+
   // The id this names in `arena`, or a refusal: an id from another arena would
   // index this one at random.  A pending literal materialises into it.
   [[nodiscard]] rt::NodeId root_in(rt::Builder<double> &arena) const {
@@ -63,7 +125,7 @@ public:
       return std::format("Expression({})", arena_->symbols()[n.slot]);
     default:
       // The op and the identity, not the subtree: an id *is* the identity of a
-      // subexpression here, and a whole tree is what to_dot() is for.
+      // subexpression here.
       return std::format("Expression({} #{})", rt::label_of(n.op), v);
     }
   }
@@ -95,7 +157,12 @@ private:
   // The one ternary.
   friend PyExpression select(const PyExpression &, const PyExpression &,
                              const PyExpression &);
+  // The reductions and the vector factories in module.cpp.
+  friend PyExpression reduce(const PyExpression &, auto &&);
+  friend PyExpression reduce(const PyExpression &, const PyExpression &,
+                             auto &&);
 
+public:
   [[nodiscard]] constexpr const Base &base() const noexcept {
     return expression_;
   }
@@ -103,9 +170,22 @@ private:
   // Null exactly while this is a pending literal, which names no graph yet.
   [[nodiscard]] constexpr const Arena &arena() const noexcept { return arena_; }
 
+private:
+
   Base expression_;
   Arena arena_;
 };
+
+// A reduction to a scalar, or any other composition that may refuse, raises
+// where it is formed; mixed operands take whichever arena is named.
+[[nodiscard]] inline PyExpression reduce(const PyExpression &v, auto &&fn) {
+  return PyExpression::checked(fn(v.expression_), v.arena_);
+}
+[[nodiscard]] inline PyExpression reduce(const PyExpression &u,
+                                         const PyExpression &v, auto &&fn) {
+  return PyExpression::checked(fn(u.expression_, v.expression_),
+                               u.arena_ ? u.arena_ : v.arena_);
+}
 
 // The comparisons answer an expression, as the base's do.  Only `<` and `<=`
 // are nodes; the rest are those two read the other way round, which the base

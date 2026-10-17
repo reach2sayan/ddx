@@ -91,18 +91,11 @@ template <typename Fn, impl::Numeric T, bool Ok>
 [[nodiscard]] constexpr T
 supported([[maybe_unused]] const impl::Numeric auto &...args) noexcept {
   if constexpr (Ok) {
-    return T{Fn{}(args...)};
+    return static_cast<T>(Fn{}(args...));
   } else {
     return T{};
   }
 }
-
-struct first_impl {
-  [[nodiscard]] constexpr auto operator()(const auto &a,
-                                          const auto &) const noexcept {
-    return a;
-  }
-};
 
 // One table row as a type: what to call, whether T can, and with how many
 // operands.  A leaf is the row with nothing to call.
@@ -143,13 +136,19 @@ dispatch(OpCode op, auto &&visit) {
 #undef DDX_RT_DISPATCH
     // A call is opaque to every scalar: the interpreter calls the function
     // itself, and supports() saying no is what keeps a Taylor sweep away from
-    // one.  A list's value is its first argument, at any scalar.
+    // one.  A sum is the interpreter's too, and adds at every scalar.
 #define DDX_RT_DISPATCH(fn, Op, label, arity, kind)                            \
   case OpCode::Op:                                                             \
-    return visit(                                                              \
-        Row<std::conditional_t<Kind::kind == Kind::Args, first_impl, void>,    \
-            Kind::kind == Kind::Args, arity>{});
+    return visit(Row<void, Kind::kind == Kind::Nary, arity>{});
     DDX_RT_EXTERN_TABLE(DDX_RT_DISPATCH)
+    DDX_RT_NARY_TABLE(DDX_RT_DISPATCH)
+#undef DDX_RT_DISPATCH
+    // A tensor row is the interpreter's as well, through its kernel table, and
+    // at no scalar but the graph's own.
+#define DDX_RT_DISPATCH(fn, Op, label, arity, kind)                            \
+  case OpCode::Op:                                                             \
+    return visit(Row<void, false, arity>{});
+    DDX_RT_TENSOR_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
   }
   std::unreachable();
@@ -174,7 +173,8 @@ template <impl::Numeric T>
   requires(sizeof...(args) >= 1 && sizeof...(args) <= 3)
 {
   return detail::dispatch<T>(op, [&]<typename R>(R) -> T {
-    if constexpr (R::arity == sizeof...(args)) {
+    if constexpr (R::arity == sizeof...(args) &&
+                  !std::is_void_v<typename R::functor>) {
       return detail::supported<typename R::functor, T, R::ok>(args...);
     } else {
       return T{};

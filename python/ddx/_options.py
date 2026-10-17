@@ -51,7 +51,6 @@ class Options(BaseModel):
 
     time_passes: bool = _DEFAULTS.time_passes
 
-    retain_object: bool = _DEFAULTS.retain_object
     cache_dir: str = _DEFAULTS.cache_dir # empty disables it
 
     device: str = _DEFAULTS.device

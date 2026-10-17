@@ -119,8 +119,8 @@ TEST(JitExtern, EveryFunctionAndComponentSurvivesTheRebuild) {
 }
 
 // The kernel holds the functions it calls and no address of its own: it runs
-// after the graph it was lowered from is gone, and its object is kept and
-// cached like any other.
+// after the graph it was lowered from is gone, and its object is kept like any
+// other.
 TEST(JitExtern, AKernelOutlivesItsGraphAndKeepsItsObject) {
   auto c = ddx::jit::Compiler::create();
   ASSERT_TRUE(c.has_value()) << c.error().detail;
@@ -131,7 +131,7 @@ TEST(JitExtern, AKernelOutlivesItsGraphAndKeepsItsObject) {
     const auto g = ddx::rt::extern_fn(b, {.name = "g", .arity = 2}, g_of);
     const auto graph = ddx::rt::Graph<>::freeze(
         b, std::array{(g(a, bb) * 2.0).id(b)});
-    auto k = c->compile(graph, {.retain_object = true});
+    auto k = c->compile(graph);
     EXPECT_TRUE(k.has_value()) << (k ? "" : k.error().detail);
     return k ? std::move(*k) : ddx::jit::Kernel{};
   }();

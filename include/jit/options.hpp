@@ -117,8 +117,6 @@ struct Options {
   std::size_t warm_points = 1uz << 16;
   std::size_t hot_points = 1uz << 20;
   bool time_passes = false; // Per-pass timing to stderr
-  // On: the object is the one part of a saved equation nothing can reconstruct.
-  bool retain_object = true;
   // Object cache directory, empty for none; keyed by graph, options and host.
   // Not serialised: a path is this machine's.
   std::string cache_dir{};
@@ -131,7 +129,7 @@ struct Options {
   friend bool operator==(const Options &, const Options &) = default;
   BOOST_DESCRIBE_CLASS(Options, (),
                        (backend, points, codegen, warm_points, hot_points,
-                        time_passes, retain_object),
+                        time_passes),
                        (), ())
 };
 
