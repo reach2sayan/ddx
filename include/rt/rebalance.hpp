@@ -125,10 +125,11 @@ rebalance(Builder<T> &b, std::span<const NodeId> roots, std::size_t blocks = 16,
         node.op == OpCode::SumN ||
         (node.op == OpCode::Add && (uses[v] != 1 || is_root[v]));
     if (spine_top) {
-      auto terms = node.op == OpCode::SumN
-                       ? arguments(b, v) |
-                             impl::to<boost::container::small_vector<NodeId, 64>>()
-                       : detail::spine_terms(b, v, uses, is_root);
+      auto terms =
+          node.op == OpCode::SumN
+              ? arguments(b, v) |
+                    impl::to<boost::container::small_vector<NodeId, 64>>()
+              : detail::spine_terms(b, v, uses, is_root);
       if (terms.size() >= least) {
         std::ranges::transform(terms, terms.begin(),
                                [&remap](NodeId t) { return remap[t]; });

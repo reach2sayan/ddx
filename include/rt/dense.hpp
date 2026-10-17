@@ -143,8 +143,7 @@ private:
     switch (t.kind) {
     case Term::Kind::Identity:
       ++n2_;
-      return {.kind = Term::Kind::Diag,
-              .a = (s * vec(ones())).id(b_, n_)};
+      return {.kind = Term::Kind::Diag, .a = (s * vec(ones())).id(b_, n_)};
     case Term::Kind::Diag:
       return {.kind = Term::Kind::Diag, .a = (s * vec(t.a)).id(b_, n_)};
     case Term::Kind::Outer:
@@ -195,7 +194,8 @@ private:
   }
   // The constant matrix C (or C^T) applied on the left of a term.
   [[nodiscard]] Term gemv(NodeId matrix, bool transposed, const Term &t) {
-    const NodeId c = b_.make(OpCode::MatRow, matrix, no_node, no_node, transposed);
+    const NodeId c =
+        b_.make(OpCode::MatRow, matrix, no_node, no_node, transposed);
     switch (t.kind) {
     case Term::Kind::Identity:
       ++n2_;
@@ -210,8 +210,7 @@ private:
               .b = t.b};
     case Term::Kind::Dense:
       ++n3_;
-      return {.kind = Term::Kind::Dense,
-              .a = b_.make(OpCode::MatMul, c, t.a)};
+      return {.kind = Term::Kind::Dense, .a = b_.make(OpCode::MatMul, c, t.a)};
     }
     std::unreachable();
   }
@@ -310,8 +309,8 @@ private:
                           }) |
                           impl::to<std::vector<NodeId>>();
         ++n2_;
-        out.push_back({.kind = Term::Kind::Dense,
-                       .a = b_.pack(rows, OpCode::StackRows)});
+        out.push_back(
+            {.kind = Term::Kind::Dense, .a = b_.pack(rows, OpCode::StackRows)});
       }
       break;
     case OpCode::Map: {
@@ -327,9 +326,8 @@ private:
     }
     case OpCode::Scale: {
       const E s = expr(node.a);
-      out = mat_[node.b] | std::views::transform([&](const Term &t) {
-              return scale(s, t);
-            }) |
+      out = mat_[node.b] |
+            std::views::transform([&](const Term &t) { return scale(s, t); }) |
             impl::to<Terms>();
       if (row_[node.a] != no_node) {
         ++n2_;

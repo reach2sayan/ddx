@@ -88,8 +88,8 @@ struct Kernels {
   using In = KernelTable::In;
   using Out = KernelTable::Out;
 
-  static constexpr void gemv(std::size_t r, std::size_t c, In m, In v,
-                             Out out, bool transposed) noexcept {
+  static constexpr void gemv(std::size_t r, std::size_t c, In m, In v, Out out,
+                             bool transposed) noexcept {
     if (transposed) {
       // out[j] = column_j . v
       for (std::size_t j = 0; j < c; ++j) {
@@ -111,9 +111,8 @@ struct Kernels {
 
   [[nodiscard]] static constexpr double dot(In u, In v) noexcept {
     return std::transform_reduce(u.begin(), u.end(), v.begin(), 0.0,
-                                 std::plus<>{}, [](double a, double b) {
-                                   return a * b;
-                                 });
+                                 std::plus<>{},
+                                 [](double a, double b) { return a * b; });
   }
 
   static constexpr void scale(double s, In v, Out out) noexcept {
@@ -153,8 +152,8 @@ struct Kernels {
   }
 
   // out = A B, one column of B at a time: a gemv per column.
-  static constexpr void gemm(std::size_t r, std::size_t k, std::size_t c,
-                             In a, In bm, Out out) noexcept {
+  static constexpr void gemm(std::size_t r, std::size_t k, std::size_t c, In a,
+                             In bm, Out out) noexcept {
     for (std::size_t j = 0; j < c; ++j) {
       gemv(r, k, a, bm.subspan(j * k, k), out.subspan(j * r, r), false);
     }

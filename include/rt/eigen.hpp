@@ -59,10 +59,9 @@ void scatter(const Sparsity &pattern, const Eigen::MatrixBase<B> &block,
   dense.derived().setZero(static_cast<Eigen::Index>(pattern.size()),
                           static_cast<Eigen::Index>(pattern.columns));
   const auto row = block.row(point);
-  for (const auto [i, j, v] :
-       pattern.cells(std::views::iota(Eigen::Index{0}, block.cols()) |
-                     std::views::transform(
-                         [&row](Eigen::Index k) { return row(k); }))) {
+  for (const auto [i, j, v] : pattern.cells(
+           std::views::iota(Eigen::Index{0}, block.cols()) |
+           std::views::transform([&row](Eigen::Index k) { return row(k); }))) {
     dense(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j)) = v;
   }
 }

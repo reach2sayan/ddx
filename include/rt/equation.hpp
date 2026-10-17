@@ -29,10 +29,9 @@ inline constexpr bool dynamic_outputs =
     std::same_as<boost::mp11::mp_list<Rest...>,
                  boost::mp11::mp_list<rt::detail::Dynamic>>;
 template <typename T, typename... Rest>
-concept COutputPack =
-    dynamic_outputs<T, Rest...> ||
-    boost::mp11::mp_all_of_q<boost::mp11::mp_list<Rest...>,
-                             is_output<T>>::value;
+concept COutputPack = dynamic_outputs<T, Rest...> ||
+                      boost::mp11::mp_all_of_q<boost::mp11::mp_list<Rest...>,
+                                               is_output<T>>::value;
 
 // The count's policy: fixed by the pack, or Dynamic as written.
 template <typename T, typename... Rest>

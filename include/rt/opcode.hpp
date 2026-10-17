@@ -191,8 +191,7 @@ inline constexpr std::array op_info = [] {
   std::array<OpInfo, op_count> t{};
 #define DDX_RT_ROW(fn, Op, label, role, ...)                                   \
   t[static_cast<std::size_t>(OpCode::Op)] = {                                  \
-      #fn, label, 0,                                                           \
-      Role::role == Role::Literal ? Kind::Const : Kind::Input};
+      #fn, label, 0, Role::role == Role::Literal ? Kind::Const : Kind::Input};
   DDX_RT_LEAF_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
 #define DDX_RT_ROW(fn, Op, label, ...)                                         \
@@ -344,7 +343,8 @@ template <typename T> struct PerKind : std::array<T, named_count> {
       std::ranges::copy(other, this->begin());
     }
   }
-  constexpr PerKind(PerKind &&other) noexcept : Array(std::move(other).taken()) {
+  constexpr PerKind(PerKind &&other) noexcept
+      : Array(std::move(other).taken()) {
     if consteval {
       std::ranges::move(other, this->begin());
     }
@@ -405,7 +405,6 @@ struct ExternSlot {
     return function < limit && components <= limit;
   }
 };
-
 
 // How many input columns of each kind a call passes, in the order it passes
 // them: the named kinds in table order, then a seeded product's direction.

@@ -124,8 +124,9 @@ def quad():
 Arithmetic and the unary functions apply elementwise, and a scalar or a bare
 number broadcasts. `len(v)` and `v.shape` give the shape and `v[i]` an element.
 Shapes are checked where an expression is formed: a mismatch, or an index past
-the end, raises `errc.tensor_shape`. A model holding vector nodes is
-interpreted — no kernel is compiled for it, and `uses_kernel` stays `False`.
+the end, raises `errc.tensor_shape`. An output is always a scalar: a model
+that returns a vector raises `errc.tensor_shape` too, so reduce it or return
+its elements as a system. A model holding vector nodes is interpreted — no kernel is compiled for it, and `uses_kernel` stays `False`.
 
 ### Written down instead
 
@@ -264,7 +265,7 @@ is the spelling.
 | `name_clash` | one name used for both a symbol and a parameter |
 | `closed_twice`, `nested_implicit` | an implicit input named twice, or a residual reading another implicit |
 | `not_single_output` | `hvp`, `dense_hessian` or `hessian_colors` on a system |
-| `tensor_shape` | vector operands of mismatched shapes, or an element index past the end |
+| `tensor_shape` | vector operands of mismatched shapes, an element index past the end, or a vector returned as an output |
 | `bad_syntax` | a string the grammar does not accept |
 | `unknown_function` | a string calls a function that does not exist |
 | `wrong_argument_count` | a string calls one with the wrong arity |

@@ -29,8 +29,9 @@ namespace {
 using flavor = boost::hash2::little_endian_flavor;
 
 template <typename U>
-using described_members = boost::describe::describe_members<
-    U, boost::describe::mod_any_access | boost::describe::mod_inherited>;
+using described_members =
+    boost::describe::describe_members<U, boost::describe::mod_any_access |
+                                             boost::describe::mod_inherited>;
 
 // The same bits as an unsigned of the same width: hash2 appends a float as
 // v + 0, which maps -0.0 onto +0.0, and a graph holding -0.0 must not load
@@ -65,8 +66,7 @@ constexpr std::string_view kMagic = "ddxjitob";
 constexpr std::uint32_t kFormat = 1;
 constexpr std::size_t kHeaderBytes = 8 + 4 + 8 + 4 + 4 + 8;
 
-template <std::unsigned_integral U>
-void put(std::span<std::byte> at, U v) {
+template <std::unsigned_integral U> void put(std::span<std::byte> at, U v) {
   boost::endian::native_to_little_inplace(v);
   std::memcpy(at.data(), &v, sizeof v);
 }
@@ -221,9 +221,9 @@ std::optional<Entry> read_entry(std::string_view dir, std::uint64_t key) {
   }
   const auto symbol = rest.first(symbol_bytes);
   const auto code = rest.subspan(symbol_bytes);
-  return Entry{.symbol = {reinterpret_cast<const char *>(symbol.data()),
-                          symbol.size()},
-               .code = {code.begin(), code.end()}};
+  return Entry{
+      .symbol = {reinterpret_cast<const char *>(symbol.data()), symbol.size()},
+      .code = {code.begin(), code.end()}};
 }
 
 void write_entry(std::string_view dir, std::uint64_t key,

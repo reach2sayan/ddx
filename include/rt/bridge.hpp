@@ -30,8 +30,9 @@ template <impl::Numeric T, impl::CExpression U>
   } else if constexpr (impl::CLit<U>) {
     return lit(b, static_cast<T>(val(U::value)));
   } else if constexpr (impl::CConstant<U>) {
-    return lit(b, static_cast<T>(val(e.template eval_seeded<impl::mp::mp_list<>>(
-                      std::array<T, 1>{}))));
+    return lit(b,
+               static_cast<T>(val(e.template eval_seeded<impl::mp::mp_list<>>(
+                   std::array<T, 1>{}))));
   } else {
     constexpr auto code = opcode_of(U::op_type::label);
     static_assert(code.has_value(), "no OpCode row carries this op's label");

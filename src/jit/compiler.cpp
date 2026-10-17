@@ -79,10 +79,12 @@ void init_native_target_once() {
 template <rt::OpCode Op, typename Functor> void define_call(auto &def) {
   if constexpr (rt::lowering_of(Op).how == rt::Lower::Call) {
     if constexpr (rt::arity_of(Op) == 1) {
-      def(rt::lowering_of(Op).name,
+      def(
+          rt::lowering_of(Op).name,
           +[](double u) noexcept { return double{Functor{}(u)}; });
     } else {
-      def(rt::lowering_of(Op).name,
+      def(
+          rt::lowering_of(Op).name,
           +[](double l, double r) noexcept { return double{Functor{}(l, r)}; });
     }
   }
@@ -111,13 +113,15 @@ template <rt::OpCode Op, typename Functor> void define_call(auto &def) {
   DDX_RT_BINARY_TABLE(DDX_JIT_RUNTIME)
 #undef DDX_JIT_RUNTIME
 #define DDX_JIT_RUNTIME(fn, Op, label)                                         \
-  def(rt::lowering_of(rt::OpCode::Op).name,                                    \
+  def(                                                                         \
+      rt::lowering_of(rt::OpCode::Op).name,                                    \
       +[](double u) noexcept { return std::fn(u); });
   DDX_UNARY_MATH_TABLE(DDX_JIT_RUNTIME)
 #undef DDX_JIT_RUNTIME
-  def(detail::trampoline_symbol,
-      +[](const void *fn, const double *in, std::uint64_t arity,
-          double *answer, std::uint64_t components) noexcept {
+  def(
+      detail::trampoline_symbol,
+      +[](const void *fn, const double *in, std::uint64_t arity, double *answer,
+          std::uint64_t components) noexcept {
         (*static_cast<const rt::ExternFn<double> *>(fn))(
             {in, static_cast<std::size_t>(arity)},
             {answer, static_cast<std::size_t>(components)});
@@ -446,12 +450,14 @@ private:
     }
     auto sym = host_.jit.lookup(name_);
     if (!sym) {
-      return std::unexpected{
-          as_error(errc::jit_lookup, llvm::Twine{"looking up "} + name_,
-                   sym.takeError())};
+      return std::unexpected{as_error(errc::jit_lookup,
+                                      llvm::Twine{"looking up "} + name_,
+                                      sym.takeError())};
     }
-    return Kernel{sym->toPtr<Kernel::function_type>(), KernelShape::of(g_),
-                  Externs::of(g_), std::move(host_.code),
+    return Kernel{sym->toPtr<Kernel::function_type>(),
+                  KernelShape::of(g_),
+                  Externs::of(g_),
+                  std::move(host_.code),
                   std::make_shared<const std::string>(name_),
                   host_.objects.take(name_)};
   }
@@ -647,15 +653,18 @@ struct Compiler::Impl {
     // link runs on the lookup.
     auto sym = jit.lookup(*jd, symbol);
     if (!sym) {
-      return std::unexpected{as_error(errc::jit_lookup,
-                                      llvm::Twine{"looking up "} +
-                                          llvm::StringRef{symbol},
-                                      sym.takeError())};
+      return std::unexpected{
+          as_error(errc::jit_lookup,
+                   llvm::Twine{"looking up "} + llvm::StringRef{symbol},
+                   sym.takeError())};
     }
     evict.set_active(false);
-    return Kernel{sym->toPtr<Kernel::function_type>(), KernelShape::of(g),
-                  Externs::of(g), self,
-                  std::make_shared<const std::string>(symbol), std::move(kept)};
+    return Kernel{sym->toPtr<Kernel::function_type>(),
+                  KernelShape::of(g),
+                  Externs::of(g),
+                  self,
+                  std::make_shared<const std::string>(symbol),
+                  std::move(kept)};
   }
 
   // On Impl, so a queued compile needs only a share of this and not a Compiler
@@ -694,8 +703,7 @@ struct Compiler::Impl {
       if (const auto entry = detail::read_entry(opt.cache_dir, key)) {
         // The shape comes from the live graph, never the file: a forged entry
         // supplies code and a symbol, never a column count.
-        if (auto adopted = link(self, entry->code, entry->symbol, g);
-            adopted) {
+        if (auto adopted = link(self, entry->code, entry->symbol, g); adopted) {
           // The phases are zero because they did not happen.
           rep.nodes = g.live_count();
           return adopted;

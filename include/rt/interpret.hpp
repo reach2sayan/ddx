@@ -69,10 +69,9 @@ template <typename Sign> struct fma_fn {
 
 // The sign is hoisted out of the lane loop rather than tested in it.
 template <std::size_t W, impl::Numeric T>
-constexpr void lanes_fma_signed(bool negated, const T *DDX_RESTRICT x,
-                                const T *DDX_RESTRICT y,
-                                const T *DDX_RESTRICT z,
-                                T *DDX_RESTRICT out) noexcept {
+constexpr void
+lanes_fma_signed(bool negated, const T *DDX_RESTRICT x, const T *DDX_RESTRICT y,
+                 const T *DDX_RESTRICT z, T *DDX_RESTRICT out) noexcept {
   if (negated) {
     lanes<W, fma_fn<std::negate<>>, T, true>(out, x, y, z);
   } else {
@@ -155,7 +154,6 @@ DDX_NOINLINE constexpr void lanes_extern(const Builder<T> &b, NodeId v, U *out,
   }
 }
 
-
 // A tensor node, W lanes of it: each lane's vector is one contiguous span
 // handed to the kernel table, except the copies -- Pack, Gather, AddAt, a
 // VecConst -- which the interpreter does itself.  At any scalar but double
@@ -193,9 +191,8 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
     case OpCode::Pack: {
       const auto args = arguments(b, v);
       for (std::size_t k = 0; k < W; ++k) {
-        std::ranges::transform(args, mine(k).begin(), [&](NodeId s) {
-          return lane(t.slot(s))[k];
-        });
+        std::ranges::transform(args, mine(k).begin(),
+                               [&](NodeId s) { return lane(t.slot(s))[k]; });
       }
       break;
     }
@@ -318,7 +315,8 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
       }
       break;
     }
-    case OpCode::StackRows: { // row i of the matrix is item i: (i, j) at i + j w
+    case OpCode::StackRows: { // row i of the matrix is item i: (i, j) at i + j
+                              // w
       const auto items = arguments(b, v);
       const std::size_t rows = items.size();
       for (std::size_t k = 0; k < W; ++k) {
@@ -388,10 +386,9 @@ DDX_NOINLINE constexpr void lanes_sum(const Builder<T> &b, NodeId v, bool fused,
 // tensor's.  The kind test sits here, past the opcode switch, where it costs
 // a sweep of scalars nothing.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
-DDX_ALWAYS_INLINE constexpr void lanes_opaque(const Builder<T> &b, NodeId v,
-                                              const Node<T> &n, bool fused,
-                                              U *out, auto &&lane,
-                                              const Scratch<U> &t) {
+DDX_ALWAYS_INLINE constexpr void
+lanes_opaque(const Builder<T> &b, NodeId v, const Node<T> &n, bool fused,
+             U *out, auto &&lane, const Scratch<U> &t) {
   switch (kind_of(n.op)) {
   case Kind::Tensor:
     lanes_tensor<W>(b, v, n, out, lane, t);

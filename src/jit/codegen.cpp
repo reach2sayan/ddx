@@ -17,8 +17,8 @@
 #include <llvm/Support/Alignment.h>
 
 #include <algorithm>
-#include <cstdint>
 #include <array>
+#include <cstdint>
 #include <map>
 #include <ranges>
 #include <span>
@@ -41,8 +41,9 @@ llvm::Intrinsic::ID intrinsic_for(rt::OpCode op) {
       const auto &[how, name] = rt::lowering_of(static_cast<rt::OpCode>(i));
       llvm::SmallString<32> spelled{"llvm."};
       spelled += name;
-      t[i] = how == rt::Lower::Call ? llvm::Intrinsic::lookupIntrinsicID(spelled)
-                                    : llvm::Intrinsic::not_intrinsic;
+      t[i] = how == rt::Lower::Call
+                 ? llvm::Intrinsic::lookupIntrinsicID(spelled)
+                 : llvm::Intrinsic::not_intrinsic;
     }
     return t;
   }();
@@ -74,9 +75,9 @@ llvm::Function *trampoline_decl(llvm::Module &m) {
   llvm::PointerType *const ptr = llvm::PointerType::getUnqual(ctx);
   llvm::Type *const i64 = llvm::Type::getInt64Ty(ctx);
   llvm::FunctionCallee c = m.getOrInsertFunction(
-      trampoline_symbol, llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
-                                                 {ptr, ptr, i64, ptr, i64},
-                                                 false));
+      trampoline_symbol,
+      llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+                              {ptr, ptr, i64, ptr, i64}, false));
   auto *fn = llvm::cast<llvm::Function>(c.getCallee());
   fn->setDoesNotThrow();
   fn->setWillReturn();
@@ -139,10 +140,10 @@ public:
     // Sign: u > 0 ? 1 : u < 0 ? -1 : u - u -- the last arm reaches only ±0
     // and NaN.
     llvm::Value *const zero = constant(0.0);
-    return b_.CreateSelect(
-        b_.CreateFCmpOGT(u, zero), constant(1.0),
-        b_.CreateSelect(b_.CreateFCmpOLT(u, zero), constant(-1.0),
-                        b_.CreateFSub(u, u)));
+    return b_.CreateSelect(b_.CreateFCmpOGT(u, zero), constant(1.0),
+                           b_.CreateSelect(b_.CreateFCmpOLT(u, zero),
+                                           constant(-1.0),
+                                           b_.CreateFSub(u, u)));
   }
 
   // Not llvm.fmuladd, which is only *permission* to fuse
@@ -252,7 +253,8 @@ private:
       if (id != llvm::Intrinsic::not_intrinsic) {
         fn = llvm::Intrinsic::getOrInsertDeclaration(&m_, id, {lanes_.ty});
       } else {
-        fn = libm_decl(m_, rt::label_of(op), static_cast<unsigned>(args.size()));
+        fn =
+            libm_decl(m_, rt::label_of(op), static_cast<unsigned>(args.size()));
         scalarise = lanes_.vector();
       }
     }
@@ -328,7 +330,7 @@ llvm::Function *declare_kernel(llvm::Module &m, llvm::StringRef name,
   // not asked for arrives as an empty span, whose data() may be null, so it
   // gets neither nonnull nor a size.
   const auto &layout = g.layout();
-  const std::array counts{g.arity(), layout.values, layout.jacobian,
+  const std::array counts{g.arity(),      layout.values,  layout.jacobian,
                           layout.hessian, std::size_t{0}, g.externs().size()};
   for (const auto [i, count] : counts | std::views::enumerate) {
     const auto arg = static_cast<unsigned>(i);
@@ -405,9 +407,9 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
       value[v] = emit.constant(p.value);
       break;
     case rt::Kind::Input:
-      value[v] = emit.load(
-          cols.inputs[rt::input_column(g.inputs(), p.op, p.slot)], index, mask,
-          "");
+      value[v] =
+          emit.load(cols.inputs[rt::input_column(g.inputs(), p.op, p.slot)],
+                    index, mask, "");
       break;
     case rt::Kind::Nary: {
       // The terms into the running sum in list order, a product term as the
@@ -434,11 +436,10 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
       const auto [fn, component] = rt::ExternSlot::of(p.slot);
       auto [answers, fresh] = called.try_emplace({fn, operands[0]});
       if (fresh) {
-        const auto args = rt::arguments(g, v) |
-                          std::views::transform([&value](rt::NodeId a) {
-                            return value[a];
-                          }) |
-                          impl::to<std::vector<llvm::Value *>>();
+        const auto args =
+            rt::arguments(g, v) |
+            std::views::transform([&value](rt::NodeId a) { return value[a]; }) |
+            impl::to<std::vector<llvm::Value *>>();
         answers->second = emit.extern_call(g.externs()[fn], fn, args);
       }
       value[v] = emit.component(answers->second, component);

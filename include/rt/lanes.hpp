@@ -160,12 +160,12 @@ template <impl::Numeric T> struct Compiled {
 
   [[nodiscard]] std::shared_ptr<const Compiled> with(AnyKernel k,
                                                      jit::Level l) const {
-    return std::make_shared<const Compiled>(Compiled{.graph = graph,
-                                                     .compile_graph =
-                                                         compile_graph,
-                                                     .kernel = std::move(k),
-                                                     .level = l,
-                                                     .kernels = kernels});
+    return std::make_shared<const Compiled>(
+        Compiled{.graph = graph,
+                 .compile_graph = compile_graph,
+                 .kernel = std::move(k),
+                 .level = l,
+                 .kernels = kernels});
   }
 };
 
@@ -197,7 +197,8 @@ public:
         return ready_;
       }
     }
-    [[maybe_unused]] const auto fill = lock_.write(); // another thread may have won
+    [[maybe_unused]] const auto fill =
+        lock_.write(); // another thread may have won
     if (!ready_) {
       prepare(want, setting, DDX_FWD(freeze));
     }
@@ -319,7 +320,8 @@ private:
       // The swept graph, not the rebalanced one a Compile backend takes: a
       // lane that climbs mid-run must not change its answer under a caller, and
       // rebalancing moves the last bits.
-      if (asked == 0 && setting.options.codegen.codegen_level > jit::Level::O0) {
+      if (asked == 0 &&
+          setting.options.codegen.codegen_level > jit::Level::O0) {
         rungs_[0] = rung(setting, jit::Level::O0, ready_->graph);
         asked_.store(1, std::memory_order_relaxed);
         return;

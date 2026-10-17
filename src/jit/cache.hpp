@@ -27,9 +27,8 @@ struct Entry {
 // this is a within-one-binary key.
 [[nodiscard]] std::uint64_t digest(const rt::Graph<double> &g);
 
-[[nodiscard]] std::uint64_t cache_key(std::uint64_t graph,
-                                      std::string_view host,
-                                      const Codegen &emitted);
+[[nodiscard]] std::uint64_t
+cache_key(std::uint64_t graph, std::string_view host, const Codegen &emitted);
 
 [[nodiscard]] std::filesystem::path entry_path(std::string_view dir,
                                                std::uint64_t key);

@@ -79,8 +79,7 @@ struct BinaryOp {
   }
 };
 
-namespace detail {
-} // namespace detail
+namespace detail {} // namespace detail
 
 template <Numeric T>
 struct SumOp
@@ -96,8 +95,8 @@ struct SumOp
 };
 
 template <Numeric T>
-struct MultiplyOp
-    : BinaryOp<T, std::multiplies<void>, FixedString{"*"}, Notation::Infix, 20> {
+struct MultiplyOp : BinaryOp<T, std::multiplies<void>, FixedString{"*"},
+                             Notation::Infix, 20> {
   static constexpr Curvature curvature = Curvature::Bilinear;
   static constexpr std::optional rule_op = algebra::RuleOp::Mul;
   [[nodiscard]] static constexpr auto
@@ -277,7 +276,7 @@ using min_impl = extremum_impl<false>;
   template <Numeric T>                                                         \
     requires(!detail::needs_real_constants_v<detail::NAME##Fn<T>> ||           \
              std::constructible_from<T, double>)                               \
-  struct NAME : UnaryOp<T, detail::NAME##Fn<T>, FixedString{LABEL}> {         \
+  struct NAME : UnaryOp<T, detail::NAME##Fn<T>, FixedString{LABEL}> {          \
     [[nodiscard]] static constexpr auto                                        \
     derivative(const CExpression auto &lhs) noexcept {                         \
       return detail::NAME##Fn<T>::deriv(lhs) * lhs.derivative();               \
@@ -356,7 +355,6 @@ struct ExtremumOp : BinaryOp<T, func, symbol> {
              Lit<T, 2>{};
     }
   }
-
 };
 
 template <Numeric T>

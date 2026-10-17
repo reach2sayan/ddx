@@ -49,7 +49,14 @@ enum class Want : std::uint8_t {
 #undef DDX_RT_WANT
 };
 enum class Seeds : std::uint8_t { None, Symbols, Functions };
-enum class Block : std::uint8_t { None, Cells, Symbols, Functions, Colours, Dense };
+enum class Block : std::uint8_t {
+  None,
+  Cells,
+  Symbols,
+  Functions,
+  Colours,
+  Dense
+};
 struct WantInfo {
   std::string_view name;
   bool single;
@@ -63,14 +70,14 @@ struct WantInfo {
 inline constexpr auto want_table = [] {
   std::array<WantInfo, 0
 #define DDX_RT_WANT(...) +1
-                               DDX_RT_WANT_TABLE(DDX_RT_WANT)
+             DDX_RT_WANT_TABLE(DDX_RT_WANT)
 #undef DDX_RT_WANT
              >
       t{};
   std::size_t i = 0;
 #define DDX_RT_WANT(Name, single, second, rebalance, seeds, values, jac, hes)  \
-  t[i++] = {#Name,         single,      second,      rebalance,                \
-            Seeds::seeds,  values,      Block::jac,  Block::hes};
+  t[i++] = {#Name,        single, second,     rebalance,                       \
+            Seeds::seeds, values, Block::jac, Block::hes};
   DDX_RT_WANT_TABLE(DDX_RT_WANT)
 #undef DDX_RT_WANT
   return t;
@@ -233,17 +240,17 @@ public:
     auto packed = detail::pack_slots(b, g.schedule_, g.outputs_);
     g.slots_ = std::move(packed.slot);
     g.tape_slots_ = packed.rows;
-    g.output_slots_ = g.outputs_ | std::views::transform([&g](NodeId o) {
-                        return g.slots_[o];
-                      }) |
-                      impl::to<std::vector<std::uint32_t>>();
+    g.output_slots_ =
+        g.outputs_ |
+        std::views::transform([&g](NodeId o) { return g.slots_[o]; }) |
+        impl::to<std::vector<std::uint32_t>>();
     g.tensors_ = detail::tensor_layout(b, g.schedule_, g.outputs_);
-    g.output_rows_ =
-        g.outputs_ | std::views::transform([&g, &b](NodeId o) {
-          return tensor_valued(b.op_of(o)) ? g.tensors_.rows[o]
-                                           : TensorRow{.at = g.slots_[o]};
-        }) |
-        impl::to<std::vector<TensorRow>>();
+    g.output_rows_ = g.outputs_ | std::views::transform([&g, &b](NodeId o) {
+                       return tensor_valued(b.op_of(o))
+                                  ? g.tensors_.rows[o]
+                                  : TensorRow{.at = g.slots_[o]};
+                     }) |
+                     impl::to<std::vector<TensorRow>>();
     return g;
   }
 
@@ -268,9 +275,7 @@ public:
   // How many input columns of each kind `xs` carries, and the names of all
   // but the seeds, in column order.
   [[nodiscard]] const Inputs &inputs() const { return inputs_; }
-  [[nodiscard]] const std::vector<std::string> &names() const {
-    return names_;
-  }
+  [[nodiscard]] const std::vector<std::string> &names() const { return names_; }
 
   // The functions extern nodes call, shared with the arena: a kernel lowered
   // from this graph calls them by index into this table.
@@ -333,9 +338,9 @@ public:
   }
 
 private:
-
   template <typename E>
-  [[nodiscard]] Blocks<std::span<const E>> blocks_of(std::span<const E> all) const {
+  [[nodiscard]] Blocks<std::span<const E>>
+  blocks_of(std::span<const E> all) const {
     return {.values = all.first(counts_.values),
             .jacobian = all.subspan(counts_.values, counts_.jacobian),
             .hessian = all.subspan(counts_.values + counts_.jacobian,
@@ -344,10 +349,10 @@ private:
 
   // Nothing but the outputs and what they reach needs to be emitted.
   void mark_live() {
-    live_ = detail::reachable(
-        properties_.size(), outputs_, [this](NodeId v, auto &&mark) {
-          detail::for_each_operand(*this, v, mark);
-        });
+    live_ = detail::reachable(properties_.size(), outputs_,
+                              [this](NodeId v, auto &&mark) {
+                                detail::for_each_operand(*this, v, mark);
+                              });
     live_order_.reserve(
         static_cast<std::size_t>(std::ranges::count(live_, true)));
     impl::append(live_order_, detail::live_ids(live_));
@@ -391,7 +396,7 @@ private:
   std::vector<Property> properties_;
   std::vector<std::array<NodeId, 3>> operands_;
   std::vector<NodeId> outputs_;
-  Layout layout_;          // columns per block
+  Layout layout_;              // columns per block
   Blocks<std::size_t> counts_; // nodes per block
   std::vector<TensorRow> output_rows_;
   Coloring coloring_;
@@ -583,7 +588,8 @@ template <impl::Numeric T>
         .jacobian_tangent_from(sweeps.jacobian_tangent());
     break;
   case Want::DenseHessian:
-    gb.jacobian_from(sweeps.jacobian()).dense_hessian_from(sweeps.dense_hessian());
+    gb.jacobian_from(sweeps.jacobian())
+        .dense_hessian_from(sweeps.dense_hessian());
     break;
   }
   return gb.finish(contract);

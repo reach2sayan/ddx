@@ -109,7 +109,7 @@ template <typename Derived> struct compound_from_binary {
 #define DDX_COMPOUND_FROM_BINARY(OP)                                           \
   template <typename B>                                                        \
     requires requires(Derived &d, const B &o) { d = d OP o; }                  \
-  constexpr Derived &operator OP##=(const B & o) & noexcept {                  \
+  constexpr Derived &operator OP## = (const B &o) & noexcept {                 \
     auto &self = static_cast<Derived &>(*this);                                \
     return self = self OP o;                                                   \
   }
