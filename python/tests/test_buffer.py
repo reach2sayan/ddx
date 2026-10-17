@@ -148,3 +148,14 @@ def test_a_kernel_landing_mid_loop_is_picked_up(scalar: ddx.Equation) -> None:
     value, gradient = scalar.jacobian([2.0, 3.0])
     assert call.value == pytest.approx(value)
     assert call.jacobian == pytest.approx(gradient)
+
+
+@pytest.mark.parametrize(
+    "want", [ddx.Want.HVP, ddx.Want.JVP, ddx.Want.VJP, ddx.Want.DENSEHESSIAN]
+)
+def test_a_want_the_buffer_cannot_bind_is_refused_up_front(
+    scalar: ddx.Equation, want: ddx.Want
+) -> None:
+    with pytest.raises(ddx.Error) as caught:
+        scalar.buffer(np.array([2.0, 3.0]), want=want)
+    assert caught.value.code is ddx.errc.wrong_column_count

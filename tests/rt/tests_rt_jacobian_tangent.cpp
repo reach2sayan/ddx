@@ -201,6 +201,25 @@ TEST(RtRestrict, KeepsOnlyTheChosenColumns) {
   EXPECT_EQ(part_dt[1], full_dt[1]);
 }
 
+// A restriction that keeps no cell keeps none, not all of them: y's column is
+// there, and zero.
+TEST(RtRestrict, KeepingNoCellIsNoColumns) {
+  const auto eq = ddx::rt::equation([] {
+    const auto x = ddx::rt::var("x");
+    (void)ddx::rt::var("y");
+    return x * x;
+  });
+  const auto none = eq.restrict({"y"});
+  ASSERT_TRUE(none.has_value());
+  EXPECT_EQ(none->jacobian_columns(), 0u);
+  const auto j = none->jacobian(3.0, 4.0);
+  ASSERT_TRUE(j.has_value()) << j.error().code;
+  EXPECT_EQ(*j, std::vector{0.0});
+  const auto dt = none->jacobian_jvp("y", 3.0, 4.0);
+  ASSERT_TRUE(dt.has_value()) << dt.error().code;
+  EXPECT_EQ(*dt, std::vector{0.0});
+}
+
 TEST(RtRestrict, ABatchThroughTheView) {
   constexpr std::size_t species = 4;
   const auto eq = mse(species);
@@ -214,10 +233,9 @@ TEST(RtRestrict, ABatchThroughTheView) {
              (1.0 + 0.001 * static_cast<double>(i));
     }
   }
-  const auto in = columns | std::views::transform([](const auto &c) {
-                    return c.data();
-                  }) |
-                  ddx::impl::to<std::vector<const double *>>();
+  const auto in =
+      columns | std::views::transform([](const auto &c) { return c.data(); }) |
+      ddx::impl::to<std::vector<const double *>>();
   std::vector<double> f(n);
   std::vector<std::vector<double>> g(tp.jacobian_columns(),
                                      std::vector<double>(n));
@@ -237,7 +255,8 @@ TEST(RtRestrict, ABatchThroughTheView) {
   // Two columns, so a block sized for the whole Jacobian is refused.
   std::vector<std::vector<double>> wide(*eq.jacobian_columns(),
                                         std::vector<double>(n));
-  const auto ws = wide | std::views::transform([](auto &c) { return c.data(); }) |
+  const auto ws = wide |
+                  std::views::transform([](auto &c) { return c.data(); }) |
                   ddx::impl::to<std::vector<double *>>();
   EXPECT_EQ(tp.jacobian(in, fs, ws, n).error().code,
             ddx::errc::wrong_column_count);
@@ -245,8 +264,7 @@ TEST(RtRestrict, ABatchThroughTheView) {
 
 TEST(RtRestrict, AnUnknownNameIsRefused) {
   const auto eq = pair();
-  EXPECT_EQ(eq.restrict({"x", "nope"}).error().code,
-            ddx::errc::unknown_symbol);
+  EXPECT_EQ(eq.restrict({"x", "nope"}).error().code, ddx::errc::unknown_symbol);
 }
 
 } // namespace

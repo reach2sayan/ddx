@@ -174,7 +174,7 @@ dual_div(const ConstOperand<Dual<T>> auto &s, const Dual<T> &a) noexcept {
   using V = T;
   const auto &[av, ad] = a; // s / a; inner kept T-on-left (wide-scalar-safe)
   const V inv = V{1} / av;
-  const V q = V{s} * inv; // value = s / a
+  const V q = V(s) * inv; // value = s / a
   return Dual{q, -(q * ad) * inv};
 }
 

@@ -11,6 +11,7 @@
 #include <concepts>
 #include <cstdint>
 #include <iterator>
+#include <limits>
 #include <ranges>
 #include <span>
 #include <string>
@@ -30,14 +31,21 @@ namespace detail {
 // The literal as written, read at T rather than at double and then narrowed:
 // the grammar has no types, so "1/2" is T(1)/T(2) whatever T is.  Whole or not
 // at all -- a trailing character is a literal the grammar should not have
-// matched.
+// matched.  Past the range is the infinity or the zero it rounds to, as a
+// number in source would be.
 template <std::floating_point T>
 [[nodiscard]] result<T> scalar_of(const std::string_view text) noexcept {
   T v{};
   const auto *const end = text.data() + text.size();
   const auto [stopped, ec] = std::from_chars(text.data(), end, v);
-  return ec == std::errc{} && stopped == end ? result<T>{v}
-                                             : fail(errc::bad_syntax);
+  if (stopped != end) {
+    return fail(errc::bad_syntax);
+  } else if (ec == std::errc::result_out_of_range) {
+    const auto e = text.find_first_of("eE");
+    const bool tiny = e != text.npos && text.find('-', e) != text.npos;
+    return tiny ? T{0} : std::numeric_limits<T>::infinity();
+  }
+  return ec == std::errc{} ? result<T>{v} : fail(errc::bad_syntax);
 }
 
 // One term, with its symbols and its operands already standing.

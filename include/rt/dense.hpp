@@ -69,11 +69,7 @@ public:
   // The row each partial ends with, stacked: a partial nothing moves is a
   // zero row.
   [[nodiscard]] NodeId block(std::span<const NodeId> partials) {
-    const auto rows = partials | std::views::transform([this](NodeId g) {
-                        return row_[g] == no_node ? zeros() : row_[g];
-                      }) |
-                      impl::to<std::vector<NodeId>>();
-    return b_.pack(rows, OpCode::StackRows);
+    return stacked(partials);
   }
   [[nodiscard]] std::uint32_t n2() const noexcept { return n2_; }
   [[nodiscard]] std::uint32_t n3() const noexcept { return n3_; }
@@ -86,9 +82,19 @@ private:
   [[nodiscard]] E expr(NodeId id) const { return E{b_, id}; }
   [[nodiscard]] NodeId zeros() { return b_.zeros(n_); }
   [[nodiscard]] NodeId ones() { return b_.ones(n_); }
-  // e_i, interned once per i.
-  [[nodiscard]] NodeId unit(std::uint32_t i) {
-    return b_.make(OpCode::AddAt, zeros(), b_.constant(T{1}), no_node, i);
+  // e_i, interned once per i and width.
+  [[nodiscard]] NodeId unit(std::uint32_t i) { return unit(i, n_); }
+  [[nodiscard]] NodeId unit(std::uint32_t i, std::uint32_t width) {
+    return b_.make(OpCode::AddAt, b_.zeros(width), b_.constant(T{1}), no_node,
+                   i);
+  }
+  // The rows of `ids` as a matrix, a zero row for an id nothing moves.
+  [[nodiscard]] NodeId stacked(const auto &ids) {
+    const auto rows = ids | std::views::transform([this](NodeId g) {
+                        return row_[g] == no_node ? zeros() : row_[g];
+                      }) |
+                      impl::to<std::vector<NodeId>>();
+    return b_.pack(rows, OpCode::StackRows);
   }
 
   // Row arithmetic, with no_node the zero row.
@@ -186,11 +192,9 @@ private:
     std::unreachable();
   }
   [[nodiscard]] NodeId left(const V &u, const Terms &ts) {
-    NodeId r = no_node;
-    for (const Term &t : ts) {
-      r = add(r, left(u, t));
-    }
-    return r;
+    return std::ranges::fold_left(ts, no_node, [&](NodeId r, const Term &t) {
+      return add(r, left(u, t));
+    });
   }
   // The constant matrix C (or C^T) applied on the left of a term.
   [[nodiscard]] Term gemv(NodeId matrix, bool transposed, const Term &t) {
@@ -245,13 +249,10 @@ private:
         return b_.pack(Implicits::row(b_, node.slot));
       }
       return no_node;
-    case Kind::Nary: {
-      NodeId r = no_node;
-      for (const NodeId t : arguments(b_, v)) {
-        r = add(r, row_[t]);
-      }
-      return r;
-    }
+    case Kind::Nary:
+      return std::ranges::fold_left(
+          arguments(b_, v), no_node,
+          [this](NodeId r, NodeId t) { return add(r, row_[t]); });
     case Kind::Extern: {
       NodeId r = no_node;
       extern_partials(b_, v, [&](NodeId arg, const E &c) {
@@ -274,13 +275,11 @@ private:
       switch (node.op) {
       case OpCode::MatConst: // a table, which a Gemv reads: nothing moves it
         return no_node;
-      case OpCode::Gather: {
-        NodeId r = no_node;
-        for (const Term &t : mat_[node.a]) {
-          r = add(r, row_of(t, node.slot));
-        }
-        return r;
-      }
+      case OpCode::Gather:
+        return std::ranges::fold_left(mat_[node.a], no_node,
+                                      [&](NodeId r, const Term &t) {
+                                        return add(r, row_of(t, node.slot));
+                                      });
       case OpCode::Sum:
         return left(vec(ones_of(node.a)), mat_[node.a]);
       case OpCode::Dot:
@@ -303,14 +302,9 @@ private:
       if (is_symbols(v)) {
         out.push_back({.kind = Term::Kind::Identity});
       } else {
-        const auto rows = arguments(b_, v) |
-                          std::views::transform([this](NodeId s) {
-                            return row_[s] == no_node ? zeros() : row_[s];
-                          }) |
-                          impl::to<std::vector<NodeId>>();
         ++n2_;
         out.push_back(
-            {.kind = Term::Kind::Dense, .a = b_.pack(rows, OpCode::StackRows)});
+            {.kind = Term::Kind::Dense, .a = stacked(arguments(b_, v))});
       }
       break;
     case OpCode::Map: {
@@ -347,7 +341,7 @@ private:
       if (row_[node.b] != no_node) {
         ++n2_;
         out.push_back({.kind = Term::Kind::Outer,
-                       .a = unit_of(node.a, node.slot),
+                       .a = unit(node.slot, width_of(b_, node.a)),
                        .b = row_[node.b]});
       }
       break;
@@ -356,12 +350,6 @@ private:
     }
     return out;
   }
-  // e_i of the width of `v`.
-  [[nodiscard]] NodeId unit_of(NodeId v, std::uint32_t i) {
-    return b_.make(OpCode::AddAt, b_.zeros(width_of(b_, v)), b_.constant(T{1}),
-                   no_node, i);
-  }
-
   Builder<T> &b_;
   std::uint32_t n_;
   std::vector<NodeId> row_;

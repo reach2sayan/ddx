@@ -76,7 +76,6 @@ private:
   }
 
 public:
-
   [[nodiscard]] std::size_t width() const { return symbol_count(); }
   [[nodiscard]] std::size_t height() const { return roots().size(); }
 
@@ -84,8 +83,8 @@ public:
   // access costs increfs and never a PyUnicode.
   [[nodiscard]] pyb::list symbols_list() const { return symbols_.listed(); }
   [[nodiscard]] pyb::list params_list() const {
-    return pyb::cast(std::vector<std::string>(params()->begin(),
-                                              params()->end()));
+    return pyb::cast(
+        std::vector<std::string>(params()->begin(), params()->end()));
   }
   // What a point supplies: the symbols, then the parameters.
   [[nodiscard]] pyb::list inputs_list() const { return inputs_.listed(); }
@@ -139,10 +138,7 @@ public:
     if (at.batched()) {
       fail_with(errc::wrong_column_count);
     }
-    std::vector<double> point(at.columns().size());
-    std::ranges::transform(at.columns(), point.begin(),
-                           [](const double *c) { return *c; });
-    return unwrap(residual(point));
+    return unwrap(residual(scalars_of(at)));
   }
 
   // Under Backend.DEVICE the device answering, None under any other backend.
@@ -177,8 +173,7 @@ private:
   friend class PyRestricted;
 
   using BlockMember = std::size_t rt::Layout::*;
-  [[nodiscard]] static std::size_t count(const Compiled &c,
-                                         BlockMember which) {
+  [[nodiscard]] static std::size_t count(const Compiled &c, BlockMember which) {
     return c.graph->layout().*which;
   }
 
@@ -196,8 +191,9 @@ private:
     std::optional<Scratch> cells{};
     std::optional<Block> block{};
     [[nodiscard]] std::span<double *const> rows() {
-      return cells ? cells->rows() : block ? block->rows()
-                                           : std::span<double *const>{};
+      return cells   ? cells->rows()
+             : block ? block->rows()
+                     : std::span<double *const>{};
     }
   };
   [[nodiscard]] Out out_for(rt::Block shape, std::size_t columns,
@@ -212,8 +208,8 @@ private:
     case rt::Block::Symbols:
       return {.block = Block{symbol_shape(at), columns, at.size()}};
     case rt::Block::Functions:
-      return {.block = Block{shape_of({ssize(height())}, at), columns,
-                             at.size()}};
+      return {.block =
+                  Block{shape_of({ssize(height())}, at), columns, at.size()}};
     }
     std::unreachable();
   }
@@ -303,10 +299,19 @@ private:
       parts.append(finish(w.jacobian, g, at, derivative().pattern, nullptr));
     }
     if (w.hessian != rt::Block::None) {
-      parts.append(
-          finish(w.hessian, h, at, derivative().pattern, &l->graph->coloring()));
+      parts.append(finish(w.hessian, h, at, derivative().pattern,
+                          &l->graph->coloring()));
     }
     return pyb::tuple(parts);
+  }
+
+  // One unbatched point's values, an input each: the symbols, then the
+  // params.
+  [[nodiscard]] static boost::container::small_vector<double, 16>
+  scalars_of(const Point &at) {
+    return at.columns() |
+           std::views::transform([](const double *c) { return *c; }) |
+           impl::to<boost::container::small_vector<double, 16>>();
   }
 
   // A system: Core's walk over the arena, which is a point at a time and says
@@ -317,9 +322,7 @@ private:
     }
     const std::size_t m = height();
     const std::size_t n = width();
-    boost::container::small_vector<double, 16> point(n);
-    std::ranges::transform(at.columns(), point.begin(),
-                           [](const double *c) { return *c; });
+    const auto point = scalars_of(at);
     Dense f{shape_of({ssize(m)}, at), at.size()};
     Dense g{shape_of({ssize(m), ssize(n)}, at), at.size()};
     Dense h{shape_of({ssize(m), ssize(n), ssize(n)}, at), at.size()};
@@ -379,10 +382,11 @@ private:
   // allocation, and every derivative call serves both.
   [[nodiscard]] std::optional<Block> values_block(const Compiled &c,
                                                   const Point &at) const {
-    return scalar(at) ? std::nullopt
-                      : std::optional<Block>{
-                            std::in_place, shape_of({ssize(height())}, at),
-                            count(c, &rt::Layout::values), at.size()};
+    return scalar(at)
+               ? std::nullopt
+               : std::optional<Block>{std::in_place,
+                                      shape_of({ssize(height())}, at),
+                                      count(c, &rt::Layout::values), at.size()};
   }
 
   [[nodiscard]] static pyb::object value_of(std::optional<Block> &f,
@@ -438,8 +442,8 @@ public:
     auto g = eq_->out_for(rt::Block::Cells, view_.jacobian_columns(), at);
     auto dg = eq_->out_for(rt::Block::Cells, view_.jacobian_columns(), at);
     unwrap(view_.jacobian_jvp(at.columns(), dir.columns(),
-                              f ? f->rows() : cell.rows(), g.rows(),
-                              dg.rows(), at.size()));
+                              f ? f->rows() : cell.rows(), g.rows(), dg.rows(),
+                              at.size()));
     return pyb::make_tuple(PyEquation::value_of(f, cell), kept(g, at),
                            kept(dg, at));
   }
@@ -450,11 +454,11 @@ private:
                        nullptr);
   }
   [[nodiscard]] std::optional<Block> values(const Point &at) const {
-    return eq_->scalar(at) ? std::nullopt
-                           : std::optional<Block>{
-                                 std::in_place,
-                                 eq_->shape_of({ssize(eq_->height())}, at),
-                                 eq_->height(), at.size()};
+    return eq_->scalar(at)
+               ? std::nullopt
+               : std::optional<Block>{std::in_place,
+                                      eq_->shape_of({ssize(eq_->height())}, at),
+                                      eq_->height(), at.size()};
   }
 
   const PyEquation *eq_; // outlived by the equation: keep_alive on the factory
@@ -474,6 +478,13 @@ public:
     // A system's Hessian is read off the arena a point at a time, so there is
     // no lane to bind; the lane's own gate says so.
     unwrap(eq_->ready(want_));
+    // No direction columns and no dense Hessian block are bound here, so a
+    // want needing either is refused once rather than on every call.
+    if (const auto &w = rt::want_info(want_);
+        w.seeds != rt::Seeds::None ||
+        (w.hessian != rt::Block::None && w.hessian != rt::Block::Colours)) {
+      fail_with(errc::wrong_column_count);
+    }
     const auto l = eq_->lane(want_);
     const auto outputs = ssize(eq_->height());
     const auto n = eq_->width();
@@ -521,10 +532,10 @@ public:
   [[nodiscard]] pyb::object hessian() const { return read(h_); }
 
   [[nodiscard]] std::string repr() const {
-    return std::format("<ddx.Call {} at {} point{}>",
-                       boost::algorithm::to_lower_copy(
-                           std::string{rt::name_of(want_)}),
-                       at_.size(), at_.size() == 1 ? "" : "s");
+    return std::format(
+        "<ddx.Call {} at {} point{}>",
+        boost::algorithm::to_lower_copy(std::string{rt::name_of(want_)}),
+        at_.size(), at_.size() == 1 ? "" : "s");
   }
 
 private:

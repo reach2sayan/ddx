@@ -71,6 +71,30 @@ TEST(RtEquationHvp, ANamedSymbolIsThatHessianColumn) {
   }
 }
 
+// A seed the product never reads still has its column: y's is dead in
+// H(x*x + y), and the call takes the full direction all the same.
+TEST(RtEquationHvp, ASeedTheProductDropsKeepsItsColumn) {
+  const auto eq = ddx::rt::equation([] {
+    const auto x = ddx::rt::var("x");
+    const auto y = ddx::rt::var("y");
+    return x * x + y;
+  });
+  const std::vector<double> v{1.0, 1.0};
+  const auto got = eq.hvp(std::span<const double>{v}, 3.0, 4.0);
+  ASSERT_TRUE(got.has_value()) << got.error().code;
+  EXPECT_EQ((*got)[0], 2.0);
+  EXPECT_EQ((*got)[1], 0.0);
+  const auto linear = ddx::rt::equation([] {
+    const auto x = ddx::rt::var("x");
+    const auto y = ddx::rt::var("y");
+    return 2.0 * x + y;
+  });
+  const auto dt = linear.jacobian_jvp("x", 3.0, 4.0);
+  ASSERT_TRUE(dt.has_value()) << dt.error().code;
+  EXPECT_EQ((*dt)[0], 0.0);
+  EXPECT_EQ((*dt)[1], 0.0);
+}
+
 TEST(RtEquationHvp, RefusesADirectionOfTheWrongLength) {
   const auto eq = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");

@@ -522,9 +522,8 @@ template <impl::Numeric U, impl::Numeric T>
 [[nodiscard]] constexpr bool computes_at(const Builder<T> &b,
                                          std::span<const NodeId> roots) {
   const auto live = detail::reachable(b, roots);
-  return std::ranges::all_of(
-      std::views::iota(NodeId{0}, static_cast<NodeId>(b.size())),
-      [&](NodeId v) { return !live[v] || supports<U>(b[v].op); });
+  return std::ranges::all_of(detail::live_ids(live),
+                             [&b](NodeId v) { return supports<U>(b[v].op); });
 }
 
 template <impl::Numeric T, std::ranges::random_access_range R>
@@ -547,6 +546,21 @@ constexpr void evaluate_into(const Builder<T> &b, const R &point,
   evaluate_block<1>(b, point, schedule, v, tensors);
 }
 
+namespace detail {
+// The nodes `ids` names, in order, as evaluate_into leaves them.
+template <impl::Numeric T, std::ranges::random_access_range R>
+[[nodiscard]] constexpr auto evaluate_over(const Builder<T> &b, auto ids,
+                                           const R &point,
+                                           const KernelTable &kernels) {
+  using U = std::ranges::range_value_t<R>;
+  const auto schedule = schedule_of(b, ids);
+  std::vector<U> v(b.size());
+  TensorScratch<U> scratch{b, schedule, kernels};
+  evaluate_into(b, point, schedule, std::span<U>{v}, scratch.view());
+  return v;
+}
+} // namespace detail
+
 // evaluate_all narrowed to what `roots` reach.  Still id-indexed and
 // arena-sized, with the entries the roots miss left value-initialised and not
 // to be read.  Worth the extra pass: a derivative sweep leaves a whole Hessian
@@ -557,13 +571,8 @@ template <impl::Numeric T, std::ranges::random_access_range R>
 evaluate_reachable(const Builder<T> &b, std::span<const NodeId> roots,
                    const R &point,
                    const KernelTable &kernels = reference_table) {
-  using U = std::ranges::range_value_t<R>;
   const auto live = detail::reachable(b, roots);
-  const auto schedule = detail::schedule_of(b, detail::live_ids(live));
-  std::vector<U> v(b.size());
-  detail::TensorScratch<U> scratch{b, schedule, kernels};
-  evaluate_into(b, point, schedule, std::span<U>{v}, scratch.view());
-  return v;
+  return detail::evaluate_over(b, detail::live_ids(live), point, kernels);
 }
 
 // Every node once, in id order: a child always precedes its parent, and the
@@ -574,13 +583,9 @@ template <impl::Numeric T, std::ranges::random_access_range R>
 [[nodiscard]] constexpr auto
 evaluate_all(const Builder<T> &b, const R &point,
              const KernelTable &kernels = reference_table) {
-  using U = std::ranges::range_value_t<R>;
-  const auto schedule = detail::schedule_of(
-      b, std::views::iota(NodeId{0}, static_cast<NodeId>(b.size())));
-  std::vector<U> v(b.size());
-  detail::TensorScratch<U> scratch{b, schedule, kernels};
-  evaluate_into(b, point, schedule, std::span<U>{v}, scratch.view());
-  return v;
+  return detail::evaluate_over(
+      b, std::views::iota(NodeId{0}, static_cast<NodeId>(b.size())), point,
+      kernels);
 }
 
 } // namespace ddx::rt

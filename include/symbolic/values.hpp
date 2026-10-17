@@ -52,7 +52,10 @@ constexpr auto arithmetic(const A &a, const B &b, auto build) noexcept {
                             build);
   } else {
     using value_type = typename A::value_type;
-    if constexpr (CLit<A> && CLit<B>) {
+    // A literal zero divisor is left to the graph: x / 0 is no constant
+    // expression.
+    if constexpr (CLit<A> && CLit<B> &&
+                  !(std::same_as<Fold, std::divides<>> && is_zero_v<B>)) {
       constexpr auto folded = Fold{}(A::value, B::value);
       if constexpr (CArithmetic<value_type>) {
         return Lit<value_type, static_cast<value_type>(folded)>{};
@@ -132,8 +135,7 @@ DDX_EXPR_UNFN(abs, AbsOp, "abs")
   template <CExpression LHS, CExpression RHS>                                  \
     requires CompatibleValueTypes<LHS, RHS>                                    \
   constexpr auto NAME(const LHS &a, const RHS &b) noexcept {                   \
-    using value_type = typename LHS::value_type;                               \
-    return Expression<OP<value_type>, LHS, RHS>{a, b};                         \
+    return detail::simplify_node<OP<typename LHS::value_type>>(a, b);          \
   }                                                                            \
   template <CArithmetic S, CExpression RHS>                                    \
   constexpr auto NAME(S s, const RHS &b) noexcept {                            \
@@ -238,7 +240,7 @@ public:
   using value_type = T;
 
   [[nodiscard]] constexpr auto derivative() const noexcept {
-    return Lit<T, frozen ? 0 : 1>{};
+    return Lit < T, frozen ? 0 : 1 > {};
   }
 
   // A frozen symbol takes the seed's value and drops its derivative slots.

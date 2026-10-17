@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -44,7 +46,8 @@ TEST(RtBuilder, ReserveChangesNeitherIdsNorInterning) {
 
   EXPECT_EQ(f, g);
   EXPECT_EQ(plain.size(), reserved.size());
-  EXPECT_EQ(exp(var(plain, "x")).id(plain), exp(var(reserved, "x")).id(reserved));
+  EXPECT_EQ(exp(var(plain, "x")).id(plain),
+            exp(var(reserved, "x")).id(reserved));
   EXPECT_EQ(plain.size(), reserved.size());
 }
 
@@ -99,6 +102,21 @@ TEST(RtBuilder, ConstantOperandsFold) {
   EXPECT_TRUE(b.is_constant((lit(b, 2.0) * lit(b, 3.0)).id(b), 6.0));
   EXPECT_TRUE(b.is_constant(sqrt(lit(b, 9.0)).id(b), 3.0));
   (void)x;
+}
+
+// Constants intern by their bits, which is what they hash by: the two zeros
+// stay apart whatever was built first, and a NaN is one node.
+TEST(RtBuilder, ConstantsInternByTheirBits) {
+  Builder<> b;
+  for (int i = 0; i < 64; ++i) {
+    (void)lit(b, 1.0 + i).id(b);
+  }
+  const auto plus = lit(b, 0.0).id(b);
+  const auto minus = lit(b, -0.0).id(b);
+  EXPECT_NE(plus, minus);
+  EXPECT_TRUE(std::signbit(b[minus].value));
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(lit(b, nan).id(b), lit(b, nan).id(b));
 }
 
 TEST(RtBuilder, SymbolsInternByName) {

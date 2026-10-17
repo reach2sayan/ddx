@@ -221,6 +221,19 @@ def test_a_param_is_an_input_with_no_column() -> None:
     assert missing.value.code is ddx.errc.wrong_arity
 
 
+def test_a_system_with_a_param_has_a_hessian() -> None:
+    @ddx.equation
+    def eq() -> tuple[ddx.Expression, ddx.Expression]:
+        x = ddx.var("x")
+        a = ddx.param("a")
+        return a * x * x, x * a
+
+    _, _, hessian = eq.hessian([3.0, 5.0])
+    assert hessian.shape == (2, 1, 1)
+    assert hessian[0].tolist() == [[10.0]]
+    assert hessian[1].tolist() == [[0.0]]
+
+
 def test_a_name_is_one_kind_of_input() -> None:
     def model():
         x = ddx.var("x")

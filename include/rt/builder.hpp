@@ -49,7 +49,9 @@ struct Implicits;
 
 // A function the caller supplies: `fn(in, out)` reads the arguments and writes
 // the answer in ExternRecord's layout.  Shared, so a frozen graph and a
-// compiled kernel keep it alive as long as they can call it.
+// compiled kernel keep it alive as long as they can call it.  It must not
+// evaluate a ddx equation of the same T: the sweep's tapes are per thread, and
+// a nested sweep would resize them under the outer one.
 template <impl::Numeric T>
 using ExternFn = std::function<void(std::span<const T>, std::span<T>)>;
 
@@ -68,7 +70,8 @@ struct ExternRecord {
   }
   // The answer's length.
   [[nodiscard]] constexpr std::size_t size() const noexcept {
-    return 1 + arity + (order >= 2 ? arity * (arity + 1) / 2 : 0);
+    const std::size_t n = arity;
+    return 1 + n + (order >= 2 ? n * (n + 1) / 2 : 0);
   }
   [[nodiscard]] constexpr std::uint32_t first(std::size_t l) const noexcept {
     return static_cast<std::uint32_t>(1 + l);
@@ -1040,12 +1043,12 @@ reads_of(const auto &s, const Step &step) {
 last_uses(const auto &s, std::span<const Step> schedule,
           std::span<const NodeId> outputs) {
   std::vector<std::uint32_t> last(s.size(), 0);
+  // Ascending, and a node is formed before anything reads it, so the last
+  // write is the last use.
   for (const auto [p, step] : schedule | std::views::enumerate) {
     last[step.node] = static_cast<std::uint32_t>(p);
-  }
-  for (const auto [p, step] : schedule | std::views::enumerate) {
     for (const NodeId u : reads_of(s, step)) {
-      last[u] = static_cast<std::uint32_t>(p); // ascending, so the last wins
+      last[u] = static_cast<std::uint32_t>(p);
     }
   }
   for (const NodeId o : outputs) {
@@ -1150,8 +1153,8 @@ tensor_layout(const auto &s, std::span<const Step> schedule,
     auto reads = reads_of(s, step);
     reads.push_back(step.node);
     std::ranges::sort(reads);
-    const auto [first, end] = std::ranges::unique(reads);
-    for (const NodeId u : std::ranges::subrange(reads.begin(), first)) {
+    reads.erase(std::ranges::unique(reads).begin(), reads.end());
+    for (const NodeId u : reads) {
       if (last[u] == at && out.rows[u].width != 0) {
         free.push_back(out.rows[u]);
       }

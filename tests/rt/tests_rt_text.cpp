@@ -11,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <format>
+#include <limits>
 #include <ranges>
 #include <string>
 #include <string_view>
@@ -58,6 +59,15 @@ TEST(RtText, RaisesToAPowerTheWayPythonDoes) {
   // same two characters are an operator.
   EXPECT_DOUBLE_EQ(value_of("--x", 4.0), 4.0);
   EXPECT_DOUBLE_EQ(value_of("-+-x", 4.0), 4.0);
+}
+
+// Past the range is what Python reads: the infinity or the zero.
+TEST(RtText, ALiteralPastTheRangeRounds) {
+  EXPECT_EQ(value_of("x + 1e999", 1.0),
+            std::numeric_limits<double>::infinity());
+  EXPECT_EQ(value_of("x + 1e-999", 1.0), 1.0);
+  EXPECT_EQ(value_of("x * 1e+999", 1.0),
+            std::numeric_limits<double>::infinity());
 }
 
 TEST(RtText, BuildsTheSameArenaAsTheCppSpelling) {

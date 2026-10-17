@@ -134,6 +134,14 @@ TEST(RtEquation, APendingSumRootsInTheCopiedArena) {
                                  std::array{3.0 + std::cos(2.0), 3.0}));
 }
 
+// No arguments is a point too: the empty one, refused here as short.
+TEST(RtEquation, AnEmptyPointIsSpellable) {
+  ddx::rt::Builder<> b;
+  const auto x = var(b, "x");
+  const auto eq = ddx::rt::equation(x * x);
+  EXPECT_EQ(eq.evaluate().error().code, ddx::errc::wrong_arity);
+}
+
 TEST(RtEquation, EveryNamedPointMustNameEverySymbolAndOnlyRealOnes) {
   ddx::rt::Builder<> b;
   const auto x = var(b, "x");
@@ -361,9 +369,8 @@ TEST(RtEquation, BatchAgreesWithPerPointToTheBit) {
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto z = var(b, "z");
-  const auto eq = ddx::rt::equation(sqrt(abs(x * y + z)) *
-                                        exp(-(y * z) + x) +
-                                    x * x * y);
+  const auto eq =
+      ddx::rt::equation(sqrt(abs(x * y + z)) * exp(-(y * z) + x) + x * x * y);
 
   constexpr std::size_t n = 2 * ddx::rt::block_lanes + 3;
   std::vector<double> cx(n), cy(n), cz(n), f(n), dx(n), dy(n), dz(n);
@@ -530,7 +537,8 @@ TEST(RtEquation, TheArenaIsInvisible) {
 }
 
 // An equation copies the arena it is lent, so the caller goes on building in
-// theirs -- a symbol that moves x's slot there moves nothing the equation reads.
+// theirs -- a symbol that moves x's slot there moves nothing the equation
+// reads.
 TEST(RtEquation, ALentArenaIsCopiedAndStaysOpen) {
   ddx::rt::Builder<> b;
   const auto x = var(b, "x");
@@ -1179,9 +1187,7 @@ TEST(RtEquation, DroppingAMidFlightCompileDoesNotBlock) {
     (void)eq.uses_kernel(); // launches the compile, adopts nothing yet
 
     const auto start = std::chrono::steady_clock::now();
-    {
-      const auto dropped = std::move(eq);
-    }
+    { const auto dropped = std::move(eq); }
     return std::chrono::steady_clock::now() - start;
   }();
 

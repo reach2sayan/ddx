@@ -205,7 +205,7 @@ public:
                          (std::ranges::input_range<Args> && ...)) {
       ok = assign_range(at, args...);
     } else {
-      const std::array positional{static_cast<T>(args)...};
+      const std::array<T, sizeof...(Args)> positional{static_cast<T>(args)...};
       ok = assign_range(at, positional);
     }
     return ok.transform([&at] { return std::move(at); });
@@ -829,7 +829,8 @@ protected:
   // equation's own, or the cells a restrict() kept, as indices into them.
   struct Cells {
     const Jacobian &jacobian;
-    std::span<const std::size_t> kept{}; // empty: all of them
+    // Unset is all of them; a restriction can keep none.
+    std::optional<std::span<const std::size_t>> kept{};
   };
   [[nodiscard]] constexpr Cells every_cell() const {
     return {.jacobian = derivative_};
@@ -1112,8 +1113,7 @@ private:
       case Block::None:
         return 0;
       case Block::Cells:
-        return cells.kept.empty() ? cells.jacobian.partial.size()
-                                  : cells.kept.size();
+        return cells.kept ? cells.kept->size() : cells.jacobian.partial.size();
       case Block::Symbols:
         return n;
       case Block::Functions:
@@ -1369,14 +1369,13 @@ private:
     if (want == Want::JacobianTangent) {
       const auto &tangent = sweeps_->tangent.peek();
       product =
-          cells.kept.empty()
-              ? tangent
-              : cells.kept | std::views::transform([&tangent](std::size_t k) {
+          cells.kept
+              ? *cells.kept | std::views::transform([&tangent](std::size_t k) {
                   return tangent[k];
-                }) | impl::to<std::vector<NodeId>>();
+                }) | impl::to<std::vector<NodeId>>()
+              : tangent;
     }
-    [[maybe_unused]] const bool rebalance =
-        cells.kept.empty() && rebalances(want);
+    [[maybe_unused]] const bool rebalance = !cells.kept && rebalances(want);
     [[maybe_unused]] const auto held = reading();
     Frozen from{*this, roots_, cells.jacobian, product};
     auto swept = std::make_shared<const Graph<T>>(
@@ -1652,7 +1651,7 @@ public:
 
 private:
   [[nodiscard]] typename C::Cells cells() const {
-    return {.jacobian = jacobian_, .kept = kept_};
+    return {.jacobian = jacobian_, .kept = std::span{kept_}};
   }
   [[nodiscard]] result<void> dispatch(Want want, std::span<const T *const> xs,
                                       const Columns<T> &out,

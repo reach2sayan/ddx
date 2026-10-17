@@ -57,8 +57,7 @@ inline constexpr bool binary_probe_v<impl::detail::extremum_impl<IsMax>, T> =
 #define DDX_RT_PROBE2(fn, Op, label, functor, ...)                             \
   template <impl::Numeric T>                                                   \
   inline constexpr bool probes_##Op =                                          \
-      impl::CArithmetic<T> || is_field_op_v<functor> ||                        \
-      binary_probe_v<functor, T>;
+      impl::CArithmetic<T> || binary_probe_v<functor, T>;
 DDX_RT_BINARY_TABLE(DDX_RT_PROBE2)
 #undef DDX_RT_PROBE2
 

@@ -307,6 +307,13 @@ static_assert(std::ranges::all_of(std::views::iota(0uz, op_count), [](auto i) {
          op != OpCode::Sum && op != OpCode::Dot && op != OpCode::MatConst;
 }
 
+// The dense Hessian's matrix rows, the tensor table's tail: built under no
+// root, so no sweep differentiates through them.
+[[nodiscard]] constexpr bool is_matrix_row(OpCode op) noexcept {
+  return op >= OpCode::MatRow;
+}
+static_assert(std::to_underlying(OpCode::RowOf) + 1 == op_count);
+
 // Which kind of named input a leaf is, in table order.
 [[nodiscard]] constexpr std::optional<std::size_t>
 named_index(OpCode op) noexcept {

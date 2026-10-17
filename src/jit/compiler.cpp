@@ -697,6 +697,11 @@ struct Compiler::Impl {
     const bool caching = !opt.cache_dir.empty();
     Codegen emitted = opt.codegen;
     emitted.lanes = *Lanes::exactly(host.lanes_for(opt));
+    // The library applied, not the one asked for: Auto, or Libmvec where it
+    // did not load, is two kernels under one request.
+    emitted.veclib = want_veclib(llvm::Triple{host.triple}, opt, host.libmvec)
+                         ? VecLib::Libmvec
+                         : VecLib::None;
     const std::uint64_t key =
         caching ? detail::cache_key(detail::digest(g), self->host, emitted) : 0;
     if (caching) {

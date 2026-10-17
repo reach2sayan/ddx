@@ -185,10 +185,10 @@ public:
 
   // `contract` is settled here, not per sweep: it decides the arithmetic, so
   // changing it afterwards means freezing again.
-  [[nodiscard]] static Graph freeze(const Builder<T> &b, OutputBlocks blocks,
-                                    Coloring coloring = {},
-                                    Sparsity jacobian = {},
-                                    bool contract = true) {
+  // `seeds` is how many direction columns the call hands, read or not.
+  [[nodiscard]] static Graph
+  freeze(const Builder<T> &b, OutputBlocks blocks, Coloring coloring = {},
+         Sparsity jacobian = {}, bool contract = true, std::size_t seeds = 0) {
     Graph g;
     // Node counts per block, and the column counts: a vector output is one
     // column per element.
@@ -211,6 +211,7 @@ public:
     g.coloring_ = std::move(coloring);
     g.jacobian_ = std::move(jacobian);
     g.inputs_ = b.inputs();
+    g.inputs_.seeds = seeds;
     g.externs_.assign(b.externs().begin(), b.externs().end());
     g.lists_.assign(b.lists().begin(), b.lists().end());
     g.names_ = b.names();
@@ -497,7 +498,8 @@ public:
   }
 
   [[nodiscard]] Graph<T> finish(bool contract = true) const {
-    return Graph<T>::freeze(*builder_, blocks_, coloring_, jacobian_, contract);
+    return Graph<T>::freeze(*builder_, blocks_, coloring_, jacobian_, contract,
+                            seeds_);
   }
 
 private:
@@ -545,6 +547,7 @@ private:
   OutputBlocks blocks_;
   Coloring coloring_;
   Sparsity jacobian_;
+  std::size_t seeds_ = 0;
 };
 
 template <impl::Numeric T> GraphBuilder(Builder<T> &) -> GraphBuilder<T>;
@@ -558,6 +561,18 @@ template <impl::Numeric T>
 [[nodiscard]] Graph<T> freeze_for(Want want, Builder<T> &arena,
                                   CSweeps auto &sweeps, bool contract) {
   GraphBuilder<T> gb{arena};
+  // Every direction column the call hands, whether or not the product reads
+  // it: y's never reaches H(x*x + y) v.
+  switch (want_info(want).seeds) {
+  case Seeds::None:
+    break;
+  case Seeds::Symbols:
+    gb.seeds_ = arena.symbols().size();
+    break;
+  case Seeds::Functions:
+    gb.seeds_ = sweeps.roots().size();
+    break;
+  }
   if (want == Want::Gradient) {
     gb.roots_from(sweeps.roots());
   } else {

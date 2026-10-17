@@ -310,16 +310,17 @@ template <impl::Numeric T>
   };
   for (const NodeId v : detail::live_ids(live)) {
     rank[v] = static_cast<NodeId>(support.size());
-    SymbolSet &here = support.emplace_back();
+    SymbolSet &here = support.emplace_back(n);
+    const auto unite = [&](const auto &ids) {
+      std::ranges::for_each(ids, [&](NodeId u) { here |= of(u); });
+    };
     const auto &node = b[v];
     // A Map or Zip couples as its inner op does, over the whole vector.
     const OpCode op = detail::effective_op(node);
     switch (kind_of(op)) {
     case Kind::Const:
-      here = SymbolSet(n);
       break;
     case Kind::Input:
-      here = SymbolSet(n);
       if (node.op == OpCode::Var) {
         here.set(node.slot);
       } else if (node.op == OpCode::Implicit) {
@@ -345,18 +346,12 @@ template <impl::Numeric T>
       break;
     case Kind::Extern:
       // Nonlinear in every argument.
-      here = SymbolSet(n);
-      for (const NodeId arg : arguments(b, v)) {
-        here |= of(arg);
-      }
+      unite(arguments(b, v));
       detail::couple(rows, here, here);
       break;
     case Kind::Nary:
       // A sum is as linear as an Add: the terms' union, no coupling.
-      here = SymbolSet(n);
-      for (const NodeId t : arguments(b, v)) {
-        here |= of(t);
-      }
+      unite(arguments(b, v));
       break;
     case Kind::Ternary:
       // As linear as an Add: it chooses between two derivatives rather than
@@ -368,7 +363,6 @@ template <impl::Numeric T>
       // Zero derivative everywhere it exists, so no support and no coupling --
       // the conservative arm below cost a colour or two per tested quantity.
       if (op == OpCode::Lt || op == OpCode::Le) {
-        here = SymbolSet(n);
         break;
       }
       here = of(node.a);
@@ -389,15 +383,12 @@ template <impl::Numeric T>
       // its operands read.  Linear ops -- Pack, Gather, Sum, Gemv over a
       // constant matrix, AddAt -- couple nothing; a Map or Zip took its inner
       // op's arm above, and Scale and Dot couple as a product does.
-      here = SymbolSet(n);
       switch (node.op) {
       case OpCode::VecConst:
       case OpCode::MatConst:
         break;
       case OpCode::Pack:
-        for (const NodeId s : arguments(b, v)) {
-          here |= of(s);
-        }
+        unite(arguments(b, v));
         break;
       case OpCode::Gather:
       case OpCode::Sum:

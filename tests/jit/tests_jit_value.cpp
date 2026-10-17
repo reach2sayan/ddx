@@ -14,13 +14,13 @@
 #include <bit>
 #include <cstdint>
 #include <cstring>
-#include <iterator>
-#include <span>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <iterator>
 #include <latch>
 #include <numeric>
+#include <span>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -146,6 +146,41 @@ TEST(JitValue, IntrinsicBackedFunctions) {
       [](Builder<> &, auto &v) { return max(v[0], v[1]); }, 2);
   expect_matches_interpreter(
       [](Builder<> &, auto &v) { return min(v[0], v[1]); }, 2);
+}
+
+// A constant exponent or base is where LLVM's library-call simplifier would
+// rewrite pow -- sqrt for 0.5, a division for -1, exp2/exp10 for a base -- and
+// libm's pow is not correctly rounded, so any rewrite moves a bit.
+TEST(JitValue, PowWithAConstantOperandIsTheSweepsPowToTheBit) {
+  const auto bits_agree = [](auto build) {
+    Builder<> b;
+    const auto x = var(b, "x");
+    const auto root = build(b, x);
+    const auto graph = Graph<>::freeze(b, std::array{root.id(b)});
+    const auto kernel = must_compile(graph);
+    ASSERT_TRUE(static_cast<bool>(kernel));
+    constexpr std::size_t n = 64;
+    std::vector<double> column(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      column[i] = 0.013 + 1.37 * static_cast<double>(i);
+    }
+    const double *const xs[]{column.data()};
+    std::vector<double> got(n);
+    double *const values[]{got.data()};
+    kernel(xs, values, {}, {}, n);
+    for (std::size_t i = 0; i < n; ++i) {
+      const double want =
+          ddx::rt::evaluate(b, root.id(b), std::span{&column[i], 1});
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(got[i]),
+                std::bit_cast<std::uint64_t>(want))
+          << "at x = " << column[i] << ": " << got[i] << " vs " << want;
+    }
+  };
+  bits_agree([](Builder<> &, const auto &x) { return pow(x, 0.5); });
+  bits_agree([](Builder<> &, const auto &x) { return pow(x, -1.0); });
+  bits_agree([](Builder<> &, const auto &x) { return pow(x, 3.5); });
+  bits_agree([](Builder<> &b, const auto &x) { return pow(lit(b, 10.0), x); });
+  bits_agree([](Builder<> &b, const auto &x) { return pow(lit(b, 2.0), x); });
 }
 
 // No LLVM intrinsic: these go out as libm calls, a different emitter path.
@@ -823,9 +858,7 @@ TEST(JitValue, AForgedSymbolCannotReachThroughTheLinkOrder) {
   // through the process generator -- and the object defines none of them.
   for (const std::string_view forged :
        {"sin", "exp", "log", "memcpy", "ddx_kernel_999"}) {
-    EXPECT_FALSE(compiler()
-                     .adopt(compiled.object(), forged, graph)
-                     .has_value())
+    EXPECT_FALSE(compiler().adopt(compiled.object(), forged, graph).has_value())
         << forged << " resolved through the link order";
   }
 }

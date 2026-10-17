@@ -79,8 +79,6 @@ struct BinaryOp {
   }
 };
 
-namespace detail {} // namespace detail
-
 template <Numeric T>
 struct SumOp
     : BinaryOp<T, std::plus<void>, FixedString{"+"}, Notation::Infix, 10> {
@@ -135,38 +133,17 @@ struct DivideOp
   static constexpr Curvature curvature = Curvature::Quotient;
   static constexpr std::optional rule_op = algebra::RuleOp::Div;
   // `a / b` means a * b^-1 -- RIGHT division, which CFieldLike cannot state.
-  // Under it dc = da*b^-1 - a*b^-1*db*b^-1, which does not fold into one
-  // division by b*b; the familiar quotient rule is that with the factors
-  // commuted, so both spellings are kept.
+  // dc = (da - a*b^-1*db) * b^-1 holds under it whether or not the scalar
+  // commutes, and never forms b*b, which overflows past ~1.3e154.
   [[nodiscard]] static constexpr auto
   derivative(const CExpression auto &lhs,
              const CExpression auto &rhs) noexcept {
-    if constexpr (CCommutativeMultiply<T>) {
-      auto num_l = lhs.derivative() * rhs;
-      auto num_r = lhs * rhs.derivative();
-      auto numerator = std::move(num_l) - std::move(num_r);
-      auto denominator = rhs * rhs;
-      return std::move(numerator) / std::move(denominator);
-    } else {
-      auto da = lhs.derivative() / rhs;
-      auto db = ((lhs / rhs) * rhs.derivative()) / rhs;
-      return std::move(da) - std::move(db);
-    }
+    return (lhs.derivative() - (lhs / rhs) * rhs.derivative()) / rhs;
   }
 };
 
 // Binary math ops.  derivative() builds a forward symbolic tree; the reverse
 // rule is the descriptor's, read through the runtime graph.
-
-template <Numeric T> struct PowOp;
-template <Numeric T> struct Atan2Op;
-template <Numeric T> struct HypotOp;
-template <Numeric T>
-  requires std::totally_ordered<T>
-struct MaxOp;
-template <Numeric T>
-  requires std::totally_ordered<T>
-struct MinOp;
 
 namespace detail {
 // The scalar's own 1 or 0 rather than a bool, so the tape keeps one element
@@ -314,21 +291,36 @@ template <Numeric T>
 struct PowOp : BinaryOp<T, detail::pow_impl, FixedString{"pow"}> {
   static constexpr std::optional rule_op = algebra::RuleOp::Pow;
   [[nodiscard]] static constexpr auto
-  derivative(const CExpression auto &lhs, const CExpression auto &rhs) noexcept;
+  derivative(const CExpression auto &lhs,
+             const CExpression auto &rhs) noexcept {
+    // Split form, not a^b * (b' ln a + b a'/a): that quotient is 0/0 at a == 0
+    // where a^(b-1) is exact, and a constant exponent folds away with no log.
+    return rhs.derivative() * log(lhs) * pow(lhs, rhs) +
+           rhs * pow(lhs, rhs - Lit<T, 1>{}) * lhs.derivative();
+  }
 };
 
 // atan2(y, x): lhs is y, rhs is x.  d = (x y' - y x') / (x² + y²).
 template <Numeric T>
 struct Atan2Op : BinaryOp<T, detail::atan2_impl, FixedString{"atan2"}> {
   [[nodiscard]] static constexpr auto
-  derivative(const CExpression auto &lhs, const CExpression auto &rhs) noexcept;
+  derivative(const CExpression auto &lhs,
+             const CExpression auto &rhs) noexcept {
+    // Two divisions by hypot, never x² + y²: the square overflows past 1e154.
+    return ((rhs * lhs.derivative() - lhs * rhs.derivative()) /
+            hypot(lhs, rhs)) /
+           hypot(lhs, rhs);
+  }
 };
 
 // hypot(x, y) = sqrt(x² + y²).  d = (x x' + y y') / hypot.
 template <Numeric T>
 struct HypotOp : BinaryOp<T, detail::hypot_impl, FixedString{"hypot"}> {
   [[nodiscard]] static constexpr auto
-  derivative(const CExpression auto &lhs, const CExpression auto &rhs) noexcept;
+  derivative(const CExpression auto &lhs,
+             const CExpression auto &rhs) noexcept {
+    return (lhs * lhs.derivative() + rhs * rhs.derivative()) / hypot(lhs, rhs);
+  }
 };
 
 // max(a, b) = (a + b + |a - b|) / 2, so with s = sign(a - b),
@@ -345,14 +337,12 @@ struct ExtremumOp : BinaryOp<T, func, symbol> {
              const CExpression auto &rhs) noexcept {
     const auto d = lhs - rhs;
     const auto s = MonoExpression<SignOp<T>, std::decay_t<decltype(d)>>{d};
+    const auto sum = lhs.derivative() + rhs.derivative();
+    const auto kink = s * (lhs.derivative() - rhs.derivative());
     if constexpr (IsMax) {
-      return (lhs.derivative() + rhs.derivative() +
-              s * (lhs.derivative() - rhs.derivative())) /
-             Lit<T, 2>{};
+      return (sum + kink) / Lit<T, 2>{};
     } else {
-      return (lhs.derivative() + rhs.derivative() -
-              s * (lhs.derivative() - rhs.derivative())) /
-             Lit<T, 2>{};
+      return (sum - kink) / Lit<T, 2>{};
     }
   }
 };
@@ -364,28 +354,5 @@ struct MaxOp : ExtremumOp<T, true, detail::max_impl, FixedString{"max"}> {};
 template <Numeric T>
   requires std::totally_ordered<T>
 struct MinOp : ExtremumOp<T, false, detail::min_impl, FixedString{"min"}> {};
-
-template <Numeric T>
-constexpr auto PowOp<T>::derivative(const CExpression auto &lhs,
-                                    const CExpression auto &rhs) noexcept {
-  // Split form, not a^b * (b' ln a + b a'/a): that quotient is 0/0 at a == 0
-  // where a^(b-1) is exact, and a constant exponent folds away with no log.
-  return rhs.derivative() * log(lhs) * pow(lhs, rhs) +
-         rhs * pow(lhs, rhs - Lit<T, 1>{}) * lhs.derivative();
-}
-
-template <Numeric T>
-constexpr auto Atan2Op<T>::derivative(const CExpression auto &lhs,
-                                      const CExpression auto &rhs) noexcept {
-  // Two divisions by hypot, never x² + y²: the square overflows past 1e154.
-  return ((rhs * lhs.derivative() - lhs * rhs.derivative()) / hypot(lhs, rhs)) /
-         hypot(lhs, rhs);
-}
-
-template <Numeric T>
-constexpr auto HypotOp<T>::derivative(const CExpression auto &lhs,
-                                      const CExpression auto &rhs) noexcept {
-  return (lhs * lhs.derivative() + rhs * rhs.derivative()) / hypot(lhs, rhs);
-}
 
 } // namespace ddx::impl

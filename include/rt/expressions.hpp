@@ -107,7 +107,7 @@ public:
     if (builder_ == nullptr) {
       return width ? b.filled(width, lit_) : b.constant(lit_);
     }
-    return sum_ ? builder_->sum_of(id_) : id_;
+    return sum_ ? b.sum_of(id_) : id_; // b may be a copy of builder_
   }
   // The identity it has in its own arena; no_node for a pending literal.
   [[nodiscard]] constexpr NodeId id() const {
@@ -174,7 +174,7 @@ public:
     }
     const RTExpression &vec = l.width_ ? l : r;
     const RTExpression &other = l.width_ ? r : l;
-    if (other.width_ == 0 && !other.pending()) {
+    if (other.width_ == 0) {
       if (op == OpCode::Mul) {
         return {*b, b->make(OpCode::Scale, other.id(*b), vec.id(*b))};
       }
@@ -182,15 +182,8 @@ public:
         return {*b, b->make(OpCode::Scale, (RTExpression{1} / r).id(*b),
                             vec.id(*b))};
       }
-      return poison(errc::tensor_shape);
-    }
-    if (other.pending()) {
-      if (op == OpCode::Mul) {
-        return {*b, b->make(OpCode::Scale, other.id(*b), vec.id(*b))};
-      }
-      if (op == OpCode::Div && &other == &r) {
-        return {*b, b->make(OpCode::Scale, (RTExpression{1} / r).id(*b),
-                            vec.id(*b))};
+      if (!other.pending()) { // a scalar node meets a vector only as a scale
+        return poison(errc::tensor_shape);
       }
     }
     return {*b, b->make(OpCode::Zip, l.id(*b, w), r.id(*b, w), no_node,

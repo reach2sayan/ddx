@@ -10,6 +10,7 @@
 #include <boost/scope/scope_exit.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <chrono>
@@ -58,7 +59,7 @@ constexpr void fold(boost::hash2::fnv1a_64 &h, const auto &v) {
 // Bumped by hand for what neither the digest nor the entry can see: the
 // emitter, the pass pipeline, the ABI.  Folded into the key, so a bump misses
 // rather than refuses.
-constexpr std::uint32_t kEpoch = 2;
+constexpr std::uint32_t kEpoch = 3;
 
 // The file: a tag, the format, the key, a CRC over everything after it, the
 // two lengths, then the symbol and the object.  Little-endian throughout.
@@ -164,20 +165,25 @@ void write_file(const std::filesystem::path &path,
 std::uint64_t digest(const rt::Graph<double> &g) {
   boost::hash2::fnv1a_64 h;
   const rt::Inputs &in = g.inputs();
-  for (const std::size_t count : in.by_kind) {
-    fold(h, count);
-  }
+  fold(h, in.by_kind);
   fold(h, in.seeds);
   fold(h, g.layout());
   const auto schedule = g.schedule();
   fold(h, schedule.size());
-  for (const rt::NodeId v : schedule | std::views::transform(&rt::Step::node)) {
-    fold(h, v);
-    fold(h, g[v]);
-    std::ranges::for_each(g.operands(v), [&h](rt::NodeId u) { fold(h, u); });
+  // A step's contraction is the graph's, decided at freeze: the same nodes
+  // emit fma under one and a multiply and an add under the other.
+  for (const rt::Step &s : schedule) {
+    fold(h, s.node);
+    fold(h, g[s.node]);
+    std::ranges::for_each(g.operands(s.node),
+                          [&h](rt::NodeId u) { fold(h, u); });
+    fold(h, std::array{s.fma.x, s.fma.y, s.fma.z});
+    fold(h, s.fma.negated);
+    fold(h, s.fused);
   }
   std::ranges::for_each(g.outputs(), [&h](rt::NodeId o) { fold(h, o); });
   fold(h, g.lists()); // a has_list node's operands live here, not in operands()
+  fold(h, g.externs()); // arity and order size the call's answer
   return h.result();
 }
 

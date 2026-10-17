@@ -124,10 +124,6 @@ struct Options {
   std::string device{};
 
   friend bool operator==(const Options &, const Options &) = default;
-  BOOST_DESCRIBE_CLASS(Options, (),
-                       (backend, points, codegen, warm_points, hot_points,
-                        time_passes),
-                       (), ())
 };
 
 // The options a lane compiles under: a batch too short to fill one block of

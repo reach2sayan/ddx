@@ -153,12 +153,10 @@ template <impl::Numeric T>
   std::vector<NodeId> wanted(roots.begin(), roots.end());
   impl::append(wanted, b.closures());
   const auto live = reachable(b, wanted);
-  return std::ranges::any_of(
-      std::views::iota(NodeId{0}, static_cast<NodeId>(b.size())),
-      [&](NodeId v) {
-        return live[v] && kind_of(b[v].op) == Kind::Extern &&
-               b.externs()[ExternSlot::of(b[v].slot).function].order < 2;
-      });
+  return std::ranges::any_of(live_ids(live), [&b](NodeId v) {
+    return kind_of(b[v].op) == Kind::Extern &&
+           b.externs()[ExternSlot::of(b[v].slot).function].order < 2;
+  });
 }
 
 // Why the implicits cannot be differentiated, if they cannot: a misuse of
@@ -219,8 +217,7 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
   // A contribution under its guard, as a node of the child's width: a
   // select, which over a vector is a Scale by the chosen 1 or 0.
   const auto guarded = [&](NodeId child, NodeId g, const RTExpression<T> &c) {
-    return (g == no_node ? c : select(expr(g), c, zero))
-        .id(b, width_of(b, child));
+    return both(g, c).id(b, width_of(b, child));
   };
 
   // `g` is the edge's guard; a child reached by an unguarded edge is always
@@ -330,20 +327,10 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
         add_to(node.a, g, a);
         add_to(node.b, g, a[node.slot]);
         break;
-      // The dense Hessian's matrix rows are never under a root; nothing
-      // differentiates through them.
-      case OpCode::MatRow:
-      case OpCode::Diag:
-      case OpCode::Outer:
-      case OpCode::RowScale:
-      case OpCode::ColScale:
-      case OpCode::MatVec:
-      case OpCode::MatMul:
-      case OpCode::StackRows:
-      case OpCode::RowOf:
-        break;
       default:
-        std::unreachable();
+        if (!is_matrix_row(node.op)) {
+          std::unreachable();
+        }
       }
       break;
     }
@@ -497,18 +484,10 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
       case OpCode::AddAt:
         d[v] = b.make(OpCode::AddAt, d[node.a], d[node.b], no_node, node.slot);
         break;
-      case OpCode::MatRow:
-      case OpCode::Diag:
-      case OpCode::Outer:
-      case OpCode::RowScale:
-      case OpCode::ColScale:
-      case OpCode::MatVec:
-      case OpCode::MatMul:
-      case OpCode::StackRows:
-      case OpCode::RowOf:
-        break; // never under a root
       default:
-        std::unreachable();
+        if (!is_matrix_row(node.op)) {
+          std::unreachable();
+        }
       }
       break;
     }

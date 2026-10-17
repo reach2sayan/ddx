@@ -377,3 +377,44 @@ TEST(ForwardJacobian, CoversEveryUnaryMathFunction) {
   [[maybe_unused]] auto y = var<"y">;
   [[maybe_unused]] auto z = var<"z">;
 }
+
+// The value coefficient of a Taylor log10 is std::log10's, not log's scaled.
+TEST(NewMathFunctions, TaylorLog10ValueIsExact) {
+  using T = ddx::impl::TaylorDual<double, 2>;
+  const T w = log10(T::variable(1000.0));
+  EXPECT_EQ(w.c[0], 3.0);
+  EXPECT_DOUBLE_EQ(w.c[1], std::numbers::log10e / 1000.0);
+}
+
+// u^2.5 at u == 0 is zero below order 2.5, as Dual says for the first
+// derivative, and has no coefficient past it.
+TEST(NewMathFunctions, TaylorPowOfANonWholeExponentAtZero) {
+  using T = ddx::impl::TaylorDual<double, 3>;
+  const T w = pow(T::variable(0.0), T{2.5});
+  EXPECT_EQ(w.c[0], 0.0);
+  EXPECT_EQ(w.c[1], 0.0);
+  EXPECT_EQ(w.c[2], 0.0);
+  EXPECT_TRUE(std::isnan(w.c[3]));
+  EXPECT_EQ(pow(Dual<double>{0.0, 1.0}, 2.5).deriv(), 0.0);
+}
+
+// atan2's recurrence never squares an operand past its range.
+TEST(NewMathFunctions, TaylorAtan2OfHugeOperands) {
+  using T = ddx::impl::TaylorDual<double, 2>;
+  const double y0 = 3e200;
+  const double x0 = 4e200;
+  const T w = atan2(T::variable(y0), T{x0});
+  EXPECT_DOUBLE_EQ(w.c[0], std::atan2(y0, x0));
+  EXPECT_DOUBLE_EQ(w.c[1], x0 / std::hypot(x0, y0) / std::hypot(x0, y0));
+  // And unchanged where nothing overflows.
+  const T small = atan2(T::variable(0.3), T{0.4});
+  EXPECT_DOUBLE_EQ(small.c[1], 0.4 / 0.25);
+}
+
+// A whole-number constant divided by a Dual: no narrowing in the quotient.
+TEST(NewMathFunctions, AnIntOverADual) {
+  const int two = 2;
+  const auto q = two / Dual<double>{4.0, 1.0};
+  EXPECT_DOUBLE_EQ(q.value(), 0.5);
+  EXPECT_DOUBLE_EQ(q.deriv(), -2.0 / 16.0);
+}
