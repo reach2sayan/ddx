@@ -35,7 +35,7 @@ concept CSymbolTag = requires { detail::tag_key_t<T>::value; };
 //
 //   named<"x">(1.5)      Entry{"x"_s, 1.5}      Entry{var<"x">, 1.5}
 //
-// V is any object type: Record keys arbitrary values by this same spelling, and
+// V is any object type: a named value is one entry of a point, and
 // the numeric entry points constrain V to Numeric where they take it.
 template <FixedString Sym, typename V>
   requires std::is_object_v<V>
@@ -49,7 +49,6 @@ struct Entry {
     requires std::default_initializable<V>
   = default;
 
-  // Not explicit: Record<...>{{1}, {2.5}} initialises its entries through this.
   constexpr Entry(V v) noexcept(std::is_nothrow_move_constructible_v<V>)
       : value{std::move(v)} {}
 

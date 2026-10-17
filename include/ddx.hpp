@@ -4,7 +4,6 @@
 // REFERENCES.md carries the algorithms; per-derivation citations sit at the
 // code that implements them -- grep "Ref:".
 #include "symbolic/equation.hpp"
-#include "symbolic/record.hpp"
 #include "util/version.hpp"
 
 namespace ddx {
@@ -33,10 +32,6 @@ using impl::idx;
 // named<"x">(3.0) -- one keyword argument of a point, or one record entry.
 using impl::Entry;
 using impl::named;
-
-// record(named<"n">(3), named<"x">(1.5)), and Record{...}, its brace spelling.
-using impl::record;
-using impl::Record;
 
 // Symbolic evaluates the stored partial trees; Reverse builds none.
 using impl::DiffMode;

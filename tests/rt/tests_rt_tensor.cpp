@@ -1,9 +1,7 @@
 #include "energy_models.hpp"
-#include "rt/archive/archive.hpp"
 #include "rt/equation.hpp"
 #include "rt/kernels.hpp"
 #include "rt/tensor.hpp"
-#include "scratch.hpp"
 
 #include <gtest/gtest.h>
 
@@ -31,10 +29,7 @@
 namespace {
 
 using RE = ddx::rt::RTExpression<>;
-using RV = ddx::rt::RTVector<>;
-
-static_assert(ddx::impl::Numeric<RV>);
-static_assert(ddx::rt::detail::CGraphHandle<RV>);
+using RV = RE; // a handle known to be a vector
 
 // The symbols as vec() names them, so both spellings share one point layout.
 std::vector<RE> symbols(std::size_t n) {
@@ -378,7 +373,9 @@ TEST(RtTensor, BatchesAndThreadsAreBitIdentical) {
   constexpr std::size_t threads = 8;
   std::latch start{threads};
   std::vector<std::jthread> pool;
-  std::vector<bool> ok(threads, false);
+  // One byte per thread: vector<bool> packs bits, and eight threads writing one
+  // word is a race the comparison would then report as a moved bit.
+  std::vector<char> ok(threads, 0);
   for (std::size_t t = 0; t < threads; ++t) {
     pool.emplace_back([&, t] {
       start.arrive_and_wait();
@@ -391,27 +388,8 @@ TEST(RtTensor, BatchesAndThreadsAreBitIdentical) {
   EXPECT_TRUE(std::ranges::all_of(ok, std::identity{}));
 }
 
-TEST(RtTensor, RoundTripsThroughAFile) {
-  const Scratch file{"tensor"};
-  constexpr std::size_t n = 40;
-  const auto built = tensor_mse(n);
-  ASSERT_FALSE(built.poisoned());
-  ASSERT_TRUE(built.save(file).has_value());
-  const auto loaded = ddx::rt::load(file.path());
-  ASSERT_TRUE(loaded.has_value()) << loaded.error().code;
-  const auto at = composition(n);
-  const auto d = direction(n);
-  EXPECT_EQ(*built.evaluate(std::span<const double>{at}),
-            *loaded->evaluate(std::span<const double>{at}));
-  EXPECT_EQ(*built.gradient(std::span<const double>{at}),
-            *loaded->gradient(std::span<const double>{at}));
-  EXPECT_EQ(*built.hvp(d, std::span<const double>{at}),
-            *loaded->hvp(d, std::span<const double>{at}));
-  EXPECT_TRUE(built.verify(file).has_value());
-}
-
 // A table of one's own: the reference kernels under another name answer the
-// same bits, and the equation records which table it ran on.
+// same bits, and the equation says which table it runs on.
 namespace {
 struct Renamed : ddx::rt::reference::Kernels {
   static constexpr std::string_view name = "renamed";
@@ -731,19 +709,6 @@ TEST(RtTensorDense, BatchColumnsAreThePointsBlockColumnMajor) {
       }
     }
   }
-}
-
-TEST(RtTensorDense, RoundTripsThroughAFile) {
-  const Scratch file{"dense"};
-  constexpr std::size_t n = 9;
-  const auto built = tensor_mse(n);
-  const auto at = composition(n);
-  const auto want = *built.dense_hessian(std::span<const double>{at});
-  ASSERT_TRUE(built.save(file).has_value());
-  const auto loaded = ddx::rt::load(file.path());
-  ASSERT_TRUE(loaded.has_value()) << loaded.error().code;
-  EXPECT_EQ(*loaded->dense_hessian(std::span<const double>{at}), want);
-  EXPECT_EQ(loaded->dense_hessian_cost()->n3_terms, 1u);
 }
 
 TEST(RtTensorDense, RefusesASystem) {

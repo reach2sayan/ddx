@@ -19,20 +19,16 @@ namespace ddx::rt {
 
 namespace detail {
 
-// What the rules below are written over: a handle onto a node that is itself
-// Numeric -- a scalar's (RTExpression) or a vector's (RTVector), where the
-// same descriptor then reads elementwise.
-template <typename H>
-concept CGraphHandle = impl::Numeric<H> && requires {
-  typename H::value_type;
-  typename H::builder_type;
-};
+// The rules below are written over the one handle, which reads elementwise
+// where the node is a vector: a Map or Zip is its inner opcode's rule, built
+// through the handle, which emits a Map or Zip again.
+template <impl::Numeric T> using H = RTExpression<T>;
 
 // A template, so `if constexpr` actually discards: deriv_from_value reuses the
 // primal node, and d(exp)/du becomes the exp node itself.
-template <typename Fn, CGraphHandle H>
-[[nodiscard]] constexpr H rule(const H &u, const H &fu) {
-  if constexpr (impl::detail::has_deriv_from_value_v<Fn, H>) {
+template <typename Fn, impl::Numeric T>
+[[nodiscard]] constexpr H<T> rule(const H<T> &u, const H<T> &fu) {
+  if constexpr (impl::detail::has_deriv_from_value_v<Fn, H<T>>) {
     return Fn::deriv_from_value(u, fu);
   } else {
     return Fn::deriv(u);
@@ -41,9 +37,9 @@ template <typename Fn, CGraphHandle H>
 
 // Nothing here passes `f` to a binary rule: the descriptors recompute it, which
 // is free on a graph since Builder::make interns it back onto the primal.
-template <CGraphHandle H>
-[[nodiscard]] constexpr H contribution(OpCode op, const H &adj, const H &u,
-                                       const H &f) {
+template <impl::Numeric T>
+[[nodiscard]] constexpr H<T> contribution(OpCode op, const H<T> &adj,
+                                          const H<T> &u, const H<T> &f) {
   switch (op) {
 #define DDX_RT_CONTRIB(fn, Op, label, functor, Desc)                           \
   case OpCode::Op:                                                             \
@@ -54,18 +50,18 @@ template <CGraphHandle H>
     // adjoints() uses.
 #define DDX_RT_CONTRIB(fn, Op, label)                                          \
   case OpCode::Op:                                                             \
-    return adj * rule<impl::detail::Op##Fn<H>>(u, f);
+    return adj * rule<impl::detail::Op##Fn<H<T>>>(u, f);
     DDX_UNARY_MATH_TABLE(DDX_RT_CONTRIB)
 #undef DDX_RT_CONTRIB
   default:
-    return H{0};
+    return H<T>{0};
   }
 }
 
 // The pair reaching a two-argument op's operands.
-template <CGraphHandle H>
-[[nodiscard]] constexpr std::pair<H, H>
-contributions(OpCode op, const H &adj, const H &l, const H &r) {
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::pair<H<T>, H<T>>
+contributions(OpCode op, const H<T> &adj, const H<T> &l, const H<T> &r) {
   switch (op) {
 #define DDX_RT_CONTRIB(fn, Op, label, functor, Desc)                           \
   case OpCode::Op: {                                                           \
@@ -75,26 +71,21 @@ contributions(OpCode op, const H &adj, const H &l, const H &r) {
     DDX_RT_BINARY_TABLE(DDX_RT_CONTRIB)
 #undef DDX_RT_CONTRIB
   default:
-    return {H{0}, H{0}};
+    return {H<T>{0}, H<T>{0}};
   }
 }
 
 // The same rule seeded with a unit adjoint: Builder::make fires the x*1 rule
 // before a node exists, so this is the partial and not a multiply by one.
-template <CGraphHandle H>
-[[nodiscard]] constexpr H partial(OpCode op, const H &u, const H &f) {
-  return contribution(op, H{1}, u, f);
+template <impl::Numeric T>
+[[nodiscard]] constexpr H<T> partial(OpCode op, const H<T> &u, const H<T> &f) {
+  return contribution(op, H<T>{1}, u, f);
 }
 
-template <CGraphHandle H>
-[[nodiscard]] constexpr std::pair<H, H> partials(OpCode op, const H &l,
-                                                 const H &r) {
-  return contributions(op, H{1}, l, r);
-}
-
-// The inner opcode a Map or Zip applies elementwise.
-[[nodiscard]] constexpr OpCode inner_of(const auto &node) noexcept {
-  return static_cast<OpCode>(node.slot);
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::pair<H<T>, H<T>> partials(OpCode op, const H<T> &l,
+                                                       const H<T> &r) {
+  return contributions(op, H<T>{1}, l, r);
 }
 
 } // namespace detail
@@ -197,7 +188,7 @@ template <impl::Numeric T>
 }
 } // namespace detail
 
-// reverse_sweep, accumulating *nodes*.  It appends to the builder it reads: new
+// The reverse sweep, accumulating *nodes*.  It appends to the builder it reads: new
 // nodes land above the snapshot, so reverse id order stays topological.
 //
 // Beside each adjoint rides a guard: the condition under which the node lies on
@@ -223,31 +214,26 @@ template <impl::Numeric T>
   const RTExpression<T> zero{0};
   const RTExpression<T> one{1};
   const auto expr = [&b](NodeId id) { return RTExpression<T>{b, id}; };
-  const auto vexpr = [&b](NodeId id) { return RTVector<T>{b, id}; };
   const auto both = [&](NodeId g, const RTExpression<T> &cond) {
     return g == no_node ? cond : select(expr(g), cond, zero);
   };
 
-  // A contribution under its guard, as a node: a scalar's is a select, a
-  // vector's a Scale by the chosen 1 or 0 -- a select has no vector arms.
-  const auto guarded = [&]<typename H>(NodeId child, NodeId g, const H &c) {
-    if constexpr (std::same_as<H, RTVector<T>>) {
-      return (g == no_node ? c : RTVector<T>::scale(select(expr(g), one, zero), c))
-          .id(b, width_of(b, child));
-    } else {
-      return (g == no_node ? c : select(expr(g), c, zero)).id(b);
-    }
+  // A contribution under its guard, as a node of the child's width: a
+  // select, which over a vector is a Scale by the chosen 1 or 0.
+  const auto guarded = [&](NodeId child, NodeId g, const RTExpression<T> &c) {
+    return (g == no_node ? c : select(expr(g), c, zero))
+        .id(b, width_of(b, child));
   };
 
   // `g` is the edge's guard; a child reached by an unguarded edge is always
   // on a chosen path, by any number of guarded ones on the OR of theirs.  The
   // handle's `+` is the sum: a Zip(add) where the child is a vector.
-  const auto add_to = [&]<typename H>(NodeId child, NodeId g,
-                                      const H &contribution) {
+  const auto add_to = [&](NodeId child, NodeId g,
+                          const RTExpression<T> &contribution) {
     const NodeId c = guarded(child, g, contribution);
     // What sign(), and so abs(), hands back.  Storing it would mark the child
     // live and carry a zero adjoint down its whole cone.
-    if (b.is_constant(c, T{0}) || b.is_zero_tensor(c)) {
+    if (b.is_constant(c, T{0})) {
       return;
     }
     if (adj[child] == no_node) {
@@ -255,11 +241,7 @@ template <impl::Numeric T>
       guard[child] = g;
       return;
     }
-    if constexpr (std::same_as<H, RTVector<T>>) {
-      adj[child] = (vexpr(adj[child]) + vexpr(c)).id(b, width_of(b, child));
-    } else {
-      adj[child] = (expr(adj[child]) + expr(c)).id(b);
-    }
+    adj[child] = (expr(adj[child]) + expr(c)).id(b);
     if (guard[child] != no_node) {
       guard[child] = g == no_node
                          ? no_node
@@ -274,9 +256,11 @@ template <impl::Numeric T>
       continue;
     }
     const auto node = b[v]; // by value: building below may reallocate
+    // The adjoint has the node's shape: a vector's is a vector of its width.
     const RTExpression<T> a = expr(adj[v]);
     const NodeId g = guard[v];
-    switch (kind_of(node.op)) {
+    const OpCode op = detail::effective_op(node);
+    switch (kind_of(op)) {
     case Kind::Const:
     case Kind::Input:
     case Kind::Args: // never reached: a call hands adjoints to its arguments
@@ -287,8 +271,7 @@ template <impl::Numeric T>
       });
       break;
     case Kind::Unary:
-      add_to(node.a, g,
-             detail::contribution(node.op, a, expr(node.a), expr(v)));
+      add_to(node.a, g, detail::contribution(op, a, expr(node.a), expr(v)));
       break;
     case Kind::Ternary: {
       // Here rather than in ops/adjoints.hpp: two arms of different types is
@@ -301,67 +284,49 @@ template <impl::Numeric T>
     }
     case Kind::Binary: {
       const auto [cl, cr] =
-          detail::contributions(node.op, a, expr(node.a), expr(node.b));
+          detail::contributions(op, a, expr(node.a), expr(node.b));
       add_to(node.a, g, cl);
       add_to(node.b, g, cr);
       break;
     }
     case Kind::Tensor: {
-      // A vector's adjoint is a vector of its width, `A` here; `a` above is
-      // the scalar one where the node reads vectors down to a scalar.
+      // The ops with a rule of their own; a Map or Zip took the arm above.
       switch (node.op) {
       case OpCode::VecConst:
       case OpCode::MatConst:
       case OpCode::PackArgs: // never reached: a Pack hands adjoints to its scalars
         break;
       case OpCode::Pack: {
-        const RTVector<T> A = vexpr(adj[v]);
         const auto args = *pack_arguments(b, v);
         for (const auto [i, s] : args | std::views::enumerate) {
-          add_to(s, g, A[static_cast<std::size_t>(i)]);
+          add_to(s, g, a[static_cast<std::size_t>(i)]);
         }
         break;
       }
       case OpCode::Gather:
         add_to(node.a, g,
-               add_at(vexpr(b.zeros(width_of(b, node.a))), a, node.slot));
+               add_at(expr(b.zeros(width_of(b, node.a))), a, node.slot));
         break;
-      case OpCode::Map:
-        add_to(node.a, g,
-               detail::contribution(detail::inner_of(node), vexpr(adj[v]),
-                                    vexpr(node.a), vexpr(v)));
+      case OpCode::Scale:
+        add_to(node.a, g, dot(a, expr(node.b)));
+        add_to(node.b, g, expr(node.a) * a);
         break;
-      case OpCode::Zip: {
-        const auto [cl, cr] =
-            detail::contributions(detail::inner_of(node), vexpr(adj[v]),
-                                  vexpr(node.a), vexpr(node.b));
-        add_to(node.a, g, cl);
-        add_to(node.b, g, cr);
-        break;
-      }
-      case OpCode::Scale: {
-        const RTVector<T> A = vexpr(adj[v]);
-        add_to(node.a, g, dot(A, vexpr(node.b)));
-        add_to(node.b, g, RTVector<T>::scale(expr(node.a), A));
-        break;
-      }
       case OpCode::Sum:
-        add_to(node.a, g,
-               RTVector<T>::scale(a, vexpr(b.ones(width_of(b, node.a)))));
+        add_to(node.a, g, a * expr(b.ones(width_of(b, node.a))));
         break;
       case OpCode::Dot:
-        add_to(node.a, g, RTVector<T>::scale(a, vexpr(node.b)));
-        add_to(node.b, g, RTVector<T>::scale(a, vexpr(node.a)));
+        add_to(node.a, g, a * expr(node.b));
+        add_to(node.b, g, a * expr(node.a));
         break;
       case OpCode::Gemv:
         // The matrix is a constant: only the vector moves, by M^T (or M).
         add_to(node.b, g,
-               vexpr(b.make_tensor(OpCode::Gemv, node.a, adj[v],
-                                   node.slot ? 0u : 1u)));
+               expr(b.make(OpCode::Gemv, node.a, adj[v], no_node,
+                           node.slot ? 0u : 1u)));
         break;
       case OpCode::AddAt:
-        add_to(node.a, g, vexpr(adj[v]));
-        add_to(node.b, g, vexpr(adj[v])[node.slot]);
+        add_to(node.a, g, a);
+        add_to(node.b, g, a[node.slot]);
         break;
       // The dense Hessian's matrix rows are never under a root; nothing
       // differentiates through them.
@@ -429,7 +394,8 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
 
   for (const NodeId v : detail::live_ids(live)) {
     const auto node = b[v]; // by value: building below may reallocate
-    switch (kind_of(node.op)) {
+    const OpCode op = detail::effective_op(node);
+    switch (kind_of(op)) {
     case Kind::Extern: {
       RTExpression<T> sum{0};
       detail::extern_partials(b, v, [&](NodeId arg, const RTExpression<T> &c) {
@@ -465,7 +431,7 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
     case Kind::Unary: {
       const RTExpression<T> u{b, node.a};
       const RTExpression<T> self{b, v};
-      d[v] = (detail::partial(node.op, u, self) * RTExpression<T>{b, d[node.a]})
+      d[v] = (detail::partial(op, u, self) * RTExpression<T>{b, d[node.a]})
                  .id(b);
       break;
     }
@@ -479,20 +445,17 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
     case Kind::Binary: {
       const RTExpression<T> l{b, node.a};
       const RTExpression<T> r{b, node.b};
-      const auto [dl, dr] = detail::partials(node.op, l, r);
+      const auto [dl, dr] = detail::partials(op, l, r);
       d[v] = (dl * RTExpression<T>{b, d[node.a]} +
               dr * RTExpression<T>{b, d[node.b]})
-                 .id(b);
+                 .id(b, width_of(b, v));
       break;
     }
     case Kind::Tensor: {
       // The forward twin of each reverse rule above; a vector's tangent is a
       // vector of its width.
-      const auto vexpr = [&b](NodeId id) { return RTVector<T>{b, id}; };
-      const auto dv = [&](NodeId u) { return RTVector<T>{b, d[u]}; };
-      const auto wide = [&](const RTVector<T> &t) {
-        return t.id(b, width_of(b, v));
-      };
+      const auto expr = [&b](NodeId id) { return RTExpression<T>{b, id}; };
+      const auto dv = [&](NodeId u) { return RTExpression<T>{b, d[u]}; };
       switch (node.op) {
       case OpCode::VecConst:
         d[v] = b.zeros(width_of(b, v));
@@ -511,35 +474,22 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
       case OpCode::Gather:
         d[v] = dv(node.a)[node.slot].id(b);
         break;
-      case OpCode::Map:
-        d[v] = wide(detail::partial(detail::inner_of(node), vexpr(node.a),
-                                    vexpr(v)) *
-                    dv(node.a));
-        break;
-      case OpCode::Zip: {
-        const auto [dl, dr] = detail::partials(detail::inner_of(node),
-                                               vexpr(node.a), vexpr(node.b));
-        d[v] = wide(dl * dv(node.a) + dr * dv(node.b));
-        break;
-      }
       case OpCode::Scale:
-        d[v] = wide(RTVector<T>::scale(RTExpression<T>{b, d[node.a]},
-                                       vexpr(node.b)) +
-                    RTVector<T>::scale(RTExpression<T>{b, node.a},
-                                       dv(node.b)));
+        d[v] = (dv(node.a) * expr(node.b) + expr(node.a) * dv(node.b))
+                   .id(b, width_of(b, v));
         break;
       case OpCode::Sum:
         d[v] = sum(dv(node.a)).id(b);
         break;
       case OpCode::Dot:
-        d[v] = (dot(dv(node.a), vexpr(node.b)) + dot(vexpr(node.a), dv(node.b)))
+        d[v] = (dot(dv(node.a), expr(node.b)) + dot(expr(node.a), dv(node.b)))
                    .id(b);
         break;
       case OpCode::Gemv:
-        d[v] = b.make_tensor(OpCode::Gemv, node.a, d[node.b], node.slot);
+        d[v] = b.make(OpCode::Gemv, node.a, d[node.b], no_node, node.slot);
         break;
       case OpCode::AddAt:
-        d[v] = b.make_tensor(OpCode::AddAt, d[node.a], d[node.b], node.slot);
+        d[v] = b.make(OpCode::AddAt, d[node.a], d[node.b], no_node, node.slot);
         break;
       case OpCode::MatRow:
       case OpCode::Diag:

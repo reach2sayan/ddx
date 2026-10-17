@@ -1,13 +1,14 @@
-# One target per dependency tier: `tests` links GoogleTest alone, `tests_rt`
-# adds libddx, `tests_jit` adds the backend.
+# One target per dependency tier: `tests` and `tests_dual` link libddx for the
+# Hessian colouring, `tests_rt` the runtime graph, `tests_jit` the backend.
 ddx_use_googletest()
 include(GoogleTest)
 
 file(GLOB DDX_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 add_executable(tests ${DDX_TEST_SOURCES})
 target_include_directories(tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(tests PRIVATE gtest_main ddx)
+target_link_libraries(tests PRIVATE gtest_main ddx::rt)
 ddx_target_flags(tests)
+ddx_runtime_deps(tests)
 set(DDX_TEST_ENV "")
 if (DDX_SANITIZE STREQUAL "thread")
     set(DDX_TEST_ENV PROPERTIES ENVIRONMENT
@@ -20,8 +21,9 @@ file(GLOB DDX_DUAL_TEST_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/dual/*.cpp")
 add_executable(tests_dual ${DDX_DUAL_TEST_SOURCES})
 target_include_directories(tests_dual PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(tests_dual PRIVATE gtest_main ddx)
+target_link_libraries(tests_dual PRIVATE gtest_main ddx::rt)
 ddx_target_flags(tests_dual)
+ddx_runtime_deps(tests_dual)
 gtest_discover_tests(tests_dual ${DDX_TEST_ENV})
 
 file(GLOB DDX_RT_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/rt/*.cpp")

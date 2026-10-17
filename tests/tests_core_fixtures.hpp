@@ -6,9 +6,5 @@
 namespace {
 
 using ddx::impl::Entry;
-using ddx::impl::Record;
-
-constexpr auto kRecordX = var<"x">;
-constexpr auto kRecordN = var<"n", int>;
 
 } // namespace

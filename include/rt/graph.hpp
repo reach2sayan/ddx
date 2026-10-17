@@ -8,7 +8,6 @@
 #include "util/ranges.hpp"
 
 #include <boost/describe/class.hpp>
-#include <boost/graph/compressed_sparse_row_graph.hpp>
 
 #include <algorithm>
 #include <array>
@@ -23,35 +22,26 @@
 
 namespace ddx::rt {
 
-// Befriended by Graph: the CSR itself is the writer's business.
-template <impl::Numeric T> class Dot;
-
-// At namespace scope rather than inside Graph because it carries no `T`: every
-// scalar freezes to the same CSR, so the graphviz writer compiles once.
-using Adjacency =
-    boost::compressed_sparse_row_graph<boost::directedS, boost::no_property,
-                                       std::uint32_t>;
-using Vertex = boost::graph_traits<Adjacency>::vertex_descriptor;
-
-// What a lane's graph carries; each level is the one below plus a block.
-// Appended rather than inserted, so a saved Object's `want` byte still names
-// the same lane it did.  The columns: whether the lane is one function's (a
-// system refuses it), whether it is second order (a function supplying first
-// partials only refuses it), whether its kernel may be built over the
-// rebalanced graph, and what its seeds are counted in.  The seeded and
-// second-order lanes may not rebalance: their block is swept from the
+// What a lane's graph carries; each level is the one below plus a block.  The
+// columns: whether the lane is one function's (a system refuses it), whether
+// it is second order (a function supplying first partials only refuses it),
+// whether its kernel may be built over the rebalanced graph, what its seeds
+// are counted in, whether it fills the values block, and the shape of its
+// Jacobian and Hessian blocks -- the pattern's cells, one per symbol or per
+// function, the colouring's compressed columns, or n x n dense.  The seeded
+// and second-order lanes may not rebalance: their block is swept from the
 // unblocked roots, so a rebalanced copy would answer in different last bits
 // than the sweep it is checked against.
 #define DDX_RT_WANT_TABLE(X)                                                   \
-  X(Value, false, false, true, None)                                           \
-  X(Jacobian, false, false, true, None)                                        \
-  X(Hessian, true, true, false, None)                                          \
-  X(Hvp, true, true, false, Symbols)                                           \
-  X(Vjp, false, false, false, Functions)                                       \
-  X(Jvp, false, false, false, Symbols)                                         \
-  X(Gradient, false, false, true, None)                                        \
-  X(JacobianTangent, false, true, false, Symbols)                              \
-  X(DenseHessian, true, true, false, None)
+  X(Value, false, false, true, None, true, None, None)                         \
+  X(Jacobian, false, false, true, None, true, Cells, None)                     \
+  X(Hessian, true, true, false, None, true, Cells, Colours)                    \
+  X(Hvp, true, true, false, Symbols, true, Cells, Symbols)                     \
+  X(Vjp, false, false, false, Functions, true, Symbols, None)                  \
+  X(Jvp, false, false, false, Symbols, true, Functions, None)                  \
+  X(Gradient, false, false, true, None, false, Cells, None)                    \
+  X(JacobianTangent, false, true, false, Symbols, true, Cells, Cells)          \
+  X(DenseHessian, true, true, false, None, true, Cells, Dense)
 
 enum class Want : std::uint8_t {
 #define DDX_RT_WANT(Name, ...) Name,
@@ -59,12 +49,16 @@ enum class Want : std::uint8_t {
 #undef DDX_RT_WANT
 };
 enum class Seeds : std::uint8_t { None, Symbols, Functions };
+enum class Block : std::uint8_t { None, Cells, Symbols, Functions, Colours, Dense };
 struct WantInfo {
   std::string_view name;
   bool single;
   bool second_order;
   bool rebalanceable;
   Seeds seeds;
+  bool values;
+  Block jacobian;
+  Block hessian;
 };
 inline constexpr auto want_table = [] {
   std::array<WantInfo, 0
@@ -74,8 +68,9 @@ inline constexpr auto want_table = [] {
              >
       t{};
   std::size_t i = 0;
-#define DDX_RT_WANT(Name, single, second, rebalance, seeds)                    \
-  t[i++] = {#Name, single, second, rebalance, Seeds::seeds};
+#define DDX_RT_WANT(Name, single, second, rebalance, seeds, values, jac, hes)  \
+  t[i++] = {#Name,         single,      second,      rebalance,                \
+            Seeds::seeds,  values,      Block::jac,  Block::hes};
   DDX_RT_WANT_TABLE(DDX_RT_WANT)
 #undef DDX_RT_WANT
   return t;
@@ -212,30 +207,18 @@ public:
     g.externs_.assign(b.externs().begin(), b.externs().end());
     g.names_ = b.names();
     g.properties_.reserve(b.size());
-
-    std::vector<std::pair<std::size_t, std::size_t>> edges;
-    std::vector<std::uint32_t> slots;
-    edges.reserve(b.size() * 3);
-    slots.reserve(b.size() * 3);
-
-    for (const auto [v, n] : b.nodes() | std::views::enumerate) {
+    g.operands_.reserve(b.size());
+    for (const Node<T> &n : b.nodes()) {
       g.properties_.push_back({.op = n.op, .value = n.value, .slot = n.slot});
-      const auto id = static_cast<std::size_t>(v);
-      for (const auto [slot, u] : std::array{n.a, n.b, n.c} |
-                                      std::views::enumerate |
-                                      std::views::take(arity_of(n.op))) {
-        edges.emplace_back(id, u);
-        slots.push_back(static_cast<std::uint32_t>(slot));
-      }
+      // The operands the arity names; the rest read as no operand.
+      std::array operands{n.a, n.b, n.c};
+      std::ranges::fill(operands | std::views::drop(arity_of(n.op)), no_node);
+      g.operands_.push_back(operands);
     }
-
-    g.children_ =
-        adjacency_type(boost::edges_are_unsorted_multi_pass, edges.begin(),
-                       edges.end(), slots.begin(), b.size());
     g.mark_live();
     g.contract(contract);
     // Read off what survived rather than taken from the builder, so a lane
-    // that kept no seed keeps the kernel and the digest it had.
+    // that kept no seed keeps the kernel it had.
     for (const NodeId v : g.schedule_ | std::views::transform(&Step::node)) {
       if (g.properties_[v].op == OpCode::Seed) {
         g.inputs_.seeds =
@@ -343,16 +326,10 @@ public:
   // Operands in slot order; arity is at most three, a select being the only op
   // that reaches it.
   [[nodiscard]] std::array<NodeId, 3> operands(NodeId v) const {
-    std::array out{no_node, no_node, no_node};
-    for (const auto &e : operand_edges(v)) {
-      out[children_[e]] = static_cast<NodeId>(boost::target(e, children_));
-    }
-    return out;
+    return operands_[v];
   }
 
 private:
-  using adjacency_type = Adjacency;
-  using vertex_type = Vertex;
 
   template <typename E>
   [[nodiscard]] Blocks<std::span<const E>> blocks_of(std::span<const E> all) const {
@@ -362,23 +339,11 @@ private:
                                    counts_.hessian)};
   }
 
-  // Only the DOT writer wants these; everything else reads `operands`.
-  friend class Dot<T>;
-  [[nodiscard]] const adjacency_type &children() const { return children_; }
-
-  [[nodiscard]] auto operand_edges(NodeId v) const {
-    const auto [first, last] =
-        boost::out_edges(static_cast<vertex_type>(v), children_);
-    return std::ranges::subrange(first, last);
-  }
-
   // Nothing but the outputs and what they reach needs to be emitted.
   void mark_live() {
     live_ = detail::reachable(
         properties_.size(), outputs_, [this](NodeId v, auto &&mark) {
-          for (const auto &edge : operand_edges(v)) {
-            mark(static_cast<NodeId>(boost::target(edge, children_)));
-          }
+          std::ranges::for_each(detail::operands_of(*this, v), mark);
         });
     live_order_.reserve(
         static_cast<std::size_t>(std::ranges::count(live_, true)));
@@ -401,9 +366,7 @@ private:
             mark(c.z);
             return;
           }
-          for (const auto &edge : operand_edges(v)) {
-            mark(static_cast<NodeId>(boost::target(edge, children_)));
-          }
+          std::ranges::for_each(detail::operands_of(*this, v), mark);
         });
     schedule_ = detail::schedule_of(
         *this, live_order_ |
@@ -411,7 +374,7 @@ private:
   }
 
   std::vector<Property> properties_;
-  adjacency_type children_;
+  std::vector<std::array<NodeId, 3>> operands_;
   std::vector<NodeId> outputs_;
   Layout layout_;          // columns per block
   Blocks<std::size_t> counts_; // nodes per block

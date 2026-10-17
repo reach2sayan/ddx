@@ -194,21 +194,6 @@ public:
         },
         this->self().expressions());
   }
-
-  template <std::size_t Base = 0>
-  constexpr void backward(const auto &syms, value_type adj, auto &grads,
-                          const auto &cache) const noexcept {
-    using Kids = typename Derived::children_t;
-    index_apply<std::tuple_size_v<Kids>>([&]<std::size_t... I>() noexcept {
-      auto child_adj =
-          Op::template adjoints<Base, child_base_at<Base, Kids, I>()...>(adj,
-                                                                         cache);
-      (std::get<I>(this->self().expressions())
-           .template backward<child_base_at<Base, Kids, I>()>(
-               syms, std::move(child_adj[I]), grads, cache),
-       ...);
-    });
-  }
 };
 
 // The CRTP parameter is the public Expression type, not this base.

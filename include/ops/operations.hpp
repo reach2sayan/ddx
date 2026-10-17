@@ -80,33 +80,11 @@ struct BinaryOp {
 };
 
 namespace detail {
-// The reverse rule, forwarded from adjoints.hpp: the children's cache slots are
-// the pack, so one body serves every arity.  `reads_primals` false lets
-// fill_cache skip the store for every child; it is read off the descriptor, so
-// a rule cannot claim less than it reads.
-template <Numeric T, template <Numeric> class Fn> struct Adjoints {
-  static constexpr bool reads_primals = reads_primals_v<Fn, T>;
-  template <std::size_t, std::size_t... CB>
-  static constexpr std::array<T, sizeof...(CB)>
-  adjoints(T adj, const auto &cache) noexcept {
-    return adjoints_of<Fn>(adj, cache[CB]...);
-  }
-};
-// The chain rule off a unary descriptor's deriv().
-template <Numeric T, template <Numeric> class Fn> struct DerivAdjoint {
-  static constexpr bool reads_primals = true;
-  template <std::size_t, std::size_t... CB>
-  static constexpr std::array<T, sizeof...(CB)>
-  adjoints(T adj, const auto &cache) noexcept {
-    return {adj * Fn<T>::deriv(cache[CB]...)};
-  }
-};
 } // namespace detail
 
 template <Numeric T>
 struct SumOp
-    : BinaryOp<T, std::plus<void>, FixedString{"+"}, Notation::Infix, 10>,
-      detail::Adjoints<T, detail::SumOpFn> {
+    : BinaryOp<T, std::plus<void>, FixedString{"+"}, Notation::Infix, 10> {
   static constexpr Curvature curvature = Curvature::None;
   static constexpr std::optional rule_op = algebra::RuleOp::Add;
 
@@ -119,8 +97,7 @@ struct SumOp
 
 template <Numeric T>
 struct MultiplyOp
-    : BinaryOp<T, std::multiplies<void>, FixedString{"*"}, Notation::Infix, 20>,
-      detail::Adjoints<T, detail::MultiplyOpFn> {
+    : BinaryOp<T, std::multiplies<void>, FixedString{"*"}, Notation::Infix, 20> {
   static constexpr Curvature curvature = Curvature::Bilinear;
   static constexpr std::optional rule_op = algebra::RuleOp::Mul;
   [[nodiscard]] static constexpr auto
@@ -134,8 +111,7 @@ struct MultiplyOp
 
 template <Numeric T>
 struct NegateOp
-    : UnaryOp<T, std::negate<void>, FixedString{"-"}, Notation::Prefix, 30>,
-      detail::Adjoints<T, detail::NegateOpFn> {
+    : UnaryOp<T, std::negate<void>, FixedString{"-"}, Notation::Prefix, 30> {
   static constexpr Curvature curvature = Curvature::None;
   static constexpr std::optional rule_op = algebra::RuleOp::Neg;
 
@@ -156,8 +132,7 @@ inline constexpr bool is_negation_expr_v<Expression<NegateOp<T>, C>> = true;
 
 template <Numeric T>
 struct DivideOp
-    : BinaryOp<T, std::divides<void>, FixedString{"/"}, Notation::Infix, 20>,
-      detail::Adjoints<T, detail::DivideOpFn> {
+    : BinaryOp<T, std::divides<void>, FixedString{"/"}, Notation::Infix, 20> {
   static constexpr Curvature curvature = Curvature::Quotient;
   static constexpr std::optional rule_op = algebra::RuleOp::Div;
   // `a / b` means a * b^-1 -- RIGHT division, which CFieldLike cannot state.
@@ -181,8 +156,8 @@ struct DivideOp
   }
 };
 
-// Binary math ops.  derivative() builds a forward symbolic tree; adjoints()
-// pushes the partial adjoints.
+// Binary math ops.  derivative() builds a forward symbolic tree; the reverse
+// rule is the descriptor's, read through the runtime graph.
 
 template <Numeric T> struct PowOp;
 template <Numeric T> struct Atan2Op;
@@ -297,14 +272,12 @@ using min_impl = extremum_impl<false>;
 } // namespace detail
 
 // Generated from the registry: each op pulls value and derivative from its
-// descriptor.  Forward mode needs no member here -- it is the ordinary eval()
-// sweep seeded with Dual, through the same descriptor.
+// descriptor.
 #define DDX_UNARY_MATH_OP(FN, NAME, LABEL)                                     \
   template <Numeric T>                                                         \
     requires(!detail::needs_real_constants_v<detail::NAME##Fn<T>> ||           \
              std::constructible_from<T, double>)                               \
-  struct NAME : UnaryOp<T, detail::NAME##Fn<T>, FixedString{LABEL}>,           \
-                detail::DerivAdjoint<T, detail::NAME##Fn> {                    \
+  struct NAME : UnaryOp<T, detail::NAME##Fn<T>, FixedString{LABEL}> {         \
     [[nodiscard]] static constexpr auto                                        \
     derivative(const CExpression auto &lhs) noexcept {                         \
       return detail::NAME##Fn<T>::deriv(lhs) * lhs.derivative();               \
@@ -318,8 +291,7 @@ DDX_UNARY_MATH_TABLE(DDX_UNARY_MATH_OP)
 // finite at the kink, where a u/|u| quotient is 0/0.
 template <Numeric T>
   requires std::totally_ordered<T>
-struct SignOp : UnaryOp<T, detail::sign_impl, FixedString{"sign"}>,
-                detail::Adjoints<T, detail::SignOpFn> {
+struct SignOp : UnaryOp<T, detail::sign_impl, FixedString{"sign"}> {
   [[nodiscard]] static constexpr auto
   derivative(const CExpression auto &) noexcept {
     return Lit<T, 0>{};
@@ -330,8 +302,7 @@ struct SignOp : UnaryOp<T, detail::sign_impl, FixedString{"sign"}>,
 // primal.  totally_ordered because the rule branches on a comparison.
 template <Numeric T>
   requires std::totally_ordered<T>
-struct AbsOp : UnaryOp<T, detail::abs_impl, FixedString{"abs"}>,
-               detail::Adjoints<T, detail::AbsOpFn> {
+struct AbsOp : UnaryOp<T, detail::abs_impl, FixedString{"abs"}> {
   [[nodiscard]] static constexpr auto
   derivative(const CExpression auto &lhs) noexcept {
     auto s = MonoExpression<SignOp<T>, std::decay_t<decltype(lhs)>>{lhs};
@@ -341,8 +312,7 @@ struct AbsOp : UnaryOp<T, detail::abs_impl, FixedString{"abs"}>,
 
 // pow(a, b) = a^b.  d(a^b) = b' ln(a) a^b + b a^(b-1) a'.
 template <Numeric T>
-struct PowOp : BinaryOp<T, detail::pow_impl, FixedString{"pow"}>,
-               detail::Adjoints<T, detail::PowOpFn> {
+struct PowOp : BinaryOp<T, detail::pow_impl, FixedString{"pow"}> {
   static constexpr std::optional rule_op = algebra::RuleOp::Pow;
   [[nodiscard]] static constexpr auto
   derivative(const CExpression auto &lhs, const CExpression auto &rhs) noexcept;
@@ -350,16 +320,14 @@ struct PowOp : BinaryOp<T, detail::pow_impl, FixedString{"pow"}>,
 
 // atan2(y, x): lhs is y, rhs is x.  d = (x y' - y x') / (x² + y²).
 template <Numeric T>
-struct Atan2Op : BinaryOp<T, detail::atan2_impl, FixedString{"atan2"}>,
-                 detail::Adjoints<T, detail::Atan2OpFn> {
+struct Atan2Op : BinaryOp<T, detail::atan2_impl, FixedString{"atan2"}> {
   [[nodiscard]] static constexpr auto
   derivative(const CExpression auto &lhs, const CExpression auto &rhs) noexcept;
 };
 
 // hypot(x, y) = sqrt(x² + y²).  d = (x x' + y y') / hypot.
 template <Numeric T>
-struct HypotOp : BinaryOp<T, detail::hypot_impl, FixedString{"hypot"}>,
-                 detail::Adjoints<T, detail::HypotOpFn> {
+struct HypotOp : BinaryOp<T, detail::hypot_impl, FixedString{"hypot"}> {
   [[nodiscard]] static constexpr auto
   derivative(const CExpression auto &lhs, const CExpression auto &rhs) noexcept;
 };
@@ -389,31 +357,6 @@ struct ExtremumOp : BinaryOp<T, func, symbol> {
     }
   }
 
-  // The one op that does not forward to adjoints.hpp: a compare is cheaper than
-  // ExtremumOpFn's sign expansion and can halve a tie.  The graph has no
-  // comparisons and must use the expansion.
-  static constexpr bool reads_primals = true;
-  template <std::size_t Base, std::size_t... CB>
-  static constexpr std::array<T, sizeof...(CB)>
-  adjoints(T adj, const auto &cache) noexcept {
-    constexpr std::size_t cb[]{CB...};
-    using ret_t = std::array<T, sizeof...(CB)>;
-    const T &a = cache[cb[0]];
-    const T &b = cache[cb[1]];
-    if (a == b) {
-      const T half = adj / T{2};
-      return ret_t{half, half};
-    }
-    // The winner takes the whole adjoint, the loser none.
-    if (IsMax ? a < b : b < a) {
-      return ret_t{T{}, adj};
-    }
-    if (IsMax ? b < a : a < b) {
-      return ret_t{adj, T{}};
-    }
-    const T poison = (a - b) * T{}; // unordered: NaN to both operands
-    return ret_t{poison, poison};
-  }
 };
 
 template <Numeric T>

@@ -1,7 +1,6 @@
 #include "ddx.hpp"
 #include "energy_models.hpp"
 #include "rt/equation.hpp"
-#include "scratch.hpp"
 
 #include <gtest/gtest.h>
 
@@ -186,16 +185,6 @@ TEST(RtImplicit, ZIsPartOfThePoint) {
   const auto eq = root_of_a();
   EXPECT_EQ(eq.gradient("a"_s = 4.0).error().code, ddx::errc::short_point);
   EXPECT_EQ(eq.gradient(4.0).error().code, ddx::errc::wrong_arity);
-}
-
-TEST(RtImplicit, SavesAndLoadsItsClosure) {
-  const Scratch path{"implicit"};
-  const auto eq = root_of_a();
-  ASSERT_TRUE(eq.save(path).has_value());
-  const auto loaded = ddx::rt::load(path);
-  ASSERT_TRUE(loaded.has_value());
-  EXPECT_EQ(*loaded->hessian(4.0, 2.0), *eq.hessian(4.0, 2.0));
-  EXPECT_EQ(*loaded->residual(4.0, 3.0), std::vector{5.0});
 }
 
 // --- refusals ----------------------------------------------------------------

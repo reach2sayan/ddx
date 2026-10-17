@@ -10,16 +10,12 @@
 // ddx knows nothing about it.  The elementwise rows stay the reference ones:
 // a transcendental per element is the same work under any name.  Last bits
 // may differ from the reference table's, since a summation order is the one
-// thing a table chooses -- which is why a saved file records the table's name.
+// thing a table chooses.
 //
 // Inert without Eigen rather than a hard error: this header is installed with
 // the rest, and tests/package compiles every installed header.
 
-#if defined(__has_include) && __has_include(<Eigen/Core>)
-#define DDX_HAS_EIGEN 1
-#else
-#define DDX_HAS_EIGEN 0
-#endif
+#include "rt/eigen.hpp" // DDX_HAS_EIGEN, probed once
 
 #if DDX_HAS_EIGEN
 

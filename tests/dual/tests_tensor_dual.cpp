@@ -26,21 +26,6 @@ TEST(BitExactness, EveryDriverIsBitStableAcrossBuilds) {
     feed(e.eval(a, b, c));
     feed(e.eval_with_tangent<"x">(a, b, c).deriv());
 
-    const std::vector<double> xs{a, b, c};
-    auto fn = [](auto q) {
-      using std::exp, std::sin;
-      return sin(q[0] * q[1]) * exp(q[0]) + q[2] * q[2] * q[1];
-    };
-    const auto H = ddx::impl::hessian(fn, std::span<const double>{xs});
-    feed(val_of(H));
-    for (std::size_t k = 0; k < hess_n(H); ++k)
-      feed(grad_at(H, k));
-    for (std::size_t r = 0; r < 3; ++r)
-      for (std::size_t cc = 0; cc < 3; ++cc)
-        feed(hess_at(H, r, cc));
-    for (auto v : ddx::impl::jacobian(fn, std::span<const double>{xs}))
-      feed(v);
-
     const auto u = sin(x * x) + exp(x) + atan(x) + asinh(x);
     feed(Equation{u}.template univariate_derivative<1>(a));
     feed(Equation{u}.template univariate_derivative<2>(a));
@@ -96,16 +81,11 @@ TEST(ConstexprContract, DifferentiationEntryPointsAreConstantEvaluated) {
   static_assert(g3[0] == 12.0 && g3[1] == 8.0 && g3[2] == 6.0,
                 "forward Jacobian path is constexpr");
 
-  // Forward-over-reverse seeds tangents, so its expression carries Dual<double>
-  // numbers.
-  using D = Dual<double>;
-  constexpr Variable<D, FixedString{"a"}> a;
-  constexpr Variable<D, FixedString{"b"}> b;
-  constexpr auto Hr = Equation{a * b}.hessian(std::array{3.0, 4.0});
-  static_assert((Hr[0, 1]) == 1.0 && (Hr[0, 0]) == 0.0,
-                "forward-over-reverse Hessian in constant evaluation");
-
-  SUCCEED();
+  // The reverse Hessian colours through libddx, so it runs; its numbers are
+  // the tensor's.
+  const auto Hr = Equation{x * y}.hessian(std::array{3.0, 4.0});
+  EXPECT_EQ((Hr[0, 1]), 1.0);
+  EXPECT_EQ((Hr[0, 0]), 0.0);
 }
 TEST(BoundTest, EvalAsCarriesDualsThroughTheGraph) {
   // eval_as is the deeper-numeric-type entry point the drivers use.
@@ -145,7 +125,7 @@ TEST(DerivativeTensorTest, ForwardAndReverseHessiansAgree) {
     auto e = a * log(a) + b * log(b) + c * c * d + exp(a * d);
     const std::array<double, 4> p{0.3, 0.4, 0.5, 0.6};
     const auto T = Equation{e}.template derivative_tensor<2>(p);
-    const auto R = ddx::impl::detail::reverse_mode_hessian(e, p);
+    const auto R = Equation{e}.hessian(p);
     for (std::size_t i = 0; i < 4; ++i) {
       for (std::size_t j = 0; j < 4; ++j) {
         EXPECT_NEAR((T[i, j]), (R[i, j]), 1e-12)
@@ -161,41 +141,15 @@ TEST(DerivativeTensorTest, ForwardAndReverseHessiansAgree) {
     Variable<D, FixedString{"e"}> e5;
     auto e = a * log(a) + b * log(b) + c * c * d + exp(a * d) + e5 * e5 * b;
     const std::array<double, 5> p{0.3, 0.4, 0.5, 0.6, 0.7};
-    const std::span<const double> xs{p.data(), p.size()};
     const auto T = Equation{e}.template derivative_tensor<2>(p);
-    const auto R = ddx::impl::detail::reverse_mode_hessian(e, p);
-    const auto H =
-        ddx::impl::hessian(e, xs); // independent driver, as a cross-check
+    const auto R = Equation{e}.hessian(p);
     for (std::size_t i = 0; i < 5; ++i) {
       for (std::size_t j = 0; j < 5; ++j) {
         EXPECT_NEAR((T[i, j]), (R[i, j]), 1e-12)
             << "N=5 at (" << i << "," << j << ")";
-        EXPECT_NEAR((T[i, j]), hess_at(H, i, j), 1e-9)
-            << "N=5 vs driver at (" << i << "," << j << ")";
       }
     }
   }
-}
-TEST(ForwardDriver, DriverHessianAgreesWithEquationHessian) {
-  // Two return shapes: a tuple of owning row-major buffers, and an
-  // md_tensor.
-  Variable<ddx::impl::Dual<double>, ddx::impl::FixedString{"x"}> x;
-  Variable<ddx::impl::Dual<double>, ddx::impl::FixedString{"y"}> y;
-  auto expr = x * y + x * x + sin(y);
-  const std::array<double, 2> p{0.7, 1.3};
-  const std::span<const double> xs{p.data(), p.size()};
-
-  const auto H = ddx::impl::hessian(expr, xs); // tuple {value, grad, hess}
-  const auto T = Equation{expr}.hessian(p);    // md_tensor
-
-  for (std::size_t i = 0; i < 2; ++i) {
-    for (std::size_t j = 0; j < 2; ++j) {
-      EXPECT_NEAR(hess_at(H, i, j), (T[i, j]), 1e-9)
-          << "driver vs Equation at (" << i << "," << j << ")";
-    }
-  }
-  // Row-major: (0,1) is element 1 of the flat buffer.
-  EXPECT_DOUBLE_EQ(hess_ptr(H)[1], hess_at(H, 0, 1));
 }
 TEST(MdTensor, PackedSymmetricTensorMatchesDenseEvaluation) {
   ddx::impl::Variable<double, ddx::impl::FixedString{"x"}> x;

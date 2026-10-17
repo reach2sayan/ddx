@@ -3,7 +3,6 @@
 #include "cl/device.hpp"
 #include "cl/kernel.hpp"
 #include "jit/kernel.hpp"
-#include "rt/archive/archive.hpp" // object_of, adopt_stored
 #include "rt/graph.hpp"
 #include "rt/kernels.hpp"
 #include "util/config.hpp" // DDX_FWD
@@ -175,7 +174,6 @@ template <impl::Numeric T> struct Compiled {
 // with neither backend all arrive here as one.  At most one is set.
 struct Setting {
   jit::Options options{};
-  std::span<const Object> objects{};
   jit::Compiler *compiler = nullptr;  // Compile and Adapt
   const cl::Device *device = nullptr; // Device
 };
@@ -210,25 +208,6 @@ public:
     }
     climb(setting);
     return ready_;
-  }
-
-  // Only an LLVM kernel that kept its bytes, so without retain_object an
-  // equation saves its graph and no code.
-  [[nodiscard]] std::optional<Object> object([[maybe_unused]] Want want,
-                                             const Setting &setting) const {
-    [[maybe_unused]] const auto read = lock_.read();
-    const jit::Kernel *const kernel =
-        ready_ ? ready_->kernel.jit_kernel() : nullptr;
-    if (setting.compiler == nullptr || kernel == nullptr ||
-        kernel->object().empty()) {
-      return std::nullopt;
-    }
-#ifdef DDX_HAS_JIT
-    return object_of(want, *ready_->graph, *kernel, *setting.compiler,
-                     setting.options.codegen);
-#else
-    return std::nullopt;
-#endif
   }
 
   // The cheapest rung, so a caller waits on it holding no lock of ours -- and,
@@ -310,22 +289,6 @@ private:
         return;
       }
 #ifdef DDX_HAS_JIT
-      // A rung already climbed: published at its own level, with the ladder
-      // launched as always and adopt()'s rank dropping what cannot beat it.
-      if (auto have =
-              adopt_stored(setting.objects, want, *ready_->compile_graph,
-                           *setting.compiler, setting.options.codegen)) {
-        const bool topped =
-            have.level >= setting.options.codegen.codegen_level;
-        ready_ = ready_->with(AnyKernel{std::move(have.kernel)}, have.level);
-        // Nothing left to climb to, so nothing is launched and, under Adapt,
-        // nothing more is counted.
-        if (topped) {
-          asked_.store(Rungs, std::memory_order_relaxed);
-          return;
-        }
-        asked_.store(1, std::memory_order_relaxed);
-      }
       // Adapt buys its rungs in climb(); Compile asks for them outright.
       if (setting.options.backend == jit::Backend::Compile) {
         launch(setting);

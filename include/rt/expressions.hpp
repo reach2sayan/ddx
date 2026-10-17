@@ -6,8 +6,10 @@
 #include "util/error.hpp"
 #include "util/scope_guard.hpp"
 
+#include <algorithm>
 #include <array>
 #include <concepts> // std::same_as
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -20,11 +22,11 @@
 namespace ddx::rt {
 
 template <impl::Numeric T = double> class RTExpression;
-template <impl::Numeric T> class RTVector;
 
 namespace detail {
 // Befriended below: an equation is the one thing that takes an expression's
-// arena over, and the only reader of the poison an absent arena leaves.
+// arena over, and the only reader of the poison an absent arena leaves; the
+// tensor factories in rt/tensor.hpp are the other way to a poisoned handle.
 struct Rooting {
   template <impl::Numeric T>
   [[nodiscard]] static constexpr Builder<T> *
@@ -35,6 +37,10 @@ struct Rooting {
   [[nodiscard]] static constexpr std::optional<errc>
   why(const RTExpression<T> &e) noexcept {
     return e.why();
+  }
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr RTExpression<T> poison(errc why) noexcept {
+    return RTExpression<T>::poison(why);
   }
 };
 } // namespace detail
@@ -51,6 +57,13 @@ template <impl::Numeric T>
 // A handle onto one node, plus the arithmetic surface that builds more.  A null
 // builder is a literal not yet given to a graph, which is what lets
 // RTExpression{1} exist for CFieldLike's constructible_from<int>.
+//
+// The node may be a vector: `width()` elements per point, and the same
+// arithmetic then builds one elementwise node -- a Map or Zip carrying the
+// scalar opcode, a Scale for a scalar times a vector.  A literal meeting a
+// vector takes its width, so every derivative rule in ops/adjoints.hpp reads
+// elementwise and no rule is written twice.  rt/tensor.hpp holds the
+// factories and reductions.
 template <impl::Numeric T> class RTExpression {
 public:
   using value_type = T;
@@ -67,10 +80,15 @@ public:
   constexpr RTExpression(V v) : lit_{static_cast<T>(std::move(v))} {}
 
   constexpr RTExpression(Builder<T> &b, NodeId id) noexcept
-      : builder_{&b}, id_{id} {}
+      : builder_{&b}, id_{id},
+        width_{tensor_valued(b.op_of(id)) ? width_of(b, id) : 0} {}
 
   [[nodiscard]] constexpr bool pending() const noexcept {
     return builder_ == nullptr;
+  }
+  // Elements per point: zero for a scalar node or a pending literal.
+  [[nodiscard]] constexpr std::uint32_t size() const noexcept {
+    return width_;
   }
 
   // Whether the input named no leaf -- no arena current, or a name another
@@ -81,33 +99,101 @@ public:
   }
   [[nodiscard]] constexpr const T &literal() const noexcept { return lit_; }
 
-  // Give the node an identity in `b`, materialising a pending literal.
-  [[nodiscard]] constexpr NodeId id(Builder<T> &b) const {
-    return builder_ ? id_ : b.constant(lit_);
+  // Give the node an identity in `b`, materialising a pending literal: a
+  // constant, or the vector of `width` copies where it meets a vector.
+  [[nodiscard]] constexpr NodeId id(Builder<T> &b,
+                                    std::uint32_t width = 0) const {
+    return builder_ ? id_ : (width ? b.filled(width, lit_) : b.constant(lit_));
+  }
+  // The identity it already has.
+  [[nodiscard]] constexpr NodeId id() const noexcept { return id_; }
+
+  // One element of a vector, as a scalar.
+  [[nodiscard]] constexpr RTExpression operator[](std::size_t i) const {
+    if (why_) {
+      return poison(*why_);
+    }
+    if (pending()) {
+      return RTExpression{lit_};
+    }
+    if (i >= width_) {
+      return poison(errc::tensor_shape);
+    }
+    return {*builder_, builder_->make(OpCode::Gather, id_, no_node, no_node,
+                                      static_cast<std::uint32_t>(i))};
   }
 
   // Two pending literals fold without reaching a graph, so the constants the
-  // derivative rules produce never become nodes.
+  // derivative rules produce never become nodes.  A vector operand makes the
+  // node elementwise: a Map carrying `op`.
   [[nodiscard]] static constexpr RTExpression form(OpCode op,
                                                    const RTExpression &u) {
     if (u.why_) {
       return poison(*u.why_);
     }
     Builder<T> *const b = u.builder();
-    return b ? RTExpression{*b, b->make(op, u.id(*b))}
-             : RTExpression{apply<T>(op, u.literal())};
+    if (b == nullptr) {
+      return RTExpression{apply<T>(op, u.literal())};
+    }
+    if (u.is_matrix()) {
+      return poison(errc::tensor_shape);
+    }
+    return u.width_ == 0
+               ? RTExpression{*b, b->make(op, u.id_)}
+               : RTExpression{*b, b->make(OpCode::Map, u.id_, no_node, no_node,
+                                          std::to_underlying(op))};
   }
 
+  // Two vectors zip elementwise at one width; a literal takes the vector's.
+  // A scalar *node* meets a vector only as a factor -- a Scale, one node
+  // rather than a broadcast and a Zip -- so anything else is a shape error.
   [[nodiscard]] static constexpr RTExpression
   form(OpCode op, const RTExpression &l, const RTExpression &r) {
     if (l.why_ || r.why_) {
       return poison(l.why_ ? *l.why_ : *r.why_);
     }
     Builder<T> *const b = l.builder() ? l.builder() : r.builder();
-    return b ? RTExpression{*b, b->make(op, l.id(*b), r.id(*b))}
-             : RTExpression{apply<T>(op, l.literal(), r.literal())};
+    if (b == nullptr) {
+      return RTExpression{apply<T>(op, l.literal(), r.literal())};
+    }
+    if (l.is_matrix() || r.is_matrix()) {
+      return poison(errc::tensor_shape);
+    }
+    const std::uint32_t w = std::max(l.width_, r.width_);
+    if (w == 0) {
+      return {*b, b->make(op, l.id(*b), r.id(*b))};
+    }
+    if (l.width_ != 0 && r.width_ != 0 && l.width_ != r.width_) {
+      return poison(errc::tensor_shape);
+    }
+    const RTExpression &vec = l.width_ ? l : r;
+    const RTExpression &other = l.width_ ? r : l;
+    if (other.width_ == 0 && !other.pending()) {
+      if (op == OpCode::Mul) {
+        return {*b, b->make(OpCode::Scale, other.id_, vec.id_)};
+      }
+      if (op == OpCode::Div && &other == &r) {
+        return {*b, b->make(OpCode::Scale, (RTExpression{1} / r).id(*b),
+                            vec.id_)};
+      }
+      return poison(errc::tensor_shape);
+    }
+    if (other.pending()) {
+      if (op == OpCode::Mul) {
+        return {*b, b->make(OpCode::Scale, other.id(*b), vec.id_)};
+      }
+      if (op == OpCode::Div && &other == &r) {
+        return {*b, b->make(OpCode::Scale, (RTExpression{1} / r).id(*b),
+                            vec.id_)};
+      }
+    }
+    return {*b, b->make(OpCode::Zip, l.id(*b, w), r.id(*b, w), no_node,
+                        std::to_underlying(op))};
   }
 
+  // A select over vector arms is a mask: each arm scaled by the chosen 1 or
+  // 0, an arm that is a literal zero dropped.  A vector condition is the
+  // mask itself, elementwise.
   [[nodiscard]] static constexpr RTExpression form(OpCode op,
                                                    const RTExpression &c,
                                                    const RTExpression &t,
@@ -117,9 +203,29 @@ public:
     }
     Builder<T> *const b =
         c.builder() ? c.builder() : (t.builder() ? t.builder() : f.builder());
-    return b ? RTExpression{*b, b->make(op, c.id(*b), t.id(*b), f.id(*b))}
-             : RTExpression{
-                   apply<T>(op, c.literal(), t.literal(), f.literal())};
+    if (b == nullptr) {
+      return RTExpression{apply<T>(op, c.literal(), t.literal(), f.literal())};
+    }
+    if (c.is_matrix() || t.is_matrix() || f.is_matrix()) {
+      return poison(errc::tensor_shape);
+    }
+    if (c.width_ == 0 && t.width_ == 0 && f.width_ == 0) {
+      return {*b, b->make(op, c.id(*b), t.id(*b), f.id(*b))};
+    }
+    const RTExpression one{1};
+    const RTExpression zero{0};
+    const RTExpression on = c.width_ ? c : select(c, one, zero);
+    const RTExpression off = c.width_ ? one - c : select(c, zero, one);
+    const auto dead = [](const RTExpression &arm) {
+      return arm.pending() && arm.lit_ == T{0};
+    };
+    if (dead(t)) {
+      return off * f;
+    }
+    if (dead(f)) {
+      return on * t;
+    }
+    return on * t + off * f;
   }
 
   // Hidden friends: ordinary functions for a given RTExpression<T>, so `x * 2`
@@ -223,9 +329,6 @@ private:
   // through poison() -- that it names none.
   friend struct detail::Rooting;
   template <impl::Numeric U> friend class ExternFunction;
-  // The vector handle: one element of it is a scalar, and it poisons as this
-  // does.
-  template <impl::Numeric U> friend class RTVector;
   template <impl::Numeric U>
   friend RTExpression<U> named(OpCode, std::string_view) noexcept;
   template <impl::Numeric U>
@@ -250,9 +353,14 @@ private:
   [[nodiscard]] constexpr std::optional<errc> why() const noexcept {
     return why_;
   }
+  // A matrix is a table a gemv reads, with no algebra of its own.
+  [[nodiscard]] constexpr bool is_matrix() const noexcept {
+    return builder_ != nullptr && builder_->op_of(id_) == OpCode::MatConst;
+  }
 
   Builder<T> *builder_ = nullptr;
   NodeId id_ = no_node;
+  std::uint32_t width_ = 0;
   T lit_{};
   std::optional<errc> why_;
 };
@@ -312,6 +420,9 @@ public:
     for (const auto &a : args) {
       if (a.why_) {
         return RTExpression<T>::poison(*a.why_);
+      }
+      if (a.size() != 0 || a.is_matrix()) {
+        return RTExpression<T>::poison(errc::tensor_shape);
       }
     }
     const auto ids = args | std::views::transform([this](const auto &a) {

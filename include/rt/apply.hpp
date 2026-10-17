@@ -91,7 +91,7 @@ template <typename Fn, impl::Numeric T, bool Ok>
 [[nodiscard]] constexpr T
 supported([[maybe_unused]] const impl::Numeric auto &...args) noexcept {
   if constexpr (Ok) {
-    return T{Fn{}(args...)};
+    return static_cast<T>(Fn{}(args...));
   } else {
     return T{};
   }

@@ -79,7 +79,7 @@ public:
   [[nodiscard]] std::uint32_t n3() const noexcept { return n3_; }
 
 private:
-  using V = RTVector<T>;
+  using V = RTExpression<T>; // a handle known to be a vector
   using E = RTExpression<T>;
 
   [[nodiscard]] V vec(NodeId id) const { return V{b_, id}; }
@@ -88,7 +88,7 @@ private:
   [[nodiscard]] NodeId ones() { return b_.ones(n_); }
   // e_i, interned once per i.
   [[nodiscard]] NodeId unit(std::uint32_t i) {
-    return b_.make_tensor(OpCode::AddAt, zeros(), b_.constant(T{1}), i);
+    return b_.make(OpCode::AddAt, zeros(), b_.constant(T{1}), no_node, i);
   }
 
   // Row arithmetic, with no_node the zero row.
@@ -109,7 +109,7 @@ private:
     if (b_.is_constant(sid, T{0})) {
       return no_node;
     }
-    return V::scale(expr(sid), vec(r)).id(b_, n_);
+    return (expr(sid) * vec(r)).id(b_, n_);
   }
   [[nodiscard]] NodeId scaled(NodeId s, NodeId r) { return scaled(expr(s), r); }
 
@@ -128,7 +128,7 @@ private:
               .b = t.b};
     case Term::Kind::Dense:
       return {.kind = Term::Kind::Dense,
-              .a = b_.make_tensor(OpCode::RowScale, d.id(b_, n_), t.a)};
+              .a = b_.make(OpCode::RowScale, d.id(b_, n_), t.a)};
     }
     std::unreachable();
   }
@@ -144,16 +144,16 @@ private:
     case Term::Kind::Identity:
       ++n2_;
       return {.kind = Term::Kind::Diag,
-              .a = V::scale(s, vec(ones())).id(b_, n_)};
+              .a = (s * vec(ones())).id(b_, n_)};
     case Term::Kind::Diag:
-      return {.kind = Term::Kind::Diag, .a = V::scale(s, vec(t.a)).id(b_, n_)};
+      return {.kind = Term::Kind::Diag, .a = (s * vec(t.a)).id(b_, n_)};
     case Term::Kind::Outer:
       return {.kind = Term::Kind::Outer,
-              .a = V::scale(s, vec(t.a)).id(b_, width_of(b_, t.a)),
+              .a = (s * vec(t.a)).id(b_, width_of(b_, t.a)),
               .b = t.b};
     case Term::Kind::Dense:
       return {.kind = Term::Kind::Dense,
-              .a = V::scale(s, vec(t.a)).id(b_, width_of(b_, t.a))};
+              .a = (s * vec(t.a)).id(b_, width_of(b_, t.a))};
     }
     std::unreachable();
   }
@@ -163,11 +163,11 @@ private:
     case Term::Kind::Identity:
       return unit(i);
     case Term::Kind::Diag:
-      return b_.make_tensor(OpCode::AddAt, zeros(), vec(t.a)[i].id(b_), i);
+      return b_.make(OpCode::AddAt, zeros(), vec(t.a)[i].id(b_), no_node, i);
     case Term::Kind::Outer:
       return scaled(vec(t.a)[i], t.b);
     case Term::Kind::Dense:
-      return b_.make_tensor(OpCode::RowOf, t.a, no_node, i);
+      return b_.make(OpCode::RowOf, t.a, no_node, no_node, i);
     }
     std::unreachable();
   }
@@ -181,8 +181,8 @@ private:
     case Term::Kind::Outer:
       return scaled(dot(u, vec(t.a)), t.b);
     case Term::Kind::Dense:
-      return b_.make_tensor(OpCode::MatVec, t.a, u.id(b_, width_of(b_, t.a) / n_),
-                            1);
+      return b_.make(OpCode::MatVec, t.a, u.id(b_, width_of(b_, t.a) / n_),
+                     no_node, 1);
     }
     std::unreachable();
   }
@@ -195,7 +195,7 @@ private:
   }
   // The constant matrix C (or C^T) applied on the left of a term.
   [[nodiscard]] Term gemv(NodeId matrix, bool transposed, const Term &t) {
-    const NodeId c = b_.make_tensor(OpCode::MatRow, matrix, no_node, transposed);
+    const NodeId c = b_.make(OpCode::MatRow, matrix, no_node, no_node, transposed);
     switch (t.kind) {
     case Term::Kind::Identity:
       ++n2_;
@@ -203,15 +203,15 @@ private:
     case Term::Kind::Diag:
       ++n2_;
       return {.kind = Term::Kind::Dense,
-              .a = b_.make_tensor(OpCode::ColScale, c, t.a)};
+              .a = b_.make(OpCode::ColScale, c, t.a)};
     case Term::Kind::Outer:
       return {.kind = Term::Kind::Outer,
-              .a = b_.make_tensor(OpCode::Gemv, matrix, t.a, transposed),
+              .a = b_.make(OpCode::Gemv, matrix, t.a, no_node, transposed),
               .b = t.b};
     case Term::Kind::Dense:
       ++n3_;
       return {.kind = Term::Kind::Dense,
-              .a = b_.make_tensor(OpCode::MatMul, c, t.a)};
+              .a = b_.make(OpCode::MatMul, c, t.a)};
     }
     std::unreachable();
   }
@@ -356,8 +356,8 @@ private:
   }
   // e_i of the width of `v`.
   [[nodiscard]] NodeId unit_of(NodeId v, std::uint32_t i) {
-    return b_.make_tensor(OpCode::AddAt, b_.zeros(width_of(b_, v)),
-                          b_.constant(T{1}), i);
+    return b_.make(OpCode::AddAt, b_.zeros(width_of(b_, v)), b_.constant(T{1}),
+                   no_node, i);
   }
 
   Builder<T> &b_;

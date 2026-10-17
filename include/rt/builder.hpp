@@ -35,7 +35,6 @@ inline constexpr NodeId no_node = ~NodeId{0};
 
 template <impl::Numeric T> class RTExpression;
 template <impl::Numeric T = double> class Builder;
-template <impl::Numeric T> class Verified;
 
 // Befriended by Builder: naming an input is this one primitive's alone, and
 // var(), param() and implicit() are its spellings.
@@ -102,11 +101,9 @@ struct ExternRecord {
   BOOST_DESCRIBE_CLASS(ExternRecord, (), (name, arity, order), (), ())
 };
 
-// The record and the function itself.  Null in an arena restored from a file
-// until the caller binds it by name.
+// The record and the function itself.
 template <impl::Numeric T> struct ExternEntry : ExternRecord {
   std::shared_ptr<const ExternFn<T>> fn;
-  // The record alone: the function is the one thing a file cannot carry.
   BOOST_DESCRIBE_CLASS(ExternEntry, (ExternRecord), (), (), ())
 };
 
@@ -158,9 +155,15 @@ struct Step {
 
 namespace detail {
 
-// Befriended by Builder: installing a saved node stream verbatim is the
-// loader's alone, every other way in interning and folding.  Defined in
-// rt/archive/snapshot.hpp, its only user.
+// The inner opcode a Map or Zip applies elementwise.
+[[nodiscard]] constexpr OpCode inner_of(const auto &node) noexcept {
+  return static_cast<OpCode>(node.slot);
+}
+// The opcode whose rule a node follows: a Map or Zip is its inner one.
+[[nodiscard]] constexpr OpCode effective_op(const auto &node) noexcept {
+  return node.op == OpCode::Map || node.op == OpCode::Zip ? inner_of(node)
+                                                          : node.op;
+}
 
 // Ids are topological, so one descending pass settles it.  Not a filtered view:
 // the body marks entries the pass has not reached.
@@ -224,8 +227,7 @@ template <impl::Numeric T> struct TensorConst {
   BOOST_DESCRIBE_CLASS(TensorConst, (), (rows, cols, data), (), ())
 };
 
-// Everything a model is: what the Builder holds, a file keeps, and the model
-// digest keys on -- one described list, so adding to it reaches all three.
+// Everything a model is: what the Builder holds, as one described list.
 template <impl::Numeric T> struct Model {
   // Each named kind's names in declaration order, which is slot order.
   PerKind<std::vector<std::string>> names;
@@ -394,16 +396,6 @@ public:
     return intern({.op = OpCode::Const, .value = v});
   }
 
-  // A tensor node: formed with its slot, past fold() -- no identity below
-  // reads a vector -- and past the commutative swap, which is a Zip's inner
-  // op's business and not Zip's.
-  [[nodiscard]] constexpr NodeId make_tensor(OpCode op, NodeId a,
-                                             NodeId b = no_node,
-                                             std::uint32_t slot = 0) {
-    assert(kind_of(op) == Kind::Tensor);
-    return intern({.op = op, .a = a, .b = b, .slot = slot});
-  }
-
   // The leaf over `data`: a VecConst for one column, a MatConst otherwise.
   // Interned by content where T compares, so zeros(w) is one node per width
   // and a matrix given twice is kept once.
@@ -436,20 +428,6 @@ public:
   [[nodiscard]] constexpr NodeId ones(std::uint32_t width) {
     return filled(width, T{1});
   }
-  // What the tensor twin of a cancelled scalar is: a VecConst of nothing but
-  // zero.
-  [[nodiscard]] constexpr bool is_zero_tensor(NodeId id) const {
-    if (model_.nodes[id].op != OpCode::VecConst) {
-      return false;
-    }
-    if constexpr (std::equality_comparable<T>) {
-      return std::ranges::all_of(model_.tensors[model_.nodes[id].slot].data,
-                                 [](const T &x) { return x == T{0}; });
-    } else {
-      return false;
-    }
-  }
-
   // The vector of `scalars` -- or, as StackRows, the matrix whose rows are
   // `items` -- over the list formed from the back as extern_call forms its, a
   // list of one being the item itself.
@@ -460,14 +438,20 @@ public:
     for (const NodeId s : items | std::views::reverse | std::views::drop(1)) {
       list = intern({.op = OpCode::PackArgs, .a = s, .b = list});
     }
-    return make_tensor(op, list, no_node,
-                       static_cast<std::uint32_t>(items.size()));
+    return make(op, list, no_node, no_node,
+                static_cast<std::uint32_t>(items.size()));
   }
 
+  // A tensor node is formed with its slot, past fold() -- no identity below
+  // reads a vector -- and past the commutative swap, which is a Zip's inner
+  // op's business and not Zip's; so is an extern call.
   [[nodiscard]] constexpr NodeId make(OpCode op, NodeId a, NodeId b = no_node,
-                                      NodeId c = no_node) {
-    // formed with its slot, through rebuild() or a friend
-    assert(!is_extern(op) && kind_of(op) != Kind::Tensor);
+                                      NodeId c = no_node,
+                                      std::uint32_t slot = 0) {
+    if (is_extern(op) || kind_of(op) == Kind::Tensor) {
+      return intern({.op = op, .a = a, .b = b, .c = c, .slot = slot});
+    }
+    assert(slot == 0);
     // fold() and the commutative swap are both binary questions; a third
     // operand means neither applies, and asking would hand a binary functor
     // three arguments.
@@ -485,15 +469,12 @@ public:
   }
 
   // The same node over remapped operands: what a rewrite that keeps every
-  // operation forms.  An extern and a tensor node keep their slot, which
-  // make() is never told, and no rule folds either.
+  // operation forms.
   [[nodiscard]] constexpr NodeId rebuild(Node<T> n, auto &&remap) {
     for (NodeId *const u : {&n.a, &n.b, &n.c}) {
       *u = *u == no_node ? no_node : remap(*u);
     }
-    return is_extern(n.op) || kind_of(n.op) == Kind::Tensor
-               ? intern(n)
-               : make(n.op, n.a, n.b, n.c);
+    return make(n.op, n.a, n.b, n.c, n.slot);
   }
 
   [[nodiscard]] constexpr const Node<T> &operator[](NodeId id) const {
@@ -567,12 +548,17 @@ public:
                : std::nullopt;
   }
 
+  // A Const of `v`, or a VecConst of nothing but `v`: what a cancelled term
+  // is in either shape.
   [[nodiscard]] constexpr bool is_constant(NodeId id, const T &v) const {
-    if (model_.nodes[id].op != OpCode::Const) {
-      return false;
-    }
+    const Node<T> &n = model_.nodes[id];
     if constexpr (std::equality_comparable<T>) {
-      return model_.nodes[id].value == v;
+      if (n.op == OpCode::Const) {
+        return n.value == v;
+      }
+      return n.op == OpCode::VecConst &&
+             std::ranges::all_of(model_.tensors[n.slot].data,
+                                 [&v](const T &x) { return x == v; });
     } else {
       return false;
     }
@@ -668,41 +654,6 @@ private:
   friend constexpr RTExpression<U> seed(Builder<U> &, std::uint32_t);
   [[nodiscard]] constexpr NodeId seed_node(std::uint32_t slot) {
     return intern({.op = OpCode::Seed, .slot = slot});
-  }
-
-  // An arena as it was, not as make() would form it again: make() folds and
-  // swaps commutative operands, and the saved sweeps name subexpressions by id.
-  // The one caller holds a snapshot Sound has passed, which is what checks
-  // what this cannot.
-  friend class Verified<T>;
-  constexpr void restore(Model<T> model) {
-    model_ = std::move(model);
-    reindex();
-  }
-  // The functions a file could not carry, by name; one the lookup lacks stays
-  // null, for the equation to refuse.
-  constexpr void bind(auto &&lookup) {
-    for (ExternEntry<T> &e : model_.externs) {
-      e.fn = lookup(std::string_view{e.name});
-    }
-  }
-
-  // The leaf ids and the name index, off the names and the nodes.  Interning
-  // leaves exactly one leaf per name, so one walk fills every entry.
-  constexpr void reindex() {
-    by_name_.clear();
-    closure_rows_.assign(model_.closures.size(), std::nullopt);
-    for (const auto [names, ids] : std::views::zip(model_.names, ids_)) {
-      ids.assign(names.size(), no_node);
-    }
-    for (const auto [id, n] : model_.nodes | std::views::enumerate) {
-      if (const auto k = named_index(n.op)) {
-        ids_[*k][n.slot] = static_cast<NodeId>(id);
-        by_name_.push_back({.op = n.op, .slot = n.slot});
-      }
-    }
-    std::ranges::sort(by_name_, {}, name_of());
-    rehash();
   }
 
   static constexpr std::uint64_t payload_of(const Node<T> &n) {
@@ -923,7 +874,7 @@ private:
   }
 
   Model<T> model_;
-  // Everything below is an index over model_, rebuilt by reindex().
+  // Everything below is an index over model_.
   // Open-addressed by hand: interning runs inside constant evaluation and no
   // library hash container is constexpr.
   std::vector<NodeId> table_; // power-of-two capacity; no_node == free slot

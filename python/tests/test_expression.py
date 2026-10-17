@@ -52,7 +52,7 @@ def test_every_exported_unary_is_covered() -> None:
     # `select` is the one ternary.
     ternary = {"select"}
     # Not operations at all: these build or read an equation.
-    not_an_op = {"closes", "equation", "implicit", "load", "param", "var"}
+    not_an_op = {"closes", "equation", "implicit", "param", "var"}
     # Vectors: factories and reductions, not scalar operations.
     vectors = {"add_at", "dot", "gemv", "gemv_t", "mat_const", "pack", "sum",
                "vec", "vec_const"}

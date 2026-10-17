@@ -1,7 +1,6 @@
 #include "ddx.hpp"
 #include "rt/equation.hpp"
 #include "rt/text/equation.hpp"
-#include "scratch.hpp"
 
 #include <gtest/gtest.h>
 
@@ -101,17 +100,6 @@ TEST(RtParam, SeededProductsSpliceTheDirectionAfterTheParams) {
   const std::array v{1.0};
   EXPECT_EQ(*eq.jvp(std::span<const double>{v}, 3.0, 5.0), std::vector{30.0});
   EXPECT_EQ(*eq.hvp(std::span<const double>{v}, 3.0, 5.0), std::vector{10.0});
-}
-
-TEST(RtParam, SavesAndLoads) {
-  const Scratch path{"param"};
-  const auto eq = scaled();
-  ASSERT_TRUE(eq.save(path).has_value());
-  const auto loaded = ddx::rt::load(path);
-  ASSERT_TRUE(loaded.has_value());
-  EXPECT_TRUE(std::ranges::equal(*loaded->params(), *eq.params()));
-  EXPECT_EQ(*loaded->gradient(3.0, 5.0), *eq.gradient(3.0, 5.0));
-  EXPECT_EQ(*loaded->evaluate("a"_s = 5.0, "x"_s = 3.0), 45.0);
 }
 
 TEST(RtParam, ANameIsOneKindOfInput) {

@@ -3,17 +3,16 @@ ddx's runtime expression graph, LLVM JIT and OpenCL device
 """
 from __future__ import annotations
 import enum
-import os
 import typing
 __all__: list[str] = ['Backend', 'Call', 'Equation', 'Error', 'Expression',
                       'VecLib', 'Want', 'abs', 'acos', 'acosh', 'add', 'asin',
                       'asinh', 'atan', 'atan2', 'atanh', 'cbrt', 'cos',
                       'cosh', 'div', 'equation', 'erf', 'errc', 'exp',
-                      'has_jit', 'has_opencl', 'hypot', 'le', 'Level', 'load', 'log', 'log10',
+                      'has_jit', 'has_opencl', 'hypot', 'le', 'Level', 'log', 'log10',
                       'lt',
                       'max', 'min', 'mul', 'neg', 'pow', 'select', 'sign',
                       'sin', 'sinh', 'sqrt', 'tan', 'tanh', 'var',
-                      'Matrix', 'Vector', 'add_at', 'dot', 'gemv', 'gemv_t',
+                      'add_at', 'dot', 'gemv', 'gemv_t',
                       'mat_const', 'pack', 'sum', 'vec', 'vec_const']
 class Backend(enum.IntEnum):
     """
@@ -59,9 +58,6 @@ class Equation:
     def restrict(self, names: list[str]) -> Restricted: pass
     def jvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
     def nodes(self, *, want: Want = ...) -> int: pass
-    def save(self, path: str | os.PathLike) -> None: pass
-    def to_dot(self, *, all: bool = False) -> str: pass
-    def verify(self, path: str | os.PathLike) -> None: pass
     def vjp(self, w: typing.Any, x: typing.Any) -> tuple: pass
     def wait_for_kernel(self, *, want: Want = ...) -> bool: pass
     @property
@@ -73,8 +69,6 @@ class Equation:
     @property
     def inputs(self) -> list[str]: pass
     @property
-    def loaded(self) -> bool: pass
-    @property
     def outputs(self) -> int: pass
     @property
     def params(self) -> list[str]: pass
@@ -85,73 +79,6 @@ class Equation:
     
 class Error(RuntimeError):
     pass
-class Matrix:
-    """
-    A constant matrix in a model, column-major; what gemv() reads.
-    """
-    def __repr__(self) -> str: ...
-    @property
-    def cols(self) -> int: ...
-    @property
-    def rows(self) -> int: ...
-
-class Vector:
-    """
-    A vector-valued node in a model: one node for n scalars.  Elementwise
-    arithmetic and functions build one node; a scalar times a vector is one
-    Scale; v[i] reads one element back as an Expression.
-    """
-    @typing.overload
-    def __add__(self, arg0: Vector) -> Vector: ...
-    @typing.overload
-    def __add__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Vector: ...
-    def __getitem__(self, i: typing.SupportsInt | typing.SupportsIndex) -> Expression: ...
-    def __len__(self) -> int: ...
-    @typing.overload
-    def __mul__(self, arg0: Expression) -> Vector: ...
-    @typing.overload
-    def __mul__(self, arg0: Vector) -> Vector: ...
-    @typing.overload
-    def __mul__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Vector: ...
-    def __neg__(self) -> Vector: ...
-    @typing.overload
-    def __pow__(self, arg0: Vector) -> Vector: ...
-    @typing.overload
-    def __pow__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Vector: ...
-    @typing.overload
-    def __radd__(self, arg0: Vector) -> Vector: ...
-    @typing.overload
-    def __radd__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Vector: ...
-    def __repr__(self) -> str: ...
-    @typing.overload
-    def __rmul__(self, arg0: Expression) -> Vector: ...
-    @typing.overload
-    def __rmul__(self, arg0: Vector) -> Vector: ...
-    @typing.overload
-    def __rmul__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Vector: ...
-    @typing.overload
-    def __rpow__(self, arg0: Vector) -> Vector: ...
-    @typing.overload
-    def __rpow__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Vector: ...
-    @typing.overload
-    def __rsub__(self, arg0: Vector) -> Vector: ...
-    @typing.overload
-    def __rsub__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Vector: ...
-    @typing.overload
-    def __rtruediv__(self, arg0: Vector) -> Vector: ...
-    @typing.overload
-    def __rtruediv__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Vector: ...
-    @typing.overload
-    def __sub__(self, arg0: Vector) -> Vector: ...
-    @typing.overload
-    def __sub__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Vector: ...
-    @typing.overload
-    def __truediv__(self, arg0: Expression) -> Vector: ...
-    @typing.overload
-    def __truediv__(self, arg0: Vector) -> Vector: ...
-    @typing.overload
-    def __truediv__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Vector: ...
-
 class Expression:
     def __abs__(self) -> Expression: pass
     @typing.overload
@@ -172,7 +99,11 @@ class Expression:
     @typing.overload
     def __gt__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass
     __hash__: typing.ClassVar[None] = None
+    @property
+    def shape(self) -> tuple[int, ...]: pass
     def __init__(self, value: typing.SupportsFloat | typing.SupportsIndex) -> None: pass
+    def __len__(self) -> int: pass
+    def __getitem__(self, i: typing.SupportsInt | typing.SupportsIndex) -> Expression: pass
     @typing.overload
     def __le__(self, arg0: Expression) -> Expression: pass
     @typing.overload
@@ -276,7 +207,6 @@ class _Options:
     contract: bool
     device: str
     loop_vectorize: bool
-    retain_object: bool
     slp: bool
     time_passes: bool
     veclib: VecLib
@@ -311,37 +241,37 @@ class errc(enum.IntEnum):
     """
     Why ddx refused; Error.code carries one.
     """
-    archive_corrupt: typing.ClassVar[errc]  # value = <errc.archive_corrupt: 18>
-    archive_io: typing.ClassVar[errc]  # value = <errc.archive_io: 16>
-    archive_mismatch: typing.ClassVar[errc]  # value = <errc.archive_mismatch: 19>
-    bad_archive: typing.ClassVar[errc]  # value = <errc.bad_archive: 17>
-    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 25>
-    device_compile: typing.ClassVar[errc]  # value = <errc.device_compile: 29>
-    device_launch: typing.ClassVar[errc]  # value = <errc.device_launch: 30>
+    short_point: typing.ClassVar[errc]  # value = <errc.short_point: 0>
+    wrong_arity: typing.ClassVar[errc]  # value = <errc.wrong_arity: 1>
+    wrong_direction: typing.ClassVar[errc]  # value = <errc.wrong_direction: 2>
+    unknown_symbol: typing.ClassVar[errc]  # value = <errc.unknown_symbol: 3>
     index_out_of_range: typing.ClassVar[errc]  # value = <errc.index_out_of_range: 4>
-    jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 24>
-    jit_module: typing.ClassVar[errc]  # value = <errc.jit_module: 21>
-    jit_object: typing.ClassVar[errc]  # value = <errc.jit_object: 22>
-    jit_target: typing.ClassVar[errc]  # value = <errc.jit_target: 20>
-    jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 23>
+    wrong_column_count: typing.ClassVar[errc]  # value = <errc.wrong_column_count: 5>
     no_arena: typing.ClassVar[errc]  # value = <errc.no_arena: 6>
-    no_device: typing.ClassVar[errc]  # value = <errc.no_device: 28>
-    closed_twice: typing.ClassVar[errc]  # value = <errc.closed_twice: 10>
+    no_graph: typing.ClassVar[errc]  # value = <errc.no_graph: 7>
     name_clash: typing.ClassVar[errc]  # value = <errc.name_clash: 8>
+    unclosed_implicit: typing.ClassVar[errc]  # value = <errc.unclosed_implicit: 9>
+    closed_twice: typing.ClassVar[errc]  # value = <errc.closed_twice: 10>
     nested_implicit: typing.ClassVar[errc]  # value = <errc.nested_implicit: 11>
     not_implicit: typing.ClassVar[errc]  # value = <errc.not_implicit: 12>
-    unclosed_implicit: typing.ClassVar[errc]  # value = <errc.unclosed_implicit: 9>
-    no_graph: typing.ClassVar[errc]  # value = <errc.no_graph: 7>
-    not_univariate: typing.ClassVar[errc]  # value = <errc.not_univariate: 13>
-    not_single_output: typing.ClassVar[errc]  # value = <errc.not_single_output: 14>
-    short_point: typing.ClassVar[errc]  # value = <errc.short_point: 0>
+    extern_order: typing.ClassVar[errc]  # value = <errc.extern_order: 13>
+    extern_shape: typing.ClassVar[errc]  # value = <errc.extern_shape: 14>
+    not_univariate: typing.ClassVar[errc]  # value = <errc.not_univariate: 15>
+    not_single_output: typing.ClassVar[errc]  # value = <errc.not_single_output: 16>
+    unsupported_scalar: typing.ClassVar[errc]  # value = <errc.unsupported_scalar: 17>
+    tensor_shape: typing.ClassVar[errc]  # value = <errc.tensor_shape: 18>
+    tensor_kernel: typing.ClassVar[errc]  # value = <errc.tensor_kernel: 19>
+    jit_target: typing.ClassVar[errc]  # value = <errc.jit_target: 20>
+    jit_module: typing.ClassVar[errc]  # value = <errc.jit_module: 21>
+    jit_object: typing.ClassVar[errc]  # value = <errc.jit_object: 22>
+    jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 23>
+    jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 24>
+    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 25>
     unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 26>
-    unknown_symbol: typing.ClassVar[errc]  # value = <errc.unknown_symbol: 3>
-    unsupported_scalar: typing.ClassVar[errc]  # value = <errc.unsupported_scalar: 15>
     wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 27>
-    wrong_arity: typing.ClassVar[errc]  # value = <errc.wrong_arity: 1>
-    wrong_column_count: typing.ClassVar[errc]  # value = <errc.wrong_column_count: 5>
-    wrong_direction: typing.ClassVar[errc]  # value = <errc.wrong_direction: 2>
+    no_device: typing.ClassVar[errc]  # value = <errc.no_device: 28>
+    device_compile: typing.ClassVar[errc]  # value = <errc.device_compile: 29>
+    device_launch: typing.ClassVar[errc]  # value = <errc.device_launch: 30>
     @classmethod
     def __new__(cls, value):
         ...
@@ -349,194 +279,78 @@ class errc(enum.IntEnum):
         """
         Convert to a string according to format_spec.
         """
-@typing.overload
 def abs(x: Expression) -> Expression:
     ...
-@typing.overload
-def abs(x: Vector) -> Vector:
-    ...
-@typing.overload
 def acos(x: Expression) -> Expression:
     ...
-@typing.overload
-def acos(x: Vector) -> Vector:
-    ...
-@typing.overload
 def acosh(x: Expression) -> Expression:
     ...
-@typing.overload
-def acosh(x: Vector) -> Vector:
-    ...
-@typing.overload
 def add(x: Expression, y: Expression) -> Expression:
     ...
-@typing.overload
-def add(x: Vector, y: Vector) -> Vector:
-    ...
-@typing.overload
 def asin(x: Expression) -> Expression:
     ...
-@typing.overload
-def asin(x: Vector) -> Vector:
-    ...
-@typing.overload
 def asinh(x: Expression) -> Expression:
     ...
-@typing.overload
-def asinh(x: Vector) -> Vector:
-    ...
-@typing.overload
 def atan(x: Expression) -> Expression:
     ...
-@typing.overload
-def atan(x: Vector) -> Vector:
-    ...
-@typing.overload
 def atan2(x: Expression, y: Expression) -> Expression:
     ...
-@typing.overload
-def atan2(x: Vector, y: Vector) -> Vector:
-    ...
-@typing.overload
 def atanh(x: Expression) -> Expression:
     ...
-@typing.overload
-def atanh(x: Vector) -> Vector:
-    ...
-@typing.overload
 def cbrt(x: Expression) -> Expression:
     ...
-@typing.overload
-def cbrt(x: Vector) -> Vector:
-    ...
-@typing.overload
 def cos(x: Expression) -> Expression:
     ...
-@typing.overload
-def cos(x: Vector) -> Vector:
-    ...
-@typing.overload
 def cosh(x: Expression) -> Expression:
     ...
-@typing.overload
-def cosh(x: Vector) -> Vector:
-    ...
-@typing.overload
 def div(x: Expression, y: Expression) -> Expression:
     ...
 @typing.overload
-def div(x: Vector, y: Vector) -> Vector:
+def equation(source: str) -> Equation:
     ...
 @typing.overload
-def equation(source: str, *, cache: str | os.PathLike | None = None) -> Equation:
+def equation(source: list[str]) -> Equation:
     ...
 @typing.overload
-def equation(source: list[str], *, cache: str | os.PathLike | None = None) -> Equation:
+def equation(model: typing.Any) -> typing.Any:
     ...
-@typing.overload
-def equation(model: typing.Any, *, cache: str | os.PathLike | None = None) -> typing.Any:
-    ...
-@typing.overload
 def erf(x: Expression) -> Expression:
     ...
-@typing.overload
-def erf(x: Vector) -> Vector:
-    ...
-@typing.overload
 def exp(x: Expression) -> Expression:
     ...
-@typing.overload
-def exp(x: Vector) -> Vector:
-    ...
-@typing.overload
 def hypot(x: Expression, y: Expression) -> Expression:
-    ...
-@typing.overload
-def hypot(x: Vector, y: Vector) -> Vector:
     ...
 def le(x: Expression, y: Expression) -> Expression:
     ...
-@typing.overload
 def log(x: Expression) -> Expression:
     ...
-@typing.overload
-def log(x: Vector) -> Vector:
-    ...
-@typing.overload
 def log10(x: Expression) -> Expression:
-    ...
-@typing.overload
-def log10(x: Vector) -> Vector:
     ...
 def lt(x: Expression, y: Expression) -> Expression:
     ...
-@typing.overload
 def max(x: Expression, y: Expression) -> Expression:
     ...
-@typing.overload
-def max(x: Vector, y: Vector) -> Vector:
-    ...
-@typing.overload
 def min(x: Expression, y: Expression) -> Expression:
     ...
-@typing.overload
-def min(x: Vector, y: Vector) -> Vector:
-    ...
-@typing.overload
 def mul(x: Expression, y: Expression) -> Expression:
     ...
-@typing.overload
-def mul(x: Vector, y: Vector) -> Vector:
-    ...
-@typing.overload
 def neg(x: Expression) -> Expression:
     ...
-@typing.overload
-def neg(x: Vector) -> Vector:
-    ...
-@typing.overload
 def pow(x: Expression, y: Expression) -> Expression:
-    ...
-@typing.overload
-def pow(x: Vector, y: Vector) -> Vector:
     ...
 def select(cond: Expression, if_true: Expression, if_false: Expression) -> Expression:
     ...
-@typing.overload
 def sign(x: Expression) -> Expression:
     ...
-@typing.overload
-def sign(x: Vector) -> Vector:
-    ...
-@typing.overload
 def sin(x: Expression) -> Expression:
     ...
-@typing.overload
-def sin(x: Vector) -> Vector:
-    ...
-@typing.overload
 def sinh(x: Expression) -> Expression:
     ...
-@typing.overload
-def sinh(x: Vector) -> Vector:
-    ...
-@typing.overload
 def sqrt(x: Expression) -> Expression:
     ...
-@typing.overload
-def sqrt(x: Vector) -> Vector:
-    ...
-@typing.overload
 def tan(x: Expression) -> Expression:
     ...
-@typing.overload
-def tan(x: Vector) -> Vector:
-    ...
-@typing.overload
 def tanh(x: Expression) -> Expression:
-    ...
-@typing.overload
-def tanh(x: Vector) -> Vector:
     ...
 def closes(z: Expression, f: Expression) -> None:
     ...
@@ -546,23 +360,23 @@ def param(name: str) -> Expression:
     ...
 def var(name: str) -> Expression:
     ...
-def add_at(v: Vector, s: Expression, i: typing.SupportsInt | typing.SupportsIndex) -> Vector:
+def add_at(v: Expression, s: Expression, i: typing.SupportsInt | typing.SupportsIndex) -> Expression:
     """v + s * e_i: the vector with element i moved by a scalar."""
-def dot(u: Vector, v: Vector) -> Expression:
+def dot(u: Expression, v: Expression) -> Expression:
     ...
-def gemv(matrix: Matrix, v: Vector) -> Vector:
+def gemv(matrix: Expression, v: Expression) -> Expression:
     """M v."""
-def gemv_t(matrix: Matrix, v: Vector) -> Vector:
+def gemv_t(matrix: Expression, v: Expression) -> Expression:
     """M^T v."""
-def mat_const(rows: typing.SupportsInt | typing.SupportsIndex, cols: typing.SupportsInt | typing.SupportsIndex, data: typing.Sequence[typing.SupportsFloat]) -> Matrix:
+def mat_const(rows: typing.SupportsInt | typing.SupportsIndex, cols: typing.SupportsInt | typing.SupportsIndex, data: typing.Sequence[typing.SupportsFloat]) -> Expression:
     """A constant rows x cols matrix from column-major data."""
-def pack(scalars: typing.Sequence[Expression]) -> Vector:
+def pack(scalars: typing.Sequence[Expression]) -> Expression:
     """The vector of these scalars, in order."""
-def sum(v: Vector) -> Expression:
+def sum(v: Expression) -> Expression:
     ...
-def vec(name: str, n: typing.SupportsInt | typing.SupportsIndex) -> Vector:
+def vec(name: str, n: typing.SupportsInt | typing.SupportsIndex) -> Expression:
     """n symbols named name[0] .. name[n-1], packed."""
-def vec_const(data: typing.Sequence[typing.SupportsFloat]) -> Vector:
+def vec_const(data: typing.Sequence[typing.SupportsFloat]) -> Expression:
     ...
 __version__: str = ...
 has_jit: bool = True

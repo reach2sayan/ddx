@@ -1,5 +1,11 @@
 #include "tests_simplify_fixtures.hpp"
 
+// Evaluate a tuple of expressions at one point, in canonical symbol order.
+template <ddx::impl::CSymbolList Syms>
+constexpr auto eval_all(const auto &vals, const auto &...es) noexcept {
+  return std::array{es.template eval_seeded<Syms>(vals)...};
+}
+
 TEST(Simplify, IdentitiesCollapseDerivativeTrees) {
   // Unfolded, d(x*y)/dx is `1*y_c + x*0`: seven nodes and seven cache slots
   // for one symbol lookup.
@@ -209,9 +215,9 @@ TEST(Simplify, JacobianRowsDifferentiateAgainButHeldSymbolsStayHeld) {
       make_all_constant_except<FixedString{"y"}>(std::get<0>(row))
           .derivative()));
   constexpr std::array at{3.0, 5.0};
-  EXPECT_DOUBLE_EQ(ddx::impl::detail::eval_all<Syms>(at, std::get<0>(row))[0],
+  EXPECT_DOUBLE_EQ(eval_all<Syms>(at, std::get<0>(row))[0],
                    30.0);
-  EXPECT_DOUBLE_EQ(ddx::impl::detail::eval_all<Syms>(at, d2)[0], 6.0);
+  EXPECT_DOUBLE_EQ(eval_all<Syms>(at, d2)[0], 6.0);
 
   // The same row, but with y held by the caller before the Jacobian was
   // taken: d/dy is zero and stays zero through the second derivative.
@@ -221,8 +227,8 @@ TEST(Simplify, JacobianRowsDifferentiateAgainButHeldSymbolsStayHeld) {
       make_all_constant_except<FixedString{"y"}>(std::get<0>(held_row))
           .derivative()));
   EXPECT_DOUBLE_EQ(
-      ddx::impl::detail::eval_all<Syms>(at, std::get<0>(held_row))[0], 30.0);
+      eval_all<Syms>(at, std::get<0>(held_row))[0], 30.0);
   EXPECT_DOUBLE_EQ(
-      ddx::impl::detail::eval_all<Syms>(at, std::get<1>(held_row))[0], 0.0);
-  EXPECT_DOUBLE_EQ(ddx::impl::detail::eval_all<Syms>(at, held_d2)[0], 0.0);
+      eval_all<Syms>(at, std::get<1>(held_row))[0], 0.0);
+  EXPECT_DOUBLE_EQ(eval_all<Syms>(at, held_d2)[0], 0.0);
 }

@@ -52,11 +52,15 @@ def test_a_vector_knows_its_length_and_elements() -> None:
     def model() -> ddx.Expression:
         v = ddx.vec("v", 3)
         assert len(v) == 3
-        assert repr(v).startswith("Vector(3")
+        assert v.shape == (3,)
+        assert repr(v).startswith("Expression(pack")
         with pytest.raises(ddx.Error) as refused:
             _ = v[3]
         assert refused.value.code == ddx.errc.tensor_shape
         w = ddx.pack([v[2], v[1], v[0]])
+        C = ddx.mat_const(2, 3, [1.0] * 6)
+        assert C.shape == (2, 3)
+        assert v[0].shape == ()
         return ddx.dot(v, w) + ddx.sum(ddx.add_at(w, v[0], 1))
 
     eq = ddx.equation(model)

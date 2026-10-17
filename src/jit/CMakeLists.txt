@@ -1,5 +1,5 @@
 # The only LLVM-aware code.  An OBJECT library so it has its own include path.
-add_library(ddx_jit_objs OBJECT codegen.cpp compiler.cpp)
+add_library(ddx_jit_objs OBJECT cache.cpp codegen.cpp compiler.cpp)
 
 set_target_properties(ddx_jit_objs PROPERTIES
         POSITION_INDEPENDENT_CODE ON

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <boost/core/noncopyable.hpp>
+
 namespace ddx::impl {
 
 namespace pinned_ {
@@ -17,20 +19,11 @@ public:
   noncopyable &operator=(const noncopyable &) = delete;
 };
 
-// The same, and the ownership cannot be handed on either:
-class pinned : private noncopyable {
-protected:
-  constexpr pinned() = default;
-  ~pinned() = default;
-
-public:
-  pinned(pinned &&) = delete;
-  pinned &operator=(pinned &&) = delete;
-};
-
 } // namespace pinned_
 
 using pinned_::noncopyable;
-using pinned_::pinned;
+// The same, and the ownership cannot be handed on either: Boost's declares
+// the copy deleted and so has no move.
+using pinned = boost::noncopyable;
 
 } // namespace ddx::impl

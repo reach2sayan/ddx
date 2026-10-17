@@ -10,7 +10,7 @@
 // No kernel is lowered over a tensor row: the compile is refused up front, the
 // lane keeps sweeping, and the answers are the sweep's.
 namespace {
-using RV = ddx::rt::RTVector<>;
+using RV = ddx::rt::RTExpression<>;
 
 auto model() {
   return ddx::rt::equation([] {
