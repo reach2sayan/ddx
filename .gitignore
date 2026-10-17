@@ -530,10 +530,14 @@ build/
 docs/ad_jacobian.tex
 docs/ad_jacobian.pdf
 
+# The bit-exactness gate probe is a local check, kept out of the index.
+/docs/plans/gate/
+
 # The comparison harness is an internal check, kept out of the index along with
 # its build trees.
 /compare/
 /build_compare/
+/build_compare_clang/
 /cmake-build-compare/
 /cmake-build-bench/
 .claude/
