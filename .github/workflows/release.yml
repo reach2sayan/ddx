@@ -67,6 +67,15 @@ jobs:
         if: runner.os != 'Linux'
         run: pipx install uv
 
+      # pyproject asks for Ninja, and Ninja takes the first compiler on PATH:
+      # on the runner that is MinGW's g++, whose wheel needs libstdc++-6.dll
+      # and fails to import.  The developer environment puts cl first.
+      - name: MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: x64
+
       # A full version: cibuildwheel publishes no floating major tag.
       - uses: pypa/cibuildwheel@v3.4.1
 
@@ -127,11 +136,12 @@ jobs:
           path: nupkg/*.nupkg
 
   # The overlay port under contrib/vcpkg pins a tag and its archive hash; each
-  # release rewrites the pin on main, pushed with the same deploy key the
-  # weekly bump uses (main requires PRs; deploy keys bypass that ruleset).
+  # release, once published, rewrites the pin on main, pushed with the same
+  # deploy key the weekly bump uses (main requires PRs; deploy keys bypass that
+  # ruleset).
   vcpkg-port:
     if: github.ref_type == 'tag'
-    needs: version
+    needs: [version, release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
