@@ -114,8 +114,9 @@ arithmetic is its matrix, so `exp(-(A0 + T * A1) / (R * T))` over tables is a
 matrix of T computed in a few nodes, and `gemv(M, v, transposed)` and
 `dot(M, N)` read it. `rt::outer(u, w)` is `u wᵀ`. Shapes must agree, rows and
 columns both, and a scalar expression meets a matrix as a factor (`T * B`,
-`B / T`), as it meets a vector. `dense_hessian` stays O(n²) over a matrix of tables and
-parameters — make T a `param` to get the composition Hessian at fixed T. A
+`B / T`), as it meets a vector. `dense_hessian` stays O(n²) over a matrix of tables,
+parameters and scalar symbols: beside a vector `x`, each scalar `var` (T, P)
+costs one more reverse sweep, and the block covers every symbol. A
 matrix that moves with a symbol and is then multiplied (`gemv(exp(outer(x, x)),
 x)`) has no O(n²) form, and `dense_hessian` refuses it with
 `errc::tensor_shape`; `hessian`, `hvp` and `jacobian_jvp` answer it.

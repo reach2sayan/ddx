@@ -33,6 +33,10 @@
 // n^3 case, counted so a caller can see when a model's structure defeated the
 // algebra.  Where the partials are the gradient vector's elements, the block
 // is that vector's terms summed; otherwise the partials' rows are stacked.
+//
+// A vector beside a few scalar symbols is swept alone, the scalars held: its
+// block is the Hessian at fixed scalars, and each scalar's row is one reverse
+// sweep of its partial, placed beside it.
 namespace ddx::rt {
 
 struct DenseHessian {
@@ -58,12 +62,48 @@ struct Term {
 };
 using Terms = boost::container::small_vector<Term, 4>;
 
+// The symbols the sweep differentiates by: `width` of them, `at` first.
+struct Swept {
+  std::uint32_t at = 0;
+  std::uint32_t width = 0;
+};
+
+// The widest vector of consecutive symbols the model packs, where it is most
+// of them; else every symbol.
+template <impl::Numeric T>
+[[nodiscard]] Swept swept_of(const Builder<T> &b, NodeId root) {
+  const auto all = static_cast<std::uint32_t>(b.symbols().size());
+  const auto run = [&b](NodeId v) -> Swept {
+    const auto args = arguments(b, v);
+    if (b.op_of(args[0]) != OpCode::Var) {
+      return {};
+    }
+    const std::uint32_t first = index_of(b[args[0]]);
+    const bool consecutive =
+        std::ranges::all_of(std::views::iota(0uz, args.size()), [&](auto j) {
+          return b.op_of(args[j]) == OpCode::Var &&
+                 index_of(b[args[j]]) == first + j;
+        });
+    return consecutive ? Swept{.at = first,
+                               .width = static_cast<std::uint32_t>(args.size())}
+                       : Swept{};
+  };
+  const auto live = reachable(b, std::span{&root, 1});
+  const Swept widest = std::ranges::fold_left(
+      live_ids(live) | std::views::filter([&b](NodeId v) {
+        return b.op_of(v) == OpCode::Pack;
+      }) | std::views::transform(run),
+      Swept{},
+      [](const Swept &l, const Swept &r) { return r.width > l.width ? r : l; });
+  return 2 * widest.width > all ? widest : Swept{.at = 0, .width = all};
+}
+
 template <impl::Numeric T> class DenseSweep {
 public:
-  DenseSweep(Builder<T> &b, std::span<const NodeId> partials)
-      : b_{b}, n_{static_cast<std::uint32_t>(b.symbols().size())},
-        row_(b.size(), no_node), mat_(b.size()) {
-    const auto live = reachable(b_, partials);
+  DenseSweep(Builder<T> &b, std::span<const NodeId> partials, Swept swept)
+      : b_{b}, at_{swept.at}, n_{swept.width}, row_(b.size(), no_node),
+        mat_(b.size()) {
+    const auto live = reachable(b_, partials.subspan(at_, n_));
     for (const NodeId v : live_ids(live)) {
       visit(v);
     }
@@ -79,8 +119,10 @@ public:
     if (refused_) {
       return no_node;
     }
-    const auto source = gathered(partials);
-    return source ? summed(mat_[*source]) : stacked(partials);
+    const auto swept = partials.subspan(at_, n_);
+    const auto source = gathered(swept);
+    const NodeId block = source ? summed(mat_[*source]) : stacked(swept);
+    return partials.size() == n_ ? block : bordered(partials, block);
   }
   [[nodiscard]] std::uint32_t n2() const noexcept { return n2_; }
   [[nodiscard]] std::uint32_t n3() const noexcept { return n3_; }
@@ -169,6 +211,45 @@ private:
                matrices | std::views::drop(1), expr(matrices.front()),
                [this](const E &sum, NodeId m) { return sum + expr(m); })
         .id(b_);
+  }
+  // The block over every symbol from the swept one: that at (at_, at_), and
+  // each held symbol's row as a row and a column, its cells on held symbols
+  // once.
+  [[nodiscard]] NodeId bordered(std::span<const NodeId> partials,
+                                NodeId swept) {
+    const auto all = static_cast<std::uint32_t>(partials.size());
+    const auto held = [this](std::uint32_t s) {
+      return s < at_ || s >= at_ + n_;
+    };
+    // E m: m's rows at at_, zero rows elsewhere.
+    const auto embedded = [&](NodeId m) {
+      const NodeId zero = b_.zeros({shape_of(b_, m).cols});
+      return b_.pack(std::views::iota(0u, all) |
+                         std::views::transform([&](std::uint32_t s) {
+                           return held(s) ? zero
+                                          : b_.make(OpCode::RowOf, m, no_node,
+                                                    no_node, s - at_);
+                         }) |
+                         impl::to<std::vector<NodeId>>(),
+                     OpCode::StackRows);
+    };
+    const auto transposed = [this](NodeId m) {
+      return b_.make(OpCode::MatRow, m, no_node, no_node, 1);
+    };
+    Terms ts{{.kind = Term::Kind::Dense,
+              .a = embedded(transposed(embedded(transposed(swept))))}};
+    for (const std::uint32_t s :
+         std::views::iota(0u, all) | std::views::filter(held)) {
+      auto row = build_reverse_jacobian(b_, partials[s]).partial;
+      const NodeId e = unit(s, all);
+      ts.push_back({.kind = Term::Kind::Outer, .a = e, .b = b_.pack(row)});
+      for (const std::uint32_t t :
+           std::views::iota(0u, all) | std::views::filter(held)) {
+        row[t] = b_.constant(T{0});
+      }
+      ts.push_back({.kind = Term::Kind::Outer, .a = b_.pack(row), .b = e});
+    }
+    return summed(ts);
   }
   // diag(d) M, folded into M's own diag(e) where it has one: a product of two
   // vectors in place of a second pass over the matrix.
@@ -329,7 +410,7 @@ private:
     const auto args = arguments(b_, v);
     return args.size() == n_ &&
            std::ranges::all_of(std::views::iota(0u, n_), [&](std::uint32_t j) {
-             return args[j] == b_.leaf(OpCode::Var, j);
+             return args[j] == b_.leaf(OpCode::Var, at_ + j);
            });
   }
 
@@ -348,10 +429,12 @@ private:
       return no_node;
     case Kind::Input:
       if (node.op == OpCode::Var) {
-        return unit(index_of(node));
+        const std::uint32_t j = index_of(node);
+        return j < at_ || j >= at_ + n_ ? no_node : unit(j - at_);
       }
       if (node.op == OpCode::Implicit) {
-        return b_.pack(Implicits::row(b_, index_of(node)));
+        return b_.pack(
+            std::span{Implicits::row(b_, index_of(node))}.subspan(at_, n_));
       }
       return no_node;
     case Kind::Nary:
@@ -466,6 +549,7 @@ private:
     return out;
   }
   Builder<T> &b_;
+  std::uint32_t at_; // the first swept symbol
   std::uint32_t n_;
   std::vector<NodeId> row_;
   std::vector<Terms> mat_;
@@ -479,7 +563,7 @@ private:
 template <impl::Numeric T>
 [[nodiscard]] DenseHessian derive_dense_hessian(Builder<T> &b, NodeId root) {
   const auto g = build_reverse_jacobian(b, root);
-  detail::DenseSweep<T> sweep{b, g.partial};
+  detail::DenseSweep<T> sweep{b, g.partial, detail::swept_of(b, root)};
   return {.value = g.value,
           .partial = g.partial,
           .block = sweep.block(g.partial),
