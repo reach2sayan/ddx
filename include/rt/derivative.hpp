@@ -217,7 +217,7 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
   // A contribution under its guard, as a node of the child's width: a
   // select, which over a vector is a Scale by the chosen 1 or 0.
   const auto guarded = [&](NodeId child, NodeId g, const Expression<T> &c) {
-    return both(g, c).id(b, width_of(b, child));
+    return both(g, c).id(b, shape_of(b, child));
   };
 
   // `g` is the edge's guard; a child reached by an unguarded edge is always
@@ -303,7 +303,7 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
       }
       case OpCode::Gather:
         add_to(node.a, g,
-               detail::add_at(expr(b.zeros(width_of(b, node.a))), a,
+               detail::add_at(expr(b.zeros(shape_of(b, node.a))), a,
                               detail::index_of(node)));
         break;
       case OpCode::Scale:
@@ -311,7 +311,7 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
         add_to(node.b, g, expr(node.a) * a);
         break;
       case OpCode::Sum:
-        add_to(node.a, g, a * expr(b.ones(width_of(b, node.a))));
+        add_to(node.a, g, a * expr(b.ones(shape_of(b, node.a))));
         break;
       case OpCode::Dot:
         add_to(node.a, g, a * expr(node.b));
@@ -327,10 +327,25 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
         add_to(node.a, g, a);
         add_to(node.b, g, a[detail::index_of(node)]);
         break;
-      default:
-        if (!is_matrix_row(node.op)) {
-          std::unreachable();
-        }
+      case OpCode::MatRow: // a table: nothing moves it
+        break;
+      case OpCode::MatVec: {
+        // y = M v moves v by M^T a and M by a v^T; y = M^T v, by M a and v a^T.
+        const bool t = detail::is_transposed(node);
+        add_to(node.b, g,
+               expr(b.make(OpCode::MatVec, node.a, adj[v], no_node, !t)));
+        add_to(node.a, g,
+               expr(t ? b.make(OpCode::Outer, node.b, adj[v])
+                      : b.make(OpCode::Outer, adj[v], node.b)));
+        break;
+      }
+      case OpCode::Outer: // u w^T: u moves by A w, w by A^T u
+        add_to(node.a, g, expr(b.make(OpCode::MatVec, adj[v], node.b)));
+        add_to(node.b, g,
+               expr(b.make(OpCode::MatVec, adj[v], node.a, no_node, 1)));
+        break;
+      default: // the dense sweep's own rows, built under no root
+        std::unreachable();
       }
       break;
     }
@@ -442,7 +457,7 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
       const auto [dl, dr] = detail::partials(op, l, r);
       d[v] =
           (dl * Expression<T>{b, d[node.a]} + dr * Expression<T>{b, d[node.b]})
-              .id(b, width_of(b, v));
+              .id(b, shape_of(b, v));
       break;
     }
     case Kind::Tensor: {
@@ -452,7 +467,8 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
       const auto dv = [&](NodeId u) { return Expression<T>{b, d[u]}; };
       switch (node.op) {
       case OpCode::VecConst:
-        d[v] = b.zeros(width_of(b, v));
+      case OpCode::MatRow:
+        d[v] = b.zeros(shape_of(b, v));
         break;
       case OpCode::MatConst: // a table, never read as a value
         break;
@@ -469,7 +485,7 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
         break;
       case OpCode::Scale:
         d[v] = (dv(node.a) * expr(node.b) + expr(node.a) * dv(node.b))
-                   .id(b, width_of(b, v));
+                   .id(b, shape_of(b, v));
         break;
       case OpCode::Sum:
         d[v] = sum(dv(node.a)).id(b);
@@ -484,10 +500,20 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
       case OpCode::AddAt:
         d[v] = b.make(OpCode::AddAt, d[node.a], d[node.b], no_node, node.aux);
         break;
-      default:
-        if (!is_matrix_row(node.op)) {
-          std::unreachable();
-        }
+      case OpCode::MatVec:
+        d[v] =
+            (expr(
+                 b.make(OpCode::MatVec, d[node.a], node.b, no_node, node.aux)) +
+             expr(b.make(OpCode::MatVec, node.a, d[node.b], no_node, node.aux)))
+                .id(b);
+        break;
+      case OpCode::Outer:
+        d[v] = (expr(b.make(OpCode::Outer, d[node.a], node.b)) +
+                expr(b.make(OpCode::Outer, node.a, d[node.b])))
+                   .id(b);
+        break;
+      default: // the dense sweep's own rows, built under no root
+        std::unreachable();
       }
       break;
     }

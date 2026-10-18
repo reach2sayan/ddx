@@ -417,6 +417,15 @@ PYBIND11_MODULE(_ddx, m) {
         });
       },
       pyb::arg("matrix"), pyb::arg("v"), pyb::arg("transposed") = false);
+  m.def("release_tapes", &rt::release_tapes<double>,
+        "Free this thread's sweep tapes; the next sweep grows them again.");
+  m.def(
+      "outer",
+      [](const PyExpression &u, const PyExpression &w) {
+        return reduce(u, w,
+                      [](const auto &a, const auto &b) { return outer(a, b); });
+      },
+      pyb::arg("u"), pyb::arg("w"));
 
   pyb::native_enum<jit::Backend>(m, "Backend", "enum.IntEnum",
                                  "Whether an equation compiles its graph.")

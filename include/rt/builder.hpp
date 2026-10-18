@@ -339,10 +339,14 @@ struct Shape {
     case OpCode::MatConst:
       return {.rows = 0, .cols = 0};
     case OpCode::MatRow: {
-      const auto &m = tensors_of(s)[detail::index_of(s[a])];
-      return detail::is_transposed(s[v])
-                 ? Shape{.rows = m.cols, .cols = m.rows}
-                 : Shape{.rows = m.rows, .cols = m.cols};
+      // A table, or -- the dense sweep's transpose -- a computed matrix.
+      const auto table = [&] {
+        const auto &m = tensors_of(s)[detail::index_of(s[a])];
+        return Shape{.rows = m.rows, .cols = m.cols};
+      };
+      const Shape m = s.op_of(a) == OpCode::MatConst ? table() : shape_of(s, a);
+      return detail::is_transposed(s[v]) ? Shape{.rows = m.cols, .cols = m.rows}
+                                         : m;
     }
     case OpCode::Pack:
       return {.rows = detail::count_of(s[v]), .cols = 1};
@@ -433,14 +437,17 @@ public:
                    .aux = static_cast<std::uint32_t>(
                        std::distance(model_.tensors.begin(), at))});
   }
-  [[nodiscard]] constexpr NodeId filled(std::uint32_t width, const T &v) {
-    return tensor_const(width, 1, std::vector<T>(width, v));
+  // A row of `shape` holding v everywhere: a matrix is the table's MatRow.
+  [[nodiscard]] constexpr NodeId filled(Shape shape, const T &v) {
+    const NodeId t =
+        tensor_const(shape.rows, shape.cols, std::vector<T>(shape.size(), v));
+    return shape.cols == 1 ? t : make(OpCode::MatRow, t);
   }
-  [[nodiscard]] constexpr NodeId zeros(std::uint32_t width) {
-    return filled(width, T{0});
+  [[nodiscard]] constexpr NodeId zeros(Shape shape) {
+    return filled(shape, T{0});
   }
-  [[nodiscard]] constexpr NodeId ones(std::uint32_t width) {
-    return filled(width, T{1});
+  [[nodiscard]] constexpr NodeId ones(Shape shape) {
+    return filled(shape, T{1});
   }
   // The vector of `scalars` -- or, as StackRows, the matrix whose rows are
   // `items`.

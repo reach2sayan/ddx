@@ -98,13 +98,16 @@ namespace ddx::rt {
 //   Gemv                a = MatConst, b = vec, aux = 1 for M^T v
 //   AddAt               a = vec, b = scalar, aux = element: a + b e_aux
 // A matrix is a row too, column-major, its shape derived from its operands
-// (shape_of in rt/builder.hpp); the dense Hessian sweep forms these:
-//   MatRow              a = MatConst, aux = 1 for M^T: the table as a row
-//   Diag                a = vec w: the w x w diagonal
+// (shape_of in rt/builder.hpp).  Map, Zip, Scale, Sum and Dot read one as the
+// vector of its elements.  A model forms the first three; the dense Hessian
+// sweep forms all of them:
+//   MatRow              a = MatConst, aux = 1 for M^T: the table as a row;
+//                       in the dense sweep also a = matrix, aux = 1: M^T
 //   Outer               a = vec r, b = vec c: a b^T
+//   MatVec              a = matrix, b = vec, aux = 1 for M^T v
+//   Diag                a = vec w: the w x w diagonal
 //   RowScale            a = vec r, b = matrix r x c: diag(a) M
 //   ColScale            a = matrix r x c, b = vec c: M diag(b)
-//   MatVec              a = matrix, b = vec, aux = 1 for M^T v
 //   MatMul              a = matrix r x k, b = matrix k x c
 //   StackRows           a = list of `aux` vectors, each a row
 //   RowOf               a = matrix, aux = row: that row, as a vector
@@ -306,13 +309,6 @@ static_assert(std::ranges::all_of(std::views::iota(0uz, op_count), [](auto i) {
   return kind_of(op) == Kind::Tensor && op != OpCode::Gather &&
          op != OpCode::Sum && op != OpCode::Dot && op != OpCode::MatConst;
 }
-
-// The dense Hessian's matrix rows, the tensor table's tail: built under no
-// root, so no sweep differentiates through them.
-[[nodiscard]] constexpr bool is_matrix_row(OpCode op) noexcept {
-  return op >= OpCode::MatRow;
-}
-static_assert(std::to_underlying(OpCode::RowOf) + 1 == op_count);
 
 // Which kind of named input a leaf is, in table order.
 [[nodiscard]] constexpr std::optional<std::size_t>

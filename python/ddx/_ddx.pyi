@@ -13,7 +13,7 @@ __all__: list[str] = ['Backend', 'Call', 'Equation', 'Error', 'Expression',
                       'max', 'min', 'mul', 'neg', 'pow', 'select', 'sign',
                       'sin', 'sinh', 'sqrt', 'tan', 'tanh', 'var',
                       'dot', 'gemv',
-                      'mat_constant', 'pack', 'sum', 'vec', 'vec_constant']
+                      'mat_constant', 'outer', 'pack', 'release_tapes', 'sum', 'vec', 'vec_constant']
 class Backend(enum.IntEnum):
     """
     Whether an equation compiles its graph.
@@ -368,11 +368,15 @@ def var(name: str) -> Expression:
 def dot(u: Expression, v: Expression) -> Expression:
     ...
 def gemv(matrix: Expression, v: Expression, transposed: bool = False) -> Expression:
-    """M v, or M^T v when transposed."""
+    """M v, or M^T v when transposed: a mat_constant table or a computed matrix."""
 def mat_constant(rows: typing.SupportsInt | typing.SupportsIndex, cols: typing.SupportsInt | typing.SupportsIndex, data: typing.Sequence[typing.SupportsFloat]) -> Expression:
     """A constant rows x cols matrix from column-major data."""
+def outer(u: Expression, w: Expression) -> Expression:
+    """u w^T, the matrix of every product of an element of u with one of w."""
 def pack(scalars: typing.Sequence[Expression]) -> Expression:
     """The vector of these scalars, in order."""
+def release_tapes() -> None:
+    """Free this thread's sweep tapes; the next sweep grows them again."""
 def sum(v: Expression) -> Expression:
     ...
 def vec(name: str, n: typing.SupportsInt | typing.SupportsIndex) -> Expression:
