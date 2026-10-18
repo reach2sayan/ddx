@@ -60,11 +60,12 @@ template <impl::Numeric T>
 // builder is a literal not yet given to a graph, which is what lets
 // Expression{1} exist for CFieldLike's constructible_from<int>.
 //
-// The node may be a vector: `width()` elements per point, and the same
-// arithmetic then builds one elementwise node -- a Map or Zip carrying the
-// scalar opcode, a Scale for a scalar times a vector.  A literal meeting a
-// vector takes its width, so every derivative rule in ops/adjoints.hpp reads
-// elementwise and no rule is written twice.  rt/tensor.hpp holds the
+// The node may be a vector or a matrix: `size()` elements per point, and the
+// same arithmetic then builds one elementwise node -- a Map or Zip carrying
+// the scalar opcode, a Scale for a scalar times one.  A literal meeting a
+// vector or a matrix takes its shape, so every derivative rule in
+// ops/adjoints.hpp reads elementwise and no rule is written twice.  A
+// mat_constant table taking part is its row.  rt/tensor.hpp holds the
 // factories and reductions.
 template <impl::Numeric T> class Expression {
 public:
@@ -83,13 +84,16 @@ public:
 
   constexpr Expression(Builder<T> &b, NodeId id) noexcept
       : builder_{&b}, id_{id},
-        width_{tensor_valued(b.op_of(id)) ? width_of(b, id) : 0} {}
+        shape_{tensor_valued(b.op_of(id)) ? shape_of(b, id) : Shape{0, 0}} {}
 
   [[nodiscard]] constexpr bool pending() const noexcept {
     return builder_ == nullptr;
   }
   // Elements per point: zero for a scalar node or a pending literal.
-  [[nodiscard]] constexpr std::uint32_t size() const noexcept { return width_; }
+  [[nodiscard]] constexpr std::uint32_t size() const noexcept {
+    return shape_.size();
+  }
+  [[nodiscard]] constexpr Shape shape() const noexcept { return shape_; }
 
   // Whether the input named no leaf -- no arena current, or a name another
   // kind of input has -- which surfaces as an errc out of equation() rather
@@ -100,12 +104,11 @@ public:
   [[nodiscard]] constexpr const T &literal() const noexcept { return lit_; }
 
   // Give the node an identity in `b`, materialising a pending literal -- a
-  // constant, or the vector of `width` copies where it meets a vector -- or
-  // a sum `+=` is still accumulating.
-  [[nodiscard]] constexpr NodeId id(Builder<T> &b,
-                                    std::uint32_t width = 0) const {
+  // constant, or the row of `shape` it meets -- or a sum `+=` is still
+  // accumulating.
+  [[nodiscard]] constexpr NodeId id(Builder<T> &b, Shape shape = {0, 0}) const {
     if (builder_ == nullptr) {
-      return width ? b.filled(width, lit_) : b.constant(lit_);
+      return shape.size() ? b.filled(shape, lit_) : b.constant(lit_);
     }
     return sum_ ? b.sum_of(id_) : id_; // b may be a copy of builder_
   }
@@ -122,7 +125,7 @@ public:
     if (pending()) {
       return Expression{lit_};
     }
-    if (i >= width_) {
+    if (i >= size()) {
       return poison(errc::tensor_shape);
     }
     return {*builder_, builder_->make(OpCode::Gather, id(), no_node, no_node,
@@ -142,17 +145,17 @@ public:
       return Expression{apply<T>(op, u.literal())};
     }
     if (u.is_matrix()) {
-      return poison(errc::tensor_shape);
+      return form(op, u.row());
     }
-    return u.width_ == 0
+    return u.size() == 0
                ? Expression{*b, b->make(op, u.id(*b))}
                : Expression{*b, b->make(OpCode::Map, u.id(*b), no_node, no_node,
                                         std::to_underlying(op))};
   }
 
-  // Two vectors zip elementwise at one width; a literal takes the vector's.
-  // A scalar *node* meets a vector only as a factor -- a Scale, one node
-  // rather than a broadcast and a Zip -- so anything else is a shape error.
+  // Two rows zip elementwise at one shape; a literal takes the row's.  A
+  // scalar *node* meets a row only as a factor -- a Scale, one node rather
+  // than a broadcast and a Zip -- so anything else is a shape error.
   [[nodiscard]] static constexpr Expression form(OpCode op, const Expression &l,
                                                  const Expression &r) {
     if (l.why_ || r.why_) {
@@ -163,18 +166,17 @@ public:
       return Expression{apply<T>(op, l.literal(), r.literal())};
     }
     if (l.is_matrix() || r.is_matrix()) {
-      return poison(errc::tensor_shape);
+      return form(op, l.row(), r.row());
     }
-    const std::uint32_t w = std::max(l.width_, r.width_);
-    if (w == 0) {
+    if (l.size() == 0 && r.size() == 0) {
       return {*b, b->make(op, l.id(*b), r.id(*b))};
     }
-    if (l.width_ != 0 && r.width_ != 0 && l.width_ != r.width_) {
+    if (l.size() != 0 && r.size() != 0 && l.shape_ != r.shape_) {
       return poison(errc::tensor_shape);
     }
-    const Expression &vec = l.width_ ? l : r;
-    const Expression &other = l.width_ ? r : l;
-    if (other.width_ == 0) {
+    const Expression &vec = l.size() ? l : r;
+    const Expression &other = l.size() ? r : l;
+    if (other.size() == 0) {
       if (op == OpCode::Mul) {
         return {*b, b->make(OpCode::Scale, other.id(*b), vec.id(*b))};
       }
@@ -186,8 +188,8 @@ public:
         return poison(errc::tensor_shape);
       }
     }
-    return {*b, b->make(OpCode::Zip, l.id(*b, w), r.id(*b, w), no_node,
-                        std::to_underlying(op))};
+    return {*b, b->make(OpCode::Zip, l.id(*b, vec.shape_), r.id(*b, vec.shape_),
+                        no_node, std::to_underlying(op))};
   }
 
   // A select over vector arms is a mask: each arm scaled by the chosen 1 or
@@ -205,15 +207,15 @@ public:
       return Expression{apply<T>(op, c.literal(), t.literal(), f.literal())};
     }
     if (c.is_matrix() || t.is_matrix() || f.is_matrix()) {
-      return poison(errc::tensor_shape);
+      return form(op, c.row(), t.row(), f.row());
     }
-    if (c.width_ == 0 && t.width_ == 0 && f.width_ == 0) {
+    if (c.size() == 0 && t.size() == 0 && f.size() == 0) {
       return {*b, b->make(op, c.id(*b), t.id(*b), f.id(*b))};
     }
     const Expression one{1};
     const Expression zero{0};
-    const Expression on = c.width_ ? c : select(c, one, zero);
-    const Expression off = c.width_ ? one - c : select(c, zero, one);
+    const Expression on = c.size() ? c : select(c, one, zero);
+    const Expression off = c.size() ? one - c : select(c, zero, one);
     const auto dead = [](const Expression &arm) {
       return arm.pending() && arm.lit_ == T{0};
     };
@@ -259,7 +261,7 @@ public:
   // side's arena and answer instead of refusing.  The parameter is the class
   // type rather than a Numeric auto, so += accepts exactly what + accepts.
   constexpr Expression &operator+=(const Expression &o) {
-    if (why_ || o.why_ || pending() || width_ || o.width_ || is_matrix() ||
+    if (why_ || o.why_ || pending() || size() || o.size() || is_matrix() ||
         o.is_matrix()) {
       return *this = *this + o;
     }
@@ -367,15 +369,21 @@ private:
   [[nodiscard]] constexpr std::optional<errc> why() const noexcept {
     return why_;
   }
-  // A matrix is a table a gemv reads, with no algebra of its own.
+  // A mat_constant table, which is no row: arithmetic reads it as its
+  // MatRow, gemv() in place.
   [[nodiscard]] constexpr bool is_matrix() const noexcept {
     return builder_ != nullptr && !sum_ &&
            builder_->op_of(id_) == OpCode::MatConst;
   }
+  [[nodiscard]] constexpr Expression row() const {
+    return is_matrix()
+               ? Expression{*builder_, builder_->make(OpCode::MatRow, id_)}
+               : *this;
+  }
 
   Builder<T> *builder_ = nullptr;
   NodeId id_ = no_node; // a node, or while sum_ the arena's pending entry
-  std::uint32_t width_ = 0;
+  Shape shape_{0, 0};
   bool sum_ = false;
   T lit_{};
   std::optional<errc> why_;

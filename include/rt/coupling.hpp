@@ -379,13 +379,15 @@ template <impl::Numeric T>
       }
       break;
     case Kind::Tensor: {
-      // One support for the whole vector, conservatively: the union of what
+      // One support for the whole row, conservatively: the union of what
       // its operands read.  Linear ops -- Pack, Gather, Sum, Gemv over a
       // constant matrix, AddAt -- couple nothing; a Map or Zip took its inner
-      // op's arm above, and Scale and Dot couple as a product does.
+      // op's arm above, and Scale, Dot, MatVec and Outer couple as a product
+      // does.
       switch (node.op) {
       case OpCode::VecConst:
       case OpCode::MatConst:
+      case OpCode::MatRow:
         break;
       case OpCode::Pack:
         unite(arguments(b, v));
@@ -403,11 +405,13 @@ template <impl::Numeric T>
         break;
       case OpCode::Scale:
       case OpCode::Dot:
+      case OpCode::MatVec:
+      case OpCode::Outer:
         here = of(node.a);
         here |= of(node.b);
         detail::couple(rows, of(node.a), of(node.b));
         break;
-      default: // the dense Hessian's matrix rows, never under a root
+      default: // the dense sweep's own rows, never under a root
         std::unreachable();
       }
       break;

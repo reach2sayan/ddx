@@ -51,10 +51,11 @@ def test_every_exported_unary_is_covered() -> None:
               "lt", "le"}
     # `select` is the one ternary.
     ternary = {"select"}
-    # Not operations at all: these build or read an equation.
-    not_an_op = {"equation", "implicit", "param", "var"}
-    # Vectors: factories and reductions, not scalar operations.
-    vectors = {"dot", "gemv", "mat_constant", "pack", "sum", "vec", "vec_constant"}
+    # Not operations at all: these build, read or run an equation.
+    not_an_op = {"equation", "implicit", "param", "release_tapes", "var"}
+    # Vectors and matrices: factories and reductions, not scalar operations.
+    vectors = {"dot", "gemv", "mat_constant", "outer", "pack", "sum", "vec",
+               "vec_constant"}
     assert functions - binary - ternary - not_an_op - vectors == set(UNARY)
 
 

@@ -89,7 +89,7 @@ public:
   [[nodiscard]] PyExpression at(std::size_t i) const {
     return checked(expression_[i], arena_);
   }
-  // (), (n,) for a vector, (rows, cols) for a constant matrix.
+  // (), (n,) for a vector, (rows, cols) for a matrix, constant or computed.
   [[nodiscard]] std::vector<std::size_t> shape() const {
     if (!arena_) {
       return {};
@@ -98,6 +98,10 @@ public:
     if (n.op == rt::OpCode::MatConst) {
       const auto &t = arena_->tensors()[rt::detail::index_of(n)];
       return {t.rows, t.cols};
+    }
+    const rt::Shape s = expression_.shape();
+    if (s.cols > 1) {
+      return {s.rows, s.cols};
     }
     return size() == 0 ? std::vector<std::size_t>{}
                        : std::vector<std::size_t>{size()};

@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <utility>
@@ -29,7 +31,8 @@
 // of width n.  Each rule is the matrix calculus of a linear map over a sum, and
 // only Gemv over a Dense term needs a product of two dense matrices -- the one
 // n^3 case, counted so a caller can see when a model's structure defeated the
-// algebra.  The rows the partials end with are stacked into the block.
+// algebra.  Where the partials are the gradient vector's elements, the block
+// is that vector's terms summed; otherwise the partials' rows are stacked.
 namespace ddx::rt {
 
 struct DenseHessian {
@@ -66,10 +69,18 @@ public:
     }
   }
 
-  // The row each partial ends with, stacked: a partial nothing moves is a
-  // zero row.
+  // No block where a matrix the symbols move was multiplied: its tangent is
+  // rows x cols x n, which no term holds.  Where the partials are the
+  // elements of one vector in order -- what the reverse sweep hands back
+  // through the symbols' Pack -- the block is that vector's tangent, its
+  // terms summed as matrices; otherwise the row each partial ends with,
+  // stacked, a partial nothing moves a zero row.
   [[nodiscard]] NodeId block(std::span<const NodeId> partials) {
-    return stacked(partials);
+    if (refused_) {
+      return no_node;
+    }
+    const auto source = gathered(partials);
+    return source ? summed(mat_[*source]) : stacked(partials);
   }
   [[nodiscard]] std::uint32_t n2() const noexcept { return n2_; }
   [[nodiscard]] std::uint32_t n3() const noexcept { return n3_; }
@@ -80,12 +91,12 @@ private:
 
   [[nodiscard]] V vec(NodeId id) const { return V{b_, id}; }
   [[nodiscard]] E expr(NodeId id) const { return E{b_, id}; }
-  [[nodiscard]] NodeId zeros() { return b_.zeros(n_); }
-  [[nodiscard]] NodeId ones() { return b_.ones(n_); }
+  [[nodiscard]] NodeId zeros() { return b_.zeros({n_}); }
+  [[nodiscard]] NodeId ones() { return b_.ones({n_}); }
   // e_i, interned once per i and width.
   [[nodiscard]] NodeId unit(std::uint32_t i) { return unit(i, n_); }
   [[nodiscard]] NodeId unit(std::uint32_t i, std::uint32_t width) {
-    return b_.make(OpCode::AddAt, b_.zeros(width), b_.constant(T{1}), no_node,
+    return b_.make(OpCode::AddAt, b_.zeros({width}), b_.constant(T{1}), no_node,
                    i);
   }
   // The rows of `ids` as a matrix, a zero row for an id nothing moves.
@@ -97,6 +108,60 @@ private:
     return b_.pack(rows, OpCode::StackRows);
   }
 
+  // The vector whose element i partial i reads, if there is one.
+  [[nodiscard]] std::optional<NodeId>
+  gathered(std::span<const NodeId> partials) const {
+    if (partials.size() != n_ || b_.op_of(partials.front()) != OpCode::Gather) {
+      return std::nullopt;
+    }
+    const NodeId source = b_[partials.front()].a;
+    const bool in_order =
+        width_of(b_, source) == n_ &&
+        std::ranges::all_of(std::views::iota(0u, n_), [&](std::uint32_t i) {
+          const Node<T> &g = b_[partials[i]];
+          return g.op == OpCode::Gather && g.a == source && index_of(g) == i;
+        });
+    return in_order ? std::optional{source} : std::nullopt;
+  }
+  // A tangent as one n x n matrix row: the diagonal terms summed as a vector
+  // first, then every matrix written once, contiguously, where reading a term
+  // back by rows is a strided pass per row.
+  [[nodiscard]] NodeId summed(const Terms &ts) {
+    const auto diagonal = [](const Term &t) {
+      return t.kind == Term::Kind::Identity || t.kind == Term::Kind::Diag;
+    };
+    const NodeId d = std::ranges::fold_left(
+        ts | std::views::filter(diagonal), no_node,
+        [this](NodeId r, const Term &t) {
+          return add(r, t.kind == Term::Kind::Identity ? ones() : t.a);
+        });
+    auto matrices = ts | std::views::filter(std::not_fn(diagonal)) |
+                    std::views::transform([this](const Term &t) {
+                      return t.kind == Term::Kind::Outer
+                                 ? b_.make(OpCode::Outer, t.a, t.b)
+                                 : t.a;
+                    }) |
+                    impl::to<boost::container::small_vector<NodeId, 4>>();
+    if (d != no_node || matrices.empty()) {
+      matrices.push_back(b_.make(OpCode::Diag, d == no_node ? zeros() : d));
+    }
+    return std::ranges::fold_left(
+               matrices | std::views::drop(1), expr(matrices.front()),
+               [this](const E &sum, NodeId m) { return sum + expr(m); })
+        .id(b_);
+  }
+  // diag(d) M, folded into M's own diag(e) where it has one: a product of two
+  // vectors in place of a second pass over the matrix.
+  [[nodiscard]] NodeId row_scaled(const V &d, NodeId m) {
+    const std::uint32_t rows = shape_of(b_, m).rows;
+    if (b_.op_of(m) == OpCode::RowScale) {
+      const Node<T> inner = b_[m];
+      return b_.make(OpCode::RowScale, (d * vec(inner.a)).id(b_, {rows}),
+                     inner.b);
+    }
+    return b_.make(OpCode::RowScale, d.id(b_, {rows}), m);
+  }
+
   // Row arithmetic, with no_node the zero row.
   [[nodiscard]] NodeId add(NodeId l, NodeId r) {
     if (l == no_node) {
@@ -105,7 +170,7 @@ private:
     if (r == no_node) {
       return l;
     }
-    return (vec(l) + vec(r)).id(b_, n_);
+    return (vec(l) + vec(r)).id(b_, {n_});
   }
   [[nodiscard]] NodeId scaled(const E &s, NodeId r) {
     if (r == no_node || s.poisoned()) {
@@ -115,7 +180,7 @@ private:
     if (b_.is_constant(sid, T{0})) {
       return no_node;
     }
-    return (expr(sid) * vec(r)).id(b_, n_);
+    return (expr(sid) * vec(r)).id(b_, {n_});
   }
   [[nodiscard]] NodeId scaled(NodeId s, NodeId r) { return scaled(expr(s), r); }
 
@@ -125,16 +190,15 @@ private:
     switch (t.kind) {
     case Term::Kind::Identity:
       ++n2_;
-      return {.kind = Term::Kind::Diag, .a = d.id(b_, n_)};
+      return {.kind = Term::Kind::Diag, .a = d.id(b_, {n_})};
     case Term::Kind::Diag:
-      return {.kind = Term::Kind::Diag, .a = (d * vec(t.a)).id(b_, n_)};
+      return {.kind = Term::Kind::Diag, .a = (d * vec(t.a)).id(b_, {n_})};
     case Term::Kind::Outer:
       return {.kind = Term::Kind::Outer,
-              .a = (d * vec(t.a)).id(b_, d.size()),
+              .a = (d * vec(t.a)).id(b_, shape_of(b_, t.a)),
               .b = t.b};
     case Term::Kind::Dense:
-      return {.kind = Term::Kind::Dense,
-              .a = b_.make(OpCode::RowScale, d.id(b_, n_), t.a)};
+      return {.kind = Term::Kind::Dense, .a = row_scaled(d, t.a)};
     }
     std::unreachable();
   }
@@ -149,16 +213,33 @@ private:
     switch (t.kind) {
     case Term::Kind::Identity:
       ++n2_;
-      return {.kind = Term::Kind::Diag, .a = (s * vec(ones())).id(b_, n_)};
+      return {.kind = Term::Kind::Diag, .a = (s * vec(ones())).id(b_, {n_})};
     case Term::Kind::Diag:
-      return {.kind = Term::Kind::Diag, .a = (s * vec(t.a)).id(b_, n_)};
+      return {.kind = Term::Kind::Diag, .a = (s * vec(t.a)).id(b_, {n_})};
     case Term::Kind::Outer:
       return {.kind = Term::Kind::Outer,
-              .a = (s * vec(t.a)).id(b_, width_of(b_, t.a)),
+              .a = (s * vec(t.a)).id(b_, shape_of(b_, t.a)),
               .b = t.b};
-    case Term::Kind::Dense:
-      return {.kind = Term::Kind::Dense,
-              .a = (s * vec(t.a)).id(b_, width_of(b_, t.a))};
+    case Term::Kind::Dense: {
+      // s diag(e) M is diag(s e) M, and s M diag(e) is M diag(s e): a vector
+      // scaled where the matrix would be copied.
+      const Node<T> inner = b_[t.a];
+      const auto rescaled = [&](NodeId e) {
+        return (s * vec(e)).id(b_, {width_of(b_, e)});
+      };
+      switch (inner.op) {
+      case OpCode::RowScale:
+        return {.kind = Term::Kind::Dense,
+                .a = b_.make(OpCode::RowScale, rescaled(inner.a), inner.b)};
+      case OpCode::ColScale:
+        return {.kind = Term::Kind::Dense,
+                .a = b_.make(OpCode::ColScale, inner.a, rescaled(inner.b))};
+      default: // a RowScale, so the next diagonal folds into it
+        return {.kind = Term::Kind::Dense,
+                .a = b_.make(OpCode::RowScale,
+                             (s * vec(ones_of_rows(t.a))).id(b_), t.a)};
+      }
+    }
     }
     std::unreachable();
   }
@@ -180,13 +261,13 @@ private:
   [[nodiscard]] NodeId left(const V &u, const Term &t) {
     switch (t.kind) {
     case Term::Kind::Identity:
-      return u.id(b_, n_);
+      return u.id(b_, {n_});
     case Term::Kind::Diag:
-      return (u * vec(t.a)).id(b_, n_);
+      return (u * vec(t.a)).id(b_, {n_});
     case Term::Kind::Outer:
       return scaled(dot(u, vec(t.a)), t.b);
     case Term::Kind::Dense:
-      return b_.make(OpCode::MatVec, t.a, u.id(b_, width_of(b_, t.a) / n_),
+      return b_.make(OpCode::MatVec, t.a, u.id(b_, {shape_of(b_, t.a).rows}),
                      no_node, 1);
     }
     std::unreachable();
@@ -196,10 +277,13 @@ private:
       return add(r, left(u, t));
     });
   }
-  // The constant matrix C (or C^T) applied on the left of a term.
+  // A matrix M (or M^T) that no symbol moves -- a table, or one computed from
+  // parameters -- applied on the left of a term.
   [[nodiscard]] Term gemv(NodeId matrix, bool transposed, const Term &t) {
-    const NodeId c =
-        b_.make(OpCode::MatRow, matrix, no_node, no_node, transposed);
+    const bool table = b_.op_of(matrix) == OpCode::MatConst;
+    const NodeId c = table || transposed ? b_.make(OpCode::MatRow, matrix,
+                                                   no_node, no_node, transposed)
+                                         : matrix;
     switch (t.kind) {
     case Term::Kind::Identity:
       ++n2_;
@@ -210,7 +294,8 @@ private:
               .a = b_.make(OpCode::ColScale, c, t.a)};
     case Term::Kind::Outer:
       return {.kind = Term::Kind::Outer,
-              .a = b_.make(OpCode::Gemv, matrix, t.a, no_node, transposed),
+              .a = b_.make(table ? OpCode::Gemv : OpCode::MatVec, matrix, t.a,
+                           no_node, transposed),
               .b = t.b};
     case Term::Kind::Dense:
       ++n3_;
@@ -291,7 +376,10 @@ private:
     }
     std::unreachable();
   }
-  [[nodiscard]] NodeId ones_of(NodeId v) { return b_.ones(width_of(b_, v)); }
+  [[nodiscard]] NodeId ones_of(NodeId v) { return b_.ones(shape_of(b_, v)); }
+  [[nodiscard]] NodeId ones_of_rows(NodeId m) {
+    return b_.ones({shape_of(b_, m).rows});
+  }
 
   [[nodiscard]] Terms matrix_tangent(NodeId v, const Node<T> &node) {
     Terms out;
@@ -331,10 +419,17 @@ private:
       break;
     }
     case OpCode::Gemv:
+    case OpCode::MatVec:
+      refused_ = refused_ || !mat_[node.a].empty();
       out = mat_[node.b] | std::views::transform([&](const Term &t) {
               return gemv(node.a, is_transposed(node), t);
             }) |
             impl::to<Terms>();
+      break;
+    case OpCode::MatRow: // a table
+      break;
+    case OpCode::Outer:
+      refused_ = refused_ || !mat_[node.a].empty() || !mat_[node.b].empty();
       break;
     case OpCode::AddAt:
       out = mat_[node.a];
@@ -356,6 +451,7 @@ private:
   std::vector<Terms> mat_;
   std::uint32_t n2_ = 0;
   std::uint32_t n3_ = 0;
+  bool refused_ = false;
 };
 
 } // namespace detail

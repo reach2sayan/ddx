@@ -34,6 +34,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -253,6 +254,18 @@ struct Sweeps {
   Lazy<Rebalanced> rebalanced;
 #endif
 };
+
+// What a thread sweeps into, per scalar type: kept between calls, since two
+// threads may be inside one equation at once and resize() on a kept vector
+// allocates only when a sweep outgrows the last.  One set per call site, so an
+// extern that calls another equation from inside a sweep never shares the
+// tape it is being read from.  release_tapes() gives them back.
+template <impl::Numeric T> struct ThreadTapes {
+  std::vector<T> values;          // a system's hessian() at a point
+  std::vector<T> at, tape, vtape; // a batch, one point at a time
+  std::vector<T> lanes, lane_tape, lane_vtape; // a batch, block_lanes at once
+};
+template <impl::Numeric T> inline thread_local ThreadTapes<T> thread_tapes;
 
 // An equation: an arena of its own, its roots, the Jacobian swept up front and
 // every other sweep on first ask, a pipeline per Want.  Equation, System and
@@ -960,7 +973,7 @@ protected:
     const std::size_t n = symbol_count();
     // The tape is thread-kept; every id read below is scheduled, so it is
     // written this call.
-    static thread_local std::vector<T> values;
+    std::vector<T> &values = thread_tapes<T>.values;
     [[maybe_unused]] const auto held = sweeping();
     values.resize(arena_->size());
     detail::TensorTape<T> scratch{*arena_, walk, tensor_kernels()};
@@ -1096,8 +1109,10 @@ protected:
   // The gates, in the order a call meets them.  alive(): not poisoned.
   // single(): one function's, which a system refuses.  orders(): second order
   // is refused where a reachable extern supplies first partials only, rather
-  // than answered with the zeros a missing component would read.  ready() is
-  // the one gate every batch and point call passes, off the want's row.
+  // than answered with the zeros a missing component would read.  blocked():
+  // the dense Hessian has no block where a matrix the symbols move is
+  // multiplied (rt/dense.hpp).  ready() is the one gate every batch and point
+  // call passes, off the want's row.
   [[nodiscard]] constexpr bool is_system() const noexcept {
     return roots_.size() != 1;
   }
@@ -1114,10 +1129,15 @@ protected:
                ? fail(errc::extern_order)
                : result<void>{};
   }
+  [[nodiscard]] constexpr result<void> blocked(Want want) const {
+    return want == Want::DenseHessian && dense_sweep().block == no_node
+               ? fail(errc::tensor_shape)
+               : result<void>{};
+  }
   [[nodiscard]] constexpr result<void> ready(Want want) const {
-    return (want_info(want).single ? single() : alive()).and_then([&] {
-      return orders(want);
-    });
+    return (want_info(want).single ? single() : alive())
+        .and_then([&] { return orders(want); })
+        .and_then([&] { return blocked(want); });
   }
 
 private:
@@ -1501,16 +1521,14 @@ private:
     // per input, and a pipeline may hold leaves that are not symbols.
     const std::size_t inputs = graph.arity();
 
-    // thread_local rather than a member: two threads may be inside one
-    // equation at once.  resize() rather than assign(): every id read is
-    // written first, so zeroing the arena per call is waste.
+    // Thread-kept (ThreadTapes).  resize() rather than assign(): every id
+    // read is written first, so zeroing the arena per call is waste.
     //
     // A short batch sweeps one point at a time rather than padding out to
     // block_lanes, which on a batch of one is the whole cost.
+    ThreadTapes<T> &kept = thread_tapes<T>;
     if (n < block_lanes) {
-      static thread_local std::vector<T> at;
-      static thread_local std::vector<T> tape;
-      static thread_local std::vector<T> vtape;
+      const auto [at, tape, vtape] = std::tie(kept.at, kept.tape, kept.vtape);
       at.resize(inputs);
       tape.resize(graph.tape_rows());
       const auto t = tensors(vtape, 1);
@@ -1528,9 +1546,8 @@ private:
     // block, and each operation becomes a lane loop wide enough to vectorise.
     // A short final block repeats its last point, and those lanes are never
     // read back.
-    static thread_local std::vector<T> lanes;
-    static thread_local std::vector<T> tape;
-    static thread_local std::vector<T> vtape;
+    const auto [lanes, tape, vtape] =
+        std::tie(kept.lanes, kept.lane_tape, kept.lane_vtape);
     lanes.resize(inputs * block_lanes);
     tape.resize(graph.tape_rows() * block_lanes);
     const auto t = tensors(vtape, block_lanes);
@@ -1678,4 +1695,11 @@ template <impl::Numeric T>
 namespace ddx::rt {
 // What Equation::restrict() and System::restrict() answer.
 template <typename C> using Restricted = detail::Restricted<C>;
+
+// Free this thread's sweep tapes: a pool worker that swept something large
+// keeps its tapes at that size until it asks.  The next sweep on the thread
+// grows them again.
+template <impl::Numeric T = double> void release_tapes() noexcept {
+  detail::thread_tapes<T> = {};
+}
 } // namespace ddx::rt

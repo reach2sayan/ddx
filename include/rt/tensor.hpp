@@ -1,15 +1,16 @@
 #pragma once
 
-// Vectors in a runtime graph: the factories and reductions over a handle that
-// is itself vector-valued (Expression::size() > 0).
+// Vectors and matrices in a runtime graph: the factories and reductions over
+// a handle that is itself tensor-valued (Expression::size() > 0).
 //
-//   auto x = rt::vec("x", n);                 // n symbols x[0] .. x[n-1],
-//   packed auto C = rt::mat_constant(n, n, data);       // column-major auto g
-//   = rt::dot(x, rt::gemv(C, x)) + rt::sum(log(x) * x);
+//   auto x = rt::vec("x", n);                    // n symbols, packed
+//   auto B = rt::mat_constant(n, n, data);       // column-major
+//   auto g = rt::dot(x, rt::gemv(exp(T * B), x)) + rt::sum(log(x) * x);
 //
-// The arithmetic is Expression's own: elementwise over a vector, a Scale
-// for a scalar times one, and a literal takes the width of the vector it
-// meets.  A matrix is a constant table that only gemv() reads.
+// The arithmetic is Expression's own: elementwise over a vector or a matrix,
+// a Scale for a scalar times one, and a literal takes the shape of the row it
+// meets.  A mat_constant table is read in place by gemv() and as its row by
+// everything else.
 
 #include "rt/builder.hpp"
 #include "rt/expressions.hpp"
@@ -180,17 +181,17 @@ template <impl::Numeric T>
   Builder<T> *const b = detail::Rooting::builder(u)
                             ? detail::Rooting::builder(u)
                             : detail::Rooting::builder(v);
-  const std::uint32_t w = std::max(u.size(), v.size());
-  if (b == nullptr || w == 0 ||
-      (u.size() != 0 && v.size() != 0 && u.size() != v.size()) ||
+  const Shape shape = u.size() ? u.shape() : v.shape();
+  if (b == nullptr || shape.size() == 0 ||
+      (u.size() != 0 && v.size() != 0 && u.shape() != v.shape()) ||
       (!u.pending() && u.size() == 0) || (!v.pending() && v.size() == 0)) {
     return detail::refused<T>(errc::tensor_shape);
   }
-  return {*b, b->make(OpCode::Dot, u.id(*b, w), v.id(*b, w))};
+  return {*b, b->make(OpCode::Dot, u.id(*b, shape), v.id(*b, shape))};
 }
 
-// M v, or M^T v.  The matrix is a constant, so neither differentiates
-// through it.
+// M v, or M^T v: a mat_constant table read in place, or a matrix the model
+// computed, which the derivatives then reach too.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T>
 gemv(const Expression<T> &m, const Expression<T> &v, bool transposed = false) {
@@ -200,15 +201,37 @@ gemv(const Expression<T> &m, const Expression<T> &v, bool transposed = false) {
     }
   }
   Builder<T> *const b = detail::Rooting::builder(m);
-  if (b == nullptr || b->op_of(m.id()) != OpCode::MatConst || v.size() == 0 ||
-      detail::Rooting::builder(v) != b) {
+  if (b == nullptr || v.size() == 0 || detail::Rooting::builder(v) != b) {
     return detail::refused<T>(errc::tensor_shape);
   }
-  const auto &table = b->tensors()[detail::index_of((*b)[m.id()])];
-  if (v.size() != (transposed ? table.rows : table.cols)) {
+  const bool table = b->op_of(m.id()) == OpCode::MatConst;
+  Shape shape = m.shape();
+  if (table) {
+    const auto &data = b->tensors()[detail::index_of((*b)[m.id()])];
+    shape = {.rows = data.rows, .cols = data.cols};
+  }
+  if (shape.cols == 1 || v.size() != (transposed ? shape.rows : shape.cols)) {
     return detail::refused<T>(errc::tensor_shape);
   }
-  return {*b, b->make(OpCode::Gemv, m.id(), v.id(), no_node, transposed)};
+  return {*b, b->make(table ? OpCode::Gemv : OpCode::MatVec, m.id(), v.id(),
+                      no_node, transposed)};
+}
+
+// u w^T, the matrix of every product of an element of u with one of w.
+template <impl::Numeric T>
+[[nodiscard]] constexpr Expression<T> outer(const Expression<T> &u,
+                                            const Expression<T> &w) {
+  for (const auto *e : {&u, &w}) {
+    if (const auto why = detail::not_a_vector(*e)) {
+      return detail::refused<T>(*why);
+    }
+  }
+  Builder<T> *const b = detail::Rooting::builder(u);
+  if (detail::Rooting::builder(w) != b || u.shape().cols != 1 ||
+      w.shape().cols != 1) {
+    return detail::refused<T>(errc::tensor_shape);
+  }
+  return {*b, b->make(OpCode::Outer, u.id(), w.id())};
 }
 
 namespace detail {

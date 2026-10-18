@@ -97,7 +97,7 @@ evaluation order unspecified. Another scalar type: `rt::equation<T>` with
 | `rt::param(name)` | an input that is read, never differentiated |
 | `rt::implicit(name, [&](auto z) { return F; })` | an input that is a root of `F`; derivatives carry ∂z/∂x = −F_x/F_z |
 | `rt::extern_fn({.name, .arity, .order}, fn)` | your own function; `fn(in, out)` writes the value, then the partials (upper triangle of the second at `order = 2`) |
-| `rt::vec(name, n)`, `rt::vec_constant(data)`, `rt::mat_constant(r, c, data)`, `rt::pack({…})` | vectors (`rt/tensor.hpp`): `n` ordinary symbols as one node |
+| `rt::vec(name, n)`, `rt::vec_constant(data)`, `rt::mat_constant(r, c, data)`, `rt::pack({…})`, `rt::outer(u, w)` | vectors and matrices (`rt/tensor.hpp`): `n` ordinary symbols as one node |
 
 A point supplies symbols, then parameters, then implicits. `eq.residual(point)`
 evaluates each implicit's `F`; ddx never solves it.
@@ -108,6 +108,17 @@ Vectors are elementwise under every operation, with `sum`, `dot` and
 `rt::use_tensor_kernels(table)` or `eq.tensor_kernels(table)`, built with
 `rt::tensor_kernel_table<K>()` over a type satisfying `rt::TensorKernels`;
 `rt/eigen_kernels.hpp` supplies `rt::eigen::table`.
+
+Matrices are elementwise the same way: a `mat_constant` table taking part in
+arithmetic is its matrix, so `exp(-(A0 + T * A1) / (R * T))` over tables is a
+matrix of T computed in a few nodes, and `gemv(M, v, transposed)` and
+`dot(M, N)` read it. `rt::outer(u, w)` is `u wᵀ`. Shapes must agree, rows and
+columns both, and a scalar expression meets a matrix as a factor (`T * B`,
+`B / T`), as it meets a vector. `dense_hessian` stays O(n²) over a matrix of tables and
+parameters — make T a `param` to get the composition Hessian at fixed T. A
+matrix that moves with a symbol and is then multiplied (`gemv(exp(outer(x, x)),
+x)`) has no O(n²) form, and `dense_hessian` refuses it with
+`errc::tensor_shape`; `hessian`, `hvp` and `jacobian_jvp` answer it.
 
 An equation can also be a string, in Python's arithmetic grammar
 (`rt/text/equation.hpp`), answering `result<Equation>`:
@@ -202,7 +213,10 @@ format and stream as text. Nothing throws.
 
 All members are `const` and thread-safe except `options()` and `tensor_kernels(table)`.
 The equation owns everything it needs and is move-only; symbols are valid only
-inside the callback that named them.
+inside the callback that named them. Each thread keeps the tapes it sweeps into
+at the largest size it has needed; `rt::release_tapes()` (Python
+`ddx.release_tapes()`) frees the calling thread's, for a pool worker after a
+large sweep.
 
 ## Compiling
 

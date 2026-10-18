@@ -103,3 +103,36 @@ def test_the_dense_hessian_is_the_coloured_one() -> None:
     np.testing.assert_allclose(g, g_want, rtol=1e-12)
     assert h.shape == (N, N)
     np.testing.assert_allclose(h, h_want, rtol=1e-10)
+
+
+def test_a_matrix_of_temperature_matches_the_scalar_spelling() -> None:
+    # sum_ij x_i x_j exp(T m_ij): exp(T * C) is a computed matrix, one node.
+    def scalar() -> ddx.Expression:
+        T = ddx.var("T")
+        x = [ddx.var(f"x[{i}]") for i in range(N)]
+        return sum(x[i] * ddx.exp(T * m_at(i, j)) * x[j]
+                   for i in range(N) for j in range(N))
+
+    def tensor() -> ddx.Expression:
+        T = ddx.var("T")
+        x = ddx.vec("x", N)
+        tau = ddx.exp(T * ddx.mat_constant(N, N, M))
+        assert tau.shape == (N, N)
+        assert ddx.outer(x, x).shape == (N, N)
+        return ddx.dot(x, ddx.gemv(tau, x))
+
+    want = ddx.equation(scalar)
+    got = ddx.equation(tensor)
+    point = [1.3, *POINT]
+    assert want.symbols == got.symbols
+    np.testing.assert_allclose(got.gradient(point), want.gradient(point), rtol=1e-12)
+    _, _, want_h = want.hessian(point)
+    _, _, got_h = got.hessian(point)
+    np.testing.assert_allclose(got_h, want_h, rtol=1e-12)
+
+
+def test_released_tapes_grow_back_to_the_same_numbers() -> None:
+    eq = ddx.equation(tensor_model)
+    before = eq.gradient(POINT)
+    ddx.release_tapes()
+    np.testing.assert_array_equal(eq.gradient(POINT), before)

@@ -240,18 +240,24 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
         to[index_of(n)] += lane(t.row(n.b))[k];
       }
       break;
-    // The matrix rows of the dense Hessian sweep.  Shapes come off the
-    // arena, as the widths do; a matrix is column-major.
-    case OpCode::MatRow: {
-      const TensorConst<T> &m = b.tensors()[index_of(b[n.a])];
+    // The matrix rows.  Shapes come off the arena, as the widths do; a
+    // matrix is column-major.
+    case OpCode::MatRow: { // a table's copy, or a computed matrix transposed
+      const bool table = b.op_of(n.a) == OpCode::MatConst;
+      const Shape to_shape = shape_of(b, v);
+      const std::size_t rows = is_transposed(n) ? to_shape.cols : to_shape.rows;
+      const std::size_t cols = is_transposed(n) ? to_shape.rows : to_shape.cols;
       for (std::size_t k = 0; k < W; ++k) {
+        const std::span<const U> from =
+            table ? std::span<const U>{b.tensors()[index_of(b[n.a])].data}
+                  : in(n.a, k);
         const auto to = mine(k);
         if (!is_transposed(n)) {
-          std::ranges::copy(m.data, to.begin());
+          std::ranges::copy(from, to.begin());
         } else {
-          for (std::size_t i = 0; i < m.rows; ++i) {
-            for (std::size_t j = 0; j < m.cols; ++j) {
-              to[j + i * m.cols] = m.data[i + j * m.rows];
+          for (std::size_t i = 0; i < rows; ++i) {
+            for (std::size_t j = 0; j < cols; ++j) {
+              to[j + i * cols] = from[i + j * rows];
             }
           }
         }
