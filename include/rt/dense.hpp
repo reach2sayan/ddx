@@ -142,7 +142,11 @@ private:
                                  : t.a;
                     }) |
                     impl::to<boost::container::small_vector<NodeId, 4>>();
-    if (d != no_node || matrices.empty()) {
+    // The block is an output row; a table's MatRow has none (interpret.hpp
+    // reads it in place), so a block that would be one alone gets a diagonal
+    // to add it to.
+    if (d != no_node || matrices.size() != 1 ||
+        b_.op_of(matrices.front()) == OpCode::MatRow) {
       matrices.push_back(b_.make(OpCode::Diag, d == no_node ? zeros() : d));
     }
     return std::ranges::fold_left(

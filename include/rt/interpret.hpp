@@ -170,8 +170,17 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
       return std::pair{t.vtape + std::size_t{t.tensor_rows[u].at} * W,
                        std::size_t{t.tensor_rows[u].width}};
     };
+    // A table's MatRow is the table, read in place rather than copied out
+    // per sweep; only its transpose is a row of its own.
+    const auto table = [&b](NodeId u) {
+      return b.op_of(u) == OpCode::MatRow && !is_transposed(b[u]) &&
+             b.op_of(b[u].a) == OpCode::MatConst;
+    };
     // Lane k of node u, as the kernels read it.
-    const auto in = [&row](NodeId u, std::size_t k) {
+    const auto in = [&](NodeId u, std::size_t k) {
+      if (table(u)) {
+        return std::span<const U>{b.tensors()[index_of(b[b[u].a])].data};
+      }
       const auto [base, w] = row(u);
       return std::span<const U>{base + k * w, w};
     };
@@ -242,23 +251,21 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
       break;
     // The matrix rows.  Shapes come off the arena, as the widths do; a
     // matrix is column-major.
-    case OpCode::MatRow: { // a table's copy, or a computed matrix transposed
-      const bool table = b.op_of(n.a) == OpCode::MatConst;
-      const Shape to_shape = shape_of(b, v);
-      const std::size_t rows = is_transposed(n) ? to_shape.cols : to_shape.rows;
-      const std::size_t cols = is_transposed(n) ? to_shape.rows : to_shape.cols;
+    case OpCode::MatRow: { // a table transposed, or a computed matrix
+      if (table(v)) {
+        break; // read in place by in()
+      }
+      // Every other MatRow is a transpose: of the table, or of a row.
+      const Shape to = shape_of(b, v); // cols x rows of the source
       for (std::size_t k = 0; k < W; ++k) {
         const std::span<const U> from =
-            table ? std::span<const U>{b.tensors()[index_of(b[n.a])].data}
-                  : in(n.a, k);
-        const auto to = mine(k);
-        if (!is_transposed(n)) {
-          std::ranges::copy(from, to.begin());
-        } else {
-          for (std::size_t i = 0; i < rows; ++i) {
-            for (std::size_t j = 0; j < cols; ++j) {
-              to[j + i * cols] = from[i + j * rows];
-            }
+            b.op_of(n.a) == OpCode::MatConst
+                ? std::span<const U>{b.tensors()[index_of(b[n.a])].data}
+                : in(n.a, k);
+        const auto dst = mine(k);
+        for (std::size_t i = 0; i < to.cols; ++i) {
+          for (std::size_t j = 0; j < to.rows; ++j) {
+            dst[j + i * to.rows] = from[i + j * to.cols];
           }
         }
       }
