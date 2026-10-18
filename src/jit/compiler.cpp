@@ -690,8 +690,9 @@ struct Compiler::Impl {
     // kernel table, and uses_kernel() says so.
     if (g.has_tensors()) {
       return std::unexpected{compile_error{
-          errc::tensor_kernel,
-          "tensor nodes run on the sweep; no kernel is built for them"}};
+          .code = errc::tensor_kernel,
+          .detail =
+              "tensor nodes run on the sweep; no kernel is built for them"}};
     }
     Host host = host_of(self);
     const bool caching = !opt.cache_dir.empty();

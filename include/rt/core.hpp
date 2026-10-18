@@ -257,13 +257,15 @@ struct Sweeps {
 
 // What a thread sweeps into, per scalar type: kept between calls, since two
 // threads may be inside one equation at once and resize() on a kept vector
-// allocates only when a sweep outgrows the last.  One set per call site, so an
-// extern that calls another equation from inside a sweep never shares the
-// tape it is being read from.  release_tapes() gives them back.
+// allocates only when a sweep outgrows the last.  One set per call site.
+// release_tapes() gives them back.
 template <impl::Numeric T> struct ThreadTapes {
   std::vector<T> values;          // a system's hessian() at a point
   std::vector<T> at, tape, vtape; // a batch, one point at a time
   std::vector<T> lanes, lane_tape, lane_vtape; // a batch, block_lanes at once
+  // A point call's output addresses: a dense block is n^2 of them, and a fresh
+  // array that size is a page fault per page on every call.
+  std::vector<T *> addresses;
 };
 template <impl::Numeric T> inline thread_local ThreadTapes<T> thread_tapes;
 
@@ -459,18 +461,10 @@ public:
   [[nodiscard]] result<std::vector<T>>
   dense_hessian(const rt::detail::CPointArg<T> auto &...args) const {
     return orders(Want::DenseHessian).and_then([&] {
-      return at<Want::DenseHessian>({}, args...)
-          .transform([this](const auto &b) {
-            // The block is column-major, H(i, j) at i + j n.
-            const std::size_t n = symbol_count();
-            std::vector<T> out(n * n);
-            for (std::size_t i = 0; i < n; ++i) {
-              for (std::size_t j = 0; j < n; ++j) {
-                out[i * n + j] = b.hessian[i + j * n];
-              }
-            }
-            return out;
-          });
+      // gather() lays the block out row-major as it scatters it.
+      return at<Want::DenseHessian>({}, args...).transform([](auto b) {
+        return std::move(b.hessian);
+      });
     });
   }
   // How many terms the sweep kept quadratic, and how many fell back to a dense
@@ -1291,7 +1285,6 @@ private:
     return boost::container::small_vector<U *, 32>(addresses.begin(),
                                                    addresses.end());
   }
-
   // One point through the batch path at n = 1, not the arena walk, so the
   // batch gate is the point gate.  Constant evaluation keeps it, having no
   // pipeline and nothing to refuse.
@@ -1312,13 +1305,27 @@ private:
                                               std::span<T> h) const {
     if !consteval {
       const auto xs = single_columns(at);
-      const auto fs = single_columns(f);
-      const auto gs = single_columns(g);
-      const auto hs = single_columns(h);
+      std::vector<T *> &out = thread_tapes<T>.addresses;
+      out.clear();
+      const auto address = [](T &v) { return std::addressof(v); };
+      impl::append(out, f | std::views::transform(address));
+      impl::append(out, g | std::views::transform(address));
+      if (want == Want::DenseHessian) {
+        // The block is column-major, H(i, j) at i + j n; pointed at row-major
+        // (i, j), the scatter is the transpose.
+        const std::size_t n = symbol_count();
+        impl::append(out, std::views::iota(0uz, h.size()) |
+                              std::views::transform([h, n](std::size_t e) {
+                                return std::addressof(h[(e % n) * n + e / n]);
+                              }));
+      } else {
+        impl::append(out, h | std::views::transform(address));
+      }
+      const std::span<T *const> all{out};
       return dispatch_in(*pipelines, cells, want, as_columns(xs),
-                         {.values = as_columns(fs),
-                          .jacobian = as_columns(gs),
-                          .hessian = as_columns(hs)},
+                         {.values = all.first(f.size()),
+                          .jacobian = all.subspan(f.size(), g.size()),
+                          .hessian = all.last(h.size())},
                          1);
     }
     auto wanted = roots_;

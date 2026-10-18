@@ -1058,7 +1058,7 @@ TEST(RtMatrix, BatchesAndThreadsAreBitIdentical) {
     EXPECT_EQ(
         std::views::iota(0uz, width) |
             std::views::transform([&](std::size_t i) { return g[i][p]; }) |
-            std::ranges::to<std::vector<double>>(),
+            ddx::impl::to<std::vector<double>>(),
         *eq.gradient(std::span<const double>{at}))
         << p;
   }
@@ -1088,7 +1088,7 @@ namespace {
 // and how many of the row-by-row nodes it holds.
 struct Census {
   std::size_t elements = 0;
-  std::size_t row_reads = 0; // RowOf and StackRows
+  std::size_t row_reads = 0; // RowOf: a row read back out of a matrix
 };
 Census census(const ddx::rt::Builder<> &b, const ddx::rt::DenseHessian &h) {
   const auto block = ddx::rt::detail::reachable(b, std::span{&h.block, 1});
@@ -1096,12 +1096,15 @@ Census census(const ddx::rt::Builder<> &b, const ddx::rt::DenseHessian &h) {
   Census c;
   for (const ddx::rt::NodeId v : ddx::rt::detail::live_ids(block)) {
     const auto op = b.op_of(v);
-    if (gradient[v] || !ddx::rt::tensor_valued(op)) {
+    // A table's MatRow is read in place, never written.
+    const bool in_place = op == ddx::rt::OpCode::MatRow &&
+                          b.op_of(b[v].a) == ddx::rt::OpCode::MatConst &&
+                          !ddx::rt::detail::is_transposed(b[v]);
+    if (gradient[v] || !ddx::rt::tensor_valued(op) || in_place) {
       continue;
     }
     c.elements += ddx::rt::width_of(b, v);
-    c.row_reads +=
-        op == ddx::rt::OpCode::RowOf || op == ddx::rt::OpCode::StackRows;
+    c.row_reads += op == ddx::rt::OpCode::RowOf;
   }
   return c;
 }
@@ -1110,8 +1113,9 @@ Census census(const ddx::rt::Builder<> &b, const ddx::rt::DenseHessian &h) {
 // The gradient of a vector model is the Pack's adjoint read element by
 // element, so the block is that vector's tangent summed as matrices: no row is
 // read back.  Stacking the partials' rows wrote 18.2 n^2 here, 2 n^2 of it
-// strided; the sum writes 12.2 n^2 -- the Dense terms (5), the outer products
-// (3), one add per further term (4).
+// strided; the sum writes 7.3 n^2 -- the Dense terms (4: C read in place, C^T
+// copied), the outer products as one low-rank product (1), one add per
+// further matrix (2).
 TEST(RtTensorDense, TheBlockIsSummedNotStacked) {
   constexpr std::size_t n = 200;
   ddx::rt::Builder<> b;
@@ -1124,7 +1128,8 @@ TEST(RtTensorDense, TheBlockIsSummedNotStacked) {
   std::printf("[ ddx ] dense block, Debye-Hueckel + double sum, n = %zu: "
               "%.2f n^2 elements written\n",
               n, static_cast<double>(c.elements) / (n * n));
-  EXPECT_LE(c.elements, 13 * n * n);
+  EXPECT_LE(c.elements, 8 * n * n);
+  EXPECT_NE(b.op_of(h.block), ddx::rt::OpCode::StackRows);
 
   // A scalar model's partials are no vector's elements: rows, stacked.
   ddx::rt::Builder<> scalar;
@@ -1132,11 +1137,11 @@ TEST(RtTensorDense, TheBlockIsSummedNotStacked) {
                  std::views::transform([&](std::size_t i) {
                    return ddx::rt::var(scalar, std::format("x[{}]", i));
                  }) |
-                 std::ranges::to<std::vector<RE>>();
+                 ddx::impl::to<std::vector<RE>>();
   const RE g = models::mse(x);
   ASSERT_FALSE(g.poisoned());
   const auto hs = ddx::rt::derive_dense_hessian(scalar, g.id(scalar));
-  EXPECT_GT(census(scalar, hs).row_reads, 0u);
+  EXPECT_EQ(scalar.op_of(hs.block), ddx::rt::OpCode::StackRows);
 }
 
 // exp(T B) is a few nodes whatever n is, and its gradient stays O(n): the

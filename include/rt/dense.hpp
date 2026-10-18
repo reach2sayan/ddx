@@ -124,29 +124,45 @@ private:
     return in_order ? std::optional{source} : std::nullopt;
   }
   // A tangent as one n x n matrix row: the diagonal terms summed as a vector
-  // first, then every matrix written once, contiguously, where reading a term
-  // back by rows is a strided pass per row.
+  // and the outer products as one low-rank product, then every matrix written
+  // once, contiguously, where reading a term back by rows is a strided pass
+  // per row.
   [[nodiscard]] NodeId summed(const Terms &ts) {
-    const auto diagonal = [](const Term &t) {
-      return t.kind == Term::Kind::Identity || t.kind == Term::Kind::Diag;
+    const auto of = [&ts](auto... kinds) {
+      return ts | std::views::filter([=](const Term &t) {
+               return ((t.kind == kinds) || ...);
+             });
     };
     const NodeId d = std::ranges::fold_left(
-        ts | std::views::filter(diagonal), no_node,
+        of(Term::Kind::Identity, Term::Kind::Diag), no_node,
         [this](NodeId r, const Term &t) {
           return add(r, t.kind == Term::Kind::Identity ? ones() : t.a);
         });
-    auto matrices = ts | std::views::filter(std::not_fn(diagonal)) |
-                    std::views::transform([this](const Term &t) {
-                      return t.kind == Term::Kind::Outer
-                                 ? b_.make(OpCode::Outer, t.a, t.b)
-                                 : t.a;
-                    }) |
-                    impl::to<boost::container::small_vector<NodeId, 4>>();
+    using Ids = boost::container::small_vector<NodeId, 4>;
+    auto matrices = of(Term::Kind::Dense) | std::views::transform(&Term::a) |
+                    impl::to<Ids>();
+    // sum_k u_k g_k^T is U G^T: an n x K by K x n product, written once, where
+    // K outer products would each be written and then added.
+    const auto outers = of(Term::Kind::Outer) | impl::to<Terms>();
+    if (outers.size() == 1) {
+      matrices.push_back(
+          b_.make(OpCode::Outer, outers.front().a, outers.front().b));
+    } else if (outers.size() > 1) {
+      const auto rows = [&](NodeId Term::*side) {
+        return b_.pack(outers | std::views::transform(side) | impl::to<Ids>(),
+                       OpCode::StackRows);
+      };
+      matrices.push_back(
+          b_.make(OpCode::MatMul,
+                  b_.make(OpCode::MatRow, rows(&Term::a), no_node, no_node, 1),
+                  rows(&Term::b)));
+    }
     // The block is an output row; a table's MatRow has none (interpret.hpp
     // reads it in place), so a block that would be one alone gets a diagonal
     // to add it to.
-    if (d != no_node || matrices.size() != 1 ||
-        b_.op_of(matrices.front()) == OpCode::MatRow) {
+    if (d != no_node || matrices.empty() ||
+        (matrices.size() == 1 &&
+         b_.op_of(matrices.front()) == OpCode::MatRow)) {
       matrices.push_back(b_.make(OpCode::Diag, d == no_node ? zeros() : d));
     }
     return std::ranges::fold_left(
