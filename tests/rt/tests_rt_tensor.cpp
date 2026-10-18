@@ -973,6 +973,140 @@ TEST(RtMatrix, DenseHessianOverATemperatureDependentMatrix) {
   }
 }
 
+// The same M(T) with T a symbol: the block is (n + 1) x (n + 1), and its x
+// block is the one T held fixed gives.
+TEST(RtMatrix, DenseHessianOverAMatrixThatMovesWithTemperature) {
+  for (const std::size_t n : {4uz, 20uz, 50uz, 100uz}) {
+    SCOPED_TRACE(n);
+    const auto b1 = pair_table(n, 6, -1.0, 1.0);
+    const auto b2 = pair_table(n, 7, -50.0, 50.0);
+    const auto b5 = pair_table(n, 8, -0.3, 0.3);
+    const auto b6 = pair_table(n, 9, -0.01, 0.01);
+    const auto model = [&](const RE &T) {
+      const RV x = ddx::rt::vec("x", n);
+      const auto M = ddx::rt::mat_constant(n, n, b1) +
+                     ddx::rt::mat_constant(n, n, b2) / T +
+                     ddx::rt::mat_constant(n, n, b5) *
+                         exp(T * ddx::rt::mat_constant(n, n, b6));
+      return dot(x, gemv(M, x)) + sum(x * log(x)) +
+             sum(log(x) * gemv(M, x, true));
+    };
+    const auto var =
+        ddx::rt::equation([&] { return model(ddx::rt::var("T")); });
+    const auto fixed =
+        ddx::rt::equation([&] { return model(ddx::rt::param("T")); });
+    ASSERT_FALSE(var.poisoned()) << var.status()->code;
+    const auto at = at_temperature(n, 298.15);
+    const auto dense = var.dense_hessian(std::span<const double>{at});
+    ASSERT_TRUE(dense.has_value()) << dense.error().code;
+    expect_close(*var.hessian(std::span<const double>{at}), *dense, 1e-10,
+                 "dense vs coloured");
+    EXPECT_EQ(var.dense_hessian_cost()->n3_terms, 0u);
+
+    auto point = composition(n);
+    point.push_back(298.15);
+    const auto x_block = *fixed.dense_hessian(std::span<const double>{point});
+    const std::size_t w = n + 1;
+    const auto from_var =
+        std::views::cartesian_product(std::views::iota(1uz, w),
+                                      std::views::iota(1uz, w)) |
+        std::views::transform([&](const auto &ij) {
+          const auto [j, i] = ij; // column-major: i fastest
+          return (*dense)[i + j * w];
+        }) |
+        ddx::impl::to<std::vector<double>>();
+    expect_close(x_block, from_var, 1e-12, "x block vs T held");
+  }
+}
+
+// UNIQUAC's residual with T and P symbols: tau = exp(-(A0 + T A1 + P AP) /
+// (R T)), read transposed.
+TEST(RtMatrix, DenseHessianOverAUniquacResidualInTemperatureAndPressure) {
+  constexpr std::size_t n = 15;
+  constexpr double R = 8.314;
+  const auto a0 = pair_table(n, 13, -200.0, 400.0);
+  const auto a1 = pair_table(n, 14, -1.0, 1.0);
+  const auto ap = pair_table(n, 15, -1e-2, 1e-2);
+  std::vector<double> q(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    q[i] = 1.0 + 0.1 * static_cast<double>(i % 7);
+  }
+  const auto eq = ddx::rt::equation([&] {
+    const RE T = ddx::rt::var("T");
+    const RE P = ddx::rt::var("P");
+    const RV x = ddx::rt::vec("x", n);
+    const auto Q = ddx::rt::vec_constant(q);
+    const RV theta = Q * x / dot(Q, x);
+    const auto tau = exp(-(ddx::rt::mat_constant(n, n, a0) +
+                           T * ddx::rt::mat_constant(n, n, a1) +
+                           P * ddx::rt::mat_constant(n, n, ap)) /
+                         (R * T));
+    return -sum(Q * x * log(gemv(tau, theta, true)));
+  });
+  ASSERT_FALSE(eq.poisoned()) << eq.status()->code;
+  auto at = composition(n);
+  at.insert(at.begin(), {310.0, 2.0});
+  const auto dense = eq.dense_hessian(std::span<const double>{at});
+  ASSERT_TRUE(dense.has_value()) << dense.error().code;
+  expect_close(*eq.hessian(std::span<const double>{at}), *dense, 1e-10,
+               "dense vs coloured");
+  EXPECT_LE(eq.dense_hessian_cost()->n3_terms, 1u);
+}
+
+// A scalar that moves with x and T multiplying the matrix's product.
+TEST(RtMatrix, DenseHessianOverAScaleThatMovesWithBoth) {
+  constexpr std::size_t n = 12;
+  const auto b = pair_table(n, 16, -0.5, 0.5);
+  const auto eq = ddx::rt::equation([&] {
+    const RE T = ddx::rt::var("T");
+    const RV x = ddx::rt::vec("x", n);
+    const RE I = sqrt(sum(x * x));
+    const auto B = exp(T * ddx::rt::mat_constant(n, n, b));
+    return (I / (1.0 + T * I)) * dot(x, gemv(B, x));
+  });
+  ASSERT_FALSE(eq.poisoned()) << eq.status()->code;
+  const auto at = at_temperature(n, 1.1);
+  const auto dense = eq.dense_hessian(std::span<const double>{at});
+  ASSERT_TRUE(dense.has_value()) << dense.error().code;
+  expect_close(*eq.hessian(std::span<const double>{at}), *dense, 1e-10,
+               "dense vs coloured");
+}
+
+// Not only matrices: any vector beside a scalar symbol.  At fixed T the
+// double sum's gemv reads the identity, where a stacked tangent was a MatMul.
+TEST(RtMatrix, DenseHessianOverAVectorBesideAScalar) {
+  constexpr std::size_t n = 30;
+  const auto eq = ddx::rt::equation([] {
+    const RV x = ddx::rt::vec("x", n);
+    const RE T = ddx::rt::var("T");
+    return debye_hueckel_and_double_sum(x) * (1.0 + 0.01 * T) + T * log(T);
+  });
+  ASSERT_FALSE(eq.poisoned()) << eq.status()->code;
+  auto at = composition(n);
+  at.push_back(1.3);
+  const auto dense = eq.dense_hessian(std::span<const double>{at});
+  ASSERT_TRUE(dense.has_value()) << dense.error().code;
+  expect_close(*eq.hessian(std::span<const double>{at}), *dense, 1e-10,
+               "dense vs coloured");
+  EXPECT_EQ(eq.dense_hessian_cost()->n3_terms, 0u);
+}
+
+// Mostly scalars: every symbol is swept, as when none is a vector.
+TEST(RtMatrix, DenseHessianOverMostlyScalars) {
+  const auto eq = ddx::rt::equation([] {
+    const RV x = ddx::rt::vec("x", 2);
+    const RE a = ddx::rt::var("a");
+    const RE b = ddx::rt::var("b");
+    return sum(exp(a * x)) * b + a * a * b;
+  });
+  ASSERT_FALSE(eq.poisoned()) << eq.status()->code;
+  const std::vector<double> at{0.3, 0.7, 1.1, -0.4};
+  const auto dense = eq.dense_hessian(std::span<const double>{at});
+  ASSERT_TRUE(dense.has_value()) << dense.error().code;
+  expect_close(*eq.hessian(std::span<const double>{at}), *dense, 1e-12,
+               "dense vs coloured");
+}
+
 // x inside the exponential: the matrix's tangent is rows x cols x n, so the
 // dense Hessian refuses, and the coloured one and hvp still answer.
 TEST(RtMatrix, DenseHessianRefusesACompositionDependentMatrix) {
@@ -1245,7 +1379,26 @@ TEST(RtMatrix, CostAtAThousandSpecies) {
   const auto t3 = std::chrono::steady_clock::now();
   ASSERT_TRUE(mt.dense_hessian(p).has_value());
   const auto t4 = std::chrono::steady_clock::now();
+
+  const auto mv = ddx::rt::equation([&] {
+    const RE T = ddx::rt::var("T");
+    const RV x = ddx::rt::vec("x", n);
+    const auto M = ddx::rt::mat_constant(n, n, b1) +
+                   ddx::rt::mat_constant(n, n, b2) / T +
+                   ddx::rt::mat_constant(n, n, b5) *
+                       exp(T * ddx::rt::mat_constant(n, n, b6));
+    return dot(x, gemv(M, x)) + sum(x * log(x));
+  });
+  auto tx = at;
+  tx.insert(tx.begin(), 298.15);
+  const std::span<const double> q{tx};
+  ASSERT_TRUE(mv.prepare({ddx::rt::Want::DenseHessian}).has_value());
+  (void)mv.dense_hessian(q);
+  const auto t5 = std::chrono::steady_clock::now();
+  ASSERT_TRUE(mv.dense_hessian(q).has_value());
+  const auto t6 = std::chrono::steady_clock::now();
   std::printf("[ ddx ] n = %zu: Debye-Hueckel + double sum dense_hessian "
-              "%.2f ms; M(T) gradient %.2f ms, dense_hessian %.2f ms\n",
-              n, ms(t0, t1), ms(t2, t3), ms(t3, t4));
+              "%.2f ms; M(T) gradient %.2f ms, dense_hessian %.2f ms; T a "
+              "var, dense_hessian %.2f ms\n",
+              n, ms(t0, t1), ms(t2, t3), ms(t3, t4), ms(t5, t6));
 }
