@@ -16,41 +16,41 @@
 // table read; a leaf and an extern have no spelling here.
 namespace ddx::rt {
 
-enum class Lower : std::uint8_t { None, Infix, Compare, Call, Special };
-struct Lowering {
-  Lower how = Lower::None;
+enum class Form : std::uint8_t { None, Infix, Compare, Call, Special };
+struct Spelling {
+  Form form = Form::None;
   std::string_view name{};
 };
 
 namespace detail {
-inline constexpr std::array lowering = [] {
-  std::array<Lowering, op_count> t{};
-  const auto set = [&t](OpCode op, Lower how, std::string_view name = {}) {
-    t[std::to_underlying(op)] = {how, name.empty() ? label_of(op) : name};
+inline constexpr std::array spellings = [] {
+  std::array<Spelling, op_count> t{};
+  const auto set = [&t](OpCode op, Form form, std::string_view name = {}) {
+    t[std::to_underlying(op)] = {form, name.empty() ? label_of(op) : name};
   };
   for (const OpCode op : {OpCode::Add, OpCode::Mul, OpCode::Div}) {
-    set(op, Lower::Infix);
+    set(op, Form::Infix);
   }
   for (const OpCode op : {OpCode::Lt, OpCode::Le}) {
-    set(op, Lower::Compare);
+    set(op, Form::Compare);
   }
-  set(OpCode::Abs, Lower::Call, "fabs"); // abs is the integer one in C
+  set(OpCode::Abs, Form::Call, "fabs"); // abs is the integer one in C
   for (const OpCode op : {OpCode::Pow, OpCode::Atan2, OpCode::Hypot}) {
-    set(op, Lower::Call);
+    set(op, Form::Call);
   }
-#define DDX_RT_LOWER(fn, Op, label) set(OpCode::Op, Lower::Call);
-  DDX_UNARY_MATH_TABLE(DDX_RT_LOWER)
-#undef DDX_RT_LOWER
+#define DDX_RT_SPELL(fn, Op, label) set(OpCode::Op, Form::Call);
+  DDX_UNARY_MATH_TABLE(DDX_RT_SPELL)
+#undef DDX_RT_SPELL
   for (const OpCode op :
        {OpCode::Neg, OpCode::Sign, OpCode::Max, OpCode::Min, OpCode::Select}) {
-    set(op, Lower::Special);
+    set(op, Form::Special);
   }
   return t;
 }();
 } // namespace detail
 
-[[nodiscard]] constexpr const Lowering &lowering_of(OpCode op) noexcept {
-  return detail::lowering[std::to_underlying(op)];
+[[nodiscard]] constexpr const Spelling &spelling_of(OpCode op) noexcept {
+  return detail::spellings[std::to_underlying(op)];
 }
 
 // Every operation a backend may meet has a spelling.
@@ -58,7 +58,7 @@ static_assert(std::ranges::all_of(std::views::iota(0uz, op_count),
                                   [](std::size_t i) {
                                     const auto op = static_cast<OpCode>(i);
                                     return !callable(op) ||
-                                           lowering_of(op).how != Lower::None;
+                                           spelling_of(op).form != Form::None;
                                   }));
 
 } // namespace ddx::rt

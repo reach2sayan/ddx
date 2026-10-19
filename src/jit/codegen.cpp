@@ -1,6 +1,6 @@
 #include "codegen.hpp"
 
-#include "rt/lowering.hpp"
+#include "rt/spelling.hpp"
 #include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>
@@ -38,13 +38,13 @@ llvm::Intrinsic::ID intrinsic_for(rt::OpCode op) {
   static const std::array<llvm::Intrinsic::ID, rt::op_count> table = [] {
     std::array<llvm::Intrinsic::ID, rt::op_count> t{};
     for (const auto i : std::views::iota(0uz, rt::op_count)) {
-      const auto &[how, name] = rt::lowering_of(static_cast<rt::OpCode>(i));
+      const auto &[form, name] = rt::spelling_of(static_cast<rt::OpCode>(i));
       llvm::SmallString<32> spelled{"llvm."};
       spelled += name;
       // Not pow: the library-call simplifier rewrites llvm.pow with a constant
       // operand -- 1/x for -1, sqrt for 0.5 -- and libm's pow is not
       // correctly rounded, so the kernel would leave the sweep by an ulp.
-      t[i] = how == rt::Lower::Call && i != std::to_underlying(rt::OpCode::Pow)
+      t[i] = form == rt::Form::Call && i != std::to_underlying(rt::OpCode::Pow)
                  ? llvm::Intrinsic::lookupIntrinsicID(spelled)
                  : llvm::Intrinsic::not_intrinsic;
     }
@@ -134,7 +134,7 @@ public:
   }
 
   llvm::Value *unary(rt::OpCode op, llvm::Value *u) const {
-    if (rt::lowering_of(op).how == rt::Lower::Call) {
+    if (rt::spelling_of(op).form == rt::Form::Call) {
       return call(op, {u});
     }
     if (op == rt::OpCode::Neg) {
@@ -157,25 +157,25 @@ public:
   }
 
   llvm::Value *binary(rt::OpCode op, llvm::Value *l, llvm::Value *r) const {
-    switch (rt::lowering_of(op).how) {
-    case rt::Lower::Infix:
+    switch (rt::spelling_of(op).form) {
+    case rt::Form::Infix:
       return op == rt::OpCode::Add   ? b_.CreateFAdd(l, r)
              : op == rt::OpCode::Mul ? b_.CreateFMul(l, r)
                                      : b_.CreateFDiv(l, r);
     // 1.0 or 0.0 in the lane type, as compare_impl computes.  Ordered, so a
     // NaN operand compares false.
-    case rt::Lower::Compare:
+    case rt::Form::Compare:
       return b_.CreateUIToFP(b_.CreateFCmp(op == rt::OpCode::Lt
                                                ? llvm::CmpInst::FCMP_OLT
                                                : llvm::CmpInst::FCMP_OLE,
                                            l, r),
                              lanes_.ty);
-    case rt::Lower::Call:
+    case rt::Form::Call:
       return call(op, {l, r});
     // Max and Min: the NaN-propagating pair the interpreter matches, where
     // maxnum/minnum are not.
-    case rt::Lower::Special:
-    case rt::Lower::None:
+    case rt::Form::Special:
+    case rt::Form::None:
       return b_.CreateBinaryIntrinsic(op == rt::OpCode::Max
                                           ? llvm::Intrinsic::maximum
                                           : llvm::Intrinsic::minimum,

@@ -665,6 +665,36 @@ void expect_dense_matches_coloured(const auto &eq, std::span<const double> at,
 }
 } // namespace
 
+// A select over tensors picks the arm taken, by element under a vector
+// condition and whole under a scalar one, so where the other arm is infinite
+// -- log at 0 -- no derivative reads 0 * inf.
+TEST(RtTensor, SelectOverTensorsPicksTheArmTaken) {
+  const std::vector<double> at{0.0, 0.3, 0.5, 0.2};
+  const auto want = ddx::rt::equation([] {
+    const auto x = symbols(4);
+    RE acc{0};
+    for (const auto &e : x) {
+      acc += select(e > 0.0, e * log(e), RE{0.0}) +
+             select(x[0] > 0.1, log(e), e * e);
+    }
+    return acc;
+  });
+  const auto got = ddx::rt::equation([] {
+    const RV x = ddx::rt::vec("x", 4);
+    return sum(select(x > 0.0, x * log(x), RE{0.0})) +
+           sum(select(x[0] > 0.1, log(x), x * x));
+  });
+  expect_same_derivatives(want, got, at);
+  expect_dense_matches_coloured(got, at, 1e-12);
+  EXPECT_EQ((*got.gradient(at))[0], 0.0);
+
+  const auto mismatched = ddx::rt::equation([] {
+    const RV x = ddx::rt::vec("x", 3);
+    return sum(select(ddx::rt::vec("c", 2), x, x));
+  });
+  EXPECT_EQ(mismatched.status()->code, ddx::errc::tensor_shape);
+}
+
 TEST(RtTensorDense, MatchesTheColouredHessianOnTheVectorModel) {
   for (const std::size_t n : {5uz, 20uz, 50uz}) {
     const auto eq = tensor_mse(n);
@@ -819,6 +849,62 @@ void expect_same_with_temperature(const auto &want, const auto &got,
                "jacobian_jvp along T");
 }
 } // namespace
+
+// select over every pairing of shapes: a scalar choosing a whole matrix, a
+// matrix condition choosing element by element, and a scalar arm -- a literal
+// or a node -- spread to the other's shape.
+TEST(RtMatrix, SelectAcrossShapes) {
+  constexpr std::size_t n = 4;
+  const auto b1 = pair_table(n, 0, -0.5, 0.5);
+  const auto b2 = pair_table(n, 3, 0.2, 1.1);
+  const auto want = ddx::rt::equation([&] {
+    const RE T = ddx::rt::var("T");
+    const auto x = symbols(n);
+    RE acc{0};
+    for (std::size_t i = 0; i < n; ++i) {
+      for (std::size_t j = 0; j < n; ++j) {
+        const double p = b1[i + j * n];
+        const RE m = select(T > 1.0, exp(T * p), T * b2[i + j * n]);
+        const RE e = p > 0.0 ? exp(T * p) : RE{0.0};
+        acc += x[i] * (m + e) * x[j];
+      }
+      acc += select(x[i] > 0.25, x[i], T) * log(x[i]);
+    }
+    return acc;
+  });
+  const auto got = ddx::rt::equation([&] {
+    const RE T = ddx::rt::var("T");
+    const RV x = ddx::rt::vec("x", n);
+    const auto B1 = ddx::rt::mat_constant(n, n, b1);
+    const auto B2 = ddx::rt::mat_constant(n, n, b2);
+    const auto M = select(T > 1.0, exp(T * B1), T * B2);
+    const auto E = select(B1 > 0.0, exp(T * B1), RE{0.0});
+    return x % (M % x) + x % (E % x) + sum(select(x > 0.25, x, T) * log(x));
+  });
+  for (const double T : {1.3, 0.7}) {
+    expect_same_with_temperature(want, got, at_temperature(n, T));
+  }
+
+  const auto refused = [](auto model) {
+    return ddx::rt::equation(model).status()->code;
+  };
+  EXPECT_EQ(refused([] {
+              const RV x = ddx::rt::vec("x", n);
+              const auto B = ddx::rt::mat_constant(n, n, pair_table(n, 0, 0, 1));
+              return x % (select(x > 0.5, exp(B * x[0]), B) % x);
+            }),
+            ddx::errc::tensor_shape); // a vector condition, matrix arms
+  EXPECT_EQ(refused([] {
+              const RV x = ddx::rt::vec("x", n);
+              const auto B = ddx::rt::mat_constant(n, n, pair_table(n, 0, 0, 1));
+              return sum(select(x[0] > 0.5, exp(B * x[0]), x));
+            }),
+            ddx::errc::tensor_shape); // arms of two shapes
+
+  ddx::rt::Builder<> b;
+  const RV x = ddx::rt::vec(b, "x", 3);
+  EXPECT_EQ(select(RE{1.0}, x, x * x).id(), x.id()); // folded as a scalar's is
+}
 
 TEST(RtMatrix, ExpOfTemperatureTimesATableMatchesTheScalarGraph) {
   for (const std::size_t n : {5uz, 20uz, 50uz}) {

@@ -355,6 +355,23 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
       }
       break;
     }
+    case OpCode::Select: { // copied, so the arm not taken never meets a 0
+      const auto chosen = [](U c) { return c != U{0}; }; // as select_impl
+      for (std::size_t k = 0; k < W; ++k) {
+        const auto on = in(n.b, k);
+        const auto off = in(n.c, k);
+        const auto to = mine(k);
+        if (!is_tensor(b[n.a])) {
+          std::ranges::copy(chosen(lane(t.row(n.a))[k]) ? on : off, to.begin());
+          continue;
+        }
+        const auto c = in(n.a, k);
+        for (std::size_t j = 0; j < to.size(); ++j) {
+          to[j] = chosen(c[j]) ? on[j] : off[j];
+        }
+      }
+      break;
+    }
     case OpCode::MatConst: // a table a Gemv reads in place
       break;
     default:
@@ -403,14 +420,11 @@ template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_ALWAYS_INLINE constexpr void
 lanes_opaque(const Builder<T> &b, NodeId v, const Node<T> &n, bool fused,
              U *out, auto &&lane, const TapeView<U> &t) {
-  switch (kind_of(n.op)) {
-  case Kind::Tensor:
+  if (kind_of(n.op) == Kind::Tensor || is_tensor(n)) { // a Select's too
     lanes_tensor<W>(b, v, n, out, lane, t);
-    break;
-  case Kind::Nary:
+  } else if (kind_of(n.op) == Kind::Nary) {
     lanes_sum<W>(b, v, fused, out, lane, t);
-    break;
-  default:
+  } else {
     lanes_extern<W>(b, v, out, lane, t);
   }
 }
@@ -429,6 +443,8 @@ lanes_apply(const Builder<T> &b, NodeId i, const Node<T> &n,
     using Fn = typename R::functor;
     if constexpr (std::is_void_v<Fn>) {
       return true;
+    } else if (std::same_as<Fn, impl::detail::select_impl> && is_tensor(n)) {
+      return true; // a Select over tensor rows: the tensor arm's
     } else {
       // The arities the tables spell.  A `std::unreachable()` in a trailing
       // `else` would leave the `return false` below it unreachable on the

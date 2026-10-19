@@ -190,7 +190,10 @@ template <impl::Numeric T>
 // is a runtime zero, and 0 * f'(u) is NaN wherever f' is infinite -- log or
 // sqrt at 0 -- so every contribution out of a guarded node is itself chosen by
 // the guard.  Guards are selects, read as select_impl reads a condition, and an
-// unguarded graph builds exactly the nodes it did without them.
+// unguarded graph builds exactly the nodes it did without them.  Below a Select
+// over a tensor condition the guard is a tensor too: it guards children of
+// its own shape and, through a Pack, each element its own; past an op that
+// mixes elements it guards nothing.
 //
 // `ift` false holds every implicit fixed and only harvests df/dz; true -- the
 // default -- folds dz/dx in at the end, adj[z] * dz/dx_s into each symbol.
@@ -215,9 +218,13 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
   };
 
   // A contribution under its guard, as a node of the child's width: a
-  // select, which over a vector is a Scale by the chosen 1 or 0.
+  // select, which over a tensor copies the chosen row.
   const auto guarded = [&](NodeId child, NodeId g, const Expression<T> &c) {
     return both(g, c).id(b, shape_of(b, child));
+  };
+  const auto fits = [&b](NodeId g, NodeId child) {
+    return g == no_node || !detail::is_tensor(b[g]) ||
+           shape_of(b, g) == shape_of(b, child);
   };
 
   // `g` is the edge's guard; a child reached by an unguarded edge is always
@@ -225,6 +232,7 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
   // handle's `+` is the sum: a Zip(add) where the child is a vector.
   const auto add_to = [&](NodeId child, NodeId g,
                           const Expression<T> &contribution) {
+    g = fits(g, child) ? g : no_node;
     const NodeId c = guarded(child, g, contribution);
     // What sign(), and so abs(), hands back.  Storing it would mark the child
     // live and carry a zero adjoint down its whole cone.
@@ -296,8 +304,10 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
         break;
       case OpCode::Pack: {
         const auto args = arguments(b, v);
+        const bool each = g != no_node && detail::is_tensor(b[g]);
         for (const auto [i, s] : args | std::views::enumerate) {
-          add_to(s, g, a[static_cast<std::size_t>(i)]);
+          const auto at = static_cast<std::size_t>(i);
+          add_to(s, each ? expr(g)[at].id(b) : g, a[at]);
         }
         break;
       }

@@ -122,7 +122,8 @@ def quad():
 | `u @ v`, `M @ v`, `transpose(M) @ v` | `dot(u, v)`, `gemv(M, v)`, `gemv(M, v, transposed=True)` |
 
 Arithmetic and the unary functions apply elementwise, and a scalar or a bare
-number broadcasts. `len(v)` and `v.shape` give the shape and `v[i]` an element.
+number broadcasts. `select` takes a whole vector under a scalar condition and
+element by element under a vector one. `len(v)` and `v.shape` give the shape and `v[i]` an element.
 Shapes are checked where an expression is formed: a mismatch, or an index past
 the end, raises `errc.tensor_shape`. An output is always a scalar: a model
 that returns a vector raises `errc.tensor_shape` too, so reduce it or return

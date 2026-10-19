@@ -81,6 +81,18 @@ def test_matmul_refuses_what_the_calls_refuse(product) -> None:  # noqa: ANN001
     assert refused.value.code == ddx.errc.tensor_shape
 
 
+def test_select_over_a_vector_picks_the_arm_taken() -> None:
+    def model() -> ddx.Expression:
+        x = ddx.vec("x", 3)
+        return ddx.sum(ddx.select(x > 0.0, x * ddx.log(x), 0.0))
+
+    eq = ddx.equation(model)
+    at = [0.0, 0.5, 2.0]
+    grad = eq.gradient(at)
+    assert grad[0] == 0.0
+    np.testing.assert_allclose(grad[1:], [math.log(v) + 1.0 for v in at[1:]], rtol=1e-14)
+
+
 def test_a_vector_knows_its_length_and_elements() -> None:
     def model() -> ddx.Expression:
         v = ddx.vec("v", 3)

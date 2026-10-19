@@ -203,7 +203,7 @@ public:
     // column per element.
     const auto columns = [&b](std::span<const NodeId> ids) {
       return std::ranges::fold_left(ids, 0uz, [&b](std::size_t n, NodeId v) {
-        return n + (tensor_valued(b.op_of(v)) ? width_of(b, v) : 1uz);
+        return n + (detail::is_tensor(b[v]) ? width_of(b, v) : 1uz);
       });
     };
     g.counts_ = {.values = blocks.values.size(),
@@ -243,7 +243,8 @@ public:
             std::max(g.inputs_.directions,
                      std::size_t{detail::index_of(g.properties_[v])} + 1);
       }
-      g.has_tensors_ |= kind_of(g.properties_[v].op) == Kind::Tensor;
+      g.has_tensors_ |= kind_of(g.properties_[v].op) == Kind::Tensor ||
+                        detail::is_tensor(g.properties_[v]);
     }
     // The tape packed by liveness, scalar rows and tensor rows alike; off the
     // arena, which holds the tensor table the widths come from.
@@ -252,7 +253,7 @@ public:
     g.tape_rows_ = packed.rows;
     g.tensors_ = detail::tensor_layout(b, g.schedule_, g.outputs_);
     g.output_rows_ = g.outputs_ | std::views::transform([&g, &b](NodeId o) {
-                       return tensor_valued(b.op_of(o))
+                       return detail::is_tensor(b[o])
                                   ? g.tensors_.rows[o]
                                   : TensorRow{.at = g.rows_[o]};
                      }) |

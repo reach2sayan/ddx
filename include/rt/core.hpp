@@ -763,7 +763,7 @@ protected:
     if (const auto why = unclosed(*arena_)) {
       poison(error{*why});
     } else if (std::ranges::any_of(roots_, [this](NodeId r) {
-                 return tensor_valued(arena_->op_of(r));
+                 return detail::is_tensor((*arena_)[r]);
                })) {
       poison(error{errc::tensor_shape});
     } else {
@@ -1409,7 +1409,7 @@ private:
       // No kernel is lowered over tensor rows, so no rebalanced copy either.
       if (!rebalanceable(want) || setting().compiler == nullptr ||
           std::ranges::any_of(arena_->nodes(), [](const Node<T> &n) {
-            return kind_of(n.op) == Kind::Tensor;
+            return kind_of(n.op) == Kind::Tensor || detail::is_tensor(n);
           })) {
         return false;
       }

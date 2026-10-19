@@ -104,7 +104,11 @@ evaluates each implicit's `F`; ddx never solves it.
 Vectors are elementwise under every operation, with `sum`, `dot` and
 `gemv(M, v, transposed = false)`, and `%` spells both: `u % v` is `dot(u, v)`,
 `M % v` is `gemv(M, v)` and `rt::transpose(M) % v` is `gemv(M, v, true)`,
-bit for bit (`@` in Python). `v[i]` reads one element. They compute at
+bit for bit (`@` in Python). `v[i]` reads one element. `select` over vectors
+and matrices takes the whole arm under a scalar condition and element by
+element under a condition of the arms' shape, a scalar arm taking the other's
+shape; the arm not taken never reaches a derivative, even where it is
+infinite. They compute at
 `double`, are never an output, and are computed by a kernel table —
 `rt::use_tensor_kernels(table)` or `eq.tensor_kernels(table)`, built with
 `rt::tensor_kernel_table<K>()` over a type satisfying `rt::TensorKernels`;

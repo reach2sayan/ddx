@@ -65,7 +65,9 @@ namespace ddx::rt {
   X(lt, Lt, "<", impl::detail::lt_impl)                                        \
   X(le, Le, "<=", impl::detail::le_impl)
 
-// The one ternary: `c != 0 ? t : f`, both arms evaluated.
+// The one ternary: `c != 0 ? t : f`, both arms evaluated.  Over tensors too
+// -- aux = 1, the arms of one shape and the condition a scalar or of theirs --
+// where the arm taken is copied, never scaled by 1 or 0.
 #define DDX_RT_TERNARY_TABLE(X)                                                \
   X(select, Select, "select", impl::detail::select_impl)
 
@@ -302,9 +304,10 @@ static_assert(std::ranges::all_of(std::views::iota(0uz, op_count), [](auto i) {
 [[nodiscard]] constexpr bool callable(OpCode op) noexcept {
   return !is_leaf(op) && !has_list(op) && kind_of(op) != Kind::Tensor;
 }
-// Whether a node's value is a vector row rather than a scalar: the tensor ops
+// Whether an op's value is a vector row rather than a scalar: the tensor ops
 // that read vectors into a scalar -- Gather, Sum, Dot -- are not, and MatConst
-// is a table a Gemv reads, not a row anything sweeps.
+// is a table a Gemv reads, not a row anything sweeps.  A Select is either; ask
+// the node (rt/builder.hpp).
 [[nodiscard]] constexpr bool tensor_valued(OpCode op) noexcept {
   return kind_of(op) == Kind::Tensor && op != OpCode::Gather &&
          op != OpCode::Sum && op != OpCode::Dot && op != OpCode::MatConst;

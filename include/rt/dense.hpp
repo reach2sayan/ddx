@@ -221,8 +221,8 @@ private:
     const auto held = [this](std::uint32_t s) {
       return s < at_ || s >= at_ + n_;
     };
-    // E m: m's rows at at_, zero rows elsewhere.
-    const auto embedded = [&](NodeId m) {
+    // m's rows at at_ of `all`, zero rows around them.
+    const auto spread_rows = [&](NodeId m) {
       const NodeId zero = b_.zeros({shape_of(b_, m).cols});
       return b_.pack(std::views::iota(0u, all) |
                          std::views::transform([&](std::uint32_t s) {
@@ -236,8 +236,14 @@ private:
     const auto transposed = [this](NodeId m) {
       return b_.make(OpCode::MatRow, m, no_node, no_node, 1);
     };
-    Terms ts{{.kind = Term::Kind::Dense,
-              .a = embedded(transposed(embedded(transposed(swept))))}};
+    // The swept block at (at_, at_): its columns spread by way of the
+    // transpose, then its rows.
+    const auto placed = [&](NodeId m) {
+      return spread_rows(transposed(spread_rows(transposed(m))));
+    };
+    Terms ts{{.kind = Term::Kind::Dense, .a = placed(swept)}};
+    // A held symbol's reverse sweep is its row; its column is the same less
+    // the cells on held symbols, which the rows already hold.
     for (const std::uint32_t s :
          std::views::iota(0u, all) | std::views::filter(held)) {
       auto row = build_reverse_jacobian(b_, partials[s]).partial;
@@ -416,7 +422,7 @@ private:
 
   void visit(NodeId v) {
     const Node<T> node = b_[v]; // by value: building below may reallocate
-    if (tensor_valued(node.op)) {
+    if (is_tensor(node)) {
       mat_[v] = matrix_tangent(v, node);
     } else {
       row_[v] = row_tangent(v, node);
@@ -454,10 +460,13 @@ private:
       const auto [dl, dr] = partials(node.op, expr(node.a), expr(node.b));
       return add(scaled(dl, row_[node.a]), scaled(dr, row_[node.b]));
     }
-    case Kind::Ternary: {
-      const E c = expr(node.a);
-      return add(scaled(select(c, E{1}, E{0}), row_[node.b]),
-                 scaled(select(c, E{0}, E{1}), row_[node.c]));
+    case Kind::Ternary: { // picked, so the row not taken is never scaled by 0
+      if (row_[node.b] == no_node && row_[node.c] == no_node) {
+        return no_node;
+      }
+      const auto row = [this](NodeId r) { return vec(r == no_node ? zeros() : r); };
+      return select(expr(node.a), row(row_[node.b]), row(row_[node.c]))
+          .id(b_, {n_});
     }
     case Kind::Tensor:
       switch (node.op) {
@@ -534,6 +543,23 @@ private:
     case OpCode::Outer:
       refused_ = refused_ || !mat_[node.a].empty() || !mat_[node.b].empty();
       break;
+    case OpCode::Select: {
+      if (mat_[node.b].empty() && mat_[node.c].empty()) {
+        break;
+      }
+      // A vector condition spread along each row of the w x n terms.
+      const std::uint32_t w = width_of(b_, v);
+      const auto block = [&](const Terms &ts) {
+        return vec(ts.empty() ? b_.zeros({w, n_}) : summed(ts));
+      };
+      const E c = expr(node.a);
+      const E cond = c.size() ? expr(b_.make(OpCode::Outer, node.a, ones())) : c;
+      ++n2_;
+      out.push_back({.kind = Term::Kind::Dense,
+                     .a = select(cond, block(mat_[node.b]), block(mat_[node.c]))
+                              .id(b_, {w, n_})});
+      break;
+    }
     case OpCode::AddAt:
       out = mat_[node.a];
       if (row_[node.b] != no_node) {

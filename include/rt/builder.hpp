@@ -178,6 +178,11 @@ namespace detail {
   return node.op == OpCode::Map || node.op == OpCode::Zip ? inner_of(node)
                                                           : node.op;
 }
+// Whether a node's value is a vector row rather than a scalar: its op's
+// answer, but for a Select, which is one over tensor arms.
+[[nodiscard]] constexpr bool is_tensor(const auto &node) noexcept {
+  return tensor_valued(node.op) || (node.op == OpCode::Select && node.aux != 0);
+}
 
 // Ids are topological, so one descending pass settles it.  Not a filtered view:
 // the body marks entries the pass has not reached.
@@ -379,6 +384,7 @@ struct Shape {
       break;
     case OpCode::Scale:
     case OpCode::RowScale:
+    case OpCode::Select:
       v = b;
       break;
     default:
@@ -468,7 +474,7 @@ public:
     if (has_list(op) || kind_of(op) == Kind::Tensor) {
       return intern({.op = op, .a = a, .b = b, .c = c, .aux = aux});
     }
-    assert(aux == 0);
+    assert(aux == 0 || op == OpCode::Select);
     // fold() and the commutative swap are both binary questions; a third
     // operand means neither applies, and asking would hand a binary functor
     // three arguments.
@@ -482,7 +488,7 @@ public:
     } else if (const auto chosen = fold_select(a, b, c)) {
       return *chosen;
     }
-    return intern({.op = op, .a = a, .b = b, .c = c});
+    return intern({.op = op, .a = a, .b = b, .c = c, .aux = aux});
   }
 
   // The same node over remapped operands -- or over its remapped list --
@@ -1147,7 +1153,7 @@ tensor_layout(const auto &s, std::span<const Step> schedule,
               std::span<const NodeId> outputs = {}) {
   TensorLayout out;
   if (std::ranges::none_of(schedule, [&s](const Step &step) {
-        return tensor_valued(s.op_of(step.node));
+        return is_tensor(s[step.node]);
       })) {
     return out;
   }
@@ -1156,7 +1162,7 @@ tensor_layout(const auto &s, std::span<const Step> schedule,
   std::vector<TensorRow> free; // (at, width) runs no live row holds
   for (const auto [p, step] : schedule | std::views::enumerate) {
     const auto at = static_cast<std::uint32_t>(p);
-    if (tensor_valued(s.op_of(step.node))) {
+    if (is_tensor(s[step.node])) {
       const std::uint32_t w = width_of(s, step.node);
       const auto fit = std::ranges::find(free, w, &TensorRow::width);
       if (fit == free.end()) {

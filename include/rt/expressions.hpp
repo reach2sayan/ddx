@@ -84,7 +84,7 @@ public:
 
   constexpr Expression(Builder<T> &b, NodeId id) noexcept
       : builder_{&b}, id_{id},
-        shape_{tensor_valued(b.op_of(id)) ? shape_of(b, id) : Shape{0, 0}} {}
+        shape_{detail::is_tensor(b[id]) ? shape_of(b, id) : Shape{0, 0}} {}
 
   [[nodiscard]] constexpr bool pending() const noexcept {
     return builder_ == nullptr;
@@ -192,9 +192,9 @@ public:
                         no_node, std::to_underlying(op))};
   }
 
-  // A select over vector arms is a mask: each arm scaled by the chosen 1 or
-  // 0, an arm that is a literal zero dropped.  A vector condition is the
-  // mask itself, elementwise.
+  // Over tensor arms a Select copies the arm taken, so the one not taken never
+  // meets a 0 -- 0 * inf is NaN where log or sqrt is infinite.  A tensor
+  // condition, of the arms' shape, chooses element by element.
   [[nodiscard]] static constexpr Expression form(OpCode op, const Expression &c,
                                                  const Expression &t,
                                                  const Expression &f) {
@@ -212,20 +212,21 @@ public:
     if (c.size() == 0 && t.size() == 0 && f.size() == 0) {
       return {*b, b->make(op, c.id(*b), t.id(*b), f.id(*b))};
     }
-    const Expression one{1};
-    const Expression zero{0};
-    const Expression on = c.size() ? c : select(c, one, zero);
-    const Expression off = c.size() ? one - c : select(c, zero, one);
-    const auto dead = [](const Expression &arm) {
-      return arm.pending() && arm.lit_ == T{0};
+    const Shape shape = t.size() ? t.shape() : (f.size() ? f.shape() : c.shape());
+    const bool arms_agree =
+        (t.size() == 0 || t.shape() == shape) &&
+        (f.size() == 0 || f.shape() == shape);
+    if (!arms_agree || (c.size() != 0 && c.shape() != shape)) {
+      return poison(errc::tensor_shape);
+    }
+    // A scalar arm spread to the shape: a literal as its row, a node as
+    // s * 1, which is s exactly.
+    const auto arm = [&](const Expression &e) {
+      return e.size() || e.pending()
+                 ? e.id(*b, shape)
+                 : b->make(OpCode::Scale, e.id(*b), b->ones(shape));
     };
-    if (dead(t)) {
-      return off * f;
-    }
-    if (dead(f)) {
-      return on * t;
-    }
-    return on * t + off * f;
+    return {*b, b->make(op, c.id(*b), arm(t), arm(f), 1)};
   }
 
   // Hidden friends: ordinary functions for a given Expression<T>, so `x * 2`

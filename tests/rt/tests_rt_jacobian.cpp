@@ -517,6 +517,10 @@ TEST(RtJacobian, SelectDiscardsTheUnchosenArmsPartials) {
     EXPECT_EQ((*eq->jacobian(0.0))[0], 0.0);
     EXPECT_EQ((*eq->hessian(0.0))[0], 0.0);
     EXPECT_EQ((*eq->hvp("x", 0.0))[0], 0.0);
+    EXPECT_EQ((*eq->jacobian_jvp("x", 0.0))[0], 0.0);
+    const std::array one{1.0};
+    EXPECT_EQ((*eq->jvp(std::span<const double>{one}, 0.0))[0], 0.0);
+    EXPECT_EQ((*eq->vjp(std::span<const double>{one}, 0.0))[0], 0.0);
     EXPECT_EQ((*eq->jacobian(-1.0))[0], 0.0);
   }
   EXPECT_DOUBLE_EQ((*log_arm.jacobian(2.0))[0], 0.5);

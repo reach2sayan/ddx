@@ -3,7 +3,7 @@
 #include "cache.hpp"
 #include "rt/derivative.hpp"
 #include "rt/expressions.hpp"
-#include "rt/lowering.hpp"
+#include "rt/spelling.hpp"
 
 #include <boost/hash2/fnv1a.hpp>
 #include <boost/hash2/hash_append.hpp>
@@ -74,25 +74,25 @@ void init_native_target_once() {
                            (what + ": " + llvm::toString(std::move(e))).str()};
 }
 
-// A Call row of the opcode tables as the runtime symbol its lowering names,
+// A Call row of the opcode tables as the runtime symbol its spelling names,
 // through the functor the row carries; a row spelled any other way defines
 // nothing.  A template, so the other arity's lambda is never formed.
 template <rt::OpCode Op, typename Functor> void define_call(auto &def) {
-  if constexpr (rt::lowering_of(Op).how == rt::Lower::Call) {
+  if constexpr (rt::spelling_of(Op).form == rt::Form::Call) {
     if constexpr (rt::arity_of(Op) == 1) {
       def(
-          rt::lowering_of(Op).name,
+          rt::spelling_of(Op).name,
           +[](double u) noexcept { return double{Functor{}(u)}; });
     } else {
       def(
-          rt::lowering_of(Op).name,
+          rt::spelling_of(Op).name,
           +[](double l, double r) noexcept { return double{Functor{}(l, r)}; });
     }
   }
 }
 
 // What a kernel calls that is not an intrinsic: every Call row of the
-// lowering table, through the functor its opcode row names, and the extern
+// spelling table, through the functor its opcode row names, and the extern
 // trampoline.  Defined outright: GetForCurrentProcess resolves whatever a
 // loaded module exports, which need not be the libm this TU was compiled
 // against.
@@ -115,7 +115,7 @@ template <rt::OpCode Op, typename Functor> void define_call(auto &def) {
 #undef DDX_JIT_RUNTIME
 #define DDX_JIT_RUNTIME(fn, Op, label)                                         \
   def(                                                                         \
-      rt::lowering_of(rt::OpCode::Op).name,                                    \
+      rt::spelling_of(rt::OpCode::Op).name,                                    \
       +[](double u) noexcept { return std::fn(u); });
   DDX_UNARY_MATH_TABLE(DDX_JIT_RUNTIME)
 #undef DDX_JIT_RUNTIME
