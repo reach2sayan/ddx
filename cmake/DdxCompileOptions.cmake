@@ -50,11 +50,6 @@ if (NOT DDX_SANITIZE STREQUAL "off")
     else ()
         add_compile_options(-fsanitize=${DDX_SANITIZE} -fno-omit-frame-pointer -g)
         add_link_options(-fsanitize=${DDX_SANITIZE})
-        # GCC refuses atomic_thread_fence under TSan (-Werror=tsan), and TSan
-        # models no fence anyway; Asio's thread_pool then orders by its mutex.
-        if (DDX_SANITIZE STREQUAL "thread")
-            add_compile_definitions(BOOST_ASIO_DISABLE_FENCED_BLOCK)
-        endif ()
     endif ()
 endif ()
 

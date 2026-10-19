@@ -1,5 +1,5 @@
 """
-ddx's runtime expression graph, LLVM JIT and OpenCL device
+ddx's runtime expression graph and LLVM JIT
 """
 from __future__ import annotations
 import enum
@@ -8,7 +8,7 @@ __all__: list[str] = ['Backend', 'Call', 'Equation', 'Error', 'Expression',
                       'VecLib', 'Want', 'abs', 'acos', 'acosh', 'add', 'asin',
                       'asinh', 'atan', 'atan2', 'atanh', 'cbrt', 'cos',
                       'cosh', 'div', 'equation', 'erf', 'errc', 'exp',
-                      'has_jit', 'has_opencl', 'hypot', 'le', 'OptLevel', 'log', 'log10',
+                      'has_jit', 'hypot', 'le', 'OptLevel', 'log', 'log10',
                       'lt',
                       'max', 'min', 'mul', 'neg', 'pow', 'select', 'sign',
                       'sin', 'sinh', 'sqrt', 'tan', 'tanh', 'var',
@@ -20,7 +20,6 @@ class Backend(enum.IntEnum):
     """
     ADAPT: typing.ClassVar[Backend]  # value = <Backend.ADAPT: 2>
     COMPILE: typing.ClassVar[Backend]  # value = <Backend.COMPILE: 1>
-    DEVICE: typing.ClassVar[Backend]  # value = <Backend.DEVICE: 3>
     INTERPRET: typing.ClassVar[Backend]  # value = <Backend.INTERPRET: 0>
     @classmethod
     def __new__(cls, value): pass
@@ -62,8 +61,6 @@ class Equation:
     def wait_for_kernel(self, *, want: Want = ...) -> bool: pass
     @property
     def arity(self) -> int: pass
-    @property
-    def device_status(self) -> str | None: pass
     @property
     def hessian_colours(self) -> int: pass
     @property
@@ -217,7 +214,6 @@ class _Options:
     backend: Backend
     cache_dir: str
     contract: bool
-    device: str
     loop_vectorize: bool
     slp_vectorize: bool
     time_passes: bool
@@ -279,9 +275,6 @@ class errc(enum.IntEnum):
     bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 23>
     unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 24>
     wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 25>
-    no_device: typing.ClassVar[errc]  # value = <errc.no_device: 26>
-    device_compile: typing.ClassVar[errc]  # value = <errc.device_compile: 27>
-    device_launch: typing.ClassVar[errc]  # value = <errc.device_launch: 28>
     @classmethod
     def __new__(cls, value):
         ...
@@ -390,4 +383,3 @@ def vec_constant(data: typing.Sequence[typing.SupportsFloat]) -> Expression:
     ...
 __version__: str = ...
 has_jit: bool = True
-has_opencl: bool = True

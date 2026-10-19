@@ -141,17 +141,6 @@ public:
     return unwrap(residual(scalars_of(at)));
   }
 
-  // Under Backend.DEVICE the device answering, None under any other backend.
-  // Raises with the reason where no device answers or its compiler refused.
-  [[nodiscard]] std::optional<std::string> device() const {
-    return device_status().transform([](const auto &status) {
-      if (!status) {
-        throw PyError{error{status.error().code}, status.error().detail};
-      }
-      return std::string{*status};
-    });
-  }
-
   // What one call for `want` evaluates: the contracted live order, which is
   // the sweep and what the kernel is lowered from.
   [[nodiscard]] std::size_t nodes(Want want) const {

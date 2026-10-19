@@ -1,7 +1,5 @@
 #pragma once
 
-#include "cl/device.hpp"
-#include "cl/kernel.hpp"
 #include "jit/kernel.hpp"
 #include "rt/graph.hpp"
 #include "rt/kernels.hpp"
@@ -16,12 +14,10 @@
 #include <limits>
 #include <memory>
 #include <mutex> // unique_lock, which <shared_mutex> does not carry
-#include <optional>
 #include <ranges>
 #include <shared_mutex>
 #include <span>
 #include <utility>
-#include <variant>
 
 // One shape of graph per Want, and the compile ladder over it.  An equation
 // keeps an array of these.
@@ -36,110 +32,29 @@ struct Guarded {
   mutable std::shared_mutex mutex;
 };
 
-// The kernel a pipeline publishes, whichever backend built it.  A variant, so
-// the alternative a build may lack is spelled here and nowhere else.
-class AnyKernel {
-public:
-  AnyKernel() = default;
-  explicit AnyKernel(jit::Kernel k) noexcept : held_{std::move(k)} {}
-#ifdef DDX_HAS_OPENCL
-  explicit AnyKernel(cl::Kernel k) noexcept : held_{std::move(k)} {}
-#endif
-
-  // Whether anything but the sweep answers.
-  [[nodiscard]] explicit operator bool() const noexcept {
-    return std::visit(
-        []<typename K>(const K &k) {
-          if constexpr (std::same_as<K, std::monostate>) {
-            return false;
-          } else {
-            return static_cast<bool>(k);
-          }
-        },
-        held_);
-  }
-
-  // Whether the columns were written.  False is the sweep's cue: no kernel, or
-  // a device that could not run this call -- a kernel is never a correctness
-  // dependency.
-  [[nodiscard]] bool operator()(std::span<const double *const> xs,
-                                std::span<double *const> f,
-                                std::span<double *const> g,
-                                std::span<double *const> h,
-                                std::size_t n) const {
-    return std::visit(
-        [&]<typename K>(const K &k) {
-          if constexpr (std::same_as<K, std::monostate>) {
-            return false;
-          } else if constexpr (std::same_as<K, jit::Kernel>) {
-            if (k) {
-              k(xs, f, g, h, n);
-            }
-            return static_cast<bool>(k);
-          } else {
-            return k && k(xs, f, g, h, n).has_value();
-          }
-        },
-        held_);
-  }
-
-  // The LLVM kernel, for what only it has: stored bytes and a codegen level.
-  [[nodiscard]] const jit::Kernel *jit_kernel() const noexcept {
-    return std::get_if<jit::Kernel>(&held_);
-  }
-
-private:
-#ifdef DDX_HAS_OPENCL
-  std::variant<std::monostate, jit::Kernel, cl::Kernel> held_;
-#else
-  std::variant<std::monostate, jit::Kernel> held_;
-#endif
-};
-
-// One rung's compile, whichever backend is running it.  Copied out by
-// pending(), so a caller waits holding no lock of ours.
+// One rung's compile.  Copied out by pending(), so a caller waits holding no
+// lock of ours.
 class Pending {
 public:
   Pending() = default;
   explicit Pending(std::shared_future<jit::compile_result<jit::Kernel>> f)
       : future_{std::move(f)} {}
-#ifdef DDX_HAS_OPENCL
-  explicit Pending(std::shared_future<cl::compile_result<cl::Kernel>> f)
-      : future_{std::move(f)} {}
-#endif
 
-  [[nodiscard]] bool valid() const {
-    return std::visit([](const auto &f) { return f.valid(); }, future_);
-  }
+  [[nodiscard]] bool valid() const { return future_.valid(); }
   // Polling a shared_future from many threads is well-defined.
   [[nodiscard]] bool landed() const {
     using namespace std::chrono_literals;
-    return std::visit(
-        [](const auto &f) {
-          return f.valid() && f.wait_for(0s) == std::future_status::ready;
-        },
-        future_);
+    return future_.valid() &&
+           future_.wait_for(0s) == std::future_status::ready;
   }
-  void wait() const {
-    std::visit([](const auto &f) { f.wait(); }, future_);
-  }
+  void wait() const { future_.wait(); }
   // The kernel, or why there is none.  Only once landed().
-  [[nodiscard]] jit::compile_result<AnyKernel> take() const {
-    return std::visit(
-        [](const auto &f) {
-          return f.get().transform([](const auto &k) { return AnyKernel{k}; });
-        },
-        future_);
+  [[nodiscard]] jit::compile_result<jit::Kernel> take() const {
+    return future_.get();
   }
 
 private:
-#ifdef DDX_HAS_OPENCL
-  std::variant<std::shared_future<jit::compile_result<jit::Kernel>>,
-               std::shared_future<cl::compile_result<cl::Kernel>>>
-      future_;
-#else
-  std::variant<std::shared_future<jit::compile_result<jit::Kernel>>> future_;
-#endif
+  std::shared_future<jit::compile_result<jit::Kernel>> future_;
 };
 
 // Published, never written: a kernel arrives as a *new* Compiled.
@@ -150,7 +65,7 @@ template <impl::Numeric T> struct Compiled {
   // chain is latency, and left alone for the sweep, where the same rewrite
   // costs tape locality.  Aliases `graph` where they agree.
   std::shared_ptr<const Graph<T>> compile_graph{};
-  AnyKernel kernel{};
+  jit::Kernel kernel{};
   // Rungs share one pool and need not land in the order they were asked for,
   // so this is what refuses a late one.
   jit::OptLevel level = jit::OptLevel::O0;
@@ -158,7 +73,7 @@ template <impl::Numeric T> struct Compiled {
   // so a table the equation is handed later means a new pipeline.
   const TensorKernelTable *kernels = nullptr;
 
-  [[nodiscard]] std::shared_ptr<const Compiled> with(AnyKernel k,
+  [[nodiscard]] std::shared_ptr<const Compiled> with(jit::Kernel k,
                                                      jit::OptLevel l) const {
     return std::make_shared<const Compiled>(
         Compiled{.graph = graph,
@@ -169,14 +84,12 @@ template <impl::Numeric T> struct Compiled {
   }
 };
 
-// What a pipeline needs from the equation that owns it.  Both null is a
+// What a pipeline needs from the equation that owns it.  No compiler is a
 // pipeline that will never compile: an interpreting backend, a poisoned
-// equation and a host with neither backend all arrive here as one.  At most one
-// is set.
+// equation and a host with no JIT all arrive here as one.
 struct Setting {
   jit::Options options{};
-  jit::Compiler *compiler = nullptr;  // Compile and Adapt
-  const cl::Device *device = nullptr; // Device
+  jit::Compiler *compiler = nullptr; // Compile and Adapt
 };
 
 // Two rungs: a cheap compile that lands soon, then the requested level.
@@ -217,12 +130,6 @@ public:
   [[nodiscard]] Pending pending() const {
     [[maybe_unused]] const auto read = lock_.read();
     return rungs_.front().pending;
-  }
-
-  // Why the last rung to land brought no kernel, if one did not.
-  [[nodiscard]] std::optional<jit::compile_error> refused() const {
-    [[maybe_unused]] const auto read = lock_.read();
-    return refused_;
   }
 
   [[nodiscard]] std::size_t points() const {
@@ -277,16 +184,6 @@ private:
                auto &&freeze) {
     ready_ = std::make_shared<const Held>(freeze());
     if constexpr (std::same_as<T, double>) {
-#ifdef DDX_HAS_OPENCL
-      // One rung, over the swept graph rather than the rebalanced one: a
-      // device hides a spine's latency with occupancy, and leaving the spine
-      // alone is what keeps it on the sweep's bits.
-      if (setting.device != nullptr) {
-        rungs_[0] = {Pending{setting.device->compile_async(ready_->graph)},
-                     jit::OptLevel::O0};
-        return;
-      }
-#endif
       if (setting.compiler == nullptr) {
         return;
       }
@@ -362,16 +259,14 @@ private:
   // Republish rather than write into what a reader holds; a rung that lost the
   // race is dropped rather than allowed to demote a live kernel.
   void adopt() {
-    AnyKernel best;
+    jit::Kernel best;
     jit::OptLevel level = jit::OptLevel::O0;
     for (Rung &rung : rungs_) {
       if (!rung.pending.landed()) {
         continue;
       }
       // A refused compile leaves the kernel empty, and the sweep stays.
-      if (auto came = rung.pending.take(); !came) {
-        refused_ = std::move(came).error();
-      } else if (!best || rung.level > level) {
+      if (auto came = rung.pending.take(); came && (!best || rung.level > level)) {
         best = *std::move(came);
         level = rung.level;
       }
@@ -392,7 +287,6 @@ private:
   std::shared_ptr<const Held> ready_;
   // Submission order, so rungs_[0] answers soonest.
   std::array<Rung, Rungs> rungs_;
-  std::optional<jit::compile_error> refused_;
   mutable std::atomic<std::size_t> points_{};
   mutable std::atomic<unsigned> asked_{};
 };

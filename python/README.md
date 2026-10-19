@@ -20,16 +20,15 @@ unrelated project. There is one wheel per platform and CPython version
 (3.11–3.14), and a wheel needs nothing installed beside it — LLVM is inside
 the library.
 
-| Wheel | JIT | OpenCL |
-|---|---|---|
-| Linux x86_64 (glibc 2.28+) | yes | no |
-| Windows x64 | no — calls interpret | no |
+| Wheel | JIT |
+|---|---|
+| Linux x86_64 (glibc 2.28+) | yes |
+| Windows x64 | no — calls interpret |
 
 There is no macOS wheel; elsewhere, `pip install .` from a checkout of the
 [repository](https://github.com/reach2sayan/ddx) builds from source.
-`ddx.has_jit` says whether the copy you have was built with the LLVM backend,
-and `ddx.has_opencl` whether it was built with the OpenCL one. Everything below
-works either way; without them, calls interpret.
+`ddx.has_jit` says whether the copy you have was built with the LLVM backend.
+Everything below works either way; without it, calls interpret.
 
 ## Models
 
@@ -270,7 +269,6 @@ is the spelling.
 | `bad_syntax` | a string the grammar does not accept |
 | `unknown_function` | a string calls a function that does not exist |
 | `wrong_argument_count` | a string calls one with the wrong arity |
-| `no_device`, `device_compile`, `device_launch` | no OpenCL device answered, its compiler refused the kernel, or a launch failed |
 | `jit_target`, `jit_module`, `jit_object`, `jit_verify`, `jit_lookup` | the compiler could not produce or link a kernel |
 
 ## Compiling
@@ -294,7 +292,6 @@ and switch over when it does.
 | `INTERPRET` | walk the graph |
 | `COMPILE` | start the compile at once, interpret until it lands |
 | `ADAPT` | compile a lane once it has been asked for `warm_points` batch points |
-| `DEVICE` | build the graph for the OpenCL device `device` names |
 
 `points` is the batch you intend to hand one call, stated because the kernel is
 built before any call exists to infer it from. It decides the lane width and
@@ -302,15 +299,6 @@ nothing else: a call carrying some other number is answered correctly, just not
 by the kernel that number would have built. `cache_dir` keeps compiled objects
 between runs, so a second run links instead of compiling — roughly three orders
 of magnitude quicker; an empty string disables it.
-
-`f.compile(backend=ddx.Backend.DEVICE)` builds for an OpenCL device instead. An
-empty `Options.device` takes the first GPU with double precision; anything else
-is matched, ignoring case, against the platform and device name — `"NVIDIA"`,
-`"gfx1035"`, `"Intel"`. `f.device_status` names the device, is `None` under
-any other backend, and raises `ddx.Error` when no device answers. No wheel
-carries the device backend; a source build asks for it with
-`-C cmake.define.DDX_BUILD_OPENCL=ON`. Where it is missing, `ddx.has_opencl` is
-`False`, `DEVICE` interprets, and `device_status` raises `errc.no_device`.
 
 ## Reference
 
@@ -330,7 +318,6 @@ carries the device backend; a source build asks for it with
 | `options` | property — read or assign an `Options` |
 | `compile(**fields)` | set `Options`, block for the kernel, return self |
 | `uses_kernel`, `wait_for_kernel(*, want)` | whether a call runs compiled code, and blocking for it — for the Jacobian lane unless `want` names another |
-| `device_status` | property — under `DEVICE`, the device answering; `None` otherwise; raises when none answers |
 | `hessian_colours` | groups in the Hessian's compression; raises on a system |
 | `buffer(x, *, want)` | a `Call` bound to its buffers, for a loop |
 | `nodes(*, want)` | how many nodes a call for `want` evaluates |

@@ -17,7 +17,6 @@
 
 #include <boost/container/small_vector.hpp>
 
-#include "cl/device.hpp"
 #include "jit/options.hpp"
 
 #include <mutex> // call_once, unique_lock
@@ -71,16 +70,6 @@ concept CColumns = std::ranges::contiguous_range<R> &&
 [[nodiscard]] inline jit::Compiler *shared_compiler() {
   static jit::compile_result<jit::Compiler> instance = jit::Compiler::create();
   return instance ? &*instance : nullptr;
-}
-#endif
-
-#ifdef DDX_HAS_OPENCL
-// One device per selector for the process, as shared_compiler() is one LLJIT;
-// null where none answers the selector, and cl::Device::shared() says why.
-[[nodiscard]] inline const cl::Device *
-shared_device(std::string_view selector) {
-  const auto &device = cl::Device::shared(selector);
-  return device ? &*device : nullptr;
 }
 #endif
 
@@ -493,7 +482,6 @@ public:
       return self;
     }
     self.options_ = opt;
-    self.settle_device();
     self.pipelines_ = std::make_unique<Pipelines>();
     // Choosing a backend starts the build, so it overlaps whatever the caller
     // does before their first call.
@@ -548,14 +536,14 @@ public:
   }
 
   // Which rung is answering, as its codegen level, and nothing where the sweep
-  // or a device is.  Every rung gives the same bits, so this is the only way
+  // is.  Every rung gives the same bits, so this is the only way
   // to see it climb.  Does not wait.
   [[nodiscard]] std::optional<jit::OptLevel> kernel_level() const {
     if (poisoned()) {
       return std::nullopt;
     }
     if (const auto l = pipeline(Want::Jacobian);
-        l->kernel.jit_kernel() != nullptr) {
+        l->kernel) {
       return l->level;
     } else {
       return std::nullopt;
@@ -599,33 +587,6 @@ public:
                : std::optional{Warmup{.points = l.points(),
                                       .threshold = Pipeline::rung_at(
                                           asked, effective_options())}};
-  }
-
-  // Under Backend::Device: the device answering, or why none is -- a selector
-  // nothing matched, or a kernel its compiler refused, with the build log.
-  // Nothing under any other backend.  Does not wait.
-  [[nodiscard]] std::optional<jit::compile_result<std::string_view>>
-  device_status() const {
-    if (options_.backend != jit::Backend::Device) {
-      return std::nullopt;
-    }
-    if (poisoned()) {
-      return std::unexpected{jit::compile_error{bad_->code, {}}};
-    }
-#ifdef DDX_HAS_OPENCL
-    const auto &device = cl::Device::shared(options_.device);
-    if (!device) {
-      return std::unexpected{device.error()};
-    }
-    (void)pipeline(Want::Jacobian); // adopts a compile that has landed
-    if (auto why = pipeline_for(Want::Jacobian).refused()) {
-      return std::unexpected{*std::move(why)};
-    }
-    return device->identity();
-#else
-    return std::unexpected{
-        jit::compile_error{errc::no_device, "built without DDX_BUILD_OPENCL"}};
-#endif
   }
 
   // One Taylor sweep: seed c[0] = x0, c[1] = 1, then un-normalise c[Order].
@@ -829,7 +790,6 @@ protected:
     if !consteval {
       pipelines_ = std::make_unique<Pipelines>();
       sweeps_ = std::make_unique<Sweeps>();
-      settle_device();
     }
   }
 
@@ -1353,16 +1313,6 @@ private:
     return (*pipelines_)[std::to_underlying(want)];
   }
 
-  // Looked up where the options change -- options() -- so a batch call never
-  // resolves a selector.
-  void settle_device() {
-#ifdef DDX_HAS_OPENCL
-    device_ = options_.backend == jit::Backend::Device
-                  ? rt::detail::shared_device(options_.device)
-                  : nullptr;
-#endif
-  }
-
   // What a pipeline needs of the equation.  No compiler is a pipeline that will
   // never compile: a poisoned equation and an interpreting backend both arrive
   // here as one, and so does a host with no JIT.
@@ -1376,9 +1326,6 @@ private:
             options_.backend == jit::Backend::Adapt) {
           out.compiler = compiler();
         }
-#endif
-#ifdef DDX_HAS_OPENCL
-        out.device = device_;
 #endif
       }
     }
@@ -1500,13 +1447,13 @@ private:
     return options_.codegen.contract;
   }
 
-  // A kernel that could not run this call -- a device refusing a launch --
-  // hands it back, and the sweep answers.
+  // The kernel where one landed, else the sweep.
   void run(const Compiled &c, std::span<const T *const> xs,
            const Columns<T> &out, std::size_t n) const {
     [[maybe_unused]] const auto held = sweeping();
     if constexpr (std::same_as<T, double>) {
-      if (c.kernel(xs, out.values, out.jacobian, out.hessian, n)) {
+      if (c.kernel) {
+        c.kernel(xs, out.values, out.jacobian, out.hessian, n);
         return;
       }
     }
@@ -1585,10 +1532,6 @@ private:
   jit::Options options_{};
   // Null: the process default, read at each freeze.
   const TensorKernelTable *kernels_ = nullptr;
-#ifdef DDX_HAS_OPENCL
-  // Settled with options_: null unless the backend is Device and one answered.
-  const cl::Device *device_ = nullptr;
-#endif
   Jacobian jacobian_;
   // unique_ptr, not shared: its destructor is constexpr, which is what keeps a
   // constant-evaluated equation destructible.  Null only there.

@@ -178,18 +178,13 @@ PYBIND11_MODULE(_ddx, m) {
   using ddx::py::PyRestricted;
   using ddx::py::PyTransposed;
 
-  m.doc() = "ddx's runtime expression graph, LLVM JIT and OpenCL device";
+  m.doc() = "ddx's runtime expression graph and LLVM JIT";
   m.attr("__version__") = DDX_VERSION_STRING;
 
 #ifdef DDX_HAS_JIT
   m.attr("has_jit") = true;
 #else
   m.attr("has_jit") = false;
-#endif
-#ifdef DDX_HAS_OPENCL
-  m.attr("has_opencl") = true;
-#else
-  m.attr("has_opencl") = false;
 #endif
 
   // The class first, then a translator that puts the code on the instance --
@@ -454,7 +449,6 @@ PYBIND11_MODULE(_ddx, m) {
       .value("INTERPRET", jit::Backend::Interpret)
       .value("COMPILE", jit::Backend::Compile)
       .value("ADAPT", jit::Backend::Adapt)
-      .value("DEVICE", jit::Backend::Device)
       .finalize();
 
   pyb::native_enum<jit::VecLib>(
@@ -533,7 +527,6 @@ PYBIND11_MODULE(_ddx, m) {
       .def_readwrite("hot_points", &jit::Options::hot_points)
       .def_readwrite("time_passes", &jit::Options::time_passes)
       .def_readwrite("cache_dir", &jit::Options::cache_dir)
-      .def_readwrite("device", &jit::Options::device)
       .def(pyb::self == pyb::self);
   codegen("opt_level", &jit::Codegen::opt_level);
   codegen("codegen_level", &jit::Codegen::codegen_level);
@@ -589,7 +582,6 @@ PYBIND11_MODULE(_ddx, m) {
       .def_property_readonly("arity", &PyEquation::width)
       .def_property_readonly("outputs", &PyEquation::height)
       .def_property_readonly("uses_kernel", &PyEquation::uses_kernel)
-      .def_property_readonly("device_status", &PyEquation::device)
       // Colours, not n: the Hessian is stored compressed and scattered on
       // read, so this is what the compiled kernel actually computes per point.
       .def_property_readonly("hessian_colours",

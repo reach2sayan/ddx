@@ -1,7 +1,0 @@
-# LeakSanitizer suppressions.
-#
-# The OpenCL ICD loader keeps every vendor it enumerates for the life of the
-# process, and ROCm's runtime keeps what it allocates when the loader opens it;
-# neither frees at exit.  Both are third party, so they are named by frame.
-leak:khrIcdInitialize
-leak:libhsa-runtime64

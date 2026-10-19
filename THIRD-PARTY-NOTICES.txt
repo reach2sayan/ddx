@@ -5,9 +5,8 @@ vendors, and what its builds link into libddx and the Python module, is
 listed below with its licence; every one permits commercial use.  Whoever
 redistributes a build of ddx passes this file on with it.
 
-Which of these a given build carries depends on how it was configured: the
-OpenCL components only with DDX_BUILD_OPENCL, LLVM, zlib and zstd only with
-DDX_BUILD_JIT, pybind11 only in the Python module.
+Which of these a given build carries depends on how it was configured: LLVM,
+zlib and zstd only with DDX_BUILD_JIT, pybind11 only in the Python module.
 
 ===============================================================================
 Boost 1.92
@@ -31,28 +30,6 @@ Under the terms of Contract DE-NA0003525 with NTESS,
 the U.S. Government retains certain rights in this software.
 
 License: Apache-2.0 WITH LLVM-exception (below)
-
-===============================================================================
-OpenCL-Headers v2026.05.29
-https://github.com/KhronosGroup/OpenCL-Headers
-
-Compiled against by libddx built with DDX_BUILD_OPENCL.
-
-Copyright (c) 2008-2026 The Khronos Group Inc.
-
-License: Apache-2.0 (below)
-
-===============================================================================
-OpenCL-ICD-Loader v2026.05.29
-https://github.com/KhronosGroup/OpenCL-ICD-Loader
-
-Linked into libddx built with DDX_BUILD_OPENCL.
-
-Copyright (c) 2016-2026 The Khronos Group Inc.
-Copyright (c) 2019 Valve Corporation (Windows sources)
-Copyright (c) 2019 LunarG, Inc. (Windows sources)
-
-License: Apache-2.0 (below)
 
 ===============================================================================
 LLVM 20.1.8
@@ -127,7 +104,7 @@ ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 -------------------------------------------------------------------------------
-Apache License 2.0 -- OpenCL-Headers, OpenCL-ICD-Loader, LLVM, Kokkos mdspan
+Apache License 2.0 -- LLVM, Kokkos mdspan
 -------------------------------------------------------------------------------
 
                                  Apache License

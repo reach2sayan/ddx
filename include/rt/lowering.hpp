@@ -12,8 +12,8 @@
 // How a backend spells each operation: an infix operator, an ordered compare
 // answering 1.0 or 0.0, a call by name -- an intrinsic where the backend has
 // one, else a libm function the runtime defines -- or a form the backend
-// writes by hand.  The one list the LLVM emitter, the OpenCL emitter and the
-// runtime's symbol table read; a leaf and an extern have no spelling here.
+// writes by hand.  The one list the LLVM emitter and the runtime's symbol
+// table read; a leaf and an extern have no spelling here.
 namespace ddx::rt {
 
 enum class Lower : std::uint8_t { None, Infix, Compare, Call, Special };

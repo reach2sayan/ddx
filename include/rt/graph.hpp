@@ -243,7 +243,6 @@ public:
             std::max(g.inputs_.directions,
                      std::size_t{detail::index_of(g.properties_[v])} + 1);
       }
-      g.calls_extern_ |= kind_of(g.properties_[v].op) == Kind::Extern;
       g.has_tensors_ |= kind_of(g.properties_[v].op) == Kind::Tensor;
     }
     // The tape packed by liveness, scalar rows and tensor rows alike; off the
@@ -293,9 +292,6 @@ public:
   }
   // Every has_list node's ids, shared with the arena: what arguments() reads.
   [[nodiscard]] std::span<const NodeId> lists() const { return lists_; }
-  // Whether a live node calls one: what a device, which cannot call the host,
-  // refuses -- a function the arena registered and nothing reaches is not.
-  [[nodiscard]] bool calls_extern() const noexcept { return calls_extern_; }
   // Whether a live node is a tensor op: what a kernel, which computes scalars
   // only, refuses, and what makes the sweep carry a second tape.
   [[nodiscard]] bool has_tensors() const noexcept { return has_tensors_; }
@@ -410,7 +406,6 @@ private:
   std::vector<std::string> names_;
   std::vector<ExternEntry<T>> externs_;
   std::vector<NodeId> lists_;
-  bool calls_extern_ = false;
   bool has_tensors_ = false;
   TensorLayout tensors_;
   std::vector<std::uint32_t> rows_;
