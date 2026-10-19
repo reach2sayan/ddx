@@ -38,7 +38,7 @@ from ._ddx import (Backend, Call, Expression, OptLevel, Restricted, VecLib, Want
                    var,
                    dot, gemv, mat_constant, outer, pack, release_tapes,
                    sum,  # noqa: A004
-                   vec, vec_constant, )
+                   Transposed, transpose, vec, vec_constant, )
 from ._options import Options
 
 if TYPE_CHECKING:
@@ -105,4 +105,4 @@ __all__ = ["Backend", "Call", "Equation", "Error", "Expression", "OptLevel", "Re
            "implicit",
            "tan", "tanh", "var",
            "dot", "gemv", "mat_constant", "outer", "pack", "release_tapes",
-           "sum", "vec", "vec_constant",]
+           "sum", "Transposed", "transpose", "vec", "vec_constant",]

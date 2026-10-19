@@ -176,6 +176,7 @@ PYBIND11_MODULE(_ddx, m) {
   using ddx::py::PyEquation;
   using ddx::py::PyExpression;
   using ddx::py::PyRestricted;
+  using ddx::py::PyTransposed;
 
   m.doc() = "ddx's runtime expression graph, LLVM JIT and OpenCL device";
   m.attr("__version__") = DDX_VERSION_STRING;
@@ -287,6 +288,14 @@ PYBIND11_MODULE(_ddx, m) {
       .def(
           "__abs__",
           [](const PyExpression &u) { return unary(rt::OpCode::Abs, u); },
+          pyb::is_operator())
+      // C++'s `%`: dot of two vectors, gemv of a matrix and a vector.
+      .def(
+          "__matmul__",
+          [](const PyExpression &l, const PyExpression &r) {
+            return reduce(l, r,
+                          [](const auto &a, const auto &b) { return a % b; });
+          },
           pyb::is_operator())
       // A comparison is a value with no truth until a point is given, so
       // `if x < 1:` and `a if x < 1 else b` refuse rather than take the first
@@ -417,6 +426,19 @@ PYBIND11_MODULE(_ddx, m) {
         });
       },
       pyb::arg("matrix"), pyb::arg("v"), pyb::arg("transposed") = false);
+  pyb::class_<PyTransposed>(m, "Transposed")
+      .def(
+          "__matmul__",
+          [](const PyTransposed &t, const PyExpression &v) {
+            return reduce(t.m, v, [](const auto &a, const auto &b) {
+              return gemv(a, b, true);
+            });
+          },
+          pyb::is_operator());
+  m.def(
+      "transpose", [](const PyExpression &M) { return PyTransposed{M}; },
+      pyb::arg("matrix"),
+      "M^T, as the left side of @: transpose(M) @ v is gemv(M, v, True).");
   m.def("release_tapes", &rt::release_tapes<double>,
         "Free this thread's sweep tapes; the next sweep grows them again.");
   m.def(

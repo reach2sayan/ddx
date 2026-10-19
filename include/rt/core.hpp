@@ -267,7 +267,12 @@ template <impl::Numeric T> struct ThreadTapes {
   // array that size is a page fault per page on every call.
   std::vector<T *> addresses;
 };
-template <impl::Numeric T> inline thread_local ThreadTapes<T> thread_tapes;
+// Block scope: GCC 15 never registers the destructor of a thread_local variable
+// template named from a template, so every thread exit leaked its tapes.
+template <impl::Numeric T> [[nodiscard]] ThreadTapes<T> &thread_tapes() {
+  thread_local ThreadTapes<T> kept;
+  return kept;
+}
 
 // An equation: an arena of its own, its roots, the Jacobian swept up front and
 // every other sweep on first ask, a pipeline per Want.  Equation, System and
@@ -967,7 +972,7 @@ protected:
     const std::size_t n = symbol_count();
     // The tape is thread-kept; every id read below is scheduled, so it is
     // written this call.
-    std::vector<T> &values = thread_tapes<T>.values;
+    std::vector<T> &values = thread_tapes<T>().values;
     [[maybe_unused]] const auto held = sweeping();
     values.resize(arena_->size());
     detail::TensorTape<T> scratch{*arena_, walk, tensor_kernels()};
@@ -1305,7 +1310,7 @@ private:
                                               std::span<T> h) const {
     if !consteval {
       const auto xs = single_columns(at);
-      std::vector<T *> &out = thread_tapes<T>.addresses;
+      std::vector<T *> &out = thread_tapes<T>().addresses;
       out.clear();
       const auto address = [](T &v) { return std::addressof(v); };
       impl::append(out, f | std::views::transform(address));
@@ -1533,7 +1538,7 @@ private:
     //
     // A short batch sweeps one point at a time rather than padding out to
     // block_lanes, which on a batch of one is the whole cost.
-    ThreadTapes<T> &kept = thread_tapes<T>;
+    ThreadTapes<T> &kept = thread_tapes<T>();
     if (n < block_lanes) {
       const auto [at, tape, vtape] = std::tie(kept.at, kept.tape, kept.vtape);
       at.resize(inputs);
@@ -1707,6 +1712,6 @@ template <typename C> using Restricted = detail::Restricted<C>;
 // keeps its tapes at that size until it asks.  The next sweep on the thread
 // grows them again.
 template <impl::Numeric T = double> void release_tapes() noexcept {
-  detail::thread_tapes<T> = {};
+  detail::thread_tapes<T>() = {};
 }
 } // namespace ddx::rt

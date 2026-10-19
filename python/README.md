@@ -111,7 +111,7 @@ operation rather than one per element:
 def quad():
     x = ddx.vec("x", 3)                         # symbols x[0], x[1], x[2]
     C = ddx.mat_constant(3, 3, coefficients)       # column-major
-    return ddx.dot(x, ddx.gemv(C, x)) + ddx.sum(x * ddx.log(x))
+    return x @ (C @ x) + ddx.sum(x * ddx.log(x))
 ```
 
 | Function | Is |
@@ -120,6 +120,7 @@ def quad():
 | `pack(scalars)`, `vec_constant(data)`, `mat_constant(rows, cols, data)` | a vector of expressions, a constant vector, a constant matrix |
 | `sum(v)`, `dot(u, v)` | the reductions to a scalar |
 | `gemv(M, v)`, `gemv(M, v, transposed=True)` | `M·v` and `Mᵀ·v` |
+| `u @ v`, `M @ v`, `transpose(M) @ v` | `dot(u, v)`, `gemv(M, v)`, `gemv(M, v, transposed=True)` |
 
 Arithmetic and the unary functions apply elementwise, and a scalar or a bare
 number broadcasts. `len(v)` and `v.shape` give the shape and `v[i]` an element.

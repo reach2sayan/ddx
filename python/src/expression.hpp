@@ -187,6 +187,11 @@ private:
                                u.arena_ ? u.arena_ : v.arena_);
 }
 
+// transpose(M): rt::transpose's handle, kept as the matrix it reads.
+struct PyTransposed {
+  PyExpression m;
+};
+
 // The comparisons answer an expression, as the base's do.  Only `<` and `<=`
 // are nodes; the rest are those two read the other way round, which the base
 // already spells with NaN in mind, so each is one composition.

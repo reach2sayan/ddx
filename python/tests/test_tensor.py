@@ -48,6 +48,39 @@ def test_the_vector_spelling_agrees_with_the_scalar_one() -> None:
     np.testing.assert_allclose(got_h, want_h, rtol=1e-12)
 
 
+def test_matmul_is_dot_and_gemv_to_the_bit() -> None:
+    def calls() -> ddx.Expression:
+        x = ddx.vec("x", N)
+        c = ddx.mat_constant(N, N, M)
+        t = ddx.exp(0.1 * c)
+        return (ddx.dot(x, ddx.gemv(c, x)) + ddx.dot(ddx.log(x), ddx.gemv(t, x, True))
+                + ddx.dot(x, x))
+
+    def operators() -> ddx.Expression:
+        x = ddx.vec("x", N)
+        c = ddx.mat_constant(N, N, M)
+        t = ddx.exp(0.1 * c)
+        return x @ (c @ x) + ddx.log(x) @ (ddx.transpose(t) @ x) + x @ x
+
+    want = ddx.equation(calls)
+    got = ddx.equation(operators)
+    assert want.evaluate(POINT) == got.evaluate(POINT)
+    np.testing.assert_array_equal(got.gradient(POINT), want.gradient(POINT))
+    np.testing.assert_array_equal(got.hessian(POINT)[2], want.hessian(POINT)[2])
+
+
+@pytest.mark.parametrize("product", [
+    lambda x, c: c @ c,
+    lambda x, c: x @ c,
+    lambda x, c: ddx.vec("y", N + 1) @ x,
+    lambda x, c: ddx.transpose(c) @ ddx.vec("y", N + 1),
+])
+def test_matmul_refuses_what_the_calls_refuse(product) -> None:  # noqa: ANN001
+    with pytest.raises(ddx.Error) as refused:
+        ddx.equation(lambda: product(ddx.vec("x", N), ddx.mat_constant(N, N, M)))
+    assert refused.value.code == ddx.errc.tensor_shape
+
+
 def test_a_vector_knows_its_length_and_elements() -> None:
     def model() -> ddx.Expression:
         v = ddx.vec("v", 3)

@@ -13,6 +13,12 @@ set(DDX_TEST_ENV "")
 if (DDX_SANITIZE STREQUAL "thread")
     set(DDX_TEST_ENV PROPERTIES ENVIRONMENT
         "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan.supp:ignore_noninstrumented_modules=1")
+elseif (DDX_SANITIZE STREQUAL "address")
+    # ROCm's unjoined thread exits after teardown has unmapped its signal
+    # stack, and ASan aborts on the failed munmap; LSAN_OPTIONS reads the
+    # common flags too, so one variable carries both.
+    set(DDX_TEST_ENV PROPERTIES ENVIRONMENT
+        "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp:use_sigaltstack=0")
 endif ()
 
 gtest_discover_tests(tests ${DDX_TEST_ENV})

@@ -103,7 +103,9 @@ A point supplies symbols, then parameters, then implicits. `eq.residual(point)`
 evaluates each implicit's `F`; ddx never solves it.
 
 Vectors are elementwise under every operation, with `sum`, `dot` and
-`gemv(M, v, transposed = false)`; `v[i]` reads one element. They compute at
+`gemv(M, v, transposed = false)`, and `%` spells both: `u % v` is `dot(u, v)`,
+`M % v` is `gemv(M, v)` and `rt::transpose(M) % v` is `gemv(M, v, true)`,
+bit for bit (`@` in Python). `v[i]` reads one element. They compute at
 `double`, are never an output, and are computed by a kernel table —
 `rt::use_tensor_kernels(table)` or `eq.tensor_kernels(table)`, built with
 `rt::tensor_kernel_table<K>()` over a type satisfying `rt::TensorKernels`;

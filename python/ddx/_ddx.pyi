@@ -13,7 +13,7 @@ __all__: list[str] = ['Backend', 'Call', 'Equation', 'Error', 'Expression',
                       'max', 'min', 'mul', 'neg', 'pow', 'select', 'sign',
                       'sin', 'sinh', 'sqrt', 'tan', 'tanh', 'var',
                       'dot', 'gemv',
-                      'mat_constant', 'outer', 'pack', 'release_tapes', 'sum', 'vec', 'vec_constant']
+                      'mat_constant', 'outer', 'pack', 'release_tapes', 'sum', 'Transposed', 'transpose', 'vec', 'vec_constant']
 class Backend(enum.IntEnum):
     """
     Whether an equation compiles its graph.
@@ -112,6 +112,7 @@ class Expression:
     def __lt__(self, arg0: Expression) -> Expression: pass
     @typing.overload
     def __lt__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass
+    def __matmul__(self, arg0: Expression) -> Expression: pass
     @typing.overload
     def __mul__(self, arg0: Expression) -> Expression: pass
     @typing.overload
@@ -174,6 +175,8 @@ class OptLevel(enum.IntEnum):
     @classmethod
     def __new__(cls, value): pass
     def __format__(self, format_spec): pass
+class Transposed:
+    def __matmul__(self, arg0: Expression) -> Expression: pass
 class VecLib(enum.IntEnum):
     """
     Which vector math library a lane may call.
@@ -377,6 +380,8 @@ def pack(scalars: typing.Sequence[Expression]) -> Expression:
     """The vector of these scalars, in order."""
 def release_tapes() -> None:
     """Free this thread's sweep tapes; the next sweep grows them again."""
+def transpose(matrix: Expression) -> Transposed:
+    """M^T, as the left side of @: transpose(M) @ v is gemv(M, v, True)."""
 def sum(v: Expression) -> Expression:
     ...
 def vec(name: str, n: typing.SupportsInt | typing.SupportsIndex) -> Expression:

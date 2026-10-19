@@ -247,6 +247,39 @@ TEST(RtTensor, GemvBothWays) {
       });
 }
 
+// Nodes are interned, so the operator and the call agreeing on an id is the
+// same node -- the same kernel, the same bits.
+TEST(RtTensor, OperatorsAreTheCalls) {
+  constexpr std::size_t rows = 4, cols = 6;
+  const auto m = matrix(rows, cols);
+  ddx::rt::Builder<> b;
+  const RV x = ddx::rt::vec(b, "x", cols);
+  const RV y = ddx::rt::vec(b, "y", rows);
+  const RE T = ddx::rt::var(b, "T");
+  const auto M = ddx::rt::mat_constant(b, rows, cols, std::span{m});
+  const auto C = exp(T * M);
+
+  EXPECT_EQ((x % x).id(), dot(x, x).id());
+  EXPECT_EQ((M % x).id(), gemv(M, x).id());
+  EXPECT_EQ((C % x).id(), gemv(C, x).id());
+  EXPECT_EQ((ddx::rt::transpose(M) % y).id(), gemv(M, y, true).id());
+  EXPECT_EQ((ddx::rt::transpose(C) % y).id(), gemv(C, y, true).id());
+  EXPECT_EQ((y % (M % x) + x % x).id(),
+            (dot(y, gemv(M, x)) + dot(x, x)).id());
+  EXPECT_EQ((2.0 * x % x).id(), dot(2.0 * x, x).id());
+
+  const auto why = [](const RE &e) {
+    return ddx::rt::equation(e).status()->code;
+  };
+  for (const RE &refused :
+       {M % M, x % M, y % C, M % y, ddx::rt::transpose(M) % x, x % y}) {
+    EXPECT_EQ(why(refused), ddx::errc::tensor_shape);
+  }
+  const RE orphan = ddx::rt::vec("z", 2);
+  EXPECT_EQ(why(orphan % M), ddx::errc::outside_equation);
+  EXPECT_EQ(why(M % orphan), ddx::errc::outside_equation);
+}
+
 TEST(RtTensor, GatherAndAddAtRoundTrip) {
   each_node(
       5,
@@ -1329,7 +1362,7 @@ TEST(RtTensor, ReleasedTapesGrowBackToTheSameBits) {
     return std::pair{f, g};
   };
   const auto before = sweep();
-  const auto &kept = ddx::rt::detail::thread_tapes<double>;
+  const auto &kept = ddx::rt::detail::thread_tapes<double>();
   ASSERT_GT(kept.lane_vtape.capacity(), 0u);
   ddx::rt::release_tapes();
   EXPECT_EQ(kept.lane_tape.capacity(), 0u);
