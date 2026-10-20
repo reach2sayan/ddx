@@ -3,7 +3,7 @@
 #include "cache.hpp"
 #include "rt/derivative.hpp"
 #include "rt/expressions.hpp"
-#include "rt/spelling.hpp"
+#include "spelling.hpp"
 
 #include <boost/hash2/fnv1a.hpp>
 #include <boost/hash2/hash_append.hpp>

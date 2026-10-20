@@ -454,11 +454,8 @@ public:
   // times over a dense term.  One output only.
   [[nodiscard]] result<std::vector<T>>
   dense_hessian(const rt::detail::CPointArg<T> auto &...args) const {
-    return orders(Want::DenseHessian).and_then([&] {
-      // gather() lays the block out row-major as it scatters it.
-      return at<Want::DenseHessian>({}, args...).transform([](auto b) {
-        return std::move(b.hessian);
-      });
+    return at<Want::DenseHessian>({}, args...).transform([](auto b) {
+      return std::move(b.hessian);
     });
   }
   // How many terms the sweep kept quadratic, and how many fell back to a dense
@@ -655,7 +652,7 @@ public:
                     n);
   }
 
-  // `h` is n^2 columns, column-major: H(i, j) is column i + j n.
+  // `h` is n^2 columns, row-major: H(i, j) is column i n + j.
   [[nodiscard]] result<void>
   dense_hessian(const rt::detail::CColumns<const T *> auto &xs,
                 const rt::detail::CColumns<T *> auto &f,
@@ -1036,34 +1033,6 @@ private:
         });
   }
 
-  // The sweep `want`'s freeze reads, built before the freeze takes the lock.
-  void ensure(Want want) const {
-    switch (want) {
-    case Want::Hessian:
-      (void)hessians();
-      break;
-    case Want::Hvp:
-      (void)hvp_sweep();
-      break;
-    case Want::Vjp:
-      (void)vjp_sweep();
-      break;
-    case Want::Jvp:
-      (void)jvp_sweep();
-      break;
-    case Want::JacobianJvp:
-      (void)tangent_sweep();
-      break;
-    case Want::DenseHessian:
-      (void)dense_sweep();
-      break;
-    case Want::Value:
-    case Want::Jacobian:
-    case Want::Gradient:
-      break;
-    }
-  }
-
 protected:
   // The gates, in the order a call meets them.  alive(): not poisoned.
   // single(): one function's, which a system refuses.  orders(): second order
@@ -1242,14 +1211,6 @@ private:
     return {};
   }
 
-  // At one point every column is one value, so a column pointer is its address.
-  template <typename U>
-  [[nodiscard]] static auto single_columns(std::span<U> values) {
-    auto addresses =
-        values | std::views::transform([](U &v) { return std::addressof(v); });
-    return boost::container::small_vector<U *, 32>(addresses.begin(),
-                                                   addresses.end());
-  }
   // One point through the batch path at n = 1, not the arena walk, so the
   // batch gate is the point gate.  Constant evaluation keeps it, having no
   // pipeline and nothing to refuse.
@@ -1269,23 +1230,14 @@ private:
                                               std::span<T> f, std::span<T> g,
                                               std::span<T> h) const {
     if !consteval {
-      const auto xs = single_columns(at);
+      // At one point every column is one value, its address.
+      const auto address = [](auto &v) { return std::addressof(v); };
+      const auto xs = at | std::views::transform(address) |
+                      impl::to<boost::container::small_vector<const T *, 32>>();
       std::vector<T *> &out = thread_tapes<T>().addresses;
       out.clear();
-      const auto address = [](T &v) { return std::addressof(v); };
-      impl::append(out, f | std::views::transform(address));
-      impl::append(out, g | std::views::transform(address));
-      if (want == Want::DenseHessian) {
-        // The block is column-major, H(i, j) at i + j n; pointed at row-major
-        // (i, j), the scatter is the transpose.
-        const std::size_t n = symbol_count();
-        impl::append(out, std::views::iota(0uz, h.size()) |
-                              std::views::transform([h, n](std::size_t e) {
-                                return std::addressof(h[(e % n) * n + e / n]);
-                              }));
-      } else {
-        impl::append(out, h | std::views::transform(address));
-      }
+      impl::append(out, std::array{f, g, h} | std::views::join |
+                            std::views::transform(address));
       const std::span<T *const> all{out};
       return dispatch_in(*pipelines, cells, want, as_columns(xs),
                          {.values = all.first(f.size()),
@@ -1332,68 +1284,82 @@ private:
     return out;
   }
 
-  // What a freeze asks for.  `ids` and `partials` differ between the swept
-  // graph and the kernel's rebalanced one; the rest cannot be rebalanced.  Read
-  // only after ensure() has built what the want names.
-  struct Frozen {
-    const Core &core;
-    std::span<const NodeId> ids;
-    const Jacobian &partials;
-    std::span<const NodeId> product{}; // dJ/dv over `partials`' cells
-
-    [[nodiscard]] std::span<const NodeId> roots() const { return ids; }
-    [[nodiscard]] const Jacobian &jacobian() const { return partials; }
-    [[nodiscard]] const Hessian &hessian() const {
-      return core.sweeps_->hessians.peek().front();
-    }
-    [[nodiscard]] const HessianVector &hessian_vector() const {
-      return core.sweeps_->hvp.peek();
-    }
-    [[nodiscard]] const VectorJacobian &vector_jacobian() const {
-      return core.sweeps_->vjp.peek();
-    }
-    [[nodiscard]] const Tangent &tangent() const {
-      return core.sweeps_->jvp.peek();
-    }
-    [[nodiscard]] std::span<const NodeId> jacobian_tangent() const {
-      return product;
-    }
-    [[nodiscard]] const DenseHessian &dense_hessian() const {
-      return core.sweeps_->dense.peek();
-    }
-  };
-
   // The graphs a pipeline computes.  A poisoned equation freezes an empty one:
   // every accessor short-circuits before it, and dispatch() refuses on `bad_`.
   [[nodiscard]] Compiled frozen_for(Want want, const Cells &cells) const {
     if (bad_) {
       return {.graph = std::make_shared<const Graph<T>>()};
     }
-    ensure(want);
-    // A restriction keeps the cells it chose, of the product too; only the
-    // whole Jacobian has rebalanced roots to compile from.
-    std::vector<NodeId> product;
-    if (want == Want::JacobianJvp) {
-      const auto &tangent = sweeps_->tangent.peek();
-      product =
-          cells.kept
-              ? *cells.kept | std::views::transform([&tangent](std::size_t k) {
-                  return tangent[k];
-                }) | impl::to<std::vector<NodeId>>()
-              : tangent;
+    // What the want adds past the values and the Jacobian, swept before the
+    // freeze takes the lock.  Vjp and Jvp replace the Jacobian block rather
+    // than add to it -- n columns instead of the pattern's nonzeros is the
+    // whole point of asking.  A restriction keeps the cells it chose, of dJ/dv
+    // too.
+    OutputBlocks added;
+    Colouring colouring;
+    switch (want) {
+    case Want::Vjp:
+      added.jacobian = vjp_sweep().product;
+      break;
+    case Want::Jvp:
+      added.jacobian = jvp_sweep().product;
+      break;
+    case Want::Hessian:
+      added.hessian = hessians().front().compressed;
+      colouring = hessians().front().colouring;
+      break;
+    case Want::Hvp:
+      added.hessian = hvp_sweep().product;
+      break;
+    case Want::JacobianJvp: {
+      const auto &tangent = tangent_sweep();
+      added.hessian = cells.kept ? *cells.kept |
+                                       std::views::transform([&](auto k) {
+                                         return tangent[k];
+                                       }) |
+                                       impl::to<std::vector<NodeId>>()
+                                 : tangent;
+      break;
     }
+    case Want::DenseHessian:
+      added.hessian = {dense_sweep().block};
+      break;
+    case Want::Value:
+    case Want::Jacobian:
+    case Want::Gradient:
+      break;
+    }
+    // `roots` and `partials` differ between the swept graph and the kernel's
+    // rebalanced one.  Gradient differentiates the roots without computing
+    // them; every direction column the call hands counts, whether or not the
+    // product reads it: y's never reaches H(x*x + y) v.
+    const WantInfo &info = want_info(want);
+    const auto freeze = [&](std::span<const NodeId> roots,
+                            const Jacobian &partials) {
+      OutputBlocks blocks = added;
+      if (info.values) {
+        blocks.values.assign(roots.begin(), roots.end());
+      }
+      const bool pattern = info.jacobian == BlockShape::Cells;
+      if (pattern) {
+        blocks.jacobian = partials.partial;
+      }
+      const std::size_t directions =
+          info.direction == Direction::Symbols     ? symbol_count()
+          : info.direction == Direction::Functions ? roots.size()
+                                                   : 0;
+      return std::make_shared<const Graph<T>>(Graph<T>::freeze(
+          *arena_, std::move(blocks), colouring,
+          pattern ? partials.pattern : Sparsity{}, contracts(), directions));
+    };
     [[maybe_unused]] const bool rebalance = !cells.kept && rebalances(want);
     [[maybe_unused]] const auto held = reading();
-    Frozen from{*this, roots_, cells.jacobian, product};
-    auto swept = std::make_shared<const Graph<T>>(
-        freeze_for(want, *arena_, from, contracts()));
+    auto swept = freeze(roots_, cells.jacobian);
     auto compiled = swept;
 #ifdef DDX_HAS_JIT
     if (rebalance) {
       const Rebalanced &over = sweeps_->rebalanced.peek();
-      Frozen rebalanced{*this, over.roots, over.derivative};
-      compiled = std::make_shared<const Graph<T>>(
-          freeze_for(want, *arena_, rebalanced, contracts()));
+      compiled = freeze(over.roots, over.derivative);
     }
 #endif
     return {.graph = std::move(swept),
@@ -1409,7 +1375,7 @@ private:
       // No kernel is lowered over tensor rows, so no rebalanced copy either.
       if (!rebalanceable(want) || setting().compiler == nullptr ||
           std::ranges::any_of(arena_->nodes(), [](const Node<T> &n) {
-            return kind_of(n.op) == Kind::Tensor || detail::is_tensor(n);
+            return detail::on_tensors(n);
           })) {
         return false;
       }
@@ -1623,8 +1589,8 @@ private:
 };
 
 // How many functions an equation has, as its type says: a count fixed there
-// refuses a file holding another and narrows one function's value to a
-// scalar; a run-time count takes any file and answers a vector.
+// narrows one function's value to a scalar; a run-time count answers a
+// vector.
 template <std::size_t N> struct Fixed {
   static constexpr std::optional<std::size_t> expected = N;
   static constexpr bool scalar = N == 1;

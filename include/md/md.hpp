@@ -2,10 +2,9 @@
 
 // The one place the library says "mdspan".  It binds to the vendored reference
 // implementation (third_party/mdspan.hpp, Apache-2.0 WITH LLVM-exception): no
-// standard library ddx builds against ships <mdspan>, and half of one is no
-// use anyway -- a std::mdspan without std::submdspan leaves slicing with no
-// spelling at all.  Explicit `using` declarations, not a namespace alias:
-// `namespace md = std` would make ddx::impl::md::vector compile.
+// standard library ddx builds against ships <mdspan>.  Explicit `using`
+// declarations, not a namespace alias: `namespace md = std` would make
+// ddx::impl::md::vector compile.
 
 // Before the include: otherwise the vendored header plants itself in ::std,
 // which is UB and collides with a real <mdspan> in the same TU.
@@ -25,22 +24,7 @@ using DDX_MDSPAN_NS::dextents;
 using DDX_MDSPAN_NS::dynamic_extent;
 using DDX_MDSPAN_NS::extents;
 using DDX_MDSPAN_NS::mdspan;
-
-using DDX_MDSPAN_NS::default_accessor;
-using DDX_MDSPAN_NS::layout_left;
 using DDX_MDSPAN_NS::layout_right;
-using DDX_MDSPAN_NS::layout_stride;
-
-using DDX_MDSPAN_NS::full_extent;
-using DDX_MDSPAN_NS::full_extent_t;
-using DDX_MDSPAN_NS::strided_slice;
-using DDX_MDSPAN_NS::submdspan;
-using DDX_MDSPAN_NS::submdspan_extents;
-// submdspan_mapping is not re-exported: it is found by ADL on the mapping type,
-// so a custom layout supplies it as a hidden friend.
-
-using DDX_MDSPAN_NS::layout_left_padded;
-using DDX_MDSPAN_NS::layout_right_padded;
 
 namespace detail {
 template <typename T> inline constexpr bool is_extents_v = false;
@@ -93,7 +77,5 @@ static_assert(CExtents<extents<std::size_t, 2, 3>>);
 static_assert(CStaticExtents<extents<std::size_t, 2, 3>>);
 static_assert(!CStaticExtents<dextents<std::size_t, 2>>);
 static_assert(CLayoutFor<layout_right, extents<std::size_t, 2, 3>>);
-static_assert(CLayoutFor<layout_left, dextents<std::size_t, 2>>);
-static_assert(CLayoutFor<layout_stride, dextents<std::size_t, 2>>);
 
 } // namespace ddx::impl::md

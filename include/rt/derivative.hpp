@@ -327,12 +327,6 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
         add_to(node.a, g, a * expr(node.b));
         add_to(node.b, g, a * expr(node.a));
         break;
-      case OpCode::Gemv:
-        // The matrix is a constant: only the vector moves, by M^T (or M).
-        add_to(node.b, g,
-               expr(b.make(OpCode::Gemv, node.a, adj[v], no_node,
-                           detail::is_transposed(node) ? 0u : 1u)));
-        break;
       case OpCode::AddAt:
         add_to(node.a, g, a);
         add_to(node.b, g, a[detail::index_of(node)]);
@@ -344,9 +338,11 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
         const bool t = detail::is_transposed(node);
         add_to(node.b, g,
                expr(b.make(OpCode::MatVec, node.a, adj[v], no_node, !t)));
-        add_to(node.a, g,
-               expr(t ? b.make(OpCode::Outer, node.b, adj[v])
-                      : b.make(OpCode::Outer, adj[v], node.b)));
+        if (!is_table(b, node.a)) { // a table: nothing moves it
+          add_to(node.a, g,
+                 expr(t ? b.make(OpCode::Outer, node.b, adj[v])
+                        : b.make(OpCode::Outer, adj[v], node.b)));
+        }
         break;
       }
       case OpCode::Outer: // u w^T: u moves by A w, w by A^T u
@@ -504,19 +500,20 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
         d[v] = (dot(dv(node.a), expr(node.b)) + dot(expr(node.a), dv(node.b)))
                    .id(b);
         break;
-      case OpCode::Gemv:
-        d[v] = b.make(OpCode::Gemv, node.a, d[node.b], no_node, node.aux);
-        break;
       case OpCode::AddAt:
         d[v] = b.make(OpCode::AddAt, d[node.a], d[node.b], no_node, node.aux);
         break;
-      case OpCode::MatVec:
-        d[v] =
-            (expr(
-                 b.make(OpCode::MatVec, d[node.a], node.b, no_node, node.aux)) +
-             expr(b.make(OpCode::MatVec, node.a, d[node.b], no_node, node.aux)))
-                .id(b);
+      case OpCode::MatVec: {
+        const Expression<T> moved{
+            b, b.make(OpCode::MatVec, node.a, d[node.b], no_node, node.aux)};
+        d[v] = is_table(b, node.a)
+                   ? moved.id(b)
+                   : (expr(b.make(OpCode::MatVec, d[node.a], node.b, no_node,
+                                  node.aux)) +
+                      moved)
+                         .id(b);
         break;
+      }
       case OpCode::Outer:
         d[v] = (expr(b.make(OpCode::Outer, d[node.a], node.b)) +
                 expr(b.make(OpCode::Outer, node.a, d[node.b])))
@@ -604,9 +601,8 @@ derive_jacobian(Builder<T> &b, std::span<const NodeId> roots) {
 }
 
 // One root rather than a span: a span is not constructible from a NodeId, so
-// this and the m-root overload never compete, and DiffMode does not satisfy
-// Numeric, which keeps it clear of the plain spelling below.
-template <impl::DiffMode Mode, impl::Numeric T>
+// this and the m-root overload never compete.
+template <impl::DiffMode Mode = impl::DiffMode::Reverse, impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow derive_jacobian(Builder<T> &b,
                                                     NodeId root) {
   if constexpr (Mode == impl::DiffMode::Symbolic) {
@@ -614,12 +610,6 @@ template <impl::DiffMode Mode, impl::Numeric T>
   } else {
     return build_reverse_jacobian(b, root);
   }
-}
-
-template <impl::Numeric T>
-[[nodiscard]] constexpr JacobianRow derive_jacobian(Builder<T> &b,
-                                                    NodeId root) {
-  return build_reverse_jacobian(b, root);
 }
 
 // One sweep per colour.  Sweeping from the sum of a colour's partials gives,

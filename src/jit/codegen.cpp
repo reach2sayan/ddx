@@ -1,6 +1,6 @@
 #include "codegen.hpp"
 
-#include "rt/spelling.hpp"
+#include "spelling.hpp"
 #include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>

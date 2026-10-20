@@ -97,7 +97,6 @@ namespace ddx::rt {
 //   Map, Zip            a (, b) = vecs, aux = the elementwise opcode
 //   Scale               a = scalar, b = vec
 //   Sum, Dot            a (, b) = vecs; a scalar
-//   Gemv                a = MatConst, b = vec, aux = 1 for M^T v
 //   AddAt               a = vec, b = scalar, aux = element: a + b e_aux
 // A matrix is a row too, column-major, its shape derived from its operands
 // (shape_of in rt/builder.hpp).  Map, Zip, Scale, Sum and Dot read one as the
@@ -124,7 +123,6 @@ namespace ddx::rt {
   X(vscale, Scale, "vscale", 2, Tensor)                                        \
   X(vsum, Sum, "vsum", 1, Tensor)                                              \
   X(vdot, Dot, "vdot", 2, Tensor)                                              \
-  X(gemv, Gemv, "gemv", 2, Tensor)                                             \
   X(add_at, AddAt, "add_at", 2, Tensor)                                        \
   X(mat_row, MatRow, "mrow", 1, Tensor)                                        \
   X(diag, Diag, "diag", 1, Tensor)                                             \
@@ -230,10 +228,7 @@ static_assert([] {
   return std::ranges::adjacent_find(labels, {}, &OpInfo::label) == labels.end();
 }());
 
-} // namespace detail
-
-namespace detail {
-// An OpCode names a row: a byte from outside -- a file, a Python int -- is
+// An OpCode names a row: a byte from outside -- a Python int -- is
 // range-checked where it is cast, never here.
 [[nodiscard]] constexpr const OpInfo &info(OpCode op) noexcept {
   const auto i = static_cast<std::size_t>(op);
@@ -255,9 +250,8 @@ namespace detail {
   return detail::info(op).kind;
 }
 
-// By label, at compile time for the bridge and at run time for a loader: byte
-// values are table-order, so appending a transcendental shifts every enumerator
-// above it, and a file names its opcodes by label and remaps them on load.
+// By label, at compile time for the bridge and at run time for the text
+// parser.
 [[nodiscard]] constexpr std::optional<OpCode>
 opcode_of(std::string_view label) noexcept {
   const auto row =
@@ -304,15 +298,6 @@ static_assert(std::ranges::all_of(std::views::iota(0uz, op_count), [](auto i) {
 [[nodiscard]] constexpr bool callable(OpCode op) noexcept {
   return !is_leaf(op) && !has_list(op) && kind_of(op) != Kind::Tensor;
 }
-// Whether an op's value is a vector row rather than a scalar: the tensor ops
-// that read vectors into a scalar -- Gather, Sum, Dot -- are not, and MatConst
-// is a table a Gemv reads, not a row anything sweeps.  A Select is either; ask
-// the node (rt/builder.hpp).
-[[nodiscard]] constexpr bool tensor_valued(OpCode op) noexcept {
-  return kind_of(op) == Kind::Tensor && op != OpCode::Gather &&
-         op != OpCode::Sum && op != OpCode::Dot && op != OpCode::MatConst;
-}
-
 // Which kind of named input a leaf is, in table order.
 [[nodiscard]] constexpr std::optional<std::size_t>
 named_index(OpCode op) noexcept {

@@ -99,9 +99,6 @@ lanes_fma(bool negated, const T *DDX_RESTRICT x, const T *DDX_RESTRICT y,
   }
 }
 
-} // namespace detail
-
-namespace detail {
 
 // The tape row an id names, W points wide.
 template <std::size_t W, impl::Numeric U>
@@ -173,8 +170,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
     // A table's MatRow is the table, read in place rather than copied out
     // per sweep; only its transpose is a row of its own.
     const auto table = [&b](NodeId u) {
-      return b.op_of(u) == OpCode::MatRow && !is_transposed(b[u]) &&
-             b.op_of(b[u].a) == OpCode::MatConst;
+      return is_table(b, u) && !is_transposed(b[u]);
     };
     // Lane k of node u, as the kernels read it.
     const auto in = [&](NodeId u, std::size_t k) {
@@ -189,193 +185,141 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
       return std::span<U>{self + k * w, w};
     };
     const TensorKernelTable &kt = *t.kernels;
-    switch (n.op) {
-    case OpCode::VecConst: {
-      const auto &data = b.tensors()[index_of(n)].data;
-      for (std::size_t k = 0; k < W; ++k) {
-        std::ranges::copy(data, mine(k).begin());
-      }
-      break;
-    }
-    case OpCode::Pack: {
-      const auto args = arguments(b, v);
-      for (std::size_t k = 0; k < W; ++k) {
-        std::ranges::transform(args, mine(k).begin(),
-                               [&](NodeId s) { return lane(t.row(s))[k]; });
-      }
-      break;
-    }
-    case OpCode::Gather:
-      for (std::size_t k = 0; k < W; ++k) {
+    // Lane k of a scalar operand.
+    const auto at = [&](NodeId s, std::size_t k) { return lane(t.row(s))[k]; };
+    for (std::size_t k = 0; k < W; ++k) {
+      const auto to = mine(k);
+      switch (n.op) {
+      case OpCode::VecConst:
+        std::ranges::copy(b.tensors()[index_of(n)].data, to.begin());
+        break;
+      case OpCode::Pack:
+        std::ranges::transform(arguments(b, v), to.begin(),
+                               [&](NodeId s) { return at(s, k); });
+        break;
+      case OpCode::Gather:
         out[k] = in(n.a, k)[index_of(n)];
-      }
-      break;
-    case OpCode::Map:
-      for (std::size_t k = 0; k < W; ++k) {
-        kt.map(inner_of(n), in(n.a, k), mine(k));
-      }
-      break;
-    case OpCode::Zip:
-      for (std::size_t k = 0; k < W; ++k) {
-        kt.zip(inner_of(n), in(n.a, k), in(n.b, k), mine(k));
-      }
-      break;
-    case OpCode::Scale:
-      for (std::size_t k = 0; k < W; ++k) {
-        kt.scale(lane(t.row(n.a))[k], in(n.b, k), mine(k));
-      }
-      break;
-    case OpCode::Sum:
-      for (std::size_t k = 0; k < W; ++k) {
+        break;
+      case OpCode::Map:
+        kt.map(inner_of(n), in(n.a, k), to);
+        break;
+      case OpCode::Zip:
+        kt.zip(inner_of(n), in(n.a, k), in(n.b, k), to);
+        break;
+      case OpCode::Scale:
+        kt.scale(at(n.a, k), in(n.b, k), to);
+        break;
+      case OpCode::Sum:
         out[k] = kt.sum(in(n.a, k));
-      }
-      break;
-    case OpCode::Dot:
-      for (std::size_t k = 0; k < W; ++k) {
+        break;
+      case OpCode::Dot:
         out[k] = kt.dot(in(n.a, k), in(n.b, k));
-      }
-      break;
-    case OpCode::Gemv: {
-      const TensorConst<T> &m = b.tensors()[index_of(b[n.a])];
-      for (std::size_t k = 0; k < W; ++k) {
-        kt.gemv(m.rows, m.cols, m.data, in(n.b, k), mine(k), is_transposed(n));
-      }
-      break;
-    }
-    case OpCode::AddAt:
-      for (std::size_t k = 0; k < W; ++k) {
-        const auto to = mine(k);
+        break;
+      case OpCode::AddAt:
         std::ranges::copy(in(n.a, k), to.begin());
-        to[index_of(n)] += lane(t.row(n.b))[k];
-      }
-      break;
-    // The matrix rows.  Shapes come off the arena, as the widths do; a
-    // matrix is column-major.
-    case OpCode::MatRow: { // a table transposed, or a computed matrix
-      if (table(v)) {
-        break; // read in place by in()
-      }
-      // Every other MatRow is a transpose: of the table, or of a row.
-      const Shape to = shape_of(b, v); // cols x rows of the source
-      for (std::size_t k = 0; k < W; ++k) {
+        to[index_of(n)] += at(n.b, k);
+        break;
+      // The matrix rows.  Shapes come off the arena, as the widths do; a
+      // matrix is column-major.
+      case OpCode::MatRow: { // a table transposed, or a computed matrix
+        if (table(v)) {
+          break; // read in place by in()
+        }
+        // Every other MatRow is a transpose: of the table, or of a row.
+        const Shape m = shape_of(b, v); // cols x rows of the source
         const std::span<const U> from =
             b.op_of(n.a) == OpCode::MatConst
                 ? std::span<const U>{b.tensors()[index_of(b[n.a])].data}
                 : in(n.a, k);
-        const auto dst = mine(k);
-        for (std::size_t i = 0; i < to.cols; ++i) {
-          for (std::size_t j = 0; j < to.rows; ++j) {
-            dst[j + i * to.rows] = from[i + j * to.cols];
+        for (std::size_t i = 0; i < m.cols; ++i) {
+          for (std::size_t j = 0; j < m.rows; ++j) {
+            to[j + i * m.rows] = from[i + j * m.cols];
           }
         }
+        break;
       }
-      break;
-    }
-    case OpCode::Diag:
-      for (std::size_t k = 0; k < W; ++k) {
+      case OpCode::Diag: {
         const auto d = in(n.a, k);
-        const auto to = mine(k);
         std::ranges::fill(to, U{});
         for (std::size_t i = 0; i < d.size(); ++i) {
           to[i + i * d.size()] = d[i];
         }
+        break;
       }
-      break;
-    case OpCode::Outer:
-      for (std::size_t k = 0; k < W; ++k) {
+      case OpCode::Outer: {
         const auto u = in(n.a, k);
         const auto g = in(n.b, k);
-        const auto to = mine(k);
         for (std::size_t j = 0; j < g.size(); ++j) {
           kt.scale(g[j], u, to.subspan(j * u.size(), u.size()));
         }
+        break;
       }
-      break;
-    case OpCode::RowScale: // diag(a) M: every column scaled elementwise by a
-      for (std::size_t k = 0; k < W; ++k) {
+      case OpCode::RowScale: { // diag(a) M: every column scaled by a
         const auto d = in(n.a, k);
         const auto m = in(n.b, k);
-        const auto to = mine(k);
         for (std::size_t j = 0; j < m.size() / d.size(); ++j) {
           kt.zip(OpCode::Mul, d, m.subspan(j * d.size(), d.size()),
                  to.subspan(j * d.size(), d.size()));
         }
+        break;
       }
-      break;
-    case OpCode::ColScale: // M diag(b): column j scaled by b[j]
-      for (std::size_t k = 0; k < W; ++k) {
+      case OpCode::ColScale: { // M diag(b): column j scaled by b[j]
         const auto m = in(n.a, k);
         const auto d = in(n.b, k);
-        const auto to = mine(k);
         const std::size_t rows = m.size() / d.size();
         for (std::size_t j = 0; j < d.size(); ++j) {
           kt.scale(d[j], m.subspan(j * rows, rows), to.subspan(j * rows, rows));
         }
+        break;
       }
-      break;
-    case OpCode::MatVec: {
-      const Shape m = shape_of(b, n.a);
-      for (std::size_t k = 0; k < W; ++k) {
-        kt.gemv(m.rows, m.cols, in(n.a, k), in(n.b, k), mine(k),
-                is_transposed(n));
+      case OpCode::MatVec: {
+        const Shape m = shape_of(b, n.a);
+        kt.gemv(m.rows, m.cols, in(n.a, k), in(n.b, k), to, is_transposed(n));
+        break;
       }
-      break;
-    }
-    case OpCode::MatMul: {
-      const Shape l = shape_of(b, n.a);
-      const Shape r = shape_of(b, n.b);
-      for (std::size_t k = 0; k < W; ++k) {
-        kt.gemm(l.rows, l.cols, r.cols, in(n.a, k), in(n.b, k), mine(k));
+      case OpCode::MatMul: {
+        const Shape l = shape_of(b, n.a);
+        kt.gemm(l.rows, l.cols, shape_of(b, n.b).cols, in(n.a, k), in(n.b, k),
+                to);
+        break;
       }
-      break;
-    }
-    case OpCode::StackRows: { // row i of the matrix is item i: (i, j) at i + j
-                              // w
-      const auto items = arguments(b, v);
-      const std::size_t rows = items.size();
-      for (std::size_t k = 0; k < W; ++k) {
-        const auto to = mine(k);
+      case OpCode::StackRows: { // item i is row i: (i, j) at i + j rows
+        const auto items = arguments(b, v);
         for (const auto [i, item] : items | std::views::enumerate) {
           const auto r = in(item, k);
           for (std::size_t j = 0; j < r.size(); ++j) {
-            to[static_cast<std::size_t>(i) + j * rows] = r[j];
+            to[static_cast<std::size_t>(i) + j * items.size()] = r[j];
           }
         }
+        break;
       }
-      break;
-    }
-    case OpCode::RowOf: {
-      const Shape m = shape_of(b, n.a);
-      for (std::size_t k = 0; k < W; ++k) {
+      case OpCode::RowOf: {
         const auto from = in(n.a, k);
-        const auto to = mine(k);
-        for (std::size_t j = 0; j < m.cols; ++j) {
-          to[j] = from[index_of(n) + j * m.rows];
+        const std::size_t rows = shape_of(b, n.a).rows;
+        for (std::size_t j = 0; j < to.size(); ++j) {
+          to[j] = from[index_of(n) + j * rows];
         }
+        break;
       }
-      break;
-    }
-    case OpCode::Select: { // copied, so the arm not taken never meets a 0
-      const auto chosen = [](U c) { return c != U{0}; }; // as select_impl
-      for (std::size_t k = 0; k < W; ++k) {
+      case OpCode::Select: { // copied, so the arm not taken never meets a 0
+        const auto chosen = [](U c) { return c != U{0}; }; // as select_impl
         const auto on = in(n.b, k);
         const auto off = in(n.c, k);
-        const auto to = mine(k);
         if (!is_tensor(b[n.a])) {
-          std::ranges::copy(chosen(lane(t.row(n.a))[k]) ? on : off, to.begin());
-          continue;
+          std::ranges::copy(chosen(at(n.a, k)) ? on : off, to.begin());
+          break;
         }
         const auto c = in(n.a, k);
         for (std::size_t j = 0; j < to.size(); ++j) {
           to[j] = chosen(c[j]) ? on[j] : off[j];
         }
+        break;
       }
-      break;
-    }
-    case OpCode::MatConst: // a table a Gemv reads in place
-      break;
-    default:
-      std::unreachable();
+      case OpCode::MatConst: // a table its MatRow reads in place
+        break;
+      default:
+        std::unreachable();
+      }
     }
   }
 }
@@ -420,7 +364,7 @@ template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_ALWAYS_INLINE constexpr void
 lanes_opaque(const Builder<T> &b, NodeId v, const Node<T> &n, bool fused,
              U *out, auto &&lane, const TapeView<U> &t) {
-  if (kind_of(n.op) == Kind::Tensor || is_tensor(n)) { // a Select's too
+  if (on_tensors(n)) {
     lanes_tensor<W>(b, v, n, out, lane, t);
   } else if (kind_of(n.op) == Kind::Nary) {
     lanes_sum<W>(b, v, fused, out, lane, t);

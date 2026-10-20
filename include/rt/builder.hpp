@@ -178,10 +178,26 @@ namespace detail {
   return node.op == OpCode::Map || node.op == OpCode::Zip ? inner_of(node)
                                                           : node.op;
 }
-// Whether a node's value is a vector row rather than a scalar: its op's
-// answer, but for a Select, which is one over tensor arms.
+// Whether a node's value is a vector row rather than a scalar.  The tensor ops
+// that read vectors into a scalar -- Gather, Sum, Dot -- are not, and MatConst
+// is a table its MatRow reads, not a row anything sweeps; a Select is one
+// over tensor arms.
 [[nodiscard]] constexpr bool is_tensor(const auto &node) noexcept {
-  return tensor_valued(node.op) || (node.op == OpCode::Select && node.aux != 0);
+  switch (node.op) {
+  case OpCode::Gather:
+  case OpCode::Sum:
+  case OpCode::Dot:
+  case OpCode::MatConst:
+    return false;
+  case OpCode::Select:
+    return node.aux != 0;
+  default:
+    return kind_of(node.op) == Kind::Tensor;
+  }
+}
+// Whether a node runs on the tensor sweep: a tensor op, or a tensor Select.
+[[nodiscard]] constexpr bool on_tensors(const auto &node) noexcept {
+  return kind_of(node.op) == Kind::Tensor || is_tensor(node);
 }
 
 // Ids are topological, so one descending pass settles it.  Not a filtered view:
@@ -219,25 +235,14 @@ template <impl::Numeric T> struct Node {
   BOOST_DESCRIBE_CLASS(Node, (), (op, a, b, c, value, aux), (), ())
 };
 
-namespace detail {
-// The layout before a select needed a third operand, kept for the assertion.
-template <impl::Numeric T> struct TwoOperandNode {
-  OpCode op;
-  NodeId a;
-  NodeId b;
-  T value;
-  std::uint32_t aux;
-};
-} // namespace detail
-
-// The third operand lands in padding the two-operand layout already carried.
-// Pinned rather than assumed: a member above `value` would silently widen every
-// node in every arena.
-static_assert(sizeof(Node<double>) == sizeof(detail::TwoOperandNode<double>));
+// A select's third operand lands in padding the two-operand layout already
+// carried.  Pinned rather than assumed: a member above `value` would silently
+// widen every node in every arena.
+static_assert(sizeof(Node<double>) == 32);
 
 // The data behind a VecConst or MatConst leaf, column-major; a vector is one
-// column.  Owned by the model, so a file carries it and a Gemv's matrix is
-// read in place rather than copied into nodes.
+// column.  Owned by the model, so a table is read in place rather than copied
+// into nodes.
 template <impl::Numeric T> struct TensorConst {
   std::uint32_t rows = 0;
   std::uint32_t cols = 1;
@@ -273,31 +278,6 @@ template <impl::Numeric T> struct Model {
   [[nodiscard]] constexpr std::size_t size() const { return nodes.size(); }
 };
 
-// The function table and the list pool of a source: the Model holds them, the
-// Builder and the frozen Graph lend them.
-[[nodiscard]] constexpr auto externs_of(const auto &s) {
-  if constexpr (requires { s.externs(); }) {
-    return s.externs();
-  } else {
-    return std::span{s.externs};
-  }
-}
-[[nodiscard]] constexpr std::span<const NodeId> lists_of(const auto &s) {
-  if constexpr (requires { s.lists(); }) {
-    return s.lists();
-  } else {
-    return std::span{s.lists};
-  }
-}
-// The tensor table of a source: the Model holds it, the Builder lends it.
-[[nodiscard]] constexpr auto tensors_of(const auto &s) {
-  if constexpr (requires { s.tensors(); }) {
-    return s.tensors();
-  } else {
-    return std::span{s.tensors};
-  }
-}
-
 // The ids a has_list node is over, in order: an extern's arguments, the
 // function's arity long; a Pack's or StackRows' items or a sum's terms, the
 // slot long.
@@ -305,9 +285,9 @@ template <impl::Numeric T> struct Model {
                                                           NodeId v) {
   const OpCode op = s.op_of(v);
   const std::size_t count =
-      is_extern(op) ? externs_of(s)[detail::extern_of(s[v]).function].arity
+      is_extern(op) ? s.externs()[detail::extern_of(s[v]).function].arity
                     : detail::count_of(s[v]);
-  return lists_of(s).subspan(s.operands(v)[0], count); // `a` is the offset
+  return s.lists().subspan(s.operands(v)[0], count); // `a` is the offset
 }
 
 namespace detail {
@@ -340,13 +320,13 @@ struct Shape {
     const auto [a, b, c] = s.operands(v);
     switch (s.op_of(v)) {
     case OpCode::VecConst:
-      return {.rows = tensors_of(s)[detail::index_of(s[v])].rows, .cols = 1};
+      return {.rows = s.tensors()[detail::index_of(s[v])].rows, .cols = 1};
     case OpCode::MatConst:
       return {.rows = 0, .cols = 0};
     case OpCode::MatRow: {
       // A table, or -- the dense sweep's transpose -- a computed matrix.
       const auto table = [&] {
-        const auto &m = tensors_of(s)[detail::index_of(s[a])];
+        const auto &m = s.tensors()[detail::index_of(s[a])];
         return Shape{.rows = m.rows, .cols = m.cols};
       };
       const Shape m = s.op_of(a) == OpCode::MatConst ? table() : shape_of(s, a);
@@ -355,10 +335,6 @@ struct Shape {
     }
     case OpCode::Pack:
       return {.rows = detail::count_of(s[v]), .cols = 1};
-    case OpCode::Gemv: {
-      const auto &m = tensors_of(s)[detail::index_of(s[a])];
-      return {.rows = detail::is_transposed(s[v]) ? m.cols : m.rows, .cols = 1};
-    }
     case OpCode::Diag: {
       const std::uint32_t w = shape_of(s, a).rows;
       return {.rows = w, .cols = w};
@@ -391,6 +367,11 @@ struct Shape {
       return {};
     }
   }
+}
+// A MatRow over a mat_constant table, either way round: a constant.
+[[nodiscard]] constexpr bool is_table(const auto &s, NodeId v) {
+  return s.op_of(v) == OpCode::MatRow &&
+         s.op_of(s.operands(v)[0]) == OpCode::MatConst;
 }
 // How many scalars a node's value is: one for a scalar node and for the tensor
 // ops that read a vector down to one, else the row's rows x cols.  Zero for a
@@ -521,7 +502,6 @@ public:
   }
   // Each kind's names in declaration order, which is slot order: the order a
   // positional point is read in and every result is laid out in.
-  [[nodiscard]] constexpr const Model<T> &model() const { return model_; }
   [[nodiscard]] constexpr const std::vector<std::string> &
   names(OpCode op) const {
     return model_.names[*named_index(op)];
@@ -1131,10 +1111,12 @@ struct Packed {
 } // namespace detail
 
 // Where a tensor-valued node's rows sit in the tensor tape: `at` elements in,
-// per lane, `width` wide.  Width 0 is a node with no row.
+// per lane, `width` wide.  Width 0 is a node with no row.  An output matrix
+// knows its `rows` too, since it leaves row-major.
 struct TensorRow {
   std::uint32_t at = 0;
   std::uint32_t width = 0;
+  std::uint32_t rows = 0;
 };
 // Every row of a schedule, indexed by id, and the elements one lane of all of
 // them takes.  Empty rows and a zero extent is a schedule with no tensor in
@@ -1162,7 +1144,9 @@ tensor_layout(const auto &s, std::span<const Step> schedule,
   std::vector<TensorRow> free; // (at, width) runs no live row holds
   for (const auto [p, step] : schedule | std::views::enumerate) {
     const auto at = static_cast<std::uint32_t>(p);
-    if (is_tensor(s[step.node])) {
+    // A table's MatRow is the table, read in place: no row of its own.
+    if (is_tensor(s[step.node]) &&
+        !(is_table(s, step.node) && !is_transposed(s[step.node]))) {
       const std::uint32_t w = width_of(s, step.node);
       const auto fit = std::ranges::find(free, w, &TensorRow::width);
       if (fit == free.end()) {
@@ -1188,9 +1172,6 @@ tensor_layout(const auto &s, std::span<const Step> schedule,
   }
   return out;
 }
-} // namespace detail
-
-namespace detail {
 
 // The roots' cone in an arena, which every walker below asks for first.
 template <impl::Numeric T>

@@ -34,28 +34,12 @@ struct Guarded {
 
 // One rung's compile.  Copied out by pending(), so a caller waits holding no
 // lock of ours.
-class Pending {
-public:
-  Pending() = default;
-  explicit Pending(std::shared_future<jit::compile_result<jit::Kernel>> f)
-      : future_{std::move(f)} {}
-
-  [[nodiscard]] bool valid() const { return future_.valid(); }
-  // Polling a shared_future from many threads is well-defined.
-  [[nodiscard]] bool landed() const {
-    using namespace std::chrono_literals;
-    return future_.valid() &&
-           future_.wait_for(0s) == std::future_status::ready;
-  }
-  void wait() const { future_.wait(); }
-  // The kernel, or why there is none.  Only once landed().
-  [[nodiscard]] jit::compile_result<jit::Kernel> take() const {
-    return future_.get();
-  }
-
-private:
-  std::shared_future<jit::compile_result<jit::Kernel>> future_;
-};
+using Pending = std::shared_future<jit::compile_result<jit::Kernel>>;
+// Polling a shared_future from many threads is well-defined.
+[[nodiscard]] inline bool landed(const Pending &p) {
+  using namespace std::chrono_literals;
+  return p.valid() && p.wait_for(0s) == std::future_status::ready;
+}
 
 // Published, never written: a kernel arrives as a *new* Compiled.
 template <impl::Numeric T> struct Compiled {
@@ -262,11 +246,11 @@ private:
     jit::Kernel best;
     jit::OptLevel level = jit::OptLevel::O0;
     for (Rung &rung : rungs_) {
-      if (!rung.pending.landed()) {
+      if (!landed(rung.pending)) {
         continue;
       }
       // A refused compile leaves the kernel empty, and the sweep stays.
-      if (auto came = rung.pending.take(); came && (!best || rung.level > level)) {
+      if (auto came = rung.pending.get(); came && (!best || rung.level > level)) {
         best = *std::move(came);
         level = rung.level;
       }
@@ -280,7 +264,7 @@ private:
   // Whether the pipeline owes a reader anything: only ever a kernel to publish.
   [[nodiscard]] bool arrived() const {
     return std::ranges::any_of(
-        rungs_, [](const Rung &rung) { return rung.pending.landed(); });
+        rungs_, [](const Rung &rung) { return landed(rung.pending); });
   }
 
   Guarded lock_;

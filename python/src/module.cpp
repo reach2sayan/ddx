@@ -24,6 +24,7 @@
 #include <array>
 #include <cctype>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <ranges>
 #include <span>
@@ -244,41 +245,46 @@ PYBIND11_MODULE(_ddx, m) {
       .def_property_readonly("shape", [](const PyExpression &e) {
         return pyb::tuple(pyb::cast(e.shape()));
       });
-  binop("__add__", [](const auto &l, const auto &r) { return l + r; });
-  binop("__radd__", [](const auto &l, const auto &r) { return r + l; });
+  // The base's own operator, so `x - y` is the node C++ builds; a reflected
+  // name takes the operands the other way round.  `1.0 < x` reaches __gt__ by
+  // Python's own reflection, and __ne__ is spelled out: Python would otherwise
+  // derive it as `not (a == b)`.
+  using Base = rt::Expression<double>;
+  const auto op = [&binop](const char *name, const char *reflected, auto fn) {
+    binop(name, [fn](const PyExpression &l, const PyExpression &r) {
+      return combine(l, r, fn);
+    });
+    if (reflected != nullptr) {
+      binop(reflected, [fn](const PyExpression &l, const PyExpression &r) {
+        return combine(r, l, fn);
+      });
+    }
+  };
+  op("__add__", "__radd__", std::plus<>{});
+  op("__sub__", "__rsub__", std::minus<>{});
+  op("__mul__", "__rmul__", std::multiplies<>{});
+  op("__truediv__", "__rtruediv__", std::divides<>{});
+  op("__pow__", "__rpow__", [](const Base &l, const Base &r) {
+    return Base::form(rt::OpCode::Pow, l, r);
+  });
+  op("__lt__", nullptr, std::less<>{});
+  op("__le__", nullptr, std::less_equal<>{});
+  op("__gt__", nullptr, std::greater<>{});
+  op("__ge__", nullptr, std::greater_equal<>{});
+  op("__eq__", nullptr, std::equal_to<>{});
+  op("__ne__", nullptr, std::not_equal_to<>{});
   // On a copy, so `y = acc; acc += t` leaves y alone; a loop of += is one
   // node of all its terms.
-  binop("__iadd__", [](const auto &l, const auto &r) {
-    PyExpression acc = l;
+  binop("__iadd__", [](PyExpression acc, const PyExpression &r) {
     return acc += r;
   });
-  binop("__isub__", [](const auto &l, const auto &r) {
-    PyExpression acc = l;
-    return acc += -r;
+  binop("__isub__", [](PyExpression acc, const PyExpression &r) {
+    return acc += unary(rt::OpCode::Neg, r);
   });
-  binop("__sub__", [](const auto &l, const auto &r) { return l - r; });
-  binop("__rsub__", [](const auto &l, const auto &r) { return r - l; });
-  binop("__mul__", [](const auto &l, const auto &r) { return l * r; });
-  binop("__rmul__", [](const auto &l, const auto &r) { return r * l; });
-  binop("__truediv__", [](const auto &l, const auto &r) { return l / r; });
-  binop("__rtruediv__", [](const auto &l, const auto &r) { return r / l; });
-  binop("__pow__", [](const auto &l, const auto &r) {
-    return binary(rt::OpCode::Pow, l, r);
-  });
-  binop("__rpow__", [](const auto &l, const auto &r) {
-    return binary(rt::OpCode::Pow, r, l);
-  });
-  // `1.0 < x` reaches __gt__ by Python's own reflection.  __ne__ is
-  // spelled out: Python would otherwise derive it as `not (a == b)`.
-  binop("__lt__", [](const auto &l, const auto &r) { return l < r; });
-  binop("__le__", [](const auto &l, const auto &r) { return l <= r; });
-  binop("__gt__", [](const auto &l, const auto &r) { return l > r; });
-  binop("__ge__", [](const auto &l, const auto &r) { return l >= r; });
-  binop("__eq__", [](const auto &l, const auto &r) { return l == r; });
-  binop("__ne__", [](const auto &l, const auto &r) { return l != r; });
   expression
       .def(
-          "__neg__", [](const PyExpression &u) { return -u; },
+          "__neg__",
+          [](const PyExpression &u) { return unary(rt::OpCode::Neg, u); },
           pyb::is_operator())
       .def(
           "__abs__",
@@ -369,12 +375,16 @@ PYBIND11_MODULE(_ddx, m) {
       pyb::arg("cond"), pyb::arg("if_true"), pyb::arg("if_false"));
 
   // The vector factories and reductions: an Expression with a width is a
-  // vector, and the arithmetic above is elementwise over one.
+  // vector, and the arithmetic above is elementwise over one.  A factory
+  // builds in the equation() callback's arena.
+  const auto in_arena = [](auto make) {
+    const auto arena = ddx::py::arena_now();
+    return PyExpression::checked(make(*arena), arena);
+  };
   m.def(
       "vec",
-      [](std::string_view name, std::size_t n) {
-        const auto arena = ddx::py::arena_now();
-        return PyExpression::checked(rt::vec(*arena, name, n), arena);
+      [in_arena](std::string_view name, std::size_t n) {
+        return in_arena([&](auto &b) { return rt::vec(b, name, n); });
       },
       pyb::arg("name"), pyb::arg("n"));
   m.def(
@@ -385,19 +395,19 @@ PYBIND11_MODULE(_ddx, m) {
       pyb::arg("scalars"));
   m.def(
       "vec_constant",
-      [](const std::vector<double> &data) {
-        const auto arena = ddx::py::arena_now();
-        return PyExpression::checked(
-            rt::vec_constant(*arena, std::span<const double>{data}), arena);
+      [in_arena](const std::vector<double> &data) {
+        return in_arena([&](auto &b) {
+          return rt::vec_constant(b, std::span<const double>{data});
+        });
       },
       pyb::arg("data"));
   m.def(
       "mat_constant",
-      [](std::size_t rows, std::size_t cols, const std::vector<double> &data) {
-        const auto arena = ddx::py::arena_now();
-        return PyExpression::checked(
-            rt::mat_constant(*arena, rows, cols, std::span<const double>{data}),
-            arena);
+      [in_arena](std::size_t rows, std::size_t cols,
+                 const std::vector<double> &data) {
+        return in_arena([&](auto &b) {
+          return rt::mat_constant(b, rows, cols, std::span<const double>{data});
+        });
       },
       pyb::arg("rows"), pyb::arg("cols"), pyb::arg("data"));
   m.def(
