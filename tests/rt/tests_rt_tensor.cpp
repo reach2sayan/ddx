@@ -1409,7 +1409,7 @@ TEST(RtTensor, ReleasedTapesGrowBackToTheSameBits) {
   const auto eq = tensor_mse(n);
   ASSERT_FALSE(eq.poisoned());
   const auto sweep = [&] { // the block_lanes path, with a tail
-    const Batch r = batch_jacobian(eq, n, 64, [](std::size_t p) { return drifted(n, p); });
+    const Batch r = batch_jacobian(eq, n, 64, [&](std::size_t p) { return drifted(n, p); });
     return std::pair{r.f, r.g};
   };
   const auto before = sweep();
