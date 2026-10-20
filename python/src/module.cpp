@@ -250,7 +250,8 @@ PYBIND11_MODULE(_ddx, m) {
   // Python's own reflection, and __ne__ is spelled out: Python would otherwise
   // derive it as `not (a == b)`.
   using Base = rt::Expression<double>;
-  const auto op = [&binop](const char *name, const char *reflected, auto fn) {
+  const auto infix = [&binop](const char *name, const char *reflected,
+                              auto fn) {
     binop(name, [fn](const PyExpression &l, const PyExpression &r) {
       return combine(l, r, fn);
     });
@@ -260,19 +261,19 @@ PYBIND11_MODULE(_ddx, m) {
       });
     }
   };
-  op("__add__", "__radd__", std::plus<>{});
-  op("__sub__", "__rsub__", std::minus<>{});
-  op("__mul__", "__rmul__", std::multiplies<>{});
-  op("__truediv__", "__rtruediv__", std::divides<>{});
-  op("__pow__", "__rpow__", [](const Base &l, const Base &r) {
+  infix("__add__", "__radd__", std::plus<>{});
+  infix("__sub__", "__rsub__", std::minus<>{});
+  infix("__mul__", "__rmul__", std::multiplies<>{});
+  infix("__truediv__", "__rtruediv__", std::divides<>{});
+  infix("__pow__", "__rpow__", [](const Base &l, const Base &r) {
     return Base::form(rt::OpCode::Pow, l, r);
   });
-  op("__lt__", nullptr, std::less<>{});
-  op("__le__", nullptr, std::less_equal<>{});
-  op("__gt__", nullptr, std::greater<>{});
-  op("__ge__", nullptr, std::greater_equal<>{});
-  op("__eq__", nullptr, std::equal_to<>{});
-  op("__ne__", nullptr, std::not_equal_to<>{});
+  infix("__lt__", nullptr, std::less<>{});
+  infix("__le__", nullptr, std::less_equal<>{});
+  infix("__gt__", nullptr, std::greater<>{});
+  infix("__ge__", nullptr, std::greater_equal<>{});
+  infix("__eq__", nullptr, std::equal_to<>{});
+  infix("__ne__", nullptr, std::not_equal_to<>{});
   // On a copy, so `y = acc; acc += t` leaves y alone; a loop of += is one
   // node of all its terms.
   binop("__iadd__", [](PyExpression acc, const PyExpression &r) {

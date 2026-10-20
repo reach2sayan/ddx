@@ -350,8 +350,9 @@ TEST(RtTensor, OperatorsAreTheCalls) {
   const auto why = [](const RE &e) {
     return ddx::rt::equation(e).status()->code;
   };
-  for (const RE &refused :
-       {M % M, x % M, y % C, M % y, ddx::rt::transpose(M) % x, x % y}) {
+  const std::array refused_all{
+      M % M, x % M, y % C, M % y, ddx::rt::transpose(M) % x, x % y};
+  for (const RE &refused : refused_all) {
     EXPECT_EQ(why(refused), ddx::errc::tensor_shape);
   }
   const RE orphan = ddx::rt::vec("z", 2);
