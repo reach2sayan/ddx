@@ -525,14 +525,6 @@ build/
 *.md
 !python/README.md
 
-# The ad_jacobian write-up and its build product are kept in the working tree
-# but out of the index, alongside the already-ignored *.md docs.
-docs/ad_jacobian.tex
-docs/ad_jacobian.pdf
-
-# The bit-exactness gate probe is a local check, kept out of the index.
-/docs/plans/gate/
-
 # The comparison harness is an internal check, kept out of the index along with
 # its build trees.
 /compare/
@@ -541,7 +533,7 @@ docs/ad_jacobian.pdf
 /cmake-build-compare/
 /cmake-build-bench/
 .claude/
-!/docs/
+/docs/
 
 # A solution file the IDE drops in the root; not part of the CMake build.
 /ddx.wsp
