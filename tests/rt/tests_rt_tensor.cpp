@@ -1296,6 +1296,23 @@ TEST(RtMatrix, RefusesMismatchedShapesAndMatrixRoots) {
   const RE m = T * ddx::rt::mat_constant(b, 2, 3, std::span<const double>{six});
   EXPECT_EQ(ddx::rt::equation(RE{b, m.id()}).status()->code,
             ddx::errc::tensor_shape);
+
+  // A table has no width, so nothing that counts widths may take it for a
+  // scalar: not as an output, an element, or a moved entry.
+  const auto table =
+      ddx::rt::equation([&] { return ddx::rt::mat_constant(2, 3, six); });
+  EXPECT_EQ(table.status()->code, ddx::errc::tensor_shape);
+  const auto element = ddx::rt::equation([&] {
+    const std::array elements{ddx::rt::var("T"),
+                              ddx::rt::mat_constant(2, 3, six)};
+    return sum(ddx::rt::pack(std::span<const RE>{elements}));
+  });
+  EXPECT_EQ(element.status()->code, ddx::errc::tensor_shape);
+  const auto moved = ddx::rt::equation([&] {
+    return sum(ddx::rt::detail::add_at(ddx::rt::vec("x", 2),
+                                       ddx::rt::mat_constant(2, 3, six), 0));
+  });
+  EXPECT_EQ(moved.status()->code, ddx::errc::tensor_shape);
 }
 
 TEST(RtMatrix, BatchesAndThreadsAreBitIdentical) {

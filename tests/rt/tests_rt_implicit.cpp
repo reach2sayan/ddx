@@ -222,6 +222,14 @@ TEST(RtImplicit, AResidualOverAnotherImplicitIsRefused) {
   EXPECT_EQ(eq.status()->code, ddx::errc::nested_implicit);
 }
 
+TEST(RtImplicit, AnImplicitWithNoResidualIsRefused) {
+  const auto eq = ddx::rt::equation([] {
+    return ddx::rt::var("a") * ddx::rt::named(ddx::rt::OpCode::Implicit, "z");
+  });
+  ASSERT_TRUE(eq.poisoned());
+  EXPECT_EQ(eq.status()->code, ddx::errc::unclosed_implicit);
+}
+
 TEST(RtImplicit, AnImplicitNamedLikeASymbolIsRefused) {
   const auto eq = ddx::rt::equation([] {
     const auto a = ddx::rt::var("a");

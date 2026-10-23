@@ -521,9 +521,10 @@ public:
     return model_.names | std::views::join |
            impl::to<std::vector<std::string>>();
   }
-  // The residual whose root each implicit input is, by slot; no_node only
-  // beside a broken() arena.  And the first misuse of implicit(), which no
-  // expression can carry, for the equation to refuse with.
+  // The residual whose root each implicit input is, by slot; no_node beside a
+  // broken() arena, or for an implicit named without implicit().  And the first
+  // misuse of implicit(), which no expression can carry, for the equation to
+  // refuse with.
   [[nodiscard]] constexpr std::span<const NodeId> closures() const {
     return model_.closures;
   }

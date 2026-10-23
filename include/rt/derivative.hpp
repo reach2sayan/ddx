@@ -171,6 +171,9 @@ template <impl::Numeric T>
       std::views::iota(0u, static_cast<std::uint32_t>(b.closures().size()));
   for (const std::uint32_t slot : implicits) {
     const NodeId f = b.closures()[slot];
+    if (f == no_node) {
+      return errc::unclosed_implicit;
+    }
     const auto live = reachable(b, std::span{&f, 1});
     if (std::ranges::any_of(implicits, [&](std::uint32_t other) {
           return other != slot && live[b.leaf(OpCode::Implicit, other)];

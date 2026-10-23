@@ -44,7 +44,10 @@ namespace ddx {
   /* The text surface. */                                                                     \
   X(bad_syntax,       "not an expression this grammar accepts")                               \
   X(unknown_function, "no function of that name")                                             \
-  X(wrong_argument_count, "the function takes a different number of arguments")
+  X(wrong_argument_count, "the function takes a different number of arguments")      \
+                                                                                              \
+  /* Appended, so no earlier value moves. */                                                  \
+  X(unclosed_implicit, "an implicit input is named without the residual it is a root of")
 // clang-format on
 
 enum class errc : std::uint8_t {

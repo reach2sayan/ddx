@@ -276,6 +276,7 @@ class errc(enum.IntEnum):
     bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 23>
     unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 24>
     wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 25>
+    unclosed_implicit: typing.ClassVar[errc]  # value = <errc.unclosed_implicit: 26>
     @classmethod
     def __new__(cls, value):
         ...

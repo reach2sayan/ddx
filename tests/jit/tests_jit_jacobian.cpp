@@ -3,6 +3,7 @@
 #include "jit/tests_jit_common.hpp"
 #include "rt/bridge.hpp"
 #include "rt/derivative.hpp"
+#include "rt/equation.hpp"
 #include "rt/graph.hpp"
 #include "rt/interpret.hpp"
 #include "util/ranges.hpp"
@@ -182,6 +183,34 @@ TEST(JitHessian, ThirdBlockCarriesTheColouredHessian) {
     }
   }
   EXPECT_EQ(colouring.count() * 2, kernel.shape().hessian);
+}
+
+// The kernel is lowered from the rebalanced roots whatever the arena holds
+// besides: a dense Hessian swept first leaves tensor nodes no scalar root
+// reads, and the value kernel keeps the bits of one swept without it.
+TEST(JitJacobian, ADenseHessianSweptFirstLeavesTheKernelsBits) {
+  const auto build = [] {
+    return ddx::rt::equation([] {
+      const auto x = ddx::rt::var("x");
+      const auto y = ddx::rt::var("y");
+      ddx::rt::Expression<> f = x * y;
+      for (int i = 1; i <= 64; ++i) {
+        f = f + sin(x * (1.0 + 0.1 * i)) * exp(y * (i % 7)) / i;
+      }
+      return f;
+    });
+  };
+  auto fresh = build();
+  auto swept = build();
+  ASSERT_TRUE(swept.dense_hessian(std::array{0.7, 1.3}).has_value());
+  for (auto *eq : {&fresh, &swept}) {
+    eq->options({.backend = ddx::jit::Backend::Compile, .points = 1});
+    ASSERT_TRUE(eq->wait_for_kernel(ddx::rt::Want::Value));
+  }
+  for (const double x : {0.3, 0.7, 1.1, 2.9, 4.2}) {
+    const std::array p{x, 1.3};
+    EXPECT_EQ(*swept.evaluate(p), *fresh.evaluate(p)) << "x = " << x;
+  }
 }
 
 } // namespace

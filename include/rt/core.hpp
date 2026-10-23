@@ -755,7 +755,8 @@ protected:
     if (const auto why = unclosed(*arena_)) {
       poison(error{*why});
     } else if (std::ranges::any_of(roots_, [this](NodeId r) {
-                 return detail::is_tensor((*arena_)[r]);
+                 return detail::is_tensor((*arena_)[r]) ||
+                        arena_->op_of(r) == OpCode::MatConst;
                })) {
       poison(error{errc::tensor_shape});
     } else {
@@ -1367,10 +1368,17 @@ private:
 #ifdef DDX_HAS_JIT
     if constexpr (std::same_as<T, double>) {
       // No kernel is lowered over tensor rows, so no rebalanced copy either.
-      if (!rebalanceable(want) || setting().compiler == nullptr ||
-          std::ranges::any_of(arena_->nodes(), [](const Node<T> &n) {
-            return detail::on_tensors(n);
-          })) {
+      // The roots' cone, not the arena: a dense Hessian swept earlier leaves
+      // tensor nodes no scalar root reads.  Read under the lock, as a sweep on
+      // another thread may be appending.
+      const auto tensors = [this] {
+        [[maybe_unused]] const auto held = reading();
+        const auto live = detail::reachable(*arena_, roots_);
+        return std::ranges::any_of(detail::live_ids(live), [this](NodeId v) {
+          return detail::on_tensors((*arena_)[v]);
+        });
+      };
+      if (!rebalanceable(want) || setting().compiler == nullptr || tensors()) {
         return false;
       }
       (void)sweep(sweeps_->rebalanced, [this] {

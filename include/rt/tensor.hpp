@@ -95,7 +95,7 @@ pack(Builder<T> &b, std::span<const Expression<T>> scalars) {
     if (const auto why = detail::Rooting::why(s)) {
       return detail::refused<T>(*why);
     }
-    if (s.size() != 0) {
+    if (!detail::Rooting::scalar(s)) {
       return detail::refused<T>(errc::tensor_shape);
     }
   }
@@ -285,7 +285,7 @@ add_at(const Expression<T> &v, const Expression<T> &s, std::size_t i) {
   if (const auto why = detail::Rooting::why(s)) {
     return detail::refused<T>(*why);
   }
-  if (i >= v.size() || s.size() != 0) {
+  if (i >= v.size() || !detail::Rooting::scalar(s)) {
     return detail::refused<T>(errc::tensor_shape);
   }
   Builder<T> &b = *detail::Rooting::builder(v);

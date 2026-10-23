@@ -530,6 +530,12 @@ template <impl::Numeric T, std::ranges::random_access_range R>
                                            const TensorKernelTable &kernels) {
   using U = std::ranges::range_value_t<R>;
   const auto schedule = schedule_of(b, ids);
+  // At a scalar other than the arena's, an op U lacks answers U{}: the caller
+  // asks computes_at() first, as univariate_derivative() does.
+  assert(
+      (std::same_as<U, T> || std::ranges::all_of(schedule, [&b](const Step &s) {
+         return supports<U>(b[s.node].op);
+       })));
   std::vector<U> v(b.size());
   TensorTape<U> scratch{b, schedule, kernels};
   evaluate_into(b, point, schedule, std::span<U>{v}, scratch.view());

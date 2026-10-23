@@ -44,6 +44,11 @@ struct Rooting {
   [[nodiscard]] static constexpr Expression<T> poison(errc why) noexcept {
     return Expression<T>::poison(why);
   }
+  // A table has no width, so size() alone takes it for a scalar.
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr bool scalar(const Expression<T> &e) noexcept {
+    return e.size() == 0 && !e.is_matrix();
+  }
 };
 } // namespace detail
 
@@ -432,7 +437,7 @@ public:
       if (a.why_) {
         return Expression<T>::poison(*a.why_);
       }
-      if (a.size() != 0 || a.is_matrix()) {
+      if (!detail::Rooting::scalar(a)) {
         return Expression<T>::poison(errc::tensor_shape);
       }
     }
