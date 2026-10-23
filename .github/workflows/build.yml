@@ -59,12 +59,8 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          # rt/eigen.hpp and rt/eigen_kernels.hpp are exempt: optional extensions
-          # nothing in ddx includes, behind `__has_include(<Eigen/Core>)` (probed
-          # once, as DDX_HAS_EIGEN) so they are inert without Eigen.
           angled=$(grep -rnE '#[[:space:]]*include[[:space:]]*<[^>]*/' include --include='*.hpp' \
-                   | grep -v third_party | grep -v '<boost/' \
-                   | grep -vE '^include/rt/eigen(_kernels)?\.hpp:' || true)
+                   | grep -v third_party | grep -v '<boost/' || true)
           # A quoted include is one of ours and must resolve inside include/,
           # as a header or as the .in template CMake configures into the build
           # tree; one that does not is a bundled dependency under another spelling.

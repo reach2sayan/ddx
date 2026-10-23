@@ -1,19 +1,18 @@
 # Every third-party dependency.  Nothing downloads until its macro asks.
 #
 #   ddx_use_boost()            Boost, header-only, found or fetched  always
-#   ddx_use_eigen()            Eigen, header-only, found or fetched  tests_eigen
 #   ddx_use_llvm()             LLVM 20, found                        DDX_BUILD_JIT
 #   ddx_use_googletest()       GoogleTest, fetched                   top-level only
 #   ddx_use_pybind11()         pybind11, found in the build env      DDX_BUILD_PYTHON
 #
-# Found or fetched: use the Boost or Eigen you were given, download one only if
+# Found or fetched: use the Boost you were given, download one only if
 # you were not.  -DBoost_ROOT=, CMAKE_PREFIX_PATH and toolchain files all work.
 include_guard(GLOBAL)
 
 include(FetchContent)
 
 # Skip CMake's user package registry: it records build trees, so a bare configure
-# once found C:/vcpkg/buildtrees/eigen3/x64-windows-rel instead of fetching.
+# can find another project's build tree instead of fetching.
 set(DDX_FIND_NO_REGISTRY NO_CMAKE_PACKAGE_REGISTRY NO_CMAKE_SYSTEM_PACKAGE_REGISTRY)
 
 # --- versions ---------------------------------------------------------------
@@ -28,45 +27,6 @@ FetchContent_Declare(googletest
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SYSTEM
 )
-
-# --- Eigen, for the interop test only ------------------------------------------
-# Headers only, never built, never a dependency of ddx itself.
-set(DDX_EIGEN_INCLUDEDIR "" CACHE PATH "A raw Eigen header tree to use (must hold Eigen/Core); overrides both find_package and the fetch")
-set(DDX_EIGEN_VERSION "3.4.0" CACHE STRING "Eigen release to fetch when none is supplied")
-FetchContent_Declare(eigen
-        URL https://gitlab.com/libeigen/eigen/-/archive/${DDX_EIGEN_VERSION}/eigen-${DDX_EIGEN_VERSION}.tar.gz
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-        SOURCE_SUBDIR ddx-does-not-build-eigen
-)
-
-macro(ddx_use_eigen)
-    if (NOT TARGET ddx_eigen)
-        add_library(ddx_eigen INTERFACE)
-        if (DDX_EIGEN_INCLUDEDIR)
-            _ddx_adopt_eigen("${DDX_EIGEN_INCLUDEDIR}")
-        else ()
-            find_package(Eigen3 QUIET CONFIG ${DDX_FIND_NO_REGISTRY})
-            if (Eigen3_FOUND AND TARGET Eigen3::Eigen)
-                target_link_libraries(ddx_eigen INTERFACE Eigen3::Eigen)
-                message(STATUS "Eigen ${Eigen3_VERSION} (found: ${Eigen3_DIR})")
-            else ()
-                FetchContent_MakeAvailable(eigen)
-                _ddx_adopt_eigen("${eigen_SOURCE_DIR}")
-            endif ()
-        endif ()
-    endif ()
-endmacro()
-
-macro(_ddx_adopt_eigen root)
-    if (NOT EXISTS "${root}/Eigen/Core")
-        message(FATAL_ERROR
-                "No Eigen at ${root}: it has no Eigen/Core.  DDX_EIGEN_INCLUDEDIR "
-                "must name the directory *containing* Eigen/, and setting it turns "
-                "off both find_package and the pinned fetch.")
-    endif ()
-    target_include_directories(ddx_eigen SYSTEM INTERFACE "${root}")
-    message(STATUS "Eigen (${root})")
-endmacro()
 
 # --- Boost -------------------------------------------------------------------
 # In order: a Boost::headers a parent already defined, find_package, the fetch.

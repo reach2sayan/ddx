@@ -63,15 +63,27 @@ endif ()
 
 # --- packaging ---------------------------------------------------------------
 # tests/package consumed out of tree, against the build tree and an install prefix.
-# rt/eigen.hpp against real Eigen, which is found or fetched only when this is on.
-option(DDX_TEST_EIGEN "Build the Eigen interop test (uses a supplied Eigen, else fetches one)" OFF)
-if (DDX_TEST_EIGEN)
-    ddx_use_eigen()
+# A consumer's glue for other libraries, each built when that library is found;
+# none is fetched.  Eigen: batches through its matrices, and a kernel table.
+find_package(Eigen3 3.3 QUIET CONFIG ${DDX_FIND_NO_REGISTRY})
+if (TARGET Eigen3::Eigen)
     add_executable(tests_eigen eigen/tests_eigen.cpp)
-    target_link_libraries(tests_eigen PRIVATE gtest_main ddx::rt ddx_eigen)
+    target_link_libraries(tests_eigen PRIVATE gtest_main ddx::rt Eigen3::Eigen)
     ddx_target_flags(tests_eigen)
     ddx_runtime_deps(tests_eigen)
     gtest_discover_tests(tests_eigen ${DDX_TEST_ENV})
+endif ()
+
+# Any CBLAS as a kernel table.
+find_package(BLAS QUIET)
+find_path(DDX_CBLAS_INCLUDE_DIR cblas.h PATH_SUFFIXES openblas)
+if (TARGET BLAS::BLAS AND DDX_CBLAS_INCLUDE_DIR)
+    add_executable(tests_cblas cblas/tests_cblas.cpp)
+    target_include_directories(tests_cblas SYSTEM PRIVATE "${DDX_CBLAS_INCLUDE_DIR}")
+    target_link_libraries(tests_cblas PRIVATE gtest_main ddx::rt BLAS::BLAS)
+    ddx_target_flags(tests_cblas)
+    ddx_runtime_deps(tests_cblas)
+    gtest_discover_tests(tests_cblas ${DDX_TEST_ENV})
 endif ()
 
 option(DDX_TEST_PACKAGE "Build the out-of-tree consumer tests" ${PROJECT_IS_TOP_LEVEL})

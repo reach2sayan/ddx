@@ -114,8 +114,22 @@ shape; the arm not taken never reaches a derivative, even where it is
 infinite. They compute at
 `double`, are never an output, and are computed by a kernel table —
 `rt::use_tensor_kernels(table)` or `eq.tensor_kernels(table)`, built with
-`rt::tensor_kernel_table<K>()` over a type satisfying `rt::TensorKernels`;
-`rt/eigen_kernels.hpp` supplies `rt::eigen::table`.
+`rt::tensor_kernel_table<K>()` over a type satisfying `rt::TensorKernels`.
+Inherit `rt::reference::Kernels` and replace only the rows your library does
+better; `tests/eigen` and `tests/cblas` each hold one, Eigen and any CBLAS:
+
+```cpp
+struct Blas : rt::reference::Kernels {
+  static constexpr std::string_view name = "cblas";
+  static void gemv(std::size_t r, std::size_t c, In m, In v, Out out, bool t) noexcept {
+    cblas_dgemv(CblasColMajor, t ? CblasTrans : CblasNoTrans, int(r), int(c), 1.0,
+                m.data(), int(r), v.data(), 1, 0.0, out.data(), 1);
+  }
+};
+constexpr auto blas = rt::tensor_kernel_table<Blas>();
+rt::use_tensor_kernels(blas);
+```
+
 
 Matrices are elementwise the same way: a `mat_constant` table taking part in
 arithmetic is its matrix, so `exp(-(A0 + T * A1) / (R * T))` over tables is a
@@ -203,7 +217,9 @@ Size each block with `value_columns()`, `jacobian_columns()`,
 `dense_hessian_columns()`. The Jacobian block holds only structural nonzeros —
 `jacobian_pattern()` maps columns to cells — and the Hessian block is
 colour-compressed, read with `hessian_cell(i, j)` or `hessian_pattern()`.
-`rt/eigen.hpp` adds `rt::eigen::columns_of(M)` and `rt::eigen::scatter(...)`.
+A column-major matrix's columns are batch columns as they stand;
+`tests/eigen/tests_eigen.cpp` passes Eigen matrices in and scatters blocks back
+out dense.
 
 `eq.restrict({"T", "P"})` is a view computing only those symbols' Jacobian
 columns.
