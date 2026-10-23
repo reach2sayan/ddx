@@ -17,7 +17,6 @@
 
 #include <boost/container/small_vector.hpp>
 
-#include "cl/device.hpp"
 #include "jit/options.hpp"
 
 #include <mutex> // call_once, unique_lock
@@ -71,16 +70,6 @@ concept CColumns = std::ranges::contiguous_range<R> &&
 [[nodiscard]] inline jit::Compiler *shared_compiler() {
   static jit::compile_result<jit::Compiler> instance = jit::Compiler::create();
   return instance ? &*instance : nullptr;
-}
-#endif
-
-#ifdef DDX_HAS_OPENCL
-// One device per selector for the process, as shared_compiler() is one LLJIT;
-// null where none answers the selector, and cl::Device::shared() says why.
-[[nodiscard]] inline const cl::Device *
-shared_device(std::string_view selector) {
-  const auto &device = cl::Device::shared(selector);
-  return device ? &*device : nullptr;
 }
 #endif
 
@@ -249,7 +238,7 @@ struct Sweeps {
   Lazy<Tangent> jvp;
   Lazy<DenseHessian> dense;
   Lazy<std::vector<NodeId>> tangent; // one forward sweep
-  Lazy<std::vector<Step>> walk;      // a system's hessian() schedule
+  Lazy<ArenaWalk> walk;              // a system's hessian() at a point
 #ifdef DDX_HAS_JIT
   Lazy<Rebalanced> rebalanced;
 #endif
@@ -260,14 +249,19 @@ struct Sweeps {
 // allocates only when a sweep outgrows the last.  One set per call site.
 // release_tapes() gives them back.
 template <impl::Numeric T> struct ThreadTapes {
-  std::vector<T> values;          // a system's hessian() at a point
-  std::vector<T> at, tape, vtape; // a batch, one point at a time
+  std::vector<T> values, value_vtape; // a system's hessian() at a point
+  std::vector<T> at, tape, vtape;     // a batch, one point at a time
   std::vector<T> lanes, lane_tape, lane_vtape; // a batch, block_lanes at once
   // A point call's output addresses: a dense block is n^2 of them, and a fresh
   // array that size is a page fault per page on every call.
   std::vector<T *> addresses;
 };
-template <impl::Numeric T> inline thread_local ThreadTapes<T> thread_tapes;
+// Block scope: GCC 15 never registers the destructor of a thread_local variable
+// template named from a template, so every thread exit leaked its tapes.
+template <impl::Numeric T> [[nodiscard]] ThreadTapes<T> &thread_tapes() {
+  thread_local ThreadTapes<T> kept;
+  return kept;
+}
 
 // An equation: an arena of its own, its roots, the Jacobian swept up front and
 // every other sweep on first ask, a pipeline per Want.  Equation, System and
@@ -460,25 +454,27 @@ public:
   // times over a dense term.  One output only.
   [[nodiscard]] result<std::vector<T>>
   dense_hessian(const rt::detail::CPointArg<T> auto &...args) const {
-    return orders(Want::DenseHessian).and_then([&] {
-      // gather() lays the block out row-major as it scatters it.
-      return at<Want::DenseHessian>({}, args...).transform([](auto b) {
-        return std::move(b.hessian);
-      });
+    return at<Want::DenseHessian>({}, args...).transform([](auto b) {
+      return std::move(b.hessian);
     });
   }
   // How many terms the sweep kept quadratic, and how many fell back to a dense
   // product: a model's structure defeated the algebra where the second is not
-  // zero -- still right, not O(n^2).
+  // zero -- still right, not O(n^2).  Nothing for a system, or for a block the
+  // sweep refused, which dense_hessian() answers with tensor_shape.
   struct DenseCost {
     std::size_t n2_terms = 0;
     std::size_t n3_terms = 0;
   };
   [[nodiscard]] std::optional<DenseCost> dense_hessian_cost() const {
-    return unless_system([this] {
-      const DenseHessian &d = dense_sweep();
-      return DenseCost{.n2_terms = d.n2_terms, .n3_terms = d.n3_terms};
-    });
+    if (poisoned() || is_system()) {
+      return std::nullopt;
+    }
+    const DenseHessian &d = dense_sweep();
+    return d.block == no_node
+               ? std::nullopt
+               : std::optional{
+                     DenseCost{.n2_terms = d.n2_terms, .n3_terms = d.n3_terms}};
   }
 
   // Whether to compile at all, and how; discards anything already compiled.
@@ -488,7 +484,6 @@ public:
       return self;
     }
     self.options_ = opt;
-    self.settle_device();
     self.pipelines_ = std::make_unique<Pipelines>();
     // Choosing a backend starts the build, so it overlaps whatever the caller
     // does before their first call.
@@ -543,14 +538,13 @@ public:
   }
 
   // Which rung is answering, as its codegen level, and nothing where the sweep
-  // or a device is.  Every rung gives the same bits, so this is the only way
+  // is.  Every rung gives the same bits, so this is the only way
   // to see it climb.  Does not wait.
   [[nodiscard]] std::optional<jit::OptLevel> kernel_level() const {
     if (poisoned()) {
       return std::nullopt;
     }
-    if (const auto l = pipeline(Want::Jacobian);
-        l->kernel.jit_kernel() != nullptr) {
+    if (const auto l = pipeline(Want::Jacobian); l->kernel) {
       return l->level;
     } else {
       return std::nullopt;
@@ -577,14 +571,16 @@ public:
   }
 
   // How far the Jacobian pipeline is toward its next rung, and nothing under
-  // any other backend or once there is none left.  Without it a pipeline that
-  // is still counting and one whose compile was refused both read as no kernel.
+  // any other backend, on a host with no compiler, or once there is none left.
+  // Without it a pipeline that is still counting and one whose compile was
+  // refused both read as no kernel.
   struct Warmup {
     std::size_t points;    // batch points this pipeline has been asked for
     std::size_t threshold; // where the next rung is bought
   };
   [[nodiscard]] std::optional<Warmup> warming() const {
-    if (poisoned() || options_.backend != jit::Backend::Adapt) {
+    if (poisoned() || options_.backend != jit::Backend::Adapt ||
+        setting().compiler == nullptr) {
       return std::nullopt;
     }
     const Pipeline &l = pipeline_for(Want::Jacobian);
@@ -594,33 +590,6 @@ public:
                : std::optional{Warmup{.points = l.points(),
                                       .threshold = Pipeline::rung_at(
                                           asked, effective_options())}};
-  }
-
-  // Under Backend::Device: the device answering, or why none is -- a selector
-  // nothing matched, or a kernel its compiler refused, with the build log.
-  // Nothing under any other backend.  Does not wait.
-  [[nodiscard]] std::optional<jit::compile_result<std::string_view>>
-  device_status() const {
-    if (options_.backend != jit::Backend::Device) {
-      return std::nullopt;
-    }
-    if (poisoned()) {
-      return std::unexpected{jit::compile_error{bad_->code, {}}};
-    }
-#ifdef DDX_HAS_OPENCL
-    const auto &device = cl::Device::shared(options_.device);
-    if (!device) {
-      return std::unexpected{device.error()};
-    }
-    (void)pipeline(Want::Jacobian); // adopts a compile that has landed
-    if (auto why = pipeline_for(Want::Jacobian).refused()) {
-      return std::unexpected{*std::move(why)};
-    }
-    return device->identity();
-#else
-    return std::unexpected{
-        jit::compile_error{errc::no_device, "built without DDX_BUILD_OPENCL"}};
-#endif
   }
 
   // One Taylor sweep: seed c[0] = x0, c[1] = 1, then un-normalise c[Order].
@@ -639,11 +608,7 @@ public:
       if (!computes_at<Taylor>(*arena_, root)) {
         return fail(errc::unsupported_scalar);
       }
-      Taylor seed;
-      seed.c[0] = x0;
-      seed.c[1] = T{1};
-
-      const std::array<Taylor, 1> at{seed};
+      const std::array<Taylor, 1> at{Taylor::variable(x0)};
       // One root out of an arena that may hold a gradient and a Hessian too,
       // and a Taylor node costs (Order + 1) coefficients.
       const auto values = evaluate_reachable(*arena_, root, at);
@@ -689,7 +654,7 @@ public:
                     n);
   }
 
-  // `h` is n^2 columns, column-major: H(i, j) is column i + j n.
+  // `h` is n^2 columns, row-major: H(i, j) is column i n + j.
   [[nodiscard]] result<void>
   dense_hessian(const rt::detail::CColumns<const T *> auto &xs,
                 const rt::detail::CColumns<T *> auto &f,
@@ -797,7 +762,7 @@ protected:
     if (const auto why = unclosed(*arena_)) {
       poison(error{*why});
     } else if (std::ranges::any_of(roots_, [this](NodeId r) {
-                 return tensor_valued(arena_->op_of(r));
+                 return !detail::is_scalar((*arena_)[r]);
                })) {
       poison(error{errc::tensor_shape});
     } else {
@@ -824,7 +789,6 @@ protected:
     if !consteval {
       pipelines_ = std::make_unique<Pipelines>();
       sweeps_ = std::make_unique<Sweeps>();
-      settle_device();
     }
   }
 
@@ -837,10 +801,18 @@ protected:
         return error{*why};
       }
     }
-    if (outputs.empty() || Rooting::builder(outputs.front()) == nullptr) {
+    if (arena_of(outputs) == nullptr) {
       return error{errc::no_graph};
     }
     return std::nullopt;
+  }
+  // The arena the outputs were built in: the first that names one, since a
+  // literal output names none.
+  [[nodiscard]] static constexpr Builder<T> *
+  arena_of(std::span<const Expression<T>> outputs) noexcept {
+    const auto named = std::ranges::find_if(
+        outputs, [](const auto &e) { return Rooting::builder(e) != nullptr; });
+    return named == outputs.end() ? nullptr : Rooting::builder(*named);
   }
 
   // The arena the outputs will be read in -- `owned`, or a copy of the one
@@ -849,10 +821,8 @@ protected:
                                            std::vector<NodeId>>
   rooted(std::span<const Expression<T>> outputs,
          std::unique_ptr<Builder<T>> owned) {
-    auto arena =
-        owned
-            ? std::move(owned)
-            : std::make_unique<Builder<T>>(*Rooting::builder(outputs.front()));
+    auto arena = owned ? std::move(owned)
+                       : std::make_unique<Builder<T>>(*arena_of(outputs));
     auto roots = outputs | std::views::transform([&arena](const auto &e) {
                    return e.id(*arena);
                  }) |
@@ -953,25 +923,29 @@ protected:
     const auto &blocks = hessians();
     // What the three blocks read -- values, partials and Hessian::at's
     // compressed cells -- settled on first ask, since it depends only on the
-    // sweeps.
+    // sweeps.  Appended block by block rather than through views::join, whose
+    // inner iterator GCC 15 calls maybe-uninitialized under -Wall; reachable()
+    // reads a set, so the order is free.
     const auto &walk = sweeps_->walk.get([&] {
-      auto wanted = blocks | std::views::transform(&Hessian::compressed) |
-                    std::views::join | impl::to<std::vector<NodeId>>();
-      impl::append(wanted, blocks | std::views::transform(&Hessian::partial) |
-                               std::views::join);
-      impl::append(wanted, blocks | std::views::transform(&Hessian::zero));
-      impl::append(wanted, roots_);
+      std::vector<NodeId> wanted{roots_.begin(), roots_.end()};
+      std::ranges::for_each(blocks, [&wanted](const Hessian &b) {
+        impl::append(wanted, b.compressed);
+        impl::append(wanted, b.partial);
+        wanted.push_back(b.zero);
+      });
       [[maybe_unused]] const auto held = reading();
-      return schedule_of(*arena_, live_ids(reachable(*arena_, wanted)));
+      return ArenaWalk{*arena_, live_ids(reachable(*arena_, wanted))};
     });
     const std::size_t n = symbol_count();
     // The tape is thread-kept; every id read below is scheduled, so it is
     // written this call.
-    std::vector<T> &values = thread_tapes<T>.values;
+    ThreadTapes<T> &kept = thread_tapes<T>();
+    std::vector<T> &values = kept.values;
     [[maybe_unused]] const auto held = sweeping();
     values.resize(arena_->size());
-    detail::TensorTape<T> scratch{*arena_, walk, tensor_kernels()};
-    evaluate_into(*arena_, at, walk, std::span<T>{values}, scratch.view());
+    kept.value_vtape.resize(walk.extent());
+    walk(*arena_, at, std::span<T>{values}, std::span<T>{kept.value_vtape},
+         tensor_kernels());
     const impl::md::mdspan dense{
         h.data(), impl::md::dextents<std::size_t, 3>{roots_.size(), n, n}};
     const auto dims = std::views::iota(0uz, n);
@@ -1069,34 +1043,6 @@ private:
           e[slot] = T{1};
           return e;
         });
-  }
-
-  // The sweep `want`'s freeze reads, built before the freeze takes the lock.
-  void ensure(Want want) const {
-    switch (want) {
-    case Want::Hessian:
-      (void)hessians();
-      break;
-    case Want::Hvp:
-      (void)hvp_sweep();
-      break;
-    case Want::Vjp:
-      (void)vjp_sweep();
-      break;
-    case Want::Jvp:
-      (void)jvp_sweep();
-      break;
-    case Want::JacobianJvp:
-      (void)tangent_sweep();
-      break;
-    case Want::DenseHessian:
-      (void)dense_sweep();
-      break;
-    case Want::Value:
-    case Want::Jacobian:
-    case Want::Gradient:
-      break;
-    }
   }
 
 protected:
@@ -1277,14 +1223,6 @@ private:
     return {};
   }
 
-  // At one point every column is one value, so a column pointer is its address.
-  template <typename U>
-  [[nodiscard]] static auto single_columns(std::span<U> values) {
-    auto addresses =
-        values | std::views::transform([](U &v) { return std::addressof(v); });
-    return boost::container::small_vector<U *, 32>(addresses.begin(),
-                                                   addresses.end());
-  }
   // One point through the batch path at n = 1, not the arena walk, so the
   // batch gate is the point gate.  Constant evaluation keeps it, having no
   // pipeline and nothing to refuse.
@@ -1304,23 +1242,14 @@ private:
                                               std::span<T> f, std::span<T> g,
                                               std::span<T> h) const {
     if !consteval {
-      const auto xs = single_columns(at);
-      std::vector<T *> &out = thread_tapes<T>.addresses;
+      // At one point every column is one value, its address.
+      const auto address = [](auto &v) { return std::addressof(v); };
+      const auto xs = at | std::views::transform(address) |
+                      impl::to<boost::container::small_vector<const T *, 32>>();
+      std::vector<T *> &out = thread_tapes<T>().addresses;
       out.clear();
-      const auto address = [](T &v) { return std::addressof(v); };
-      impl::append(out, f | std::views::transform(address));
-      impl::append(out, g | std::views::transform(address));
-      if (want == Want::DenseHessian) {
-        // The block is column-major, H(i, j) at i + j n; pointed at row-major
-        // (i, j), the scatter is the transpose.
-        const std::size_t n = symbol_count();
-        impl::append(out, std::views::iota(0uz, h.size()) |
-                              std::views::transform([h, n](std::size_t e) {
-                                return std::addressof(h[(e % n) * n + e / n]);
-                              }));
-      } else {
-        impl::append(out, h | std::views::transform(address));
-      }
+      impl::append(out, std::array{f, g, h} | std::views::join |
+                            std::views::transform(address));
       const std::span<T *const> all{out};
       return dispatch_in(*pipelines, cells, want, as_columns(xs),
                          {.values = all.first(f.size()),
@@ -1348,16 +1277,6 @@ private:
     return (*pipelines_)[std::to_underlying(want)];
   }
 
-  // Looked up where the options change -- options() -- so a batch call never
-  // resolves a selector.
-  void settle_device() {
-#ifdef DDX_HAS_OPENCL
-    device_ = options_.backend == jit::Backend::Device
-                  ? rt::detail::shared_device(options_.device)
-                  : nullptr;
-#endif
-  }
-
   // What a pipeline needs of the equation.  No compiler is a pipeline that will
   // never compile: a poisoned equation and an interpreting backend both arrive
   // here as one, and so does a host with no JIT.
@@ -1372,44 +1291,10 @@ private:
           out.compiler = compiler();
         }
 #endif
-#ifdef DDX_HAS_OPENCL
-        out.device = device_;
-#endif
       }
     }
     return out;
   }
-
-  // What a freeze asks for.  `ids` and `partials` differ between the swept
-  // graph and the kernel's rebalanced one; the rest cannot be rebalanced.  Read
-  // only after ensure() has built what the want names.
-  struct Frozen {
-    const Core &core;
-    std::span<const NodeId> ids;
-    const Jacobian &partials;
-    std::span<const NodeId> product{}; // dJ/dv over `partials`' cells
-
-    [[nodiscard]] std::span<const NodeId> roots() const { return ids; }
-    [[nodiscard]] const Jacobian &jacobian() const { return partials; }
-    [[nodiscard]] const Hessian &hessian() const {
-      return core.sweeps_->hessians.peek().front();
-    }
-    [[nodiscard]] const HessianVector &hessian_vector() const {
-      return core.sweeps_->hvp.peek();
-    }
-    [[nodiscard]] const VectorJacobian &vector_jacobian() const {
-      return core.sweeps_->vjp.peek();
-    }
-    [[nodiscard]] const Tangent &tangent() const {
-      return core.sweeps_->jvp.peek();
-    }
-    [[nodiscard]] std::span<const NodeId> jacobian_tangent() const {
-      return product;
-    }
-    [[nodiscard]] const DenseHessian &dense_hessian() const {
-      return core.sweeps_->dense.peek();
-    }
-  };
 
   // The graphs a pipeline computes.  A poisoned equation freezes an empty one:
   // every accessor short-circuits before it, and dispatch() refuses on `bad_`.
@@ -1417,31 +1302,75 @@ private:
     if (bad_) {
       return {.graph = std::make_shared<const Graph<T>>()};
     }
-    ensure(want);
-    // A restriction keeps the cells it chose, of the product too; only the
-    // whole Jacobian has rebalanced roots to compile from.
-    std::vector<NodeId> product;
-    if (want == Want::JacobianJvp) {
-      const auto &tangent = sweeps_->tangent.peek();
-      product =
-          cells.kept
-              ? *cells.kept | std::views::transform([&tangent](std::size_t k) {
-                  return tangent[k];
-                }) | impl::to<std::vector<NodeId>>()
-              : tangent;
+    // What the want adds past the values and the Jacobian, swept before the
+    // freeze takes the lock.  Vjp and Jvp replace the Jacobian block rather
+    // than add to it -- n columns instead of the pattern's nonzeros is the
+    // whole point of asking.  A restriction keeps the cells it chose, of dJ/dv
+    // too.
+    OutputBlocks added;
+    Colouring colouring;
+    switch (want) {
+    case Want::Vjp:
+      added.jacobian = vjp_sweep().product;
+      break;
+    case Want::Jvp:
+      added.jacobian = jvp_sweep().product;
+      break;
+    case Want::Hessian:
+      added.hessian = hessians().front().compressed;
+      colouring = hessians().front().colouring;
+      break;
+    case Want::Hvp:
+      added.hessian = hvp_sweep().product;
+      break;
+    case Want::JacobianJvp: {
+      const auto &tangent = tangent_sweep();
+      added.hessian = cells.kept
+                          ? *cells.kept | std::views::transform([&](auto k) {
+                              return tangent[k];
+                            }) | impl::to<std::vector<NodeId>>()
+                          : tangent;
+      break;
     }
+    case Want::DenseHessian:
+      added.hessian = {dense_sweep().block};
+      break;
+    case Want::Value:
+    case Want::Jacobian:
+    case Want::Gradient:
+      break;
+    }
+    // `roots` and `partials` differ between the swept graph and the kernel's
+    // rebalanced one.  Gradient differentiates the roots without computing
+    // them; every direction column the call hands counts, whether or not the
+    // product reads it: y's never reaches H(x*x + y) v.
+    const WantInfo &info = want_info(want);
+    const auto freeze = [&](std::span<const NodeId> roots,
+                            const Jacobian &partials) {
+      OutputBlocks blocks = added;
+      if (info.values) {
+        blocks.values.assign(roots.begin(), roots.end());
+      }
+      const bool pattern = info.jacobian == BlockShape::Cells;
+      if (pattern) {
+        blocks.jacobian = partials.partial;
+      }
+      const std::size_t directions =
+          info.direction == Direction::Symbols     ? symbol_count()
+          : info.direction == Direction::Functions ? roots.size()
+                                                   : 0;
+      return std::make_shared<const Graph<T>>(Graph<T>::freeze(
+          *arena_, std::move(blocks), colouring,
+          pattern ? partials.pattern : Sparsity{}, contracts(), directions));
+    };
     [[maybe_unused]] const bool rebalance = !cells.kept && rebalances(want);
     [[maybe_unused]] const auto held = reading();
-    Frozen from{*this, roots_, cells.jacobian, product};
-    auto swept = std::make_shared<const Graph<T>>(
-        freeze_for(want, *arena_, from, contracts()));
+    auto swept = freeze(roots_, cells.jacobian);
     auto compiled = swept;
 #ifdef DDX_HAS_JIT
     if (rebalance) {
       const Rebalanced &over = sweeps_->rebalanced.peek();
-      Frozen rebalanced{*this, over.roots, over.derivative};
-      compiled = std::make_shared<const Graph<T>>(
-          freeze_for(want, *arena_, rebalanced, contracts()));
+      compiled = freeze(over.roots, over.derivative);
     }
 #endif
     return {.graph = std::move(swept),
@@ -1450,15 +1379,24 @@ private:
   }
 
   // Whether the kernel for `want` is lowered from rebalanced roots, which are
-  // swept here on first ask: only a pipeline that compiles reads them.
+  // swept here on first ask: only Compile reads them, as Adapt climbs from the
+  // swept graph.
   [[nodiscard]] bool rebalances([[maybe_unused]] Want want) const {
 #ifdef DDX_HAS_JIT
     if constexpr (std::same_as<T, double>) {
       // No kernel is lowered over tensor rows, so no rebalanced copy either.
-      if (!rebalanceable(want) || setting().compiler == nullptr ||
-          std::ranges::any_of(arena_->nodes(), [](const Node<T> &n) {
-            return kind_of(n.op) == Kind::Tensor;
-          })) {
+      // The roots' cone, not the arena: a dense Hessian swept earlier leaves
+      // tensor nodes no scalar root reads.  Read under the lock, as a sweep on
+      // another thread may be appending.
+      const auto tensors = [this] {
+        [[maybe_unused]] const auto held = reading();
+        const auto live = detail::reachable(*arena_, roots_);
+        return std::ranges::any_of(detail::live_ids(live), [this](NodeId v) {
+          return detail::on_tensors((*arena_)[v]);
+        });
+      };
+      if (!rebalanceable(want) || options_.backend != jit::Backend::Compile ||
+          setting().compiler == nullptr || tensors()) {
         return false;
       }
       (void)sweep(sweeps_->rebalanced, [this] {
@@ -1495,13 +1433,13 @@ private:
     return options_.codegen.contract;
   }
 
-  // A kernel that could not run this call -- a device refusing a launch --
-  // hands it back, and the sweep answers.
+  // The kernel where one landed, else the sweep.
   void run(const Compiled &c, std::span<const T *const> xs,
            const Columns<T> &out, std::size_t n) const {
     [[maybe_unused]] const auto held = sweeping();
     if constexpr (std::same_as<T, double>) {
-      if (c.kernel(xs, out.values, out.jacobian, out.hessian, n)) {
+      if (c.kernel) {
+        c.kernel(xs, out.values, out.jacobian, out.hessian, n);
         return;
       }
     }
@@ -1533,7 +1471,7 @@ private:
     //
     // A short batch sweeps one point at a time rather than padding out to
     // block_lanes, which on a batch of one is the whole cost.
-    ThreadTapes<T> &kept = thread_tapes<T>;
+    ThreadTapes<T> &kept = thread_tapes<T>();
     if (n < block_lanes) {
       const auto [at, tape, vtape] = std::tie(kept.at, kept.tape, kept.vtape);
       at.resize(inputs);
@@ -1580,10 +1518,6 @@ private:
   jit::Options options_{};
   // Null: the process default, read at each freeze.
   const TensorKernelTable *kernels_ = nullptr;
-#ifdef DDX_HAS_OPENCL
-  // Settled with options_: null unless the backend is Device and one answered.
-  const cl::Device *device_ = nullptr;
-#endif
   Jacobian jacobian_;
   // unique_ptr, not shared: its destructor is constexpr, which is what keeps a
   // constant-evaluated equation destructible.  Null only there.
@@ -1675,8 +1609,8 @@ private:
 };
 
 // How many functions an equation has, as its type says: a count fixed there
-// refuses a file holding another and narrows one function's value to a
-// scalar; a run-time count takes any file and answers a vector.
+// narrows one function's value to a scalar; a run-time count answers a
+// vector.
 template <std::size_t N> struct Fixed {
   static constexpr std::optional<std::size_t> expected = N;
   static constexpr bool scalar = N == 1;
@@ -1707,6 +1641,6 @@ template <typename C> using Restricted = detail::Restricted<C>;
 // keeps its tapes at that size until it asks.  The next sweep on the thread
 // grows them again.
 template <impl::Numeric T = double> void release_tapes() noexcept {
-  detail::thread_tapes<T> = {};
+  detail::thread_tapes<T>() = {};
 }
 } // namespace ddx::rt

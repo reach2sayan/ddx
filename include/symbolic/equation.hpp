@@ -191,19 +191,17 @@ private:
   };
   [[nodiscard]] constexpr Lowered lower() const {
     Lowered l{};
+    // The trees bound the arena; interning only shrinks it.
+    l.arena.reserve(input_dim +
+                        (node_count_v<detail::canonical_t<TFirst>> + ... +
+                         node_count_v<detail::canonical_t<TRest>>),
+                    input_dim);
     mp::mp_for_each<symbols>(
         [&l]<typename Sym>(Sym) { (void)rt::var(l.arena, Sym::name); });
     static_for<output_dim>([&]<std::size_t I>() {
       l.roots[I] = rt::to_graph(l.arena, std::get<I>(expressions)).id(l.arena);
     });
     return l;
-  }
-  // The nodes `wanted` reach, at the point's scalar.
-  template <Numeric U>
-  [[nodiscard]] static constexpr std::vector<U>
-  sweep(const Lowered &l, std::span<const rt::NodeId> wanted,
-        const std::array<U, input_dim> &at) {
-    return rt::evaluate_reachable(l.arena, wanted, at);
   }
 
   // The symbolic trees and their partials.  Every other member reduces them to
@@ -252,7 +250,7 @@ public:
     return detail::with_point<symbols, value_type, input_dim>(
         [&](const point_t &vals) {
           const Lowered l = lower();
-          const auto v = sweep(l, l.roots, vals);
+          const auto v = rt::evaluate_reachable(l.arena, l.roots, vals);
           if constexpr (output_dim == 1) {
             return v[l.roots[0]];
           } else {
@@ -299,7 +297,7 @@ public:
               }
             }
           }
-          const auto v = sweep(l, cells, vals);
+          const auto v = rt::evaluate_reachable(l.arena, cells, vals);
           if constexpr (output_dim == 1) {
             std::array<value_type, input_dim> row{};
             std::ranges::transform(cells, row.begin(),
@@ -333,7 +331,7 @@ public:
             hs[k] = rt::derive_hessian(l.arena, l.roots[k]);
             append(wanted, hs[k].compressed);
           }
-          const auto v = sweep(l, wanted, vals);
+          const auto v = rt::evaluate_reachable(l.arena, wanted, vals);
           constexpr auto dims = std::views::iota(0uz, input_dim);
           if constexpr (output_dim == 1) {
             nd_tensor_t<S, input_dim, 2> H{};
@@ -357,7 +355,7 @@ public:
   }
 
   // Forward mode at a dual nested Order deep: one sweep per distinct
-  // multi-index serves every output.
+  // multi-index serves every output, all through one walk.
   template <std::size_t Order>
   [[nodiscard]] constexpr auto
   derivative_tensor(const CEvalArg auto &...args) const noexcept
@@ -374,21 +372,23 @@ public:
               return nd_stack_t<scalar, output_dim, input_dim, Order>{};
             }
           }();
+          // A fresh arena is little but the roots' cone: walked whole, it
+          // needs no liveness pass.
+          const rt::detail::ArenaWalk walk{l.arena};
+          std::vector<U> v(l.arena.size()), vtape(walk.extent());
           for (const auto &idx :
                detail::simplex_index_table_v<input_dim, Order>) {
-            const auto seeds = detail::mixed_seeds<scalar, Order>(vals, idx);
-            const auto v = sweep<U>(l, l.roots, seeds);
-            if constexpr (output_dim == 1) {
-              result.at_index(idx) = detail::extract_nth<Order>(v[l.roots[0]]);
-            } else {
-              for (const std::size_t k : std::views::iota(0uz, output_dim)) {
-                const auto stacked =
-                    [&]<std::size_t... K>(std::index_sequence<K...>) {
-                      return std::array<std::size_t, Order + 1>{k, idx[K]...};
-                    }(std::make_index_sequence<Order>{});
-                result.at_index(stacked) =
-                    detail::extract_nth<Order>(v[l.roots[k]]);
-              }
+            walk(l.arena, detail::mixed_seeds<scalar, Order>(vals, idx),
+                 std::span<U>{v}, std::span<U>{vtape});
+            for (const auto [k, root] : l.roots | std::views::enumerate) {
+              const auto at = [&]<std::size_t... K>(std::index_sequence<K...>) {
+                if constexpr (output_dim == 1) {
+                  return idx;
+                } else {
+                  return std::array{static_cast<std::size_t>(k), idx[K]...};
+                }
+              }(std::make_index_sequence<Order>{});
+              result.at_index(at) = detail::extract_nth<Order>(v[root]);
             }
           }
           return result;
@@ -409,8 +409,8 @@ public:
         rt::detail::computes_at_tree<Taylor, std::tuple_element_t<0, Exprs>>(),
         "an operation the Taylor arithmetic does not define");
     const Lowered l = lower();
-    const auto v =
-        sweep(l, l.roots, std::array<Taylor, 1>{Taylor::variable(x0)});
+    const auto v = rt::evaluate_reachable(
+        l.arena, l.roots, std::array<Taylor, 1>{Taylor::variable(x0)});
     return v[l.roots[0]].c[Order] *
            static_cast<scalar>(detail::compile_time_factorial(Order));
   }

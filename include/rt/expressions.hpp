@@ -44,6 +44,11 @@ struct Rooting {
   [[nodiscard]] static constexpr Expression<T> poison(errc why) noexcept {
     return Expression<T>::poison(why);
   }
+  // A table has no width, so size() alone takes it for a scalar.
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr bool scalar(const Expression<T> &e) noexcept {
+    return e.size() == 0 && !e.is_matrix();
+  }
 };
 } // namespace detail
 
@@ -84,7 +89,7 @@ public:
 
   constexpr Expression(Builder<T> &b, NodeId id) noexcept
       : builder_{&b}, id_{id},
-        shape_{tensor_valued(b.op_of(id)) ? shape_of(b, id) : Shape{0, 0}} {}
+        shape_{detail::is_tensor(b[id]) ? shape_of(b, id) : Shape{0, 0}} {}
 
   [[nodiscard]] constexpr bool pending() const noexcept {
     return builder_ == nullptr;
@@ -132,45 +137,48 @@ public:
                                       static_cast<std::uint32_t>(i))};
   }
 
-  // Two pending literals fold without reaching a graph, so the constants the
-  // derivative rules produce never become nodes.  A vector operand makes the
-  // node elementwise: a Map carrying `op`.
-  [[nodiscard]] static constexpr Expression form(OpCode op,
-                                                 const Expression &u) {
-    if (u.why_) {
-      return poison(*u.why_);
+  // One node of `op` over its operands.  Pending literals fold without
+  // reaching a graph, so the constants the derivative rules produce never
+  // become nodes; a table is read as its MatRow.  A tensor operand makes the
+  // node elementwise:
+  //  - unary, a Map carrying `op`;
+  //  - binary, a Zip of two rows at one shape, a literal taking the row's.  A
+  //    scalar *node* meets a row only as a factor -- a Scale, one node rather
+  //    than a broadcast and a Zip -- so anything else is a shape error;
+  //  - a Select copies the arm taken, so the one not taken never meets a 0 --
+  //    0 * inf is NaN where log or sqrt is infinite.  A tensor condition, of
+  //    the arms' shape, chooses element by element.
+  [[nodiscard]] static constexpr Expression
+  form(OpCode op, const std::same_as<Expression> auto &...xs) {
+    std::optional<errc> why;
+    ((why = why ? why : xs.why_), ...);
+    if (why) {
+      return poison(*why);
     }
-    Builder<T> *const b = u.builder();
+    Builder<T> *b = nullptr;
+    ((b = b ? b : xs.builder()), ...);
     if (b == nullptr) {
-      return Expression{apply<T>(op, u.literal())};
+      return Expression{apply<T>(op, xs.literal()...)};
     }
-    if (u.is_matrix()) {
-      return form(op, u.row());
+    if ((xs.is_matrix() || ...)) {
+      return form(op, xs.row()...);
     }
-    return u.size() == 0
-               ? Expression{*b, b->make(op, u.id(*b))}
-               : Expression{*b, b->make(OpCode::Map, u.id(*b), no_node, no_node,
-                                        std::to_underlying(op))};
+    if (((xs.size() == 0) && ...)) {
+      return {*b, b->make(op, xs.id(*b)...)};
+    }
+    if constexpr (sizeof...(xs) == 1) {
+      return {*b, b->make(OpCode::Map, xs.id(*b)..., no_node, no_node,
+                          std::to_underlying(op))};
+    } else if constexpr (sizeof...(xs) == 2) {
+      return zipped(op, *b, xs...);
+    } else {
+      return picked(op, *b, xs...);
+    }
   }
 
-  // Two rows zip elementwise at one shape; a literal takes the row's.  A
-  // scalar *node* meets a row only as a factor -- a Scale, one node rather
-  // than a broadcast and a Zip -- so anything else is a shape error.
-  [[nodiscard]] static constexpr Expression form(OpCode op, const Expression &l,
-                                                 const Expression &r) {
-    if (l.why_ || r.why_) {
-      return poison(l.why_ ? *l.why_ : *r.why_);
-    }
-    Builder<T> *const b = l.builder() ? l.builder() : r.builder();
-    if (b == nullptr) {
-      return Expression{apply<T>(op, l.literal(), r.literal())};
-    }
-    if (l.is_matrix() || r.is_matrix()) {
-      return form(op, l.row(), r.row());
-    }
-    if (l.size() == 0 && r.size() == 0) {
-      return {*b, b->make(op, l.id(*b), r.id(*b))};
-    }
+private:
+  [[nodiscard]] static constexpr Expression
+  zipped(OpCode op, Builder<T> &b, const Expression &l, const Expression &r) {
     if (l.size() != 0 && r.size() != 0 && l.shape_ != r.shape_) {
       return poison(errc::tensor_shape);
     }
@@ -178,55 +186,39 @@ public:
     const Expression &other = l.size() ? r : l;
     if (other.size() == 0) {
       if (op == OpCode::Mul) {
-        return {*b, b->make(OpCode::Scale, other.id(*b), vec.id(*b))};
+        return {b, b.make(OpCode::Scale, other.id(b), vec.id(b))};
       }
       if (op == OpCode::Div && &other == &r) {
-        return {*b,
-                b->make(OpCode::Scale, (Expression{1} / r).id(*b), vec.id(*b))};
+        return {b, b.make(OpCode::Scale, (Expression{1} / r).id(b), vec.id(b))};
       }
-      if (!other.pending()) { // a scalar node meets a vector only as a scale
+      if (!other.pending()) {
         return poison(errc::tensor_shape);
       }
     }
-    return {*b, b->make(OpCode::Zip, l.id(*b, vec.shape_), r.id(*b, vec.shape_),
-                        no_node, std::to_underlying(op))};
+    return {b, b.make(OpCode::Zip, l.id(b, vec.shape_), r.id(b, vec.shape_),
+                      no_node, std::to_underlying(op))};
+  }
+  [[nodiscard]] static constexpr Expression
+  picked(OpCode op, Builder<T> &b, const Expression &c, const Expression &t,
+         const Expression &f) {
+    const Shape shape = t.size() ? t.shape() : (f.size() ? f.shape() : c.shape());
+    const auto fits = [&](const Expression &e) {
+      return e.size() == 0 || e.shape() == shape;
+    };
+    if (!fits(c) || !fits(t) || !fits(f)) {
+      return poison(errc::tensor_shape);
+    }
+    // A scalar arm spread to the shape: a literal as its row, a node as
+    // s * 1, which is s exactly.
+    const auto arm = [&](const Expression &e) {
+      return e.size() || e.pending()
+                 ? e.id(b, shape)
+                 : b.make(OpCode::Scale, e.id(b), b.ones(shape));
+    };
+    return {b, b.make(op, c.id(b), arm(t), arm(f), 1)};
   }
 
-  // A select over vector arms is a mask: each arm scaled by the chosen 1 or
-  // 0, an arm that is a literal zero dropped.  A vector condition is the
-  // mask itself, elementwise.
-  [[nodiscard]] static constexpr Expression form(OpCode op, const Expression &c,
-                                                 const Expression &t,
-                                                 const Expression &f) {
-    if (c.why_ || t.why_ || f.why_) {
-      return poison(c.why_ ? *c.why_ : (t.why_ ? *t.why_ : *f.why_));
-    }
-    Builder<T> *const b =
-        c.builder() ? c.builder() : (t.builder() ? t.builder() : f.builder());
-    if (b == nullptr) {
-      return Expression{apply<T>(op, c.literal(), t.literal(), f.literal())};
-    }
-    if (c.is_matrix() || t.is_matrix() || f.is_matrix()) {
-      return form(op, c.row(), t.row(), f.row());
-    }
-    if (c.size() == 0 && t.size() == 0 && f.size() == 0) {
-      return {*b, b->make(op, c.id(*b), t.id(*b), f.id(*b))};
-    }
-    const Expression one{1};
-    const Expression zero{0};
-    const Expression on = c.size() ? c : select(c, one, zero);
-    const Expression off = c.size() ? one - c : select(c, zero, one);
-    const auto dead = [](const Expression &arm) {
-      return arm.pending() && arm.lit_ == T{0};
-    };
-    if (dead(t)) {
-      return off * f;
-    }
-    if (dead(f)) {
-      return on * t;
-    }
-    return on * t + off * f;
-  }
+public:
 
   // Hidden friends: ordinary functions for a given Expression<T>, so `x * 2`
   // and `2 * x` both convert.
@@ -445,7 +437,7 @@ public:
       if (a.why_) {
         return Expression<T>::poison(*a.why_);
       }
-      if (a.size() != 0 || a.is_matrix()) {
+      if (!detail::Rooting::scalar(a)) {
         return Expression<T>::poison(errc::tensor_shape);
       }
     }

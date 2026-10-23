@@ -187,59 +187,16 @@ private:
                                u.arena_ ? u.arena_ : v.arena_);
 }
 
-// The comparisons answer an expression, as the base's do.  Only `<` and `<=`
-// are nodes; the rest are those two read the other way round, which the base
-// already spells with NaN in mind, so each is one composition.
-[[nodiscard]] inline PyExpression operator<(const PyExpression &l,
-                                            const PyExpression &r) {
-  return combine(l, r, [](const auto &a, const auto &b) { return a < b; });
-}
-[[nodiscard]] inline PyExpression operator<=(const PyExpression &l,
-                                             const PyExpression &r) {
-  return combine(l, r, [](const auto &a, const auto &b) { return a <= b; });
-}
-[[nodiscard]] inline PyExpression operator>(const PyExpression &l,
-                                            const PyExpression &r) {
-  return combine(l, r, [](const auto &a, const auto &b) { return a > b; });
-}
-[[nodiscard]] inline PyExpression operator>=(const PyExpression &l,
-                                             const PyExpression &r) {
-  return combine(l, r, [](const auto &a, const auto &b) { return a >= b; });
-}
-[[nodiscard]] inline PyExpression operator==(const PyExpression &l,
-                                             const PyExpression &r) {
-  return combine(l, r, [](const auto &a, const auto &b) { return a == b; });
-}
-[[nodiscard]] inline PyExpression operator!=(const PyExpression &l,
-                                             const PyExpression &r) {
-  return combine(l, r, [](const auto &a, const auto &b) { return a != b; });
-}
+// transpose(M): rt::transpose's handle, kept as the matrix it reads.
+struct PyTransposed {
+  PyExpression m;
+};
 
 // The ternary: the arena is whichever operand names one, as above.
 [[nodiscard]] inline PyExpression
 select(const PyExpression &c, const PyExpression &t, const PyExpression &f) {
   const auto arena = c.arena() ? c.arena() : t.arena() ? t.arena() : f.arena();
   return {select(c.base(), t.base(), f.base()), arena};
-}
-
-[[nodiscard]] inline PyExpression operator+(const PyExpression &l,
-                                            const PyExpression &r) {
-  return binary(rt::OpCode::Add, l, r);
-}
-[[nodiscard]] inline PyExpression operator*(const PyExpression &l,
-                                            const PyExpression &r) {
-  return binary(rt::OpCode::Mul, l, r);
-}
-[[nodiscard]] inline PyExpression operator/(const PyExpression &l,
-                                            const PyExpression &r) {
-  return binary(rt::OpCode::Div, l, r);
-}
-[[nodiscard]] inline PyExpression operator-(const PyExpression &u) {
-  return unary(rt::OpCode::Neg, u);
-}
-[[nodiscard]] inline PyExpression operator-(const PyExpression &l,
-                                            const PyExpression &r) {
-  return l + (-r);
 }
 
 } // namespace ddx::py

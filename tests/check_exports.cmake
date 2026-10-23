@@ -12,7 +12,7 @@ if (leaked)
     message(FATAL_ERROR "${count} ${WHAT} symbols exported from ${LIB}, such as:\n  ${sample}")
 endif ()
 
-# libdl: the OpenCL loader's dlopen lives there before glibc 2.34.
+# libdl: LLVM's dlopen lives there before glibc 2.34.
 execute_process(COMMAND "${READELF}" -d "${LIB}"
         OUTPUT_VARIABLE dynamic COMMAND_ERROR_IS_FATAL ANY)
 string(REGEX MATCHALL "\\(NEEDED\\)[^\n]*" needed "${dynamic}")

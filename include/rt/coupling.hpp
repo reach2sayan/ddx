@@ -378,44 +378,17 @@ template <impl::Numeric T>
         detail::couple(rows, here, here);
       }
       break;
-    case Kind::Tensor: {
-      // One support for the whole row, conservatively: the union of what
-      // its operands read.  Linear ops -- Pack, Gather, Sum, Gemv over a
-      // constant matrix, AddAt -- couple nothing; a Map or Zip took its inner
-      // op's arm above, and Scale, Dot, MatVec and Outer couple as a product
-      // does.
-      switch (node.op) {
-      case OpCode::VecConst:
-      case OpCode::MatConst:
-      case OpCode::MatRow:
-        break;
-      case OpCode::Pack:
-        unite(arguments(b, v));
-        break;
-      case OpCode::Gather:
-      case OpCode::Sum:
-        here = of(node.a);
-        break;
-      case OpCode::Gemv:
-        here = of(node.b);
-        break;
-      case OpCode::AddAt:
-        here = of(node.a);
-        here |= of(node.b);
-        break;
-      case OpCode::Scale:
-      case OpCode::Dot:
-      case OpCode::MatVec:
-      case OpCode::Outer:
-        here = of(node.a);
-        here |= of(node.b);
+    case Kind::Tensor:
+      // One support for the whole row, conservatively: the union of what its
+      // operands read, a table's empty.  Scale, Dot, MatVec and Outer couple
+      // as a product does, the rest are linear; a Map or Zip took its inner
+      // op's arm above.
+      detail::for_each_operand(b, v, [&](NodeId u) { here |= of(u); });
+      if (op == OpCode::Scale || op == OpCode::Dot || op == OpCode::MatVec ||
+          op == OpCode::Outer) {
         detail::couple(rows, of(node.a), of(node.b));
-        break;
-      default: // the dense sweep's own rows, never under a root
-        std::unreachable();
       }
       break;
-    }
     }
   }
   return rows;

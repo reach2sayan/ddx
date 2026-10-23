@@ -35,11 +35,10 @@ DEPS_DIR = ROOT / ".deps"
 # In preference order, when neither --cxx nor $CXX says otherwise.
 COMPILERS = ("g++-15", "g++-14", "g++", "clang++")
 
-# Every combination of the two macros ddx's headers branch on.  They agree
-# today -- jit/ and cl/ are header types in every build -- and the union costs
-# nothing if they ever stop.
-VARIANTS = ((), ("-DDDX_HAS_JIT",), ("-DDDX_HAS_OPENCL",),
-            ("-DDDX_HAS_JIT", "-DDDX_HAS_OPENCL"))
+# Both settings of the macro ddx's headers branch on.  They agree today --
+# jit/ is header types in every build -- and the union costs nothing if they
+# ever stop.
+VARIANTS = ((), ("-DDDX_HAS_JIT",))
 
 # Every file, every subdirectory: the libraries whose variant is
 # chosen by -- BOOST_COMPILER_CONFIG,

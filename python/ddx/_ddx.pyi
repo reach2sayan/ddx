@@ -1,5 +1,5 @@
 """
-ddx's runtime expression graph, LLVM JIT and OpenCL device
+ddx's runtime expression graph and LLVM JIT
 """
 from __future__ import annotations
 import enum
@@ -8,19 +8,19 @@ __all__: list[str] = ['Backend', 'Call', 'Equation', 'Error', 'Expression',
                       'VecLib', 'Want', 'abs', 'acos', 'acosh', 'add', 'asin',
                       'asinh', 'atan', 'atan2', 'atanh', 'cbrt', 'cos',
                       'cosh', 'div', 'equation', 'erf', 'errc', 'exp',
-                      'has_jit', 'has_opencl', 'hypot', 'le', 'OptLevel', 'log', 'log10',
+                      'has_jit', 'hypot', 'le', 'OptLevel', 'log', 'log10',
                       'lt',
                       'max', 'min', 'mul', 'neg', 'pow', 'select', 'sign',
                       'sin', 'sinh', 'sqrt', 'tan', 'tanh', 'var',
+                      'implicit', 'param', 'Restricted',
                       'dot', 'gemv',
-                      'mat_constant', 'outer', 'pack', 'release_tapes', 'sum', 'vec', 'vec_constant']
+                      'mat_constant', 'outer', 'pack', 'release_tapes', 'sum', 'Transposed', 'transpose', 'vec', 'vec_constant']
 class Backend(enum.IntEnum):
     """
     Whether an equation compiles its graph.
     """
     ADAPT: typing.ClassVar[Backend]  # value = <Backend.ADAPT: 2>
     COMPILE: typing.ClassVar[Backend]  # value = <Backend.COMPILE: 1>
-    DEVICE: typing.ClassVar[Backend]  # value = <Backend.DEVICE: 3>
     INTERPRET: typing.ClassVar[Backend]  # value = <Backend.INTERPRET: 0>
     @classmethod
     def __new__(cls, value): pass
@@ -62,8 +62,6 @@ class Equation:
     def wait_for_kernel(self, *, want: Want = ...) -> bool: pass
     @property
     def arity(self) -> int: pass
-    @property
-    def device_status(self) -> str | None: pass
     @property
     def hessian_colours(self) -> int: pass
     @property
@@ -112,6 +110,7 @@ class Expression:
     def __lt__(self, arg0: Expression) -> Expression: pass
     @typing.overload
     def __lt__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass
+    def __matmul__(self, arg0: Expression) -> Expression: pass
     @typing.overload
     def __mul__(self, arg0: Expression) -> Expression: pass
     @typing.overload
@@ -174,6 +173,8 @@ class OptLevel(enum.IntEnum):
     @classmethod
     def __new__(cls, value): pass
     def __format__(self, format_spec): pass
+class Transposed:
+    def __matmul__(self, arg0: Expression) -> Expression: pass
 class VecLib(enum.IntEnum):
     """
     Which vector math library a lane may call.
@@ -214,7 +215,6 @@ class _Options:
     backend: Backend
     cache_dir: str
     contract: bool
-    device: str
     loop_vectorize: bool
     slp_vectorize: bool
     time_passes: bool
@@ -276,9 +276,7 @@ class errc(enum.IntEnum):
     bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 23>
     unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 24>
     wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 25>
-    no_device: typing.ClassVar[errc]  # value = <errc.no_device: 26>
-    device_compile: typing.ClassVar[errc]  # value = <errc.device_compile: 27>
-    device_launch: typing.ClassVar[errc]  # value = <errc.device_launch: 28>
+    unclosed_implicit: typing.ClassVar[errc]  # value = <errc.unclosed_implicit: 26>
     @classmethod
     def __new__(cls, value):
         ...
@@ -377,6 +375,8 @@ def pack(scalars: typing.Sequence[Expression]) -> Expression:
     """The vector of these scalars, in order."""
 def release_tapes() -> None:
     """Free this thread's sweep tapes; the next sweep grows them again."""
+def transpose(matrix: Expression) -> Transposed:
+    """M^T, as the left side of @: transpose(M) @ v is gemv(M, v, True)."""
 def sum(v: Expression) -> Expression:
     ...
 def vec(name: str, n: typing.SupportsInt | typing.SupportsIndex) -> Expression:
@@ -385,4 +385,3 @@ def vec_constant(data: typing.Sequence[typing.SupportsFloat]) -> Expression:
     ...
 __version__: str = ...
 has_jit: bool = True
-has_opencl: bool = True

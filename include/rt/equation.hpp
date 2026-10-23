@@ -40,10 +40,10 @@ using policy_of = boost::mp11::mp_if_c<dynamic_outputs<T, Rest...>, Dynamic,
 namespace ddx::impl {
 
 // rt::detail::Core with the output count in the type -- evaluate() answers a
-// T for one function, and a file holding another count is refused -- or, with
-// Dynamic in the pack, a count only known at run time: one function per
-// species read from a database, every value block a vector, and the
-// one-function members refusing with errc::not_single_output.
+// T for one function -- or, with Dynamic in the pack, a count only known at
+// run time: one function per species read from a database, every value block
+// a vector, and the one-function members refusing with
+// errc::not_single_output.
 template <Numeric T, typename... Rest>
   requires rt::detail::COutputPack<T, Rest...>
 class Equation<rt::Expression<T>, Rest...> : public rt::detail::Core<T> {

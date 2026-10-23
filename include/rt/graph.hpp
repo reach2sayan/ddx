@@ -168,8 +168,11 @@ constexpr void scatter_blocks(const OutputRows &rows, std::span<const T> tape,
         ++column;
         continue;
       }
+      // Column c of a column-major rows x cols matrix, read row-major.
+      const std::size_t cols = r.width / r.rows;
       const T *const base = vtape.data() + std::size_t{r.at} * stride;
-      for (std::size_t e = 0; e < r.width; ++e, ++column) {
+      for (std::size_t c = 0; c < r.width; ++c, ++column) {
+        const std::size_t e = c / cols + (c % cols) * r.rows;
         for (std::size_t k = 0; k < width; ++k) {
           (*column)[i + k] = base[k * r.width + e];
         }
@@ -203,7 +206,7 @@ public:
     // column per element.
     const auto columns = [&b](std::span<const NodeId> ids) {
       return std::ranges::fold_left(ids, 0uz, [&b](std::size_t n, NodeId v) {
-        return n + (tensor_valued(b.op_of(v)) ? width_of(b, v) : 1uz);
+        return n + (detail::is_tensor(b[v]) ? width_of(b, v) : 1uz);
       });
     };
     g.counts_ = {.values = blocks.values.size(),
@@ -243,8 +246,7 @@ public:
             std::max(g.inputs_.directions,
                      std::size_t{detail::index_of(g.properties_[v])} + 1);
       }
-      g.calls_extern_ |= kind_of(g.properties_[v].op) == Kind::Extern;
-      g.has_tensors_ |= kind_of(g.properties_[v].op) == Kind::Tensor;
+      g.has_tensors_ |= detail::on_tensors(g.properties_[v]);
     }
     // The tape packed by liveness, scalar rows and tensor rows alike; off the
     // arena, which holds the tensor table the widths come from.
@@ -253,9 +255,12 @@ public:
     g.tape_rows_ = packed.rows;
     g.tensors_ = detail::tensor_layout(b, g.schedule_, g.outputs_);
     g.output_rows_ = g.outputs_ | std::views::transform([&g, &b](NodeId o) {
-                       return tensor_valued(b.op_of(o))
-                                  ? g.tensors_.rows[o]
-                                  : TensorRow{.at = g.rows_[o]};
+                       if (!detail::is_tensor(b[o])) {
+                         return TensorRow{.at = g.rows_[o]};
+                       }
+                       TensorRow r = g.tensors_.rows[o];
+                       r.rows = shape_of(b, o).rows;
+                       return r;
                      }) |
                      impl::to<std::vector<TensorRow>>();
     return g;
@@ -293,9 +298,6 @@ public:
   }
   // Every has_list node's ids, shared with the arena: what arguments() reads.
   [[nodiscard]] std::span<const NodeId> lists() const { return lists_; }
-  // Whether a live node calls one: what a device, which cannot call the host,
-  // refuses -- a function the arena registered and nothing reaches is not.
-  [[nodiscard]] bool calls_extern() const noexcept { return calls_extern_; }
   // Whether a live node is a tensor op: what a kernel, which computes scalars
   // only, refuses, and what makes the sweep carry a second tape.
   [[nodiscard]] bool has_tensors() const noexcept { return has_tensors_; }
@@ -410,7 +412,6 @@ private:
   std::vector<std::string> names_;
   std::vector<ExternEntry<T>> externs_;
   std::vector<NodeId> lists_;
-  bool calls_extern_ = false;
   bool has_tensors_ = false;
   TensorLayout tensors_;
   std::vector<std::uint32_t> rows_;
@@ -428,26 +429,6 @@ private:
 //   GraphBuilder{b}.value(f).build_jacobian().build_hessian().finish()
 //
 // The class template argument is deduced from the builder.
-// What a freeze may ask a pipeline for.  Each is fetched only on the branch
-// that wants it, so a caller whose sweeps are lazy stays lazy.
-template <typename S>
-concept CSweeps = requires(S &s) {
-  { s.roots() } -> std::convertible_to<std::span<const NodeId>>;
-  { s.jacobian() } -> std::convertible_to<const Jacobian &>;
-  { s.hessian() } -> std::convertible_to<const Hessian &>;
-  { s.hessian_vector() } -> std::convertible_to<const HessianVector &>;
-  { s.vector_jacobian() } -> std::convertible_to<const VectorJacobian &>;
-  { s.tangent() } -> std::convertible_to<const Tangent &>;
-  { s.jacobian_tangent() } -> std::convertible_to<std::span<const NodeId>>;
-  { s.dense_hessian() } -> std::convertible_to<const DenseHessian &>;
-};
-
-// Defined below GraphBuilder, which befriends it: the only caller of the
-// block-taking members it keeps private.
-template <impl::Numeric T>
-[[nodiscard]] Graph<T> freeze_for(Want want, Builder<T> &arena,
-                                  CSweeps auto &sweeps, bool contract);
-
 template <impl::Numeric T = double> class GraphBuilder {
 public:
   explicit constexpr GraphBuilder(Builder<T> &b) noexcept : builder_{&b} {}
@@ -502,15 +483,10 @@ public:
 
   [[nodiscard]] Graph<T> finish(bool contract = true) const {
     return Graph<T>::freeze(*builder_, blocks_, colouring_, jacobian_pattern_,
-                            contract, directions_);
+                            contract);
   }
 
 private:
-  // The Hessian an Equation already holds, so the arena is not swept again:
-  // rt::derive_hessian appends to the builder, and freeze() must not.
-  template <impl::Numeric U>
-  friend Graph<U> freeze_for(Want, Builder<U> &, CSweeps auto &, bool);
-
   constexpr GraphBuilder &block(std::vector<NodeId> OutputBlocks::*which,
                                 std::span<const NodeId> ids) {
     (blocks_.*which).assign(ids.begin(), ids.end());
@@ -520,97 +496,14 @@ private:
     colouring_ = h.colouring;
     return block(&OutputBlocks::hessian, h.compressed);
   }
-  // H v is a second-order block of one column, so the colouring stays empty
-  // and colouring() is not always a way to read that block back.
-  constexpr GraphBuilder &hessian_vector_from(const HessianVector &h) {
-    return block(&OutputBlocks::hessian, h.product);
-  }
-  // J v is a first-order block of m columns, one per function.
-  constexpr GraphBuilder &tangent_from(const Tangent &t) {
-    return block(&OutputBlocks::jacobian, t.product);
-  }
-  // dJ/dv has the Jacobian's layout: one column per cell, read with its
-  // pattern.
-  constexpr GraphBuilder &
-  jacobian_tangent_from(std::span<const NodeId> product) {
-    return block(&OutputBlocks::hessian, product);
-  }
-  // w'J is a first-order block of n columns and dense, so jacobian_pattern()
-  // stays empty.
-  constexpr GraphBuilder &vector_jacobian_from(const VectorJacobian &j) {
-    return block(&OutputBlocks::jacobian, j.product);
-  }
-  // The dense Hessian is one vector output, n x n wide; no colouring.
-  constexpr GraphBuilder &dense_hessian_from(const DenseHessian &h) {
-    return block(&OutputBlocks::hessian, std::span{&h.block, 1});
-  }
 
   Builder<T> *builder_;
   std::vector<NodeId> roots_;
   OutputBlocks blocks_;
   Colouring colouring_;
   Sparsity jacobian_pattern_;
-  std::size_t directions_ = 0;
 };
 
 template <impl::Numeric T> GraphBuilder(Builder<T> &) -> GraphBuilder<T>;
-
-// The graph one pipeline computes: the value block unless the want is Gradient,
-// which differentiates the roots without computing them, and the one derivative
-// block that want names.  Vjp and Jvp replace the Jacobian block rather than
-// adding to it -- n columns instead of the pattern's nonzeros is the whole
-// point of asking.
-template <impl::Numeric T>
-[[nodiscard]] Graph<T> freeze_for(Want want, Builder<T> &arena,
-                                  CSweeps auto &sweeps, bool contract) {
-  GraphBuilder<T> gb{arena};
-  // Every direction column the call hands, whether or not the product reads
-  // it: y's never reaches H(x*x + y) v.
-  switch (want_info(want).direction) {
-  case Direction::None:
-    break;
-  case Direction::Symbols:
-    gb.directions_ = arena.symbols().size();
-    break;
-  case Direction::Functions:
-    gb.directions_ = sweeps.roots().size();
-    break;
-  }
-  if (want == Want::Gradient) {
-    gb.roots_from(sweeps.roots());
-  } else {
-    gb.values_from(sweeps.roots());
-  }
-  switch (want) {
-  case Want::Value:
-    break;
-  case Want::Vjp:
-    gb.vector_jacobian_from(sweeps.vector_jacobian());
-    break;
-  case Want::Jvp:
-    gb.tangent_from(sweeps.tangent());
-    break;
-  case Want::Jacobian:
-  case Want::Gradient:
-    gb.jacobian_from(sweeps.jacobian());
-    break;
-  case Want::Hessian:
-    gb.jacobian_from(sweeps.jacobian()).hessian_from(sweeps.hessian());
-    break;
-  case Want::Hvp:
-    gb.jacobian_from(sweeps.jacobian())
-        .hessian_vector_from(sweeps.hessian_vector());
-    break;
-  case Want::JacobianJvp:
-    gb.jacobian_from(sweeps.jacobian())
-        .jacobian_tangent_from(sweeps.jacobian_tangent());
-    break;
-  case Want::DenseHessian:
-    gb.jacobian_from(sweeps.jacobian())
-        .dense_hessian_from(sweeps.dense_hessian());
-    break;
-  }
-  return gb.finish(contract);
-}
 
 } // namespace ddx::rt

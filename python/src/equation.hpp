@@ -141,17 +141,6 @@ public:
     return unwrap(residual(scalars_of(at)));
   }
 
-  // Under Backend.DEVICE the device answering, None under any other backend.
-  // Raises with the reason where no device answers or its compiler refused.
-  [[nodiscard]] std::optional<std::string> device() const {
-    return device_status().transform([](const auto &status) {
-      if (!status) {
-        throw PyError{error{status.error().code}, status.error().detail};
-      }
-      return std::string{*status};
-    });
-  }
-
   // What one call for `want` evaluates: the contracted live order, which is
   // the sweep and what the kernel is lowered from.
   [[nodiscard]] std::size_t nodes(Want want) const {
@@ -184,9 +173,9 @@ private:
   }
 
   // The storage one derivative block is swept into, and the array it becomes.
-  // The pattern's cells, a coloured block and a dense n x n are scattered or
-  // transposed afterwards; a block per symbol or per function is laid out as
-  // the array already.
+  // The pattern's cells and a coloured block are scattered afterwards; a
+  // block per symbol or per function, and a dense n x n, is laid out as the
+  // array already.
   struct Out {
     std::optional<Scratch> cells{};
     std::optional<Block> block{};
@@ -203,8 +192,12 @@ private:
       return {};
     case rt::BlockShape::Cells:
     case rt::BlockShape::Colours:
-    case rt::BlockShape::Dense:
       return {.cells = Scratch{columns, at.size()}};
+    case rt::BlockShape::Dense:
+      return {.block = Block{shape_of({ssize(height()), ssize(width()),
+                                       ssize(width())},
+                                      at),
+                             columns, at.size()}};
     case rt::BlockShape::Symbols:
       return {.block = Block{symbol_shape(at), columns, at.size()}};
     case rt::BlockShape::Functions:
@@ -225,6 +218,7 @@ private:
       return pyb::none();
     case rt::BlockShape::Symbols:
     case rt::BlockShape::Functions:
+    case rt::BlockShape::Dense:
       return std::move(*o.block).array();
     case rt::BlockShape::Cells: {
       Dense g{shape_of({ssize(m), ssize(pattern.columns)}, at), at.size()};
@@ -235,18 +229,6 @@ private:
     case rt::BlockShape::Colours: {
       Dense h{shape_of({ssize(m), ssize(n), ssize(n)}, at), at.size()};
       py::scatter(*colouring, *o.cells, h, n, n, at.size());
-      return std::move(h).array();
-    }
-    case rt::BlockShape::Dense: {
-      // The pipeline's block is column-major and the array row-major.
-      Dense h{shape_of({ssize(m), ssize(n), ssize(n)}, at), at.size()};
-      for (std::size_t i = 0; i < n; ++i) {
-        for (std::size_t j = 0; j < n; ++j) {
-          std::ranges::copy_n(o.cells->rows()[i + j * n],
-                              static_cast<std::ptrdiff_t>(at.size()),
-                              h.at(i * n + j));
-        }
-      }
       return std::move(h).array();
     }
     }

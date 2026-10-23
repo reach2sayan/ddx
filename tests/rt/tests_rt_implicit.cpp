@@ -222,6 +222,26 @@ TEST(RtImplicit, AResidualOverAnotherImplicitIsRefused) {
   EXPECT_EQ(eq.status()->code, ddx::errc::nested_implicit);
 }
 
+TEST(RtImplicit, AnImplicitWithNoResidualIsRefused) {
+  const auto eq = ddx::rt::equation([] {
+    return ddx::rt::var("a") * ddx::rt::named(ddx::rt::OpCode::Implicit, "z");
+  });
+  ASSERT_TRUE(eq.poisoned());
+  EXPECT_EQ(eq.status()->code, ddx::errc::unclosed_implicit);
+}
+
+// dz/dx = -F_x / F_z is a quotient only for a scalar F.
+TEST(RtImplicit, AVectorResidualIsRefused) {
+  const auto eq = ddx::rt::equation([] {
+    const auto a = ddx::rt::var("a");
+    const auto z = ddx::rt::implicit(
+        "z", [&](const RE &z) { return z * ddx::rt::vec("v", 2) - a; });
+    return z * a;
+  });
+  ASSERT_TRUE(eq.poisoned());
+  EXPECT_EQ(eq.status()->code, ddx::errc::tensor_shape);
+}
+
 TEST(RtImplicit, AnImplicitNamedLikeASymbolIsRefused) {
   const auto eq = ddx::rt::equation([] {
     const auto a = ddx::rt::var("a");

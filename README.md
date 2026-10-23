@@ -11,8 +11,8 @@ A C++23 library for differentiating expressions. Build a function over named
 symbols while the program runs — terms looped over a data file, a model read
 from configuration, an expression typed by a user, a loss that switches shape
 on a comparison — and ask it for values, gradients, Jacobians and Hessians. One
-point at a time or a batch of thousands in one call, interpreted, compiled
-through LLVM, or run on a GPU through OpenCL. There are
+point at a time or a batch of thousands in one call, interpreted or compiled
+through LLVM. There are
 [Python bindings](#python) over the same runtime, and a header-only
 [compile-time API](#compile-time-expressions) for expressions whose shape is
 known when you compile.
@@ -52,7 +52,7 @@ time.
 
 ```cmake
 add_subdirectory(ddx)
-target_link_libraries(my_app PRIVATE ddx::rt)      # or ddx::jit, ddx::cl
+target_link_libraries(my_app PRIVATE ddx::rt)      # or ddx::jit
 ```
 
 ```cmake
@@ -64,7 +64,6 @@ find_package(ddx CONFIG REQUIRED COMPONENTS rt jit)
 | `ddx::ddx` | header-only: compile-time expressions |
 | `ddx::rt` | runtime equations |
 | `ddx::jit` | `ddx::rt` with the LLVM backend (`-DDDX_BUILD_JIT=ON`, needs LLVM 20) |
-| `ddx::cl` | `ddx::rt` with the OpenCL backend (`-DDDX_BUILD_OPENCL`, `AUTO` by default) |
 
 Also packaged for vcpkg (`--overlay-ports=contrib/vcpkg/ports`) and NuGet
 (`ddx`), both without the JIT. Presets: `debug`, `release`, `debug_jit`,
@@ -103,7 +102,13 @@ A point supplies symbols, then parameters, then implicits. `eq.residual(point)`
 evaluates each implicit's `F`; ddx never solves it.
 
 Vectors are elementwise under every operation, with `sum`, `dot` and
-`gemv(M, v, transposed = false)`; `v[i]` reads one element. They compute at
+`gemv(M, v, transposed = false)`, and `%` spells both: `u % v` is `dot(u, v)`,
+`M % v` is `gemv(M, v)` and `rt::transpose(M) % v` is `gemv(M, v, true)`,
+bit for bit (`@` in Python). `v[i]` reads one element. `select` over vectors
+and matrices takes the whole arm under a scalar condition and element by
+element under a condition of the arms' shape, a scalar arm taking the other's
+shape; the arm not taken never reaches a derivative, even where it is
+infinite. They compute at
 `double`, are never an output, and are computed by a kernel table —
 `rt::use_tensor_kernels(table)` or `eq.tensor_kernels(table)`, built with
 `rt::tensor_kernel_table<K>()` over a type satisfying `rt::TensorKernels`;
@@ -236,7 +241,6 @@ eq.uses_kernel();              // true
 | `Interpret` | default; LLVM is never loaded |
 | `Compile` | compile now |
 | `Adapt` | compile once batch traffic pays for it; `warming()` reports progress |
-| `Device` | OpenCL device, chosen by `.device = "NVIDIA"` (empty: first double-precision GPU); `device_status()` names it or says why none |
 
 | `jit::Options` field | Default | Is |
 |---|---|---|
@@ -250,7 +254,6 @@ eq.uses_kernel();              // true
 | `warm_points`, `hot_points` | `65536`, `1048576` | `Adapt` thresholds |
 | `cache_dir` | empty | reuse compiled objects across runs |
 | `time_passes` | `false` | per-pass timing to stderr |
-| `device` | empty | the `Device` selector |
 
 `kernel_level()` says which compiled tier is answering.
 

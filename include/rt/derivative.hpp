@@ -43,7 +43,7 @@ template <impl::Numeric T>
   switch (op) {
 #define DDX_RT_CONTRIB(fn, Op, label, functor, Desc)                           \
   case OpCode::Op:                                                             \
-    return impl::detail::adjoints_of<impl::detail::Desc>(adj, u)[0];
+    return impl::detail::adjoint_of<impl::detail::Desc, 0>(adj, u);
     DDX_RT_UNARY_TABLE(DDX_RT_CONTRIB)
 #undef DDX_RT_CONTRIB
     // `adj * f'(u)` is already the association DDX_UNARY_MATH_OP's generated
@@ -58,20 +58,20 @@ template <impl::Numeric T>
   }
 }
 
-// The pair reaching a two-argument op's operands.
-template <impl::Numeric T>
-[[nodiscard]] constexpr std::pair<H<T>, H<T>>
-contributions(OpCode op, const H<T> &adj, const H<T> &l, const H<T> &r) {
+// What reaches operand I of a two-argument op: one operand at a time, so a
+// sweep builds the rule only for an operand a derivative moves.  With a unit
+// adjoint it is that operand's partial.
+template <std::size_t I, impl::Numeric T>
+[[nodiscard]] constexpr H<T> contribution_to(OpCode op, const H<T> &adj,
+                                             const H<T> &l, const H<T> &r) {
   switch (op) {
 #define DDX_RT_CONTRIB(fn, Op, label, functor, Desc)                           \
-  case OpCode::Op: {                                                           \
-    const auto c = impl::detail::adjoints_of<impl::detail::Desc>(adj, l, r);   \
-    return {c[0], c[1]};                                                       \
-  }
+  case OpCode::Op:                                                             \
+    return impl::detail::adjoint_of<impl::detail::Desc, I>(adj, l, r);
     DDX_RT_BINARY_TABLE(DDX_RT_CONTRIB)
 #undef DDX_RT_CONTRIB
   default:
-    return {H<T>{0}, H<T>{0}};
+    return H<T>{0};
   }
 }
 
@@ -80,12 +80,6 @@ contributions(OpCode op, const H<T> &adj, const H<T> &l, const H<T> &r) {
 template <impl::Numeric T>
 [[nodiscard]] constexpr H<T> partial(OpCode op, const H<T> &u, const H<T> &f) {
   return contribution(op, H<T>{1}, u, f);
-}
-
-template <impl::Numeric T>
-[[nodiscard]] constexpr std::pair<H<T>, H<T>> partials(OpCode op, const H<T> &l,
-                                                       const H<T> &r) {
-  return contributions(op, H<T>{1}, l, r);
 }
 
 } // namespace detail
@@ -159,6 +153,27 @@ template <impl::Numeric T>
   });
 }
 
+// Which of the first live.size() nodes a derivative moves: every symbol and
+// implicit -- the IFT step reaches symbols outside the cone -- and whatever in
+// the cone reads one.  A param, a seed, a constant or a table holds still, and
+// no adjoint is built for it.
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::vector<bool>
+moving(const Builder<T> &b, const std::vector<bool> &live) {
+  std::vector<bool> moves(live.size(), false);
+  for (const NodeId v :
+       std::views::iota(NodeId{0}, static_cast<NodeId>(live.size()))) {
+    const OpCode op = b.op_of(v);
+    if (op == OpCode::Var || op == OpCode::Implicit) {
+      moves[v] = true;
+    } else if (live[v]) {
+      for_each_operand(b, v,
+                       [&](NodeId u) { moves[v] = moves[v] || moves[u]; });
+    }
+  }
+  return moves;
+}
+
 // Why the implicits cannot be differentiated, if they cannot: a misuse of
 // implicit(), or a residual reaching another implicit -- which would need a
 // linear solve, not a quotient.
@@ -171,6 +186,12 @@ template <impl::Numeric T>
       std::views::iota(0u, static_cast<std::uint32_t>(b.closures().size()));
   for (const std::uint32_t slot : implicits) {
     const NodeId f = b.closures()[slot];
+    if (f == no_node) {
+      return errc::unclosed_implicit;
+    }
+    if (!is_scalar(b[f])) {
+      return errc::tensor_shape; // F_z is a quotient only for a scalar F
+    }
     const auto live = reachable(b, std::span{&f, 1});
     if (std::ranges::any_of(implicits, [&](std::uint32_t other) {
           return other != slot && live[b.leaf(OpCode::Implicit, other)];
@@ -190,7 +211,10 @@ template <impl::Numeric T>
 // is a runtime zero, and 0 * f'(u) is NaN wherever f' is infinite -- log or
 // sqrt at 0 -- so every contribution out of a guarded node is itself chosen by
 // the guard.  Guards are selects, read as select_impl reads a condition, and an
-// unguarded graph builds exactly the nodes it did without them.
+// unguarded graph builds exactly the nodes it did without them.  Below a Select
+// over a tensor condition the guard is a tensor too: it guards children of
+// its own shape and, through a Pack, each element its own; past an op that
+// mixes elements it guards nothing.
 //
 // `ift` false holds every implicit fixed and only harvests df/dz; true -- the
 // default -- folds dz/dx in at the end, adj[z] * dz/dx_s into each symbol.
@@ -201,6 +225,14 @@ template <impl::Numeric T>
 build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
   const auto n = static_cast<NodeId>(b.size());
   const auto live = detail::reachable(b, std::span{&root, 1});
+  // Who a contribution is built for: a node a derivative moves, and a
+  // constant.  A constant's adjoint is read by nothing either, but a later
+  // sweep interns against the nodes its contribution builds, and making them
+  // there instead moves which product an fma takes -- the bit gate's jvp.
+  const auto moving = detail::moving(b, live);
+  const auto moves = [&](NodeId u) {
+    return moving[u] || kind_of(b.op_of(u)) == Kind::Const;
+  };
   // Two nodes per node of the cone is what a reverse pass comes to.
   b.reserve(n + 2 * static_cast<std::size_t>(std::ranges::count(live, true)));
   std::vector<NodeId> adj(n, no_node);
@@ -215,17 +247,26 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
   };
 
   // A contribution under its guard, as a node of the child's width: a
-  // select, which over a vector is a Scale by the chosen 1 or 0.
+  // select, which over a tensor copies the chosen row.
   const auto guarded = [&](NodeId child, NodeId g, const Expression<T> &c) {
     return both(g, c).id(b, shape_of(b, child));
+  };
+  const auto fits = [&b](NodeId g, NodeId child) {
+    return g == no_node || !detail::is_tensor(b[g]) ||
+           shape_of(b, g) == shape_of(b, child);
   };
 
   // `g` is the edge's guard; a child reached by an unguarded edge is always
   // on a chosen path, by any number of guarded ones on the OR of theirs.  The
-  // handle's `+` is the sum: a Zip(add) where the child is a vector.
-  const auto add_to = [&](NodeId child, NodeId g,
-                          const Expression<T> &contribution) {
-    const NodeId c = guarded(child, g, contribution);
+  // handle's `+` is the sum: a Zip(add) where the child is a vector.  The
+  // contribution is built only for a child `moves` names: a param's, a seed's
+  // or a table's adjoint is read by nothing.
+  const auto add_to = [&](NodeId child, NodeId g, auto &&contribution) {
+    if (!moves(child)) {
+      return;
+    }
+    g = fits(g, child) ? g : no_node;
+    const NodeId c = guarded(child, g, contribution());
     // What sign(), and so abs(), hands back.  Storing it would mark the child
     // live and carry a zero adjoint down its whole cone.
     if (b.is_constant(c, T{0})) {
@@ -261,31 +302,44 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
       break;
     case Kind::Extern:
       detail::extern_partials(b, v, [&](NodeId arg, const Expression<T> &c) {
-        add_to(arg, g, a * c);
+        add_to(arg, g, [&] { return a * c; });
       });
       break;
     case Kind::Nary: // linear: every term takes the adjoint whole
       for (const NodeId t : arguments(b, v)) {
-        add_to(t, g, a);
+        add_to(t, g, [&] { return a; });
       }
       break;
     case Kind::Unary:
-      add_to(node.a, g, detail::contribution(op, a, expr(node.a), expr(v)));
+      add_to(node.a, g, [&] {
+        return detail::contribution(op, a, expr(node.a), expr(v));
+      });
       break;
     case Kind::Ternary: {
       // Here rather than in ops/adjoints.hpp: two arms of different types is
       // what a type-encoded tree cannot hold, so there is no compile-time rule
       // to share with.  Nothing reaches the condition -- it chooses.
       const Expression<T> cond = expr(node.a);
-      add_to(node.b, both(g, cond).id(b), a);
-      add_to(node.c, both(g, select(cond, zero, one)).id(b), a);
+      if (moves(node.b)) {
+        add_to(node.b, both(g, cond).id(b), [&] { return a; });
+      }
+      if (moves(node.c)) {
+        add_to(node.c, both(g, select(cond, zero, one)).id(b),
+               [&] { return a; });
+      }
       break;
     }
     case Kind::Binary: {
-      const auto [cl, cr] =
-          detail::contributions(op, a, expr(node.a), expr(node.b));
-      add_to(node.a, g, cl);
-      add_to(node.b, g, cr);
+      // Both rules before either sum: `make` orders a commutative node's
+      // operands by id, so the order nodes are built in is part of the answer.
+      const Expression<T> l = expr(node.a);
+      const Expression<T> r = expr(node.b);
+      const Expression<T> cl =
+          moves(node.a) ? detail::contribution_to<0>(op, a, l, r) : zero;
+      const Expression<T> cr =
+          moves(node.b) ? detail::contribution_to<1>(op, a, l, r) : zero;
+      add_to(node.a, g, [&] { return cl; });
+      add_to(node.b, g, [&] { return cr; });
       break;
     }
     case Kind::Tensor: {
@@ -296,53 +350,57 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
         break;
       case OpCode::Pack: {
         const auto args = arguments(b, v);
+        const bool each = g != no_node && detail::is_tensor(b[g]);
         for (const auto [i, s] : args | std::views::enumerate) {
-          add_to(s, g, a[static_cast<std::size_t>(i)]);
+          const auto at = static_cast<std::size_t>(i);
+          if (moves(s)) {
+            add_to(s, each ? expr(g)[at].id(b) : g, [&] { return a[at]; });
+          }
         }
         break;
       }
       case OpCode::Gather:
-        add_to(node.a, g,
-               detail::add_at(expr(b.zeros(shape_of(b, node.a))), a,
-                              detail::index_of(node)));
+        add_to(node.a, g, [&] {
+          return detail::add_at(expr(b.zeros(shape_of(b, node.a))), a,
+                                detail::index_of(node));
+        });
         break;
       case OpCode::Scale:
-        add_to(node.a, g, dot(a, expr(node.b)));
-        add_to(node.b, g, expr(node.a) * a);
+        add_to(node.a, g, [&] { return dot(a, expr(node.b)); });
+        add_to(node.b, g, [&] { return expr(node.a) * a; });
         break;
       case OpCode::Sum:
-        add_to(node.a, g, a * expr(b.ones(shape_of(b, node.a))));
+        add_to(node.a, g,
+               [&] { return a * expr(b.ones(shape_of(b, node.a))); });
         break;
       case OpCode::Dot:
-        add_to(node.a, g, a * expr(node.b));
-        add_to(node.b, g, a * expr(node.a));
-        break;
-      case OpCode::Gemv:
-        // The matrix is a constant: only the vector moves, by M^T (or M).
-        add_to(node.b, g,
-               expr(b.make(OpCode::Gemv, node.a, adj[v], no_node,
-                           detail::is_transposed(node) ? 0u : 1u)));
+        add_to(node.a, g, [&] { return a * expr(node.b); });
+        add_to(node.b, g, [&] { return a * expr(node.a); });
         break;
       case OpCode::AddAt:
-        add_to(node.a, g, a);
-        add_to(node.b, g, a[detail::index_of(node)]);
+        add_to(node.a, g, [&] { return a; });
+        add_to(node.b, g, [&] { return a[detail::index_of(node)]; });
         break;
       case OpCode::MatRow: // a table: nothing moves it
         break;
       case OpCode::MatVec: {
         // y = M v moves v by M^T a and M by a v^T; y = M^T v, by M a and v a^T.
         const bool t = detail::is_transposed(node);
-        add_to(node.b, g,
-               expr(b.make(OpCode::MatVec, node.a, adj[v], no_node, !t)));
-        add_to(node.a, g,
-               expr(t ? b.make(OpCode::Outer, node.b, adj[v])
-                      : b.make(OpCode::Outer, adj[v], node.b)));
+        add_to(node.b, g, [&] {
+          return expr(b.make(OpCode::MatVec, node.a, adj[v], no_node, !t));
+        });
+        add_to(node.a, g, [&] {
+          return expr(t ? b.make(OpCode::Outer, node.b, adj[v])
+                        : b.make(OpCode::Outer, adj[v], node.b));
+        });
         break;
       }
       case OpCode::Outer: // u w^T: u moves by A w, w by A^T u
-        add_to(node.a, g, expr(b.make(OpCode::MatVec, adj[v], node.b)));
-        add_to(node.b, g,
-               expr(b.make(OpCode::MatVec, adj[v], node.a, no_node, 1)));
+        add_to(node.a, g,
+               [&] { return expr(b.make(OpCode::MatVec, adj[v], node.b)); });
+        add_to(node.b, g, [&] {
+          return expr(b.make(OpCode::MatVec, adj[v], node.a, no_node, 1));
+        });
         break;
       default: // the dense sweep's own rows, built under no root
         std::unreachable();
@@ -363,7 +421,7 @@ build_reverse_jacobian(Builder<T> &b, NodeId root, bool ift) {
       for (const auto [s, dz] :
            detail::Implicits::row(b, slot) | std::views::enumerate) {
         add_to(b.leaf(OpCode::Var, static_cast<std::uint32_t>(s)), guard[z],
-               expr(adj[z]) * expr(dz));
+               [&] { return expr(adj[z]) * expr(dz); });
       }
     }
   }
@@ -394,17 +452,42 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
               std::span<const NodeId> tangent) {
   const auto n = static_cast<NodeId>(b.size());
   const auto live = detail::reachable(b, roots);
+  const auto moves = detail::moving(b, live);
   b.reserve(n + 2 * static_cast<std::size_t>(std::ranges::count(live, true)));
   std::vector<NodeId> d(n, no_node);
+  // A node nothing moves has the zero of its shape for a tangent, made only
+  // where an arm reads it; a table is never read as a value.
+  const auto at = [&](NodeId u) {
+    if (d[u] == no_node && !moves[u]) {
+      d[u] =
+          detail::is_tensor(b[u]) ? b.zeros(shape_of(b, u)) : b.constant(T{0});
+    }
+    return d[u];
+  };
+  const auto expr = [&b](NodeId id) { return Expression<T>{b, id}; };
+  const auto dv = [&](NodeId u) { return Expression<T>{b, at(u)}; };
+  // The terms of a product rule whose operand moves, and only those: a zero
+  // term is no node on a scalar, but a tensor op is never folded, so it would
+  // be computed at every point.  At least one moves, or `v` would not.
+  const auto moved = [&](NodeId v, NodeId l, auto &&dl, NodeId r, auto &&dr) {
+    const Shape shape = shape_of(b, v);
+    if (!moves[r]) {
+      return dl().id(b, shape);
+    }
+    return (moves[l] ? dl() + dr() : dr()).id(b, shape);
+  };
 
   for (const NodeId v : detail::live_ids(live)) {
     const auto node = b[v]; // by value: building below may reallocate
+    if (!moves[v]) {
+      continue;
+    }
     const OpCode op = detail::effective_op(node);
     switch (kind_of(op)) {
     case Kind::Extern: {
       Expression<T> sum{0};
       detail::extern_partials(b, v, [&](NodeId arg, const Expression<T> &c) {
-        sum = sum + c * Expression<T>{b, d[arg]};
+        sum = sum + c * Expression<T>{b, at(arg)};
       });
       d[v] = sum.id(b);
       break;
@@ -412,15 +495,14 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
     case Kind::Nary: { // the sum of the terms' tangents, as a sum again
       Expression<T> sum{0};
       for (const NodeId t : arguments(b, v)) {
-        sum += Expression<T>{b, d[t]};
+        sum += Expression<T>{b, at(t)};
       }
       d[v] = sum.id(b);
       break;
     }
-    case Kind::Const:
-      d[v] = b.constant(T{0});
-      break;
-    case Kind::Input:
+    case Kind::Const: // holds still, above
+      std::unreachable();
+    case Kind::Input: // a symbol or an implicit: a param or a seed holds still
       if (node.op == OpCode::Implicit) {
         // dz = sum_s dz/dx_s dx_s: z moves with every symbol its residual does.
         const auto dz = detail::Implicits::row(b, detail::index_of(node));
@@ -433,49 +515,45 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
                    Expression<T>{0}, std::plus<>{})
                    .id(b);
       } else {
-        // A Seed is a direction, not a variable, so it carries no tangent.
-        d[v] = node.op == OpCode::Var ? tangent[detail::index_of(node)]
-                                      : b.constant(T{0});
+        d[v] = tangent[detail::index_of(node)];
       }
       break;
     case Kind::Unary: {
       const Expression<T> u{b, node.a};
       const Expression<T> self{b, v};
-      d[v] = (detail::partial(op, u, self) * Expression<T>{b, d[node.a]}).id(b);
+      d[v] =
+          (detail::partial(op, u, self) * Expression<T>{b, at(node.a)}).id(b);
       break;
     }
     case Kind::Ternary:
       // select(c, dt, df): the condition picks the derivative as it picks
       // the value.
-      d[v] = select(Expression<T>{b, node.a}, Expression<T>{b, d[node.b]},
-                    Expression<T>{b, d[node.c]})
+      d[v] = select(Expression<T>{b, node.a}, Expression<T>{b, at(node.b)},
+                    Expression<T>{b, at(node.c)})
                  .id(b);
       break;
     case Kind::Binary: {
+      // Both partials before either product, as in the reverse sweep.
       const Expression<T> l{b, node.a};
       const Expression<T> r{b, node.b};
-      const auto [dl, dr] = detail::partials(op, l, r);
-      d[v] =
-          (dl * Expression<T>{b, d[node.a]} + dr * Expression<T>{b, d[node.b]})
-              .id(b, shape_of(b, v));
+      const Expression<T> one{1};
+      const Expression<T> pl =
+          moves[node.a] ? detail::contribution_to<0>(op, one, l, r) : one;
+      const Expression<T> pr =
+          moves[node.b] ? detail::contribution_to<1>(op, one, l, r) : one;
+      d[v] = moved(
+          v, node.a, [&] { return pl * dv(node.a); }, node.b,
+          [&] { return pr * dv(node.b); });
       break;
     }
     case Kind::Tensor: {
       // The forward twin of each reverse rule above; a vector's tangent is a
-      // vector of its width.
-      const auto expr = [&b](NodeId id) { return Expression<T>{b, id}; };
-      const auto dv = [&](NodeId u) { return Expression<T>{b, d[u]}; };
+      // vector of its width.  A constant or a table holds still, above.
       switch (node.op) {
-      case OpCode::VecConst:
-      case OpCode::MatRow:
-        d[v] = b.zeros(shape_of(b, v));
-        break;
-      case OpCode::MatConst: // a table, never read as a value
-        break;
       case OpCode::Pack: {
         const auto args = arguments(b, v);
         const auto tangents =
-            args | std::views::transform([&d](NodeId s) { return d[s]; }) |
+            args | std::views::transform([&](NodeId s) { return at(s); }) |
             impl::to<boost::container::small_vector<NodeId, 8>>();
         d[v] = b.pack(tangents);
         break;
@@ -484,33 +562,40 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
         d[v] = dv(node.a)[detail::index_of(node)].id(b);
         break;
       case OpCode::Scale:
-        d[v] = (dv(node.a) * expr(node.b) + expr(node.a) * dv(node.b))
-                   .id(b, shape_of(b, v));
+        d[v] = moved(
+            v, node.a, [&] { return dv(node.a) * expr(node.b); }, node.b,
+            [&] { return expr(node.a) * dv(node.b); });
         break;
       case OpCode::Sum:
         d[v] = sum(dv(node.a)).id(b);
         break;
       case OpCode::Dot:
-        d[v] = (dot(dv(node.a), expr(node.b)) + dot(expr(node.a), dv(node.b)))
-                   .id(b);
-        break;
-      case OpCode::Gemv:
-        d[v] = b.make(OpCode::Gemv, node.a, d[node.b], no_node, node.aux);
+        d[v] = moved(
+            v, node.a, [&] { return dot(dv(node.a), expr(node.b)); }, node.b,
+            [&] { return dot(expr(node.a), dv(node.b)); });
         break;
       case OpCode::AddAt:
-        d[v] = b.make(OpCode::AddAt, d[node.a], d[node.b], no_node, node.aux);
+        d[v] = b.make(OpCode::AddAt, at(node.a), at(node.b), no_node, node.aux);
         break;
       case OpCode::MatVec:
-        d[v] =
-            (expr(
-                 b.make(OpCode::MatVec, d[node.a], node.b, no_node, node.aux)) +
-             expr(b.make(OpCode::MatVec, node.a, d[node.b], no_node, node.aux)))
-                .id(b);
+        d[v] = moved(
+            v, node.a,
+            [&] {
+              return expr(b.make(OpCode::MatVec, at(node.a), node.b, no_node,
+                                 node.aux));
+            },
+            node.b,
+            [&] {
+              return expr(b.make(OpCode::MatVec, node.a, at(node.b), no_node,
+                                 node.aux));
+            });
         break;
       case OpCode::Outer:
-        d[v] = (expr(b.make(OpCode::Outer, d[node.a], node.b)) +
-                expr(b.make(OpCode::Outer, node.a, d[node.b])))
-                   .id(b);
+        d[v] = moved(
+            v, node.a,
+            [&] { return expr(b.make(OpCode::Outer, at(node.a), node.b)); },
+            node.b,
+            [&] { return expr(b.make(OpCode::Outer, node.a, at(node.b))); });
         break;
       default: // the dense sweep's own rows, built under no root
         std::unreachable();
@@ -520,7 +605,7 @@ tangent_sweep(Builder<T> &b, std::span<const NodeId> roots,
     }
   }
 
-  return roots | std::views::transform([&d](NodeId r) { return d[r]; }) |
+  return roots | std::views::transform([&](NodeId r) { return at(r); }) |
          impl::to<std::vector<NodeId>>();
 }
 
@@ -594,9 +679,8 @@ derive_jacobian(Builder<T> &b, std::span<const NodeId> roots) {
 }
 
 // One root rather than a span: a span is not constructible from a NodeId, so
-// this and the m-root overload never compete, and DiffMode does not satisfy
-// Numeric, which keeps it clear of the plain spelling below.
-template <impl::DiffMode Mode, impl::Numeric T>
+// this and the m-root overload never compete.
+template <impl::DiffMode Mode = impl::DiffMode::Reverse, impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow derive_jacobian(Builder<T> &b,
                                                     NodeId root) {
   if constexpr (Mode == impl::DiffMode::Symbolic) {
@@ -604,12 +688,6 @@ template <impl::DiffMode Mode, impl::Numeric T>
   } else {
     return build_reverse_jacobian(b, root);
   }
-}
-
-template <impl::Numeric T>
-[[nodiscard]] constexpr JacobianRow derive_jacobian(Builder<T> &b,
-                                                    NodeId root) {
-  return build_reverse_jacobian(b, root);
 }
 
 // One sweep per colour.  Sweeping from the sum of a colour's partials gives,

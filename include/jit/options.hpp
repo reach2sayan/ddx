@@ -13,7 +13,7 @@
 
 // What a caller says about compiling, and nothing that compiles: header types
 // in every build, so an Equation has one shape whether or not a backend was
-// compiled in.  jit/kernel.hpp holds the LLVM side, cl/ the device side.
+// compiled in.  jit/kernel.hpp holds the LLVM side.
 namespace ddx::rt {
 template <impl::Numeric T> class Graph;
 } // namespace ddx::rt
@@ -71,10 +71,8 @@ private:
 
 // Compile and Adapt are a ladder: a codegen-0 kernel answers first and one at
 // codegen_level replaces it, bit-identically; calls before the first rung lands
-// are swept.  Adapt asks for a rung once the batch has paid for it.  Device
-// builds the graph as OpenCL C for the device Options::device names -- one
-// rung, and the sweep answers until it lands.
-enum class Backend : std::uint8_t { Interpret, Compile, Adapt, Device };
+// are swept.  Adapt asks for a rung once the batch has paid for it.
+enum class Backend : std::uint8_t { Interpret, Compile, Adapt };
 
 // What decides the machine code, and nothing else: the identity a stored
 // object is matched against and the object cache is keyed on, so a field here
@@ -118,10 +116,6 @@ struct Options {
   bool time_passes = false; // Per-pass timing to stderr
   // Object cache directory, empty for none; keyed by graph, options and host.
   std::string cache_dir{};
-  // Under Backend::Device, which OpenCL device: a case-insensitive substring of
-  // "<platform> / <device>".  Empty is the first GPU with double precision,
-  // else the first double-precision device of any type.
-  std::string device{};
 
   friend bool operator==(const Options &, const Options &) = default;
 };
