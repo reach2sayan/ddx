@@ -37,14 +37,16 @@ jobs:
       # promises is what CI proves.  g++-14 for the libstdc++ 14 floor
       # (std::ranges::to), which clang on Linux compiles against too, so the
       # line serves either Linux caller.  clang-20 for the Clang floor README.md
-      # documents.  Compilers only: Boost is fetched at a pinned hash and never found, and
-      # an installed ddx carries the headers in its own prefix, so tests/package
-      # needs none either.
+      # documents.  Boost is fetched at a pinned hash and never found, and an
+      # installed ddx carries the headers in its own prefix, so tests/package
+      # needs none either.  Eigen and OpenBLAS are for tests_eigen and
+      # tests_cblas, which are built only where CMake finds them; ddx itself
+      # never links either.
       - name: Install compilers (Ubuntu)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y clang-20 gcc-14 g++-14
+          sudo apt-get install -y clang-20 gcc-14 g++-14 libeigen3-dev libopenblas-dev
 
       # include/ may name the standard library and Boost, and nothing else.
       # Boost is not a third party here: it is fetched at a pinned hash and
@@ -156,7 +158,7 @@ jobs:
       - name: Install compilers (Ubuntu)
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y clang-20 gcc-14 g++-14
+          sudo apt-get install -y clang-20 gcc-14 g++-14 libeigen3-dev libopenblas-dev
 
       # Its own key, not the release workflow's: a prefix built here carries
       # this runner's glibc, which a manylinux wheel must never link.
