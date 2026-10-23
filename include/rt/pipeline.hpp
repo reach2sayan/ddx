@@ -184,18 +184,14 @@ private:
   // rung, and the second re-reads an `asked` the first has already moved.
   void climb(const Setting &setting) {
     if constexpr (std::same_as<T, double>) {
-      if (setting.options.backend != jit::Backend::Adapt) {
+      // No compiler, no ladder: count() never counted, so nothing was bought.
+      if (setting.options.backend != jit::Backend::Adapt ||
+          setting.compiler == nullptr) {
         return;
       }
       const unsigned asked = asked_.load(std::memory_order_relaxed);
       if (asked >= Rungs || points_.load(std::memory_order_relaxed) <
                                 rung_at(asked, setting.options)) {
-        return;
-      }
-      if (setting.compiler == nullptr) {
-        // No ladder on this host, and the sweep answers everything: stop
-        // counting rather than take the write lock on every call from here on.
-        asked_.store(Rungs, std::memory_order_relaxed);
         return;
       }
 #ifdef DDX_HAS_JIT

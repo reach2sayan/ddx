@@ -138,6 +138,25 @@ TEST(RtSystem, HessianStacksTheScalarHessians) {
   }
 }
 
+// A literal output is a constant function wherever it stands: the arena is
+// the first output's that names one.
+TEST(RtSystem, ALiteralFirstOutputTakesTheArenaOfTheNext) {
+  const auto first = ddx::rt::equation([] {
+    const auto x = ddx::rt::var("x");
+    return std::vector<RE>{RE{2.5}, x * x};
+  });
+  const auto last = ddx::rt::equation([] {
+    const auto x = ddx::rt::var("x");
+    return std::vector<RE>{x * x, RE{2.5}};
+  });
+  ASSERT_FALSE(first.poisoned()) << first.status()->code;
+  ASSERT_FALSE(last.poisoned()) << last.status()->code;
+  const std::array at{3.0};
+  EXPECT_EQ(*first.evaluate(at), (std::vector{2.5, 9.0}));
+  EXPECT_EQ(*first.jacobian(at), (std::vector{0.0, 6.0}));
+  EXPECT_EQ(*last.jacobian(at), (std::vector{6.0, 0.0}));
+}
+
 TEST(RtSystem, AnEmptyRangeIsNoGraph) {
   const auto sys = ddx::rt::equation([] { return std::vector<RE>{}; });
   ASSERT_TRUE(sys.poisoned());

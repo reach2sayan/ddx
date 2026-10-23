@@ -102,8 +102,12 @@ template <impl::Numeric T> class DenseSweep {
 public:
   DenseSweep(Builder<T> &b, std::span<const NodeId> partials, Swept swept)
       : b_{b}, at_{swept.at}, n_{swept.width}, row_(b.size(), no_node),
-        mat_(b.size()) {
-    const auto live = reachable(b_, partials.subspan(at_, n_));
+        mat_(b.size()), source_{gathered(partials.subspan(at_, n_))} {
+    // Partials gathered from one vector are read through its tangent, so the
+    // walk stops at the vector and builds no row per partial.
+    const auto live =
+        reachable(b_, source_ ? std::span<const NodeId>{&*source_, 1}
+                              : partials.subspan(at_, n_));
     for (const NodeId v : live_ids(live)) {
       visit(v);
     }
@@ -119,9 +123,8 @@ public:
     if (refused_) {
       return no_node;
     }
-    const auto swept = partials.subspan(at_, n_);
-    const auto source = gathered(swept);
-    const NodeId block = source ? summed(mat_[*source]) : stacked(swept);
+    const NodeId block =
+        source_ ? summed(mat_[*source_]) : stacked(partials.subspan(at_, n_));
     return partials.size() == n_ ? block : bordered(partials, block);
   }
   [[nodiscard]] std::uint32_t n2() const noexcept { return n2_; }
@@ -142,7 +145,7 @@ private:
   // The rows of `ids` as a matrix, a zero row for an id nothing moves.
   [[nodiscard]] NodeId stacked(const auto &ids) {
     const auto rows = ids | std::views::transform([this](NodeId g) {
-                        return row_[g] == no_node ? zeros() : row_[g];
+                        return row(g) == no_node ? zeros() : row(g);
                       }) |
                       impl::to<std::vector<NodeId>>();
     return b_.pack(rows, OpCode::StackRows);
@@ -392,6 +395,18 @@ private:
            });
   }
 
+  // A swept symbol's row is e_j, made where something reads it: a symbol read
+  // only through the symbol vector's Pack is the identity term, and no row.
+  [[nodiscard]] NodeId row(NodeId u) {
+    if (row_[u] == no_node && b_.op_of(u) == OpCode::Var) {
+      const std::uint32_t j = index_of(b_[u]);
+      if (j >= at_ && j < at_ + n_) {
+        row_[u] = unit(j - at_);
+      }
+    }
+    return row_[u];
+  }
+
   void visit(NodeId v) {
     const Node<T> node = b_[v]; // by value: building below may reallocate
     if (is_tensor(node)) {
@@ -406,10 +421,6 @@ private:
     case Kind::Const:
       return no_node;
     case Kind::Input:
-      if (node.op == OpCode::Var) {
-        const std::uint32_t j = index_of(node);
-        return j < at_ || j >= at_ + n_ ? no_node : unit(j - at_);
-      }
       if (node.op == OpCode::Implicit) {
         return b_.pack(
             std::span{Implicits::row(b_, index_of(node))}.subspan(at_, n_));
@@ -418,26 +429,40 @@ private:
     case Kind::Nary:
       return std::ranges::fold_left(
           arguments(b_, v), no_node,
-          [this](NodeId r, NodeId t) { return add(r, row_[t]); });
+          [this](NodeId r, NodeId t) { return add(r, row(t)); });
     case Kind::Extern: {
       NodeId r = no_node;
       extern_partials(b_, v, [&](NodeId arg, const E &c) {
-        r = add(r, scaled(c, row_[arg]));
+        r = add(r, scaled(c, row(arg)));
       });
       return r;
     }
+    // A partial is built only to scale a row there is.
     case Kind::Unary:
-      return scaled(partial(node.op, expr(node.a), expr(v)), row_[node.a]);
+      return row(node.a) == no_node
+                 ? no_node
+                 : scaled(partial(node.op, expr(node.a), expr(v)), row(node.a));
     case Kind::Binary: {
-      const auto [dl, dr] = partials(node.op, expr(node.a), expr(node.b));
-      return add(scaled(dl, row_[node.a]), scaled(dr, row_[node.b]));
+      // Both partials before either product: `make` orders a commutative
+      // node's operands by id.
+      const E l = expr(node.a);
+      const E r = expr(node.b);
+      const E pl = row(node.a) == no_node
+                       ? E{0}
+                       : contribution_to<0>(node.op, E{1}, l, r);
+      const E pr = row(node.b) == no_node
+                       ? E{0}
+                       : contribution_to<1>(node.op, E{1}, l, r);
+      return add(scaled(pl, row(node.a)), scaled(pr, row(node.b)));
     }
     case Kind::Ternary: { // picked, so the row not taken is never scaled by 0
-      if (row_[node.b] == no_node && row_[node.c] == no_node) {
+      if (row(node.b) == no_node && row(node.c) == no_node) {
         return no_node;
       }
-      const auto row = [this](NodeId r) { return expr(r == no_node ? zeros() : r); };
-      return select(expr(node.a), row(row_[node.b]), row(row_[node.c]))
+      const auto or_zeros = [this](NodeId r) {
+        return expr(r == no_node ? zeros() : r);
+      };
+      return select(expr(node.a), or_zeros(row(node.b)), or_zeros(row(node.c)))
           .id(b_, {n_});
     }
     case Kind::Tensor:
@@ -475,24 +500,33 @@ private:
             {.kind = Term::Kind::Dense, .a = stacked(arguments(b_, v))});
       }
       break;
-    case OpCode::Map: {
-      const E p = partial(inner_of(node), expr(node.a), expr(v));
-      out = scale(p, mat_[node.a]);
+    // A partial is built only to scale terms there are.
+    case OpCode::Map:
+      if (!mat_[node.a].empty()) {
+        out =
+            scale(partial(inner_of(node), expr(node.a), expr(v)), mat_[node.a]);
+      }
       break;
-    }
     case OpCode::Zip: {
-      const auto [pu, pv] = partials(inner_of(node), expr(node.a), expr(node.b));
+      const E u = expr(node.a);
+      const E w = expr(node.b);
+      const E pu = mat_[node.a].empty()
+                       ? E{0}
+                       : contribution_to<0>(inner_of(node), E{1}, u, w);
+      const E pw = mat_[node.b].empty()
+                       ? E{0}
+                       : contribution_to<1>(inner_of(node), E{1}, u, w);
       out = scale(pu, mat_[node.a]);
-      impl::append(out, scale(pv, mat_[node.b]));
+      impl::append(out, scale(pw, mat_[node.b]));
       break;
     }
     case OpCode::Scale: {
       const E s = expr(node.a);
       out = scale(s, mat_[node.b]);
-      if (row_[node.a] != no_node) {
+      if (row(node.a) != no_node) {
         ++n2_;
         out.push_back(
-            {.kind = Term::Kind::Outer, .a = node.b, .b = row_[node.a]});
+            {.kind = Term::Kind::Outer, .a = node.b, .b = row(node.a)});
       }
       break;
     }
@@ -527,11 +561,11 @@ private:
     }
     case OpCode::AddAt:
       out = mat_[node.a];
-      if (row_[node.b] != no_node) {
+      if (row(node.b) != no_node) {
         ++n2_;
         out.push_back({.kind = Term::Kind::Outer,
                        .a = unit(index_of(node), width_of(b_, node.a)),
-                       .b = row_[node.b]});
+                       .b = row(node.b)});
       }
       break;
     default:
@@ -547,6 +581,7 @@ private:
   std::uint32_t n2_ = 0;
   std::uint32_t n3_ = 0;
   bool refused_ = false;
+  std::optional<NodeId> source_; // the vector the partials are gathered from
 };
 
 } // namespace detail

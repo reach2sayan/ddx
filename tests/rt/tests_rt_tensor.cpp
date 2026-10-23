@@ -1272,7 +1272,36 @@ TEST(RtMatrix, DenseHessianRefusesACompositionDependentMatrix) {
   const auto at = composition(n);
   EXPECT_EQ(got.dense_hessian(std::span<const double>{at}).error().code,
             ddx::errc::tensor_shape);
+  EXPECT_FALSE(got.dense_hessian_cost().has_value()) << "no block, no cost";
   expect_same_derivatives(want, got, at, 1e-11);
+}
+
+// No adjoint or tangent is built for what nothing moves: a param, a constant
+// vector, a table.  Counted on the arena, as a node a sweep builds and nobody
+// reads is computed nowhere but costs every later sweep its interning.
+TEST(RtTensor, SweepsBuildNothingForWhatHoldsStill) {
+  const auto count = [](const ddx::rt::Builder<> &b, ddx::rt::OpCode op) {
+    return std::ranges::count(b.nodes(), op, &ddx::rt::Node<double>::op);
+  };
+  {
+    ddx::rt::Builder<> b;
+    const RE s = ddx::rt::param(b, "s");
+    const RV x = ddx::rt::vec(b, "x", 3);
+    const auto root = sum(s * x).id(b);
+    (void)ddx::rt::derive_jacobian(b, std::span{&root, 1});
+    EXPECT_EQ(count(b, ddx::rt::OpCode::Dot), 0) << "an adjoint for the param";
+  }
+  {
+    ddx::rt::Builder<> b;
+    const std::vector<double> c{1.0, 2.0, 3.0};
+    const RV x = ddx::rt::vec(b, "x", 3);
+    const RV k = ddx::rt::vec_constant(b, std::span<const double>{c});
+    const auto root = sum(gemv(ddx::rt::outer(x, k), k)).id(b);
+    (void)ddx::rt::tangent_sweep(b, std::span{&root, 1},
+                                 ddx::rt::detail::seeds_along(b));
+    EXPECT_EQ(count(b, ddx::rt::OpCode::Outer), 2)
+        << "the primal and d(x) k^T, and no x d(k)^T over a zero row";
+  }
 }
 
 TEST(RtMatrix, RefusesMismatchedShapesAndMatrixRoots) {

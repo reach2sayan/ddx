@@ -265,9 +265,10 @@ constexpr bool operator==(const A &a,
 // The binary chain rule off the shared descriptor, f' = da a' + db b', with
 // the primal from the value functor.  A term whose operand has a zero
 // derivative -- a constant, or a constant exponent handed over embedded in a
-// dual -- is left out rather than multiplied by zero: at a <= 0 pow's exponent
-// partial is 0 * log(a), which is NaN, not nothing.  The descriptor is
-// instantiated at the component, so a nested dual's rule recurses.
+// dual -- is left out, its rule never evaluated, rather than multiplied by
+// zero: at a <= 0 pow's exponent partial is 0 * log(a), which is NaN, not
+// nothing.  The descriptor is instantiated at the component, so a nested
+// dual's rule recurses.
 template <template <Numeric> class Desc, typename Value>
 struct binary_dual_combine {
   template <DualLike DT>
@@ -280,13 +281,13 @@ struct binary_dual_combine {
     if (all_zero(xd) && all_zero(yd)) {
       return DT{f};
     }
-    const auto [dx, dy] = detail::adjoints_of<Desc, Comp>(Comp{1}, xv, yv);
     if (all_zero(xd)) {
-      return DT{f, dy * yd};
+      return DT{f, detail::adjoint_of<Desc, 1, Comp>(Comp{1}, xv, yv) * yd};
     }
     if (all_zero(yd)) {
-      return DT{f, dx * xd};
+      return DT{f, detail::adjoint_of<Desc, 0, Comp>(Comp{1}, xv, yv) * xd};
     }
+    const auto [dx, dy] = detail::adjoints_of<Desc, Comp>(Comp{1}, xv, yv);
     return DT{f, dx * xd + dy * yd};
   }
 };

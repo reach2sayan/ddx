@@ -195,6 +195,10 @@ namespace detail {
     return kind_of(node.op) == Kind::Tensor;
   }
 }
+// Whether a node's value is one scalar: no row, and no table either.
+[[nodiscard]] constexpr bool is_scalar(const auto &node) noexcept {
+  return !is_tensor(node) && node.op != OpCode::MatConst;
+}
 // Whether a node runs on the tensor sweep: a tensor op, or a tensor Select.
 [[nodiscard]] constexpr bool on_tensors(const auto &node) noexcept {
   return kind_of(node.op) == Kind::Tensor || is_tensor(node);

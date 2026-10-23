@@ -460,16 +460,21 @@ public:
   }
   // How many terms the sweep kept quadratic, and how many fell back to a dense
   // product: a model's structure defeated the algebra where the second is not
-  // zero -- still right, not O(n^2).
+  // zero -- still right, not O(n^2).  Nothing for a system, or for a block the
+  // sweep refused, which dense_hessian() answers with tensor_shape.
   struct DenseCost {
     std::size_t n2_terms = 0;
     std::size_t n3_terms = 0;
   };
   [[nodiscard]] std::optional<DenseCost> dense_hessian_cost() const {
-    return unless_system([this] {
-      const DenseHessian &d = dense_sweep();
-      return DenseCost{.n2_terms = d.n2_terms, .n3_terms = d.n3_terms};
-    });
+    if (poisoned() || is_system()) {
+      return std::nullopt;
+    }
+    const DenseHessian &d = dense_sweep();
+    return d.block == no_node
+               ? std::nullopt
+               : std::optional{
+                     DenseCost{.n2_terms = d.n2_terms, .n3_terms = d.n3_terms}};
   }
 
   // Whether to compile at all, and how; discards anything already compiled.
@@ -566,14 +571,16 @@ public:
   }
 
   // How far the Jacobian pipeline is toward its next rung, and nothing under
-  // any other backend or once there is none left.  Without it a pipeline that
-  // is still counting and one whose compile was refused both read as no kernel.
+  // any other backend, on a host with no compiler, or once there is none left.
+  // Without it a pipeline that is still counting and one whose compile was
+  // refused both read as no kernel.
   struct Warmup {
     std::size_t points;    // batch points this pipeline has been asked for
     std::size_t threshold; // where the next rung is bought
   };
   [[nodiscard]] std::optional<Warmup> warming() const {
-    if (poisoned() || options_.backend != jit::Backend::Adapt) {
+    if (poisoned() || options_.backend != jit::Backend::Adapt ||
+        setting().compiler == nullptr) {
       return std::nullopt;
     }
     const Pipeline &l = pipeline_for(Want::Jacobian);
@@ -755,8 +762,7 @@ protected:
     if (const auto why = unclosed(*arena_)) {
       poison(error{*why});
     } else if (std::ranges::any_of(roots_, [this](NodeId r) {
-                 return detail::is_tensor((*arena_)[r]) ||
-                        arena_->op_of(r) == OpCode::MatConst;
+                 return !detail::is_scalar((*arena_)[r]);
                })) {
       poison(error{errc::tensor_shape});
     } else {
@@ -795,10 +801,18 @@ protected:
         return error{*why};
       }
     }
-    if (outputs.empty() || Rooting::builder(outputs.front()) == nullptr) {
+    if (arena_of(outputs) == nullptr) {
       return error{errc::no_graph};
     }
     return std::nullopt;
+  }
+  // The arena the outputs were built in: the first that names one, since a
+  // literal output names none.
+  [[nodiscard]] static constexpr Builder<T> *
+  arena_of(std::span<const Expression<T>> outputs) noexcept {
+    const auto named = std::ranges::find_if(
+        outputs, [](const auto &e) { return Rooting::builder(e) != nullptr; });
+    return named == outputs.end() ? nullptr : Rooting::builder(*named);
   }
 
   // The arena the outputs will be read in -- `owned`, or a copy of the one
@@ -807,10 +821,8 @@ protected:
                                            std::vector<NodeId>>
   rooted(std::span<const Expression<T>> outputs,
          std::unique_ptr<Builder<T>> owned) {
-    auto arena =
-        owned
-            ? std::move(owned)
-            : std::make_unique<Builder<T>>(*Rooting::builder(outputs.front()));
+    auto arena = owned ? std::move(owned)
+                       : std::make_unique<Builder<T>>(*arena_of(outputs));
     auto roots = outputs | std::views::transform([&arena](const auto &e) {
                    return e.id(*arena);
                  }) |
@@ -1363,7 +1375,8 @@ private:
   }
 
   // Whether the kernel for `want` is lowered from rebalanced roots, which are
-  // swept here on first ask: only a pipeline that compiles reads them.
+  // swept here on first ask: only Compile reads them, as Adapt climbs from the
+  // swept graph.
   [[nodiscard]] bool rebalances([[maybe_unused]] Want want) const {
 #ifdef DDX_HAS_JIT
     if constexpr (std::same_as<T, double>) {
@@ -1378,7 +1391,8 @@ private:
           return detail::on_tensors((*arena_)[v]);
         });
       };
-      if (!rebalanceable(want) || setting().compiler == nullptr || tensors()) {
+      if (!rebalanceable(want) || options_.backend != jit::Backend::Compile ||
+          setting().compiler == nullptr || tensors()) {
         return false;
       }
       (void)sweep(sweeps_->rebalanced, [this] {
