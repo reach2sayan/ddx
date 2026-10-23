@@ -118,6 +118,8 @@ template <std::floating_point T>
   // arena is then a function of the model rather than of the order the parser
   // happened to reduce it in, which is what lets a model that was written down
   // be the same nodes as the same model built by hand.
+  arena.reserve(arena.size() + ast.names.size() + ast.terms.size(),
+                arena.symbols().size() + ast.names.size());
   std::vector<Expr> symbols;
   symbols.reserve(ast.names.size());
   std::ranges::transform(

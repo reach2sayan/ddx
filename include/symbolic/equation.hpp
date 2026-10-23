@@ -193,8 +193,9 @@ private:
     Lowered l{};
     // The trees bound the arena; interning only shrinks it.
     l.arena.reserve(input_dim +
-                    (node_count_v<detail::canonical_t<TFirst>> + ... +
-                     node_count_v<detail::canonical_t<TRest>>));
+                        (node_count_v<detail::canonical_t<TFirst>> + ... +
+                         node_count_v<detail::canonical_t<TRest>>),
+                    input_dim);
     mp::mp_for_each<symbols>(
         [&l]<typename Sym>(Sym) { (void)rt::var(l.arena, Sym::name); });
     static_for<output_dim>([&]<std::size_t I>() {

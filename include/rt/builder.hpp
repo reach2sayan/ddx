@@ -395,14 +395,20 @@ public:
     return intern({.op = OpCode::Const, .value = v});
   }
 
-  // Room for `nodes` in all, arena and table at once, instead of growing both
-  // through every doubling on the way: what a pass that knows the size of
-  // what it is about to build asks for.
-  constexpr void reserve(std::size_t nodes) {
+  // Room for `nodes` in all, arena and table at once, and for `symbols` in
+  // all with the indexes over their names, instead of growing each through
+  // every doubling on the way: what a pass that knows the size of what it is
+  // about to build asks for.
+  constexpr void reserve(std::size_t nodes, std::size_t symbols = 0) {
     model_.nodes.reserve(nodes);
     if (2 * nodes > table_.size()) {
       rehash(nodes);
     }
+    const auto k = *named_index(OpCode::Var);
+    by_name_.reserve(by_name_.size() + symbols -
+                     std::min(symbols, model_.names[k].size()));
+    model_.names[k].reserve(symbols);
+    ids_[k].reserve(symbols);
   }
 
   // The leaf over `data`: a VecConst for one column, a MatConst otherwise.
