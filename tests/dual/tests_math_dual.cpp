@@ -390,12 +390,35 @@ TEST(NewMathFunctions, TaylorLog10ValueIsExact) {
 // derivative, and has no coefficient past it.
 TEST(NewMathFunctions, TaylorPowOfANonWholeExponentAtZero) {
   using T = ddx::impl::TaylorDual<double, 3>;
-  const T w = pow(T::variable(0.0), T{2.5});
+  const T w = pow(T::variable(0.0), 2.5);
   EXPECT_EQ(w.c[0], 0.0);
   EXPECT_EQ(w.c[1], 0.0);
   EXPECT_EQ(w.c[2], 0.0);
   EXPECT_TRUE(std::isnan(w.c[3]));
   EXPECT_EQ(pow(Dual<double>{0.0, 1.0}, 2.5).deriv(), 0.0);
+}
+
+// A constant on either side agrees with the same constant embedded as a
+// series, coefficient for coefficient.
+TEST(NewMathFunctions, TaylorConstantOperandsMatchTheEmbeddedSeries) {
+  using T = ddx::impl::TaylorDual<double, 3>;
+  const T u = sin(T::variable(0.7));
+  const T k{2.5};
+  const auto same = [](const T &a, const T &b) {
+    for (std::size_t i = 0; i < a.c.size(); ++i) {
+      EXPECT_DOUBLE_EQ(a.c[i], b.c[i]) << "coefficient " << i;
+    }
+  };
+  same(u + 2.5, u + k);
+  same(2.5 + u, k + u);
+  same(u - 2.5, u - k);
+  same(2.5 - u, k - u);
+  same(u * 2.5, u * k);
+  same(2.5 * u, k * u);
+  same(u / 2.5, u / k);
+  same(2.5 / u, k / u);
+  same(u * 2, u * T{2.0});
+  same(pow(u, 2.5), pow(u, k));
 }
 
 // atan2's recurrence never squares an operand past its range.

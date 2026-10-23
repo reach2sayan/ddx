@@ -539,8 +539,7 @@ public:
     if (poisoned()) {
       return std::nullopt;
     }
-    if (const auto l = pipeline(Want::Jacobian);
-        l->kernel) {
+    if (const auto l = pipeline(Want::Jacobian); l->kernel) {
       return l->level;
     } else {
       return std::nullopt;
@@ -602,11 +601,7 @@ public:
       if (!computes_at<Taylor>(*arena_, root)) {
         return fail(errc::unsupported_scalar);
       }
-      Taylor seed;
-      seed.c[0] = x0;
-      seed.c[1] = T{1};
-
-      const std::array<Taylor, 1> at{seed};
+      const std::array<Taylor, 1> at{Taylor::variable(x0)};
       // One root out of an arena that may hold a gradient and a Hessian too,
       // and a Taylor node costs (Order + 1) coefficients.
       const auto values = evaluate_reachable(*arena_, root, at);
@@ -1313,12 +1308,11 @@ private:
       break;
     case Want::JacobianJvp: {
       const auto &tangent = tangent_sweep();
-      added.hessian = cells.kept ? *cells.kept |
-                                       std::views::transform([&](auto k) {
-                                         return tangent[k];
-                                       }) |
-                                       impl::to<std::vector<NodeId>>()
-                                 : tangent;
+      added.hessian = cells.kept
+                          ? *cells.kept | std::views::transform([&](auto k) {
+                              return tangent[k];
+                            }) | impl::to<std::vector<NodeId>>()
+                          : tangent;
       break;
     }
     case Want::DenseHessian:

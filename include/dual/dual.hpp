@@ -23,10 +23,10 @@ template <Numeric T>
 inline constexpr bool is_commutative_multiply_v<Dual<T>> =
     is_commutative_multiply_v<T>;
 
-// A zero-derivative operand for the dual A.
-template <typename C, typename A>
+// A zero-derivative operand for a dual whose components are V.
+template <typename C, typename V>
 concept ConstOperand =
-    CArithmetic<C> || std::same_as<std::remove_cvref_t<C>, dual_value_t<A>>;
+    CArithmetic<C> || std::same_as<std::remove_cvref_t<C>, V>;
 
 // Ref: Clifford, Proc. LMS s1-4 (1873) 381 -- adjoin ε with ε² = 0.
 template <Numeric T> class Dual : public compound_from_binary<Dual<T>> {
@@ -102,7 +102,7 @@ DDX_ALWAYS_INLINE constexpr Dual<T> dual_add(const Dual<T> &a,
 
 template <Numeric T>
 DDX_ALWAYS_INLINE constexpr Dual<T>
-dual_add(const Dual<T> &a, const ConstOperand<Dual<T>> auto &s) noexcept {
+dual_add(const Dual<T> &a, const ConstOperand<T> auto &s) noexcept {
   const auto &[av, ad] = a;
   return Dual<T>{av + s, ad};
 }
@@ -117,14 +117,14 @@ DDX_ALWAYS_INLINE constexpr Dual<T> dual_sub(const Dual<T> &a,
 
 template <Numeric T>
 DDX_ALWAYS_INLINE constexpr Dual<T>
-dual_sub(const Dual<T> &a, const ConstOperand<Dual<T>> auto &s) noexcept {
+dual_sub(const Dual<T> &a, const ConstOperand<T> auto &s) noexcept {
   const auto &[av, ad] = a;
   return Dual<T>{av - s, ad};
 }
 
 template <Numeric T>
-DDX_ALWAYS_INLINE constexpr Dual<T>
-dual_sub(const ConstOperand<Dual<T>> auto &s, const Dual<T> &a) noexcept {
+DDX_ALWAYS_INLINE constexpr Dual<T> dual_sub(const ConstOperand<T> auto &s,
+                                             const Dual<T> &a) noexcept {
   const auto &[av, ad] = a; // s - a == -(a - s);
   return Dual<T>{-(av - s), -ad};
 }
@@ -139,7 +139,7 @@ DDX_ALWAYS_INLINE constexpr Dual<T> dual_mul(const Dual<T> &a,
 
 template <Numeric T>
 DDX_ALWAYS_INLINE constexpr Dual<T>
-dual_mul(const Dual<T> &a, const ConstOperand<Dual<T>> auto &s) noexcept {
+dual_mul(const Dual<T> &a, const ConstOperand<T> auto &s) noexcept {
   const auto &[av, ad] = a; // scalar distributes; no zero-derivative term
   return Dual<T>{av * s, ad * s};
 }
@@ -161,7 +161,7 @@ DDX_ALWAYS_INLINE constexpr Dual<T> dual_div(const Dual<T> &a,
 
 template <Numeric T>
 DDX_ALWAYS_INLINE constexpr Dual<T>
-dual_div(const Dual<T> &a, const ConstOperand<Dual<T>> auto &s) noexcept {
+dual_div(const Dual<T> &a, const ConstOperand<T> auto &s) noexcept {
   using V = T;
   const auto &[av, ad] = a; // s is a zero-derivative constant
   const V inv = V{1} / V(s);
@@ -169,8 +169,8 @@ dual_div(const Dual<T> &a, const ConstOperand<Dual<T>> auto &s) noexcept {
 }
 
 template <Numeric T>
-DDX_ALWAYS_INLINE constexpr Dual<T>
-dual_div(const ConstOperand<Dual<T>> auto &s, const Dual<T> &a) noexcept {
+DDX_ALWAYS_INLINE constexpr Dual<T> dual_div(const ConstOperand<T> auto &s,
+                                             const Dual<T> &a) noexcept {
   using V = T;
   const auto &[av, ad] = a; // s / a; inner kept T-on-left (wide-scalar-safe)
   const V inv = V{1} / av;
@@ -187,11 +187,13 @@ dual_div(const ConstOperand<Dual<T>> auto &s, const Dual<T> &a) noexcept {
     return COMB(a, b);                                                         \
   }                                                                            \
   template <DualLike A>                                                        \
-  constexpr auto operator OP(A &&a, ConstOperand<A> auto &&s) noexcept {       \
+  constexpr auto operator OP(                                                  \
+      A &&a, ConstOperand<dual_value_t<A>> auto &&s) noexcept {                \
     return COMB(a, s);                                                         \
   }                                                                            \
   template <DualLike A>                                                        \
-  constexpr auto operator OP(ConstOperand<A> auto &&s, A &&a) noexcept {       \
+  constexpr auto operator OP(ConstOperand<dual_value_t<A>> auto &&s,           \
+                             A &&a) noexcept {                                 \
     return LEFT;                                                               \
   }
 DDX_DUAL_BINOP(+, dual_add, dual_add(a, s))
