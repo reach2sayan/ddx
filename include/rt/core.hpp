@@ -238,7 +238,7 @@ struct Sweeps {
   Lazy<Tangent> jvp;
   Lazy<DenseHessian> dense;
   Lazy<std::vector<NodeId>> tangent; // one forward sweep
-  Lazy<std::vector<Step>> walk;      // a system's hessian() schedule
+  Lazy<ArenaWalk> walk;              // a system's hessian() at a point
 #ifdef DDX_HAS_JIT
   Lazy<Rebalanced> rebalanced;
 #endif
@@ -249,8 +249,8 @@ struct Sweeps {
 // allocates only when a sweep outgrows the last.  One set per call site.
 // release_tapes() gives them back.
 template <impl::Numeric T> struct ThreadTapes {
-  std::vector<T> values;          // a system's hessian() at a point
-  std::vector<T> at, tape, vtape; // a batch, one point at a time
+  std::vector<T> values, value_vtape; // a system's hessian() at a point
+  std::vector<T> at, tape, vtape;     // a batch, one point at a time
   std::vector<T> lanes, lane_tape, lane_vtape; // a batch, block_lanes at once
   // A point call's output addresses: a dense block is n^2 of them, and a fresh
   // array that size is a page fault per page on every call.
@@ -923,25 +923,29 @@ protected:
     const auto &blocks = hessians();
     // What the three blocks read -- values, partials and Hessian::at's
     // compressed cells -- settled on first ask, since it depends only on the
-    // sweeps.
+    // sweeps.  Appended block by block rather than through views::join, whose
+    // inner iterator GCC 15 calls maybe-uninitialized under -Wall; reachable()
+    // reads a set, so the order is free.
     const auto &walk = sweeps_->walk.get([&] {
-      auto wanted = blocks | std::views::transform(&Hessian::compressed) |
-                    std::views::join | impl::to<std::vector<NodeId>>();
-      impl::append(wanted, blocks | std::views::transform(&Hessian::partial) |
-                               std::views::join);
-      impl::append(wanted, blocks | std::views::transform(&Hessian::zero));
-      impl::append(wanted, roots_);
+      std::vector<NodeId> wanted{roots_.begin(), roots_.end()};
+      std::ranges::for_each(blocks, [&wanted](const Hessian &b) {
+        impl::append(wanted, b.compressed);
+        impl::append(wanted, b.partial);
+        wanted.push_back(b.zero);
+      });
       [[maybe_unused]] const auto held = reading();
-      return schedule_of(*arena_, live_ids(reachable(*arena_, wanted)));
+      return ArenaWalk{*arena_, live_ids(reachable(*arena_, wanted))};
     });
     const std::size_t n = symbol_count();
     // The tape is thread-kept; every id read below is scheduled, so it is
     // written this call.
-    std::vector<T> &values = thread_tapes<T>().values;
+    ThreadTapes<T> &kept = thread_tapes<T>();
+    std::vector<T> &values = kept.values;
     [[maybe_unused]] const auto held = sweeping();
     values.resize(arena_->size());
-    detail::TensorTape<T> scratch{*arena_, walk, tensor_kernels()};
-    evaluate_into(*arena_, at, walk, std::span<T>{values}, scratch.view());
+    kept.value_vtape.resize(walk.extent());
+    walk(*arena_, at, std::span<T>{values}, std::span<T>{kept.value_vtape},
+         tensor_kernels());
     const impl::md::mdspan dense{
         h.data(), impl::md::dextents<std::size_t, 3>{roots_.size(), n, n}};
     const auto dims = std::views::iota(0uz, n);

@@ -445,29 +445,6 @@ sweep_step(const Builder<T> &b, std::span<const Node<T>> nodes,
   }
 }
 
-// The scratch an arena walk owns for its tensor rows: the layout of its
-// schedule and the tape, handed to the sweep as a view.  The reference table
-// unless told otherwise, which is what a walk outside any equation computes
-// with; an equation passes the table it was given.
-template <impl::Numeric U> class TensorTape {
-public:
-  constexpr TensorTape() = default;
-  constexpr TensorTape(const auto &s, std::span<const Step> schedule,
-                       const TensorKernelTable &kernels)
-      : layout_{tensor_layout(s, schedule)}, tape_(layout_.extent),
-        kernels_{&kernels} {}
-  [[nodiscard]] constexpr TapeView<U> view() noexcept {
-    return {.tensor_rows = layout_.rows,
-            .vtape = tape_.data(),
-            .kernels = kernels_};
-  }
-
-private:
-  TensorLayout layout_;
-  std::vector<U> tape_;
-  const TensorKernelTable *kernels_ = nullptr;
-};
-
 } // namespace detail
 
 // The nodes of `schedule`, for W points at once.  `point_lanes` is
@@ -523,24 +500,59 @@ constexpr void evaluate_into(const Builder<T> &b, const R &point,
 }
 
 namespace detail {
-// The nodes `ids` names, in order, as evaluate_into leaves them.
-template <impl::Numeric T, std::ranges::random_access_range R>
-[[nodiscard]] constexpr auto evaluate_over(const Builder<T> &b, auto ids,
-                                           const R &point,
-                                           const TensorKernelTable &kernels) {
-  using U = std::ranges::range_value_t<R>;
-  const auto schedule = schedule_of(b, ids);
-  // At a scalar other than the arena's, an op U lacks answers U{}: the caller
-  // asks computes_at() first, as univariate_derivative() does.
-  assert(
-      (std::same_as<U, T> || std::ranges::all_of(schedule, [&b](const Step &s) {
-         return supports<U>(b[s.node].op);
-       })));
-  std::vector<U> v(b.size());
-  TensorTape<U> scratch{b, schedule, kernels};
-  evaluate_into(b, point, schedule, std::span<U>{v}, scratch.view());
-  return v;
-}
+// What a walk over `ids` takes from the graph alone -- the nodes in order, as
+// evaluate_into leaves them, and where their tensor rows sit -- kept once and
+// swept at one point after another.  The tapes are the caller's: `values` by
+// id and arena-sized, `vtape` extent() long.  The reference table unless told
+// otherwise, which is what a walk outside any equation computes with.
+class ArenaWalk {
+public:
+  constexpr ArenaWalk() = default;
+  template <impl::Numeric T>
+  constexpr ArenaWalk(const Builder<T> &b, auto ids)
+      : schedule_{schedule_of(b, ids)}, layout_{tensor_layout(b, schedule_)} {}
+  // Every node, in id order: a child always precedes its parent.
+  template <impl::Numeric T>
+  constexpr explicit ArenaWalk(const Builder<T> &b)
+      : ArenaWalk{b,
+                  std::views::iota(NodeId{0}, static_cast<NodeId>(b.size()))} {}
+
+  [[nodiscard]] constexpr std::size_t extent() const noexcept {
+    return layout_.extent;
+  }
+
+  template <impl::Numeric T, impl::Numeric U>
+  constexpr void
+  operator()(const Builder<T> &b, const auto &point, std::span<U> values,
+             std::span<U> vtape,
+             const TensorKernelTable &kernels = reference_table) const {
+    // At a scalar other than the arena's, an op U lacks answers U{}: the
+    // caller asks computes_at() first, as univariate_derivative() does.
+    assert((std::same_as<U, T> ||
+            std::ranges::all_of(schedule_, [&b](const Step &s) {
+              return supports<U>(b[s.node].op);
+            })));
+    evaluate_into(b, point, schedule_, values,
+                  TapeView<U>{.tensor_rows = layout_.rows,
+                              .vtape = vtape.data(),
+                              .kernels = &kernels});
+  }
+  // Into tapes of its own; the values come back.
+  template <impl::Numeric T>
+  [[nodiscard]] constexpr auto
+  operator()(const Builder<T> &b,
+             const std::ranges::random_access_range auto &point,
+             const TensorKernelTable &kernels = reference_table) const {
+    using U = std::ranges::range_value_t<decltype(point)>;
+    std::vector<U> values(b.size()), vtape(extent());
+    (*this)(b, point, std::span<U>{values}, std::span<U>{vtape}, kernels);
+    return values;
+  }
+
+private:
+  std::vector<Step> schedule_;
+  TensorLayout layout_;
+};
 } // namespace detail
 
 // evaluate_all narrowed to what `roots` reach.  Still id-indexed and
@@ -553,8 +565,8 @@ template <impl::Numeric T, std::ranges::random_access_range R>
 evaluate_reachable(const Builder<T> &b, std::span<const NodeId> roots,
                    const R &point,
                    const TensorKernelTable &kernels = reference_table) {
-  const auto live = detail::reachable(b, roots);
-  return detail::evaluate_over(b, detail::live_ids(live), point, kernels);
+  return detail::ArenaWalk{b, detail::live_ids(detail::reachable(b, roots))}(
+      b, point, kernels);
 }
 
 // Every node once, in id order: a child always precedes its parent, and the
@@ -565,9 +577,7 @@ template <impl::Numeric T, std::ranges::random_access_range R>
 [[nodiscard]] constexpr auto
 evaluate_all(const Builder<T> &b, const R &point,
              const TensorKernelTable &kernels = reference_table) {
-  return detail::evaluate_over(
-      b, std::views::iota(NodeId{0}, static_cast<NodeId>(b.size())), point,
-      kernels);
+  return detail::ArenaWalk{b}(b, point, kernels);
 }
 
 } // namespace ddx::rt
