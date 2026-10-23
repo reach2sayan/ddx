@@ -1,6 +1,7 @@
 [![GCC 14](https://github.com/reach2sayan/ddx/actions/workflows/gcc.yml/badge.svg?branch=main)](https://github.com/reach2sayan/ddx/actions/workflows/gcc.yml)
 [![Clang 20](https://github.com/reach2sayan/ddx/actions/workflows/clang.yml/badge.svg?branch=main)](https://github.com/reach2sayan/ddx/actions/workflows/clang.yml)
 [![MSVC 2022](https://github.com/reach2sayan/ddx/actions/workflows/msvc.yml/badge.svg?branch=main)](https://github.com/reach2sayan/ddx/actions/workflows/msvc.yml)
+[![Conan](https://github.com/reach2sayan/ddx/actions/workflows/conan.yml/badge.svg?branch=main)](https://github.com/reach2sayan/ddx/actions/workflows/conan.yml)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white)](#install)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](#python)
 [![License](https://img.shields.io/badge/license-BSL--1.0-4B8BBE)](LICENSE.txt)
@@ -65,8 +66,10 @@ find_package(ddx CONFIG REQUIRED COMPONENTS rt jit)
 | `ddx::rt` | runtime equations |
 | `ddx::jit` | `ddx::rt` with the LLVM backend (`-DDDX_BUILD_JIT=ON`, needs LLVM 20) |
 
-Also packaged for vcpkg (`--overlay-ports=contrib/vcpkg/ports`) and NuGet
-(`ddx`), both without the JIT. Presets: `debug`, `release`, `debug_jit`,
+Conan: `conan create .` packages it and `conan editable add .` uses the tree
+in place; consumers `find_package(ddx)` as above.  Also packaged for vcpkg
+(`--overlay-ports=contrib/vcpkg/ports`) and NuGet (`ddx`).  None of the three
+carries the JIT. Presets: `debug`, `release`, `debug_jit`,
 `release_jit`, `python`.
 
 ## Equations
