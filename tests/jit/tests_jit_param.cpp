@@ -16,7 +16,7 @@
 namespace {
 
 TEST(JitParam, ColumnsAreSymbolsThenParamsThenSeeds) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto a = ddx::rt::param(b, "a");
   const auto f = a * x * x + exp(x) * seed(b, 0);

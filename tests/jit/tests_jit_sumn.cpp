@@ -17,7 +17,7 @@
 // not, value and gradient.
 
 namespace {
-using ddx::rt::Builder;
+using ddx::rt::Arena;
 using ddx::rt::Graph;
 using RE = ddx::rt::Expression<>;
 
@@ -46,7 +46,7 @@ RE summed(const std::vector<RE> &x) {
 
 void expect_bit_identical(bool contract) {
   constexpr std::size_t nvars = 3, n = 64;
-  Builder<> b;
+  Arena<> b;
   std::vector<RE> x;
   for (const char *name : {"x", "y", "z"}) {
     x.push_back(var(b, name));

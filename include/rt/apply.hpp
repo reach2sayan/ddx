@@ -162,7 +162,7 @@ template <impl::Numeric T>
   return detail::dispatch<T>(op, []<typename R>(R) { return R::ok; });
 }
 
-// Templated on the scalar, so the interpreter, constant folding and the builder
+// Templated on the scalar, so the interpreter, constant folding and the arena
 // share one definition: at double it computes, at Expression it builds.  The
 // operand count is the arity asked for; a row of another arity answers T{},
 // as an unsupported one does.

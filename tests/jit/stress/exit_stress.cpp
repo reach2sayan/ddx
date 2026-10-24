@@ -16,7 +16,7 @@ namespace {
 
 // Wide enough that a compile takes milliseconds, so a round drops its equations
 // while the pool is still inside LLVM.  Each equation owns its arena: the
-// Hessian sweep appends, so two threads may not share one Builder.
+// Hessian sweep appends, so two threads may not share one Arena.
 auto model(std::size_t n) {
   return ddx::rt::equation([n] {
     std::vector<ddx::rt::Expression<double>> v;

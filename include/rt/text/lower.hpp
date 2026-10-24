@@ -1,6 +1,6 @@
 #pragma once
 
-#include "rt/builder.hpp"
+#include "rt/arena.hpp"
 #include "rt/expressions.hpp"
 #include "rt/opcode.hpp"
 #include "rt/text/ast.hpp"
@@ -111,7 +111,7 @@ form(const Ast &ast, std::span<const Expression<T>> symbols,
 // The arena gains one symbol per free identifier and one node per term; the
 // answer is the root.
 template <std::floating_point T>
-[[nodiscard]] result<Expression<T>> lower(Builder<T> &arena, const Ast &ast) {
+[[nodiscard]] result<Expression<T>> lower(Arena<T> &arena, const Ast &ast) {
   using Expr = Expression<T>;
 
   // Every symbol before any node, in the order the text first named them: the

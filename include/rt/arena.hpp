@@ -33,16 +33,16 @@ using NodeId = std::uint32_t;
 inline constexpr NodeId no_node = ~NodeId{0};
 
 template <impl::Numeric T> class Expression;
-template <impl::Numeric T = double> class Builder;
+template <impl::Numeric T = double> class Arena;
 
-// Befriended by Builder: naming an input is this one primitive's alone, and
+// Befriended by Arena: naming an input is this one primitive's alone, and
 // var(), param() and implicit() are its spellings.
 template <impl::Numeric T>
-[[nodiscard]] constexpr Expression<T> named(Builder<T> &b, OpCode op,
+[[nodiscard]] constexpr Expression<T> named(Arena<T> &b, OpCode op,
                                             std::string_view name);
 template <impl::Numeric T, std::invocable<const Expression<T> &> F>
 [[nodiscard]] constexpr Expression<T>
-implicit(Builder<T> &b, std::string_view name, F &&residual);
+implicit(Arena<T> &b, std::string_view name, F &&residual);
 namespace detail {
 struct Implicits;
 }
@@ -108,11 +108,11 @@ template <impl::Numeric T> struct ExternEntry : ExternRecord {
 
 template <impl::Numeric T> class ExternFunction;
 template <impl::Numeric T>
-[[nodiscard]] ExternFunction<T> extern_fn(Builder<T> &b, ExternRecord record,
+[[nodiscard]] ExternFunction<T> extern_fn(Arena<T> &b, ExternRecord record,
                                           std::type_identity_t<ExternFn<T>> fn);
 namespace detail {
 template <impl::Numeric T, typename Sink>
-constexpr void extern_partials(Builder<T> &b, NodeId v, Sink &&sink);
+constexpr void extern_partials(Arena<T> &b, NodeId v, Sink &&sink);
 }
 
 // A named input: which kind of leaf, and its place among that kind.
@@ -124,7 +124,7 @@ struct Input {
 
 // Befriended for symmetry with var(); a seed slot moves nothing.
 template <impl::Numeric T>
-[[nodiscard]] constexpr Expression<T> seed(Builder<T> &b, std::uint32_t slot);
+[[nodiscard]] constexpr Expression<T> seed(Arena<T> &b, std::uint32_t slot);
 
 // A multiply and an add taken as one rounding: x * y + z, with x negated where
 // the multiply reached the add through a Neg, which is what a subtraction
@@ -204,20 +204,6 @@ namespace detail {
   return kind_of(node.op) == Kind::Tensor || is_tensor(node);
 }
 
-// Ids are topological, so one descending pass settles it.  Not a filtered view:
-// the body marks entries the pass has not reached.
-[[nodiscard]] constexpr std::vector<bool>
-reachable(std::size_t n, std::span<const NodeId> roots, auto &&operands_of) {
-  std::vector<bool> live(n, false);
-  std::ranges::for_each(roots, [&](NodeId r) { live[r] = true; });
-  for (NodeId v = static_cast<NodeId>(n); v-- > 0;) {
-    if (live[v]) {
-      operands_of(v, [&](NodeId u) { live[u] = true; });
-    }
-  }
-  return live;
-}
-
 // The operands a node actually has.  Arity is at most three and the absent ones
 // are no_node, so every walker would otherwise repeat the same skip.  Not for
 // a node with a list (has_list), whose `a` is no operand: for_each_operand
@@ -257,7 +243,7 @@ template <impl::Numeric T> struct TensorConst {
   BOOST_DESCRIBE_CLASS(TensorConst, (), (rows, cols, data), (), ())
 };
 
-// Everything a model is: what the Builder holds, as one described list.
+// Everything a model is: what the Arena holds, as one described list.
 template <impl::Numeric T> struct Model {
   // Each named kind's names in declaration order, which is slot order.
   PerKind<std::vector<std::string>> names;
@@ -270,7 +256,7 @@ template <impl::Numeric T> struct Model {
                        (names, closures, externs, tensors, lists, nodes), (),
                        ())
 
-  // The CNodeSource half, which the Builder lends and the frozen Graph
+  // The CNodeSource half, which the Arena lends and the frozen Graph
   // answers as well.
   [[nodiscard]] constexpr const Node<T> &operator[](NodeId v) const {
     return nodes[v];
@@ -303,6 +289,27 @@ constexpr void for_each_operand(const auto &s, NodeId v, auto &&f) {
   } else {
     std::ranges::for_each(operands_of(s, v), f);
   }
+}
+
+inline constexpr auto every_operand = [](const auto &s, NodeId v, auto &&mark) {
+  for_each_operand(s, v, mark);
+};
+
+// The roots' cone, which every walker asks for first; `reaches` marks what a
+// node reads.  Ids are topological, so one descending pass settles it.  Not a
+// filtered view: the body marks entries the pass has not reached.
+template <typename Reach = decltype(every_operand)>
+[[nodiscard]] constexpr std::vector<bool>
+reachable(const auto &nodes, std::span<const NodeId> roots,
+          Reach reaches = every_operand) {
+  std::vector<bool> live(nodes.size(), false);
+  std::ranges::for_each(roots, [&](NodeId r) { live[r] = true; });
+  for (NodeId v = static_cast<NodeId>(nodes.size()); v-- > 0;) {
+    if (live[v]) {
+      reaches(nodes, v, [&](NodeId u) { live[u] = true; });
+    }
+  }
+  return live;
 }
 } // namespace detail
 
@@ -386,7 +393,7 @@ struct Shape {
 
 // Nodes are interned as they are formed, so an id *is* the identity of a
 // subexpression -- where the compile-time side compares types.
-template <impl::Numeric T> class Builder {
+template <impl::Numeric T> class Arena {
 public:
   using value_type = T;
   using node_type = Node<T>;
@@ -590,7 +597,7 @@ private:
   // next slot of its kind and moves nothing already built.  no_node is a name
   // already taken by another kind, which named() poisons.
   template <impl::Numeric U>
-  friend constexpr Expression<U> named(Builder<U> &, OpCode, std::string_view);
+  friend constexpr Expression<U> named(Arena<U> &, OpCode, std::string_view);
   [[nodiscard]] constexpr NodeId input(OpCode op, std::string_view name) {
     const auto at = std::ranges::lower_bound(by_name_, name, {}, name_of());
     if (at != by_name_.end() && name_of()(*at) == name) {
@@ -612,7 +619,7 @@ private:
   // same implicit named twice -- is kept rather than thrown: the equation
   // built over this arena refuses with it.
   template <impl::Numeric U, std::invocable<const Expression<U> &> F>
-  friend constexpr Expression<U> implicit(Builder<U> &, std::string_view, F &&);
+  friend constexpr Expression<U> implicit(Arena<U> &, std::string_view, F &&);
   constexpr void close(NodeId z, NodeId f, std::optional<errc> why) {
     NodeId &closure = model_.closures[detail::index_of(model_.nodes[z])];
     if (why || closure != no_node) {
@@ -625,7 +632,7 @@ private:
   // Registering an extern is extern_fn()'s alone; its index is what the call
   // names.
   template <impl::Numeric U>
-  friend ExternFunction<U> extern_fn(Builder<U> &, ExternRecord,
+  friend ExternFunction<U> extern_fn(Arena<U> &, ExternRecord,
                                      std::type_identity_t<ExternFn<U>>);
   constexpr std::optional<std::uint32_t> add_extern(ExternEntry<T> e) {
     if (!ExternRef::fits(model_.externs.size(), e.size())) {
@@ -693,7 +700,7 @@ private:
   // Another component of the call `v` is: the same function and list,
   // another slot.
   template <impl::Numeric U, typename Sink>
-  friend constexpr void detail::extern_partials(Builder<U> &, NodeId, Sink &&);
+  friend constexpr void detail::extern_partials(Arena<U> &, NodeId, Sink &&);
   constexpr NodeId extern_component(NodeId v, std::uint32_t component) {
     const Node<T> n = model_[v]; // by value: intern() may reallocate
     return intern({.op = OpCode::ExternD,
@@ -711,7 +718,7 @@ private:
   // A seed slot is given rather than looked up.  Interning leaves one node per
   // slot.
   template <impl::Numeric U>
-  friend constexpr Expression<U> seed(Builder<U> &, std::uint32_t);
+  friend constexpr Expression<U> seed(Arena<U> &, std::uint32_t);
   [[nodiscard]] constexpr NodeId seed_node(std::uint32_t index) {
     return intern({.op = OpCode::Seed, .aux = index});
   }
@@ -961,7 +968,7 @@ private:
 };
 
 // What a walker reads: an id-addressed source that answers a node's operation
-// and its operands.  Builder and the frozen Graph both do, which is what lets
+// and its operands.  Arena and the frozen Graph both do, which is what lets
 // contraction_at() be written once over the two.
 template <typename S>
 concept CNodeSource = requires(const S &s, NodeId v) {
@@ -987,7 +994,7 @@ concept CNodeSource = requires(const S &s, NodeId v) {
 // The rule is structural -- it asks the add what its operands are and nothing
 // about how many readers they have -- which is what lets the arena walk, the
 // frozen graph and the kernel agree to the bit.  The lower-id operand wins
-// where an add has two products, the order Builder::make already sorted
+// where an add has two products, the order Arena::make already sorted
 // commutative operands into.  A SumN fuses by the same rule, term by term
 // into the running sum (the `fused` Step).
 [[nodiscard]] constexpr Contraction
@@ -1182,15 +1189,6 @@ tensor_layout(const auto &s, std::span<const Step> schedule,
     }
   }
   return out;
-}
-
-// The roots' cone in an arena, which every walker below asks for first.
-template <impl::Numeric T>
-[[nodiscard]] constexpr std::vector<bool>
-reachable(const Builder<T> &b, std::span<const NodeId> roots) {
-  return reachable(b.size(), roots, [&b](NodeId v, auto &&mark) {
-    for_each_operand(b, v, mark);
-  });
 }
 
 // The ids a liveness pass kept, ascending.

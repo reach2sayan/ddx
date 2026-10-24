@@ -33,6 +33,15 @@ template <typename T, typename... Rest>
 using policy_of = boost::mp11::mp_if_c<dynamic_outputs<T, Rest...>, Dynamic,
                                        Fixed<1 + sizeof...(Rest)>>;
 
+// Befriended by Equation: the equation() factories, this header's and
+// rt/text's, are the only callers of create().
+struct Creating {
+  template <typename Eq>
+  [[nodiscard]] static constexpr Eq create(auto &&...args) {
+    return Eq::create(DDX_FWD(args)...);
+  }
+};
+
 } // namespace ddx::rt::detail
 
 // Keyed on the Expression<T> *pattern*: a `requires` over <TFirst, TRest...>
@@ -50,18 +59,16 @@ class Equation<rt::Expression<T>, Rest...> : public rt::detail::Core<T> {
   using Outputs = rt::detail::policy_of<T, Rest...>;
   using Base = rt::detail::Core<T>;
   friend Base;
+  friend struct rt::detail::Creating;
 
-public:
   // A refusal rides on the equation rather than a result at every call site;
   // see poisoned().  `owned` is null where the outputs' arena is the caller's,
   // which is then copied.
   [[nodiscard]] static constexpr Equation
-  create(std::unique_ptr<rt::Builder<T>> owned,
+  create(std::unique_ptr<rt::Arena<T>> owned,
          std::span<const rt::Expression<T>> outputs) {
     return Base::template make<Equation>(outputs, std::move(owned));
   }
-  // What the type fixes: 0 where it fixes nothing (a System).
-  static constexpr std::size_t output_dim = Outputs::expected.value_or(0);
 
   template <typename... Es>
   static constexpr bool are_outputs =
@@ -71,12 +78,16 @@ public:
   template <typename... Es>
     requires are_outputs<Es...>
   [[nodiscard]] static constexpr Equation
-  create(std::unique_ptr<rt::Builder<T>> owned, rt::Expression<T> first,
+  create(std::unique_ptr<rt::Arena<T>> owned, rt::Expression<T> first,
          Es... rest) {
     const std::array outputs{first, rest...};
     return create(std::move(owned),
                   std::span<const rt::Expression<T>>{outputs});
   }
+
+public:
+  // What the type fixes: 0 where it fixes nothing (a System).
+  static constexpr std::size_t output_dim = Outputs::expected.value_or(0);
 
   // `Outputs` is the one place the count's policy acts.
   [[nodiscard]] constexpr auto
@@ -113,7 +124,8 @@ using System = impl::Equation<Expression<T>, detail::Dynamic>;
 template <impl::Numeric T, typename... Ts>
   requires(std::same_as<Ts, Expression<T>> && ...)
 [[nodiscard]] constexpr auto equation(Expression<T> first, Ts... rest) {
-  return impl::Equation<Expression<T>, Ts...>::create(nullptr, first, rest...);
+  return detail::Creating::create<impl::Equation<Expression<T>, Ts...>>(
+      nullptr, first, rest...);
 }
 
 // Build an Equation:
@@ -160,7 +172,7 @@ template <impl::Numeric T = double>
   auto [arena, built] = detail::assemble<T>(DDX_FWD(assemble));
   return detail::over<T>(
       built, [&]<typename Eq>(std::type_identity<Eq>, auto... roots) {
-        return Eq::create(std::move(arena), roots...);
+        return detail::Creating::create<Eq>(std::move(arena), roots...);
       });
 }
 

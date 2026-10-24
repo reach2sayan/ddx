@@ -19,7 +19,7 @@ using ddx::rt::Graph;
 using ddx::rt::NodeId;
 
 TEST(RtGraph, OperandOrderSurvivesCompression) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x / y; // not commutative: the slots must not be swapped
@@ -31,7 +31,7 @@ TEST(RtGraph, OperandOrderSurvivesCompression) {
 }
 
 TEST(RtGraph, UnaryNodeHasOneOperand) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto f = sin(x);
   const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
@@ -44,7 +44,7 @@ TEST(RtGraph, UnaryNodeHasOneOperand) {
 // value needs are not live.  x*y is the case -- d/dx wants y, never the
 // product.
 TEST(RtGraph, RootsAloneLeaveTheValueOut) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * log(x) + 0.3 * (x * y);
@@ -66,7 +66,7 @@ TEST(RtGraph, RootsAloneLeaveTheValueOut) {
 }
 
 TEST(RtGraph, EverythingTheOutputsReachIsLive) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = exp(x) * sin(y);
@@ -81,7 +81,7 @@ TEST(RtGraph, EverythingTheOutputsReachIsLive) {
 }
 
 TEST(RtGraph, CarriesSymbolsAndOutputs) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto root = ddx::rt::to_graph(b, ddx::var<"x"> * ddx::var<"y">);
   const auto graph =
       ddx::rt::GraphBuilder{b}.value(root).build_jacobian().finish();
@@ -91,7 +91,7 @@ TEST(RtGraph, CarriesSymbolsAndOutputs) {
 }
 
 TEST(RtGraph, IdOrderIsTopological) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto root = ddx::rt::to_graph(b, sin(ddx::var<"x"> * ddx::var<"y">) +
                                              exp(ddx::var<"x">));
   const auto graph =
@@ -115,7 +115,7 @@ TEST(RtGraph, IdOrderIsTopological) {
 // fraction of the ids it schedules.  The arithmetic is untouched -- every
 // kernel-against-sweep test is the proof -- so this asks only about size.
 TEST(RtGraph, PacksTheTapeByLiveness) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   std::vector<ddx::rt::Expression<>> x;
   for (std::size_t i = 0; i < 64; ++i) {
     x.push_back(var(b, std::format("x{:02}", i)));

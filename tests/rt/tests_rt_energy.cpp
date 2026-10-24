@@ -17,12 +17,12 @@
 // Hessian does not -- a mixing rule couples every species to every other.
 
 namespace {
-using ddx::rt::Builder;
+using ddx::rt::Arena;
 using models::RE;
 
 // Zero-padded: a slot is the symbol's place in the alphabet, so x9 has to sort
 // before x10 for slot order to be site order -- which is what banded means.
-std::vector<RE> species(Builder<> &b, std::size_t n) {
+std::vector<RE> species(Arena<> &b, std::size_t n) {
   const auto width = std::to_string(n - 1).size();
   std::vector<RE> x;
   x.reserve(n);
@@ -46,7 +46,7 @@ std::vector<double> composition(std::size_t n) {
 }
 
 // Central differences on the interpreter: independent of the sweep.
-void expect_jacobian_matches_differences(Builder<> &b, ddx::rt::NodeId root,
+void expect_jacobian_matches_differences(Arena<> &b, ddx::rt::NodeId root,
                                          const ddx::rt::JacobianRow &g,
                                          std::vector<double> pt,
                                          double tol = 2e-6) {
@@ -65,7 +65,7 @@ void expect_jacobian_matches_differences(Builder<> &b, ddx::rt::NodeId root,
 }
 
 TEST(RtEnergy, UniquacJacobian) {
-  Builder<> b;
+  Arena<> b;
   const auto x = species(b, 8);
   const auto f = models::uniquac(x);
   const auto g = ddx::rt::derive_jacobian(b, f.id(b));
@@ -73,7 +73,7 @@ TEST(RtEnergy, UniquacJacobian) {
 }
 
 TEST(RtEnergy, PengRobinsonJacobian) {
-  Builder<> b;
+  Arena<> b;
   auto x = species(b, 6);
   const auto Z = var(b, "Z");
   const auto f = models::peng_robinson(x, Z);
@@ -84,7 +84,7 @@ TEST(RtEnergy, PengRobinsonJacobian) {
 }
 
 TEST(RtEnergy, MseJacobian) {
-  Builder<> b;
+  Arena<> b;
   const auto x = species(b, 6);
   const auto f = models::mse(x);
   const auto g = ddx::rt::derive_jacobian(b, f.id(b));
@@ -94,7 +94,7 @@ TEST(RtEnergy, MseJacobian) {
 // 1e-12 mole fractions are routine, and UNIQUAC has x*log(x) and log(phi/x).
 TEST(RtEnergy, StableDownToTraceMoleFractions) {
   constexpr std::size_t n = 6;
-  Builder<> b;
+  Arena<> b;
   const auto x = species(b, n);
   const auto f = models::uniquac(x);
   const auto g = ddx::rt::derive_jacobian(b, f.id(b));
@@ -128,7 +128,7 @@ TEST(RtEnergy, StableDownToTraceMoleFractions) {
 // Jacobian row.  Both Hessian tests below are this check; they differ in the
 // model.  Every cell, not only the stored ones -- a cell the colouring dropped
 // still has to read back as the zero it claims to be.
-void expect_matches_differences(const ddx::rt::Hessian &h, Builder<> &b,
+void expect_matches_differences(const ddx::rt::Hessian &h, Arena<> &b,
                                 std::size_t n) {
   const auto pt = composition(n);
   const auto values = ddx::rt::evaluate_all(b, pt);
@@ -148,7 +148,7 @@ void expect_matches_differences(const ddx::rt::Hessian &h, Builder<> &b,
 
 TEST(RtEnergy, HessianMatchesDifferencesOfTheJacobian) {
   constexpr std::size_t n = 4;
-  Builder<> b;
+  Arena<> b;
   const auto x = species(b, n);
   const auto f = models::uniquac(x);
   const auto h = ddx::rt::derive_hessian(b, f.id(b));
@@ -159,7 +159,7 @@ TEST(RtEnergy, HessianMatchesDifferencesOfTheJacobian) {
 // derivatives into one cell.
 TEST(RtEnergy, MixingRulesGiveADenseHessian) {
   for (const std::size_t n : {4u, 8u}) {
-    Builder<> b;
+    Arena<> b;
     auto x = species(b, n);
     const auto f = models::peng_robinson(x, RE{0.9}); // Z pinned: n symbols
     const auto rows = ddx::rt::coupling_pattern(b, f.id(b));
@@ -177,7 +177,7 @@ TEST(RtEnergy, MixingRulesGiveADenseHessian) {
 TEST(RtEnergy, JacobianStaysCheapAsSpeciesAreAdded) {
   std::size_t previous_ratio = 0;
   for (const std::size_t n : {5u, 10u, 20u}) {
-    Builder<> b;
+    Arena<> b;
     const auto x = species(b, n);
     const auto f = models::uniquac(x);
     const std::size_t built = b.size();
@@ -202,7 +202,7 @@ namespace {
 // then a handful of sweeps rather than one per species.
 TEST(RtEnergySparse, FiniteRangeGivesFewColours) {
   for (const std::size_t n : {20u, 60u, 200u}) {
-    Builder<> b;
+    Arena<> b;
     const auto s = species(b, n);
     const auto e = models::cluster_expansion(s, 2);
     const auto colouring =
@@ -217,7 +217,7 @@ TEST(RtEnergySparse, FiniteRangeGivesFewColours) {
 
 TEST(RtEnergySparse, BondedChainIsBanded) {
   constexpr std::size_t n = 40;
-  Builder<> b;
+  Arena<> b;
   const auto r = species(b, n);
   const auto e = models::bonded_chain(r);
   const auto rows = ddx::rt::coupling_pattern(b, e.id(b));
@@ -237,7 +237,7 @@ TEST(RtEnergySparse, BondedChainIsBanded) {
 TEST(RtEnergySparse, ColouredHessianIsStillCorrect) {
   // Larger than the interaction range: a ring of 8 at range 2 saves nothing.
   constexpr std::size_t n = 16;
-  Builder<> b;
+  Arena<> b;
   const auto s = species(b, n);
   const auto e = models::cluster_expansion(s, 2);
   const auto h = ddx::rt::derive_hessian(b, e.id(b));

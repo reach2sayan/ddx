@@ -29,7 +29,7 @@ namespace ddx::rt {
 // solved for; a Seed, a seeded product's direction.  The last cell is what the
 // index is: nothing, a place among the named inputs of that kind, or a
 // position. The named kinds are their own table, in the order a point passes
-// them: it is what the Builder keeps one name list per and what var()'s
+// them: it is what the Arena keeps one name list per and what var()'s
 // spellings, the Python factories and the column layout are generated from.
 #define DDX_RT_NAMED_TABLE(X)                                                  \
   X(var, Var, "var", Named)                                                    \
@@ -90,7 +90,7 @@ namespace ddx::rt {
 // A node whose value is a vector of `width` scalars per point, or a scalar
 // read off one.  Operands are ids like any other; `aux` is what the row
 // says -- no node carries data, and a shape is a function of the source
-// (width_of in rt/builder.hpp), never of the node alone:
+// (width_of in rt/arena.hpp), never of the node alone:
 //   VecConst, MatConst  aux = index into Model::tensors; the data lives there
 //   Pack                a = list of `aux` scalars
 //   Gather              a = vec, aux = element; a scalar
@@ -99,7 +99,7 @@ namespace ddx::rt {
 //   Sum, Dot            a (, b) = vecs; a scalar
 //   AddAt               a = vec, b = scalar, aux = element: a + b e_aux
 // A matrix is a row too, column-major, its shape derived from its operands
-// (shape_of in rt/builder.hpp).  Map, Zip, Scale, Sum and Dot read one as the
+// (shape_of in rt/arena.hpp).  Map, Zip, Scale, Sum and Dot read one as the
 // vector of its elements.  A model forms the first three; the dense Hessian
 // sweep forms all of them:
 //   MatRow              a = MatConst, aux = 1 for M^T: the table as a row;

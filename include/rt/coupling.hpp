@@ -2,7 +2,7 @@
 
 #include "md/md.hpp"
 #include "ops/operations.hpp"
-#include "rt/builder.hpp"
+#include "rt/arena.hpp"
 #include "rt/opcode.hpp"
 #include "util/config.hpp" // DDX_FWD
 #include "util/export.hpp"
@@ -292,11 +292,11 @@ inline void couple(CouplingRows &rows, const SymbolSet &a, const SymbolSet &b) {
 // rows[i][j] is true when d2f/dxi dxj may be nonzero.  Conservative and
 // symmetric, as hessian_pattern is: a superset costs sweeps, never correctness.
 template <impl::Numeric T>
-[[nodiscard]] CouplingRows coupling_pattern(const Builder<T> &b, NodeId root) {
+[[nodiscard]] CouplingRows coupling_pattern(const Arena<T> &b, NodeId root) {
   const std::size_t n = b.symbols().size();
   CouplingRows rows(n, SymbolSet(n));
 
-  // Only what the root reaches: another expression sharing the builder would
+  // Only what the root reaches: another expression sharing the arena would
   // otherwise contribute couplings this one does not have.
   const auto live = detail::reachable(b, std::span{&root, 1});
 

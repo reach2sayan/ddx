@@ -8,15 +8,15 @@
 #include <string>
 #include <vector>
 
-// The builder folds with ids: a rewrite returns an existing node, so the
+// The arena folds with ids: a rewrite returns an existing node, so the
 // assertions here are on node identity rather than node count.
 
 namespace {
-using ddx::rt::Builder;
+using ddx::rt::Arena;
 using RE = ddx::rt::Expression<>;
 
-TEST(RtBuilder, IdenticalSubtreesInternToOneNode) {
-  Builder<> b;
+TEST(RtArena, IdenticalSubtreesInternToOneNode) {
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = exp(x) * sin(y);
@@ -27,8 +27,8 @@ TEST(RtBuilder, IdenticalSubtreesInternToOneNode) {
   EXPECT_EQ(b.size(), after_first);
 }
 
-TEST(RtBuilder, ReserveChangesNeitherIdsNorInterning) {
-  const auto build = [](Builder<> &b) {
+TEST(RtArena, ReserveChangesNeitherIdsNorInterning) {
+  const auto build = [](Arena<> &b) {
     const auto x = var(b, "x");
     const auto y = var(b, "y");
     auto f = exp(x) * sin(y);
@@ -37,8 +37,8 @@ TEST(RtBuilder, ReserveChangesNeitherIdsNorInterning) {
     }
     return f.id(b);
   };
-  Builder<> plain;
-  Builder<> reserved;
+  Arena<> plain;
+  Arena<> reserved;
   reserved.reserve(4096);
   EXPECT_EQ(reserved.size(), 0u);
   const auto f = build(plain);
@@ -51,8 +51,8 @@ TEST(RtBuilder, ReserveChangesNeitherIdsNorInterning) {
   EXPECT_EQ(plain.size(), reserved.size());
 }
 
-TEST(RtBuilder, CommutativeOperandsCanonicalise) {
-  Builder<> b;
+TEST(RtArena, CommutativeOperandsCanonicalise) {
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   EXPECT_EQ((x * y).id(b), (y * x).id(b));
@@ -60,8 +60,8 @@ TEST(RtBuilder, CommutativeOperandsCanonicalise) {
   EXPECT_NE((x / y).id(b), (y / x).id(b));
 }
 
-TEST(RtBuilder, IdentityRewrites) {
-  Builder<> b;
+TEST(RtArena, IdentityRewrites) {
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
 
@@ -82,8 +82,8 @@ TEST(RtBuilder, IdentityRewrites) {
   EXPECT_EQ((x * (y / x)).id(b), y.id(b));
 }
 
-TEST(RtBuilder, LiteralsFoldBeforeReachingTheGraph) {
-  Builder<> b;
+TEST(RtArena, LiteralsFoldBeforeReachingTheGraph) {
+  Arena<> b;
   const auto x = var(b, "x");
   const std::size_t before = b.size();
   const auto c = RE{2} * RE{3} + RE{1};
@@ -95,8 +95,8 @@ TEST(RtBuilder, LiteralsFoldBeforeReachingTheGraph) {
   (void)x;
 }
 
-TEST(RtBuilder, ConstantOperandsFold) {
-  Builder<> b;
+TEST(RtArena, ConstantOperandsFold) {
+  Arena<> b;
   const auto x = var(b, "x");
   EXPECT_TRUE(b.is_constant((lit(b, 2.0) * lit(b, 3.0)).id(b), 6.0));
   EXPECT_TRUE(b.is_constant(sqrt(lit(b, 9.0)).id(b), 3.0));
@@ -105,8 +105,8 @@ TEST(RtBuilder, ConstantOperandsFold) {
 
 // Constants intern by their bits, which is what they hash by: the two zeros
 // stay apart whatever was built first, and a NaN is one node.
-TEST(RtBuilder, ConstantsInternByTheirBits) {
-  Builder<> b;
+TEST(RtArena, ConstantsInternByTheirBits) {
+  Arena<> b;
   for (int i = 0; i < 64; ++i) {
     (void)lit(b, 1.0 + i).id(b);
   }
@@ -118,8 +118,8 @@ TEST(RtBuilder, ConstantsInternByTheirBits) {
   EXPECT_EQ(lit(b, nan).id(b), lit(b, nan).id(b));
 }
 
-TEST(RtBuilder, SymbolsInternByName) {
-  Builder<> b;
+TEST(RtArena, SymbolsInternByName) {
+  Arena<> b;
   EXPECT_EQ(var(b, "x").id(b), var(b, "x").id(b));
   EXPECT_NE(var(b, "x").id(b), var(b, "y").id(b));
   ASSERT_EQ(b.symbols().size(), 2u);
@@ -128,8 +128,8 @@ TEST(RtBuilder, SymbolsInternByName) {
 
 // A slot is the order the model named its symbols in, so a symbol named late
 // takes the next slot and moves nothing already built.
-TEST(RtBuilder, SlotsAreDeclarationOrder) {
-  Builder<> b;
+TEST(RtArena, SlotsAreDeclarationOrder) {
+  Arena<> b;
   const auto z = var(b, "z");
   const auto s = sin(z); // built while z is the only symbol
   const auto a = var(b, "a");
@@ -142,8 +142,8 @@ TEST(RtBuilder, SlotsAreDeclarationOrder) {
 
 // One namespace for every named input: a parameter cannot take a symbol's name,
 // and parameters number their own slots after the symbols' columns.
-TEST(RtBuilder, ParamsShareTheNamespaceAndNumberTheirOwnSlots) {
-  Builder<> b;
+TEST(RtArena, ParamsShareTheNamespaceAndNumberTheirOwnSlots) {
+  Arena<> b;
   const auto x = var(b, "x");
   const auto k = ddx::rt::param(b, "k");
   const auto y = var(b, "y");
@@ -165,8 +165,8 @@ TEST(RtBuilder, ParamsShareTheNamespaceAndNumberTheirOwnSlots) {
 // makes an id comparison.
 // Two terms are the long form's own Add; the other compound operators build
 // what their operator builds.  Past two terms `+=` is a SumN: tests_rt_sumn.
-TEST(RtBuilder, CompoundAssignmentBuildsWhatTheLongFormBuilds) {
-  Builder<> b;
+TEST(RtArena, CompoundAssignmentBuildsWhatTheLongFormBuilds) {
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
 
@@ -186,8 +186,8 @@ TEST(RtBuilder, CompoundAssignmentBuildsWhatTheLongFormBuilds) {
 
 // The right operand converts, as it does for the binary operators, and two
 // pending literals fold without an arena to fold in.
-TEST(RtBuilder, CompoundAssignmentTakesAScalar) {
-  Builder<> b;
+TEST(RtArena, CompoundAssignmentTakesAScalar) {
+  Arena<> b;
   const auto x = var(b, "x");
 
   auto e = x;
@@ -201,7 +201,7 @@ TEST(RtBuilder, CompoundAssignmentTakesAScalar) {
 }
 
 TEST(RtInterpreter, EvaluatesSharedNodesOnce) {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = (x * y) + sin(x * y);
@@ -212,8 +212,8 @@ TEST(RtInterpreter, EvaluatesSharedNodesOnce) {
 
 // A literal condition has chosen, NaN reading as true the way select_impl
 // reads it, and equal arms need no choosing.
-TEST(RtBuilder, SelectFoldsWhereABinaryWould) {
-  ddx::rt::Builder<> b;
+TEST(RtArena, SelectFoldsWhereABinaryWould) {
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   EXPECT_EQ(select(ddx::rt::lit(b, 1.0), x, y).id(b), x.id(b));
@@ -227,8 +227,8 @@ TEST(RtBuilder, SelectFoldsWhereABinaryWould) {
 
 // Two comparison opcodes carry six operators: each is `lt` or `le`, some read
 // the other way round, and a bare number converts on either side.
-TEST(RtBuilder, ComparisonOperatorsAreTheTwoNodes) {
-  ddx::rt::Builder<> b;
+TEST(RtArena, ComparisonOperatorsAreTheTwoNodes) {
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   EXPECT_EQ((x < y).id(b), lt(x, y).id(b));

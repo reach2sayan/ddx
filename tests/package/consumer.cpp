@@ -44,7 +44,7 @@ int main() {
 
 #ifdef DDX_CONSUMER_RT
   // The runtime graph is the header set that needs Boost.
-  rt::Builder<> b;
+  rt::Arena<> b;
   const auto root = rt::to_graph(b, x * y + sin(x));
   const auto rg = rt::derive_jacobian(b, root.id(b));
   const auto values = rt::evaluate_all(b, std::array{1.25, 0.5});

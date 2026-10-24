@@ -186,7 +186,7 @@ private:
   // canonicalised tree's own list can be shorter, (y*x)/(x*y) folds to 1 and
   // loses both.
   struct Lowered {
-    rt::Builder<scalar> arena;
+    rt::Arena<scalar> arena;
     std::array<rt::NodeId, output_dim> roots;
   };
   [[nodiscard]] constexpr Lowered lower() const {

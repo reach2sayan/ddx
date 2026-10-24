@@ -33,7 +33,7 @@ template <impl::Numeric T = double, std::convertible_to<std::string_view>... Ss>
     using Eq = impl::Equation<Expression<T>, detail::Repeat<I, T>...>;
     const std::array sources{first, std::string_view{rest}...};
 
-    auto arena = std::make_unique<Builder<T>>();
+    auto arena = std::make_unique<Arena<T>>();
     std::vector<Expression<T>> roots;
     roots.reserve(sources.size());
 
@@ -52,7 +52,8 @@ template <impl::Numeric T = double, std::convertible_to<std::string_view>... Ss>
       });
     }
     return ok.transform([&] {
-      return Eq::create(std::move(arena), roots[0], roots[I + 1]...);
+      return detail::Creating::create<Eq>(std::move(arena), roots[0],
+                                        roots[I + 1]...);
     });
   });
 }

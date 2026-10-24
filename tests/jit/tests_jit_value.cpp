@@ -32,7 +32,7 @@
 // the same graph, so a disagreement is a codegen bug.  Batch shape throughout.
 
 namespace {
-using ddx::rt::Builder;
+using ddx::rt::Arena;
 using ddx::rt::Graph;
 
 // The cache entry's prologue: tag, format, key, CRC, then the two lengths.  The
@@ -60,7 +60,7 @@ std::string spelled(ddx::jit::Lanes lanes) {
 // Compile `build` and compare a batch against the interpreter.
 void expect_matches_interpreter(auto build, std::size_t nvars,
                                 std::size_t n = 64) {
-  Builder<> b;
+  Arena<> b;
   std::vector<ddx::rt::Expression<>> vars;
   static constexpr const char *names[] = {"x", "y", "z", "w"};
   for (std::size_t i = 0; i < nvars; ++i) {
@@ -110,42 +110,42 @@ TEST(JitValue, CompilerIsMovableButNotCopyable) {
 }
 
 TEST(JitValue, Arithmetic) {
-  expect_matches_interpreter([](Builder<> &, auto &v) { return v[0] + v[1]; },
+  expect_matches_interpreter([](Arena<> &, auto &v) { return v[0] + v[1]; },
                              2);
-  expect_matches_interpreter([](Builder<> &, auto &v) { return v[0] - v[1]; },
+  expect_matches_interpreter([](Arena<> &, auto &v) { return v[0] - v[1]; },
                              2);
-  expect_matches_interpreter([](Builder<> &, auto &v) { return v[0] * v[1]; },
+  expect_matches_interpreter([](Arena<> &, auto &v) { return v[0] * v[1]; },
                              2);
-  expect_matches_interpreter([](Builder<> &, auto &v) { return v[0] / v[1]; },
+  expect_matches_interpreter([](Arena<> &, auto &v) { return v[0] / v[1]; },
                              2);
-  expect_matches_interpreter([](Builder<> &, auto &v) { return -v[0] * v[1]; },
+  expect_matches_interpreter([](Arena<> &, auto &v) { return -v[0] * v[1]; },
                              2);
 }
 
 // Split across tests so a failure names the op that broke.
 TEST(JitValue, IntrinsicBackedFunctions) {
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) { return sin(v[0]) + cos(v[1]); }, 2);
+      [](Arena<> &, auto &v) { return sin(v[0]) + cos(v[1]); }, 2);
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) { return tan(v[0]) * exp(v[1]); }, 2);
+      [](Arena<> &, auto &v) { return tan(v[0]) * exp(v[1]); }, 2);
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) { return log(v[0]) - log10(v[1]); }, 2);
+      [](Arena<> &, auto &v) { return log(v[0]) - log10(v[1]); }, 2);
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) { return sqrt(v[0]) + asin(v[1]); }, 2);
+      [](Arena<> &, auto &v) { return sqrt(v[0]) + asin(v[1]); }, 2);
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) { return acos(v[0]) + atan(v[1]); }, 2);
+      [](Arena<> &, auto &v) { return acos(v[0]) + atan(v[1]); }, 2);
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) { return sinh(v[0]) + cosh(v[1]); }, 2);
+      [](Arena<> &, auto &v) { return sinh(v[0]) + cosh(v[1]); }, 2);
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) { return tanh(v[0]) * abs(v[1]); }, 2);
+      [](Arena<> &, auto &v) { return tanh(v[0]) * abs(v[1]); }, 2);
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) { return pow(v[0], v[1]); }, 2);
+      [](Arena<> &, auto &v) { return pow(v[0], v[1]); }, 2);
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) { return atan2(v[0], v[1]); }, 2);
+      [](Arena<> &, auto &v) { return atan2(v[0], v[1]); }, 2);
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) { return max(v[0], v[1]); }, 2);
+      [](Arena<> &, auto &v) { return max(v[0], v[1]); }, 2);
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) { return min(v[0], v[1]); }, 2);
+      [](Arena<> &, auto &v) { return min(v[0], v[1]); }, 2);
 }
 
 // A constant exponent or base is where LLVM's library-call simplifier would
@@ -153,7 +153,7 @@ TEST(JitValue, IntrinsicBackedFunctions) {
 // libm's pow is not correctly rounded, so any rewrite moves a bit.
 TEST(JitValue, PowWithAConstantOperandIsTheSweepsPowToTheBit) {
   const auto bits_agree = [](auto build) {
-    Builder<> b;
+    Arena<> b;
     const auto x = var(b, "x");
     const auto root = build(b, x);
     const auto graph = Graph<>::freeze(b, std::array{root.id(b)});
@@ -176,32 +176,32 @@ TEST(JitValue, PowWithAConstantOperandIsTheSweepsPowToTheBit) {
           << "at x = " << column[i] << ": " << got[i] << " vs " << want;
     }
   };
-  bits_agree([](Builder<> &, const auto &x) { return pow(x, 0.5); });
-  bits_agree([](Builder<> &, const auto &x) { return pow(x, -1.0); });
-  bits_agree([](Builder<> &, const auto &x) { return pow(x, 3.5); });
-  bits_agree([](Builder<> &b, const auto &x) { return pow(lit(b, 10.0), x); });
-  bits_agree([](Builder<> &b, const auto &x) { return pow(lit(b, 2.0), x); });
+  bits_agree([](Arena<> &, const auto &x) { return pow(x, 0.5); });
+  bits_agree([](Arena<> &, const auto &x) { return pow(x, -1.0); });
+  bits_agree([](Arena<> &, const auto &x) { return pow(x, 3.5); });
+  bits_agree([](Arena<> &b, const auto &x) { return pow(lit(b, 10.0), x); });
+  bits_agree([](Arena<> &b, const auto &x) { return pow(lit(b, 2.0), x); });
 }
 
 // No LLVM intrinsic: these go out as libm calls, a different emitter path.
 TEST(JitValue, LibmBackedFunctions) {
-  expect_matches_interpreter([](Builder<> &, auto &v) { return cbrt(v[0]); },
+  expect_matches_interpreter([](Arena<> &, auto &v) { return cbrt(v[0]); },
                              1);
-  expect_matches_interpreter([](Builder<> &, auto &v) { return asinh(v[0]); },
+  expect_matches_interpreter([](Arena<> &, auto &v) { return asinh(v[0]); },
                              1);
-  expect_matches_interpreter([](Builder<> &, auto &v) { return atanh(v[0]); },
+  expect_matches_interpreter([](Arena<> &, auto &v) { return atanh(v[0]); },
                              1);
-  expect_matches_interpreter([](Builder<> &, auto &v) { return erf(v[0]); }, 1);
+  expect_matches_interpreter([](Arena<> &, auto &v) { return erf(v[0]); }, 1);
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) { return hypot(v[0], v[1]); }, 2);
+      [](Arena<> &, auto &v) { return hypot(v[0], v[1]); }, 2);
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) { return acosh(v[0] + 1.0); }, 1);
+      [](Arena<> &, auto &v) { return acosh(v[0] + 1.0); }, 1);
 }
 
 TEST(JitValue, MaxMinPropagateNaNSymmetrically) {
   // llvm.maximum/minimum propagate a NaN operand from either side, as
   // max_impl does; maxnum/minnum would return the other operand.
-  Builder<> b;
+  Arena<> b;
   const auto root =
       max(var(b, "x"), var(b, "y")) + min(var(b, "x"), var(b, "y"));
   const auto kernel = must_compile(Graph<>::freeze(b, std::array{root.id(b)}));
@@ -224,7 +224,7 @@ TEST(JitValue, MaxMinPropagateNaNSymmetrically) {
 // and llvm.minimum compute; the interpreter has to say the same, or 1/min(x, y)
 // changes sign between the two.
 TEST(JitValue, MaxMinSignedZeroTiesMatchTheInterpreter) {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto graph =
@@ -257,7 +257,7 @@ TEST(JitValue, MaxMinSignedZeroTiesMatchTheInterpreter) {
 // freezes: the kernel takes an empty partials span, and the emitter has to
 // produce a function that stores value columns and nothing else.
 TEST(JitValue, AValuesOnlyGraphCompilesAndStoresNoPartials) {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto graph =
@@ -286,7 +286,7 @@ TEST(JitValue, AValuesOnlyGraphCompilesAndStoresNoPartials) {
 
 // the emitter has, on a batch that is not a multiple of any width.
 TEST(JitValue, EveryLaneWidthAgreesToTheBit) {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   auto f = x / (y + 1.0) - x * y;
@@ -343,7 +343,7 @@ TEST(JitValue, EveryLaneWidthAgreesToTheBit) {
 // FastISel forms no FMAs of its own but an llvm.fma it is handed is an
 // operation like any other.
 TEST(JitValue, EveryCodegenLevelAgreesToTheBit) {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   // Multiply-add shapes throughout, so every level that forms an FMA does.
@@ -389,7 +389,7 @@ TEST(JitValue, EveryCodegenLevelAgreesToTheBit) {
 // given `reassoc`, so neither may move a bit.  This is the gate on turning
 // either on.
 TEST(JitValue, TheVectorisersDoNotMoveABit) {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * log(x) + y * exp(x * y) + sqrt(x + y) + x * y * (x + y);
@@ -442,14 +442,14 @@ TEST(JitValue, TheVectorisersDoNotMoveABit) {
 
 TEST(JitValue, SharedAndNested) {
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) {
+      [](Arena<> &, auto &v) {
         return (v[0] * v[1]) * (v[0] * v[1]) + sin(v[0] * v[1]);
       },
       2);
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) { return sin(cos(exp(v[0] * v[1]))); }, 2);
+      [](Arena<> &, auto &v) { return sin(cos(exp(v[0] * v[1]))); }, 2);
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) {
+      [](Arena<> &, auto &v) {
         auto t = v[0];
         for (int i = 0; i < 6; ++i) {
           t = sin(t * v[1]) + exp(t / 3.0);
@@ -458,7 +458,7 @@ TEST(JitValue, SharedAndNested) {
       },
       2);
   expect_matches_interpreter(
-      [](Builder<> &, auto &v) {
+      [](Arena<> &, auto &v) {
         return exp(v[0] * v[1]) + log(v[2]) / tanh(v[3]);
       },
       4);
@@ -467,7 +467,7 @@ TEST(JitValue, SharedAndNested) {
 TEST(JitValue, AgreesWithDdxThroughTheBridge) {
   constexpr auto x = ddx::var<"x">;
   constexpr auto y = ddx::var<"y">;
-  Builder<> b;
+  Arena<> b;
   const auto root = ddx::rt::to_graph(b, exp(x) * sin(y));
   const auto graph = Graph<>::freeze(b, std::array{root.id(b)});
   const auto kernel = must_compile(graph);
@@ -496,7 +496,7 @@ TEST(JitValue, AnUnbuiltKernelIsFalsyAndCreateAnswersWithAResult) {
   auto c = ddx::jit::Compiler::create();
   ASSERT_TRUE(c.has_value()) << c.error().detail;
 
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   auto k = c->compile(Graph<>::freeze(b, std::array{(x + x).id(b)}));
   ASSERT_TRUE(k.has_value()) << k.error().detail;
@@ -504,7 +504,7 @@ TEST(JitValue, AnUnbuiltKernelIsFalsyAndCreateAnswersWithAResult) {
 }
 
 TEST(JitValue, EmptyBatchWritesNothing) {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto graph = Graph<>::freeze(b, std::array{sin(x).id(b)});
   const auto kernel = must_compile(graph);
@@ -518,7 +518,7 @@ TEST(JitValue, EmptyBatchWritesNothing) {
 }
 
 TEST(JitValue, ConstantFoldsToAStore) {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto f = x * ddx::rt::Expression<>{0} + ddx::rt::Expression<>{7};
   const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
@@ -536,7 +536,7 @@ TEST(JitValue, ConstantFoldsToAStore) {
 // The object a compile produced links back and answers the same bits, which is
 // what makes a compile storable.
 TEST(JitValue, AnObjectAdoptsBackIntoTheSameKernel) {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto root = (x * log(x) + exp(x * y) + sqrt(y)).id(b);
@@ -580,7 +580,7 @@ TEST(JitValue, ACachedObjectSkipsTheWholeCompile) {
   const Scratch dir{"jit_skips"};
 
   const auto build = [] {
-    Builder<> b;
+    Arena<> b;
     const auto x = var(b, "x");
     const auto y = var(b, "y");
     const auto root = (x * log(x) + exp(x * y) + sqrt(y)).id(b);
@@ -621,7 +621,7 @@ TEST(JitValue, ACorruptCacheEntryIsAMissNotACrash) {
   ddx::jit::Options opt;
   opt.cache_dir = dir.string();
 
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto graph = Graph<>::freeze(b, std::array{(x * x + log(x)).id(b)});
   ASSERT_TRUE(compiler().compile(graph, opt).has_value());
@@ -659,7 +659,7 @@ TEST(JitValue, ACacheEntrySurvivesCorruptionAndTruncation) {
   ddx::jit::Options opt;
   opt.cache_dir = dir.string();
 
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto graph = Graph<>::freeze(b, std::array{(x * x + log(x)).id(b)});
   ASSERT_TRUE(compiler().compile(graph, opt).has_value());
@@ -775,9 +775,9 @@ TEST(JitValue, ConcurrentCompilesLeaveOneWholeCacheEntry) {
     std::vector<std::thread> threads;
     for (std::size_t t = 0; t < writers; ++t) {
       threads.emplace_back([&, t] {
-        // Its own arena: one Builder is not shared between threads.  Two
+        // Its own arena: one Arena is not shared between threads.  Two
         // independent builds hashing alike is also the cache's premise.
-        Builder<> b;
+        Arena<> b;
         const auto x = var(b, "x");
         const auto graph =
             Graph<>::freeze(b, std::array{(x * x + log(x)).id(b)});
@@ -821,7 +821,7 @@ TEST(JitValue, ConcurrentCompilesLeaveOneWholeCacheEntry) {
   EXPECT_EQ(entries, 1u) << "one graph and one option set should be one entry";
 
   // And what landed is a whole entry, not a mixture of eight.
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto graph = Graph<>::freeze(b, std::array{(x * x + log(x)).id(b)});
   ddx::jit::CompileReport warm;
@@ -834,7 +834,7 @@ TEST(JitValue, ConcurrentCompilesLeaveOneWholeCacheEntry) {
 TEST(JitValue, NoCacheDirectoryWritesNothing) {
   const Scratch dir{"jit_absent"};
 
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   ASSERT_TRUE(compiler()
                   .compile(Graph<>::freeze(b, std::array{(x * x).id(b)}))
@@ -843,7 +843,7 @@ TEST(JitValue, NoCacheDirectoryWritesNothing) {
 }
 
 TEST(JitValue, AForgedSymbolCannotReachThroughTheLinkOrder) {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto graph = Graph<>::freeze(b, std::array{(x * x + exp(x)).id(b)});
   const auto compiled = must_compile(graph);
@@ -869,7 +869,7 @@ TEST(JitValue, AdoptingRubbishIsAnErrorNotACrash) {
   const std::array<std::byte, 8> rubbish{
       std::byte{0x7f}, std::byte{'E'}, std::byte{'L'}, std::byte{'F'},
       std::byte{0},    std::byte{0},   std::byte{0},   std::byte{0}};
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto graph = Graph<>::freeze(b, std::array{(x * x).id(b)});
   const auto k = compiler().adopt(rubbish, "ddx_kernel_0", graph);
@@ -877,11 +877,11 @@ TEST(JitValue, AdoptingRubbishIsAnErrorNotACrash) {
 }
 
 TEST(JitValue, SeparateCompilesCoexist) {
-  Builder<> b1;
+  Arena<> b1;
   const auto x1 = var(b1, "x");
   const auto k1 = must_compile(Graph<>::freeze(b1, std::array{sin(x1).id(b1)}));
 
-  Builder<> b2;
+  Arena<> b2;
   const auto x2 = var(b2, "x");
   const auto k2 = must_compile(Graph<>::freeze(b2, std::array{cos(x2).id(b2)}));
 
@@ -902,7 +902,7 @@ TEST(JitValue, KernelOutlivesItsCompiler) {
   ddx::jit::Kernel kernel;
   {
     auto local = *ddx::jit::Compiler::create();
-    Builder<> b;
+    Arena<> b;
     const auto x = var(b, "x");
     auto k = local.compile(Graph<>::freeze(b, std::array{(x * x).id(b)}));
     ASSERT_TRUE(k.has_value()) << k.error().detail;

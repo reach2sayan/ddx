@@ -20,7 +20,7 @@ namespace detail {
 // Sum and Multiply are n-ary in the type but binary in the graph, so a wide
 // node folds left into a chain.
 template <impl::Numeric T, impl::CExpression U>
-[[nodiscard]] constexpr Expression<T> lower(Builder<T> &b, const U &e) {
+[[nodiscard]] constexpr Expression<T> lower(Arena<T> &b, const U &e) {
   // A dual-valued tree's literals and constants are duals; the graph is over
   // the base.  Unqualified val(): ADL finds the dual's, ordinary lookup the
   // scalar's.
@@ -76,7 +76,7 @@ template <impl::Numeric U, impl::CExpression E>
 // quietly revive what the caller held -- the tree is refused instead.
 template <impl::Numeric T, impl::CExpression U>
   requires(!impl::holds_frozen<U>())
-[[nodiscard]] constexpr Expression<T> to_graph(Builder<T> &b, const U &e) {
+[[nodiscard]] constexpr Expression<T> to_graph(Arena<T> &b, const U &e) {
   impl::mp::mp_for_each<impl::extract_symbols_from_expr_t<U>>(
       [&b]<typename S>(S) { (void)var(b, S::name); });
   return detail::lower(b, e);

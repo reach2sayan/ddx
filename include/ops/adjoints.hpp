@@ -9,7 +9,7 @@
 #include <utility>
 
 // The reverse-mode rule for every op outside unary_math.hpp's eighteen, one
-// operand at a time: adjoint<I> is what reaches operand I.  The graph builder
+// operand at a time: adjoint<I> is what reaches operand I.  The arena
 // instantiates them at rt::Expression and asks only for the operands a
 // derivative moves; Dual instantiates them at its component.  No rule reads
 // its own primal, so pow and hypot recompute it, which costs a graph nothing.
@@ -84,7 +84,7 @@ template <Numeric T> struct PowOpFn {
     // constant 1, and a^b * log(a) with a^b == 0, where 0^b is the constant 0.
     // Both are the zero the vanishing factor says.  A number asks with a
     // comparison; a graph handle's comparison is a node, so it asks with a
-    // select, which the builder folds to the bare partial wherever the
+    // select, which the arena folds to the bare partial wherever the
     // factor is a literal.
     const auto unless_vanishing = [&a](const T &d, const T &factor) -> T {
       if constexpr (std::equality_comparable<T>) {

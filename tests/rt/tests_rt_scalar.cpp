@@ -52,20 +52,20 @@ static_assert(!ddx::impl::CCommutativeMultiply<M2>,
               "and its * does not commute");
 
 TEST(RtScalar, CommutativeSwapIsAskedNotAssumed) {
-  ddx::rt::Builder<M2> b;
+  ddx::rt::Arena<M2> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   // A matrix product must not be canonicalised by swapping operands.
   EXPECT_NE((x * y).id(b), (y * x).id(b));
 
-  ddx::rt::Builder<double> d;
+  ddx::rt::Arena<double> d;
   const auto dx = var(d, "x");
   const auto dy = var(d, "y");
   EXPECT_EQ((dx * dy).id(d), (dy * dx).id(d));
 }
 
 TEST(RtScalar, OnlyTheCancellationThatHoldsForAnyScalarFires) {
-  ddx::rt::Builder<M2> b;
+  ddx::rt::Arena<M2> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   // (n/d)*d is n whatever T is: `/` is right division, so d^-1 meets d.
@@ -75,7 +75,7 @@ TEST(RtScalar, OnlyTheCancellationThatHoldsForAnyScalarFires) {
 }
 
 TEST(RtScalar, EvaluatesInTheScalarsOwnArithmetic) {
-  ddx::rt::Builder<M2> b;
+  ddx::rt::Arena<M2> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const std::array<M2, 2> pt{M2{1, 2, 3, 4}, M2{5, 6, 7, 8}};
@@ -86,7 +86,7 @@ TEST(RtScalar, EvaluatesInTheScalarsOwnArithmetic) {
 // A transcendental over a matrix is meaningless, and must not stop the type
 // being usable at all.
 TEST(RtScalar, UnsupportedOpsDoNotBreakTheInstantiation) {
-  ddx::rt::Builder<M2> b;
+  ddx::rt::Arena<M2> b;
   const auto x = var(b, "x");
   // The assertion is that it instantiates and builds a node at all.
   EXPECT_NE((x + x * x - x / x).id(b), ddx::rt::no_node);
@@ -94,7 +94,7 @@ TEST(RtScalar, UnsupportedOpsDoNotBreakTheInstantiation) {
 
 // What apply() cannot compute it answers with a zero, so a sweep asks first.
 TEST(RtScalar, ComputesAtSaysWhichOpsTheScalarHas) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto field = (x + x * x - x / x).id(b);
   const auto kink = max(x, x * x).id(b);
@@ -117,7 +117,7 @@ namespace {
 // Forward mode falls out of the interpreter rather than being a second engine:
 // evaluate_all takes its arithmetic from the point's element type.
 TEST(RtScalar, ADualPointCarriesDerivativesThroughTheSameWalk) {
-  ddx::rt::Builder<> b; // the graph itself is over double
+  ddx::rt::Arena<> b; // the graph itself is over double
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = exp(x) * sin(y);
