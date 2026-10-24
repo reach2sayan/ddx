@@ -749,7 +749,8 @@ protected:
   using Pipeline = detail::Pipeline<T>;
   using Pipelines = std::array<Pipeline, want_count>;
 
-  // Poisoned: arena_ null, roots_ empty, every accessor short-circuiting first.
+  // Poisoned: arena_ null, roots_ empty, no pipelines or sweeps, and every
+  // accessor short-circuiting first.
   constexpr explicit Core(error why) : bad_(why) { settle(); }
 
   // The arena is the equation's own from here: one it was lent is copied, so
@@ -781,11 +782,12 @@ protected:
     roots_.clear();
   }
   // Every equation's tail: what the gates read of the arena, and the pipelines
-  // and sweeps, which constant evaluation never reaches.
+  // and sweeps, which constant evaluation and a poisoned equation never reach.
   constexpr void settle() {
-    if (arena_) {
-      first_order_ = first_order_only(*arena_, roots_);
+    if (!arena_) {
+      return;
     }
+    first_order_ = first_order_only(*arena_, roots_);
     if !consteval {
       pipelines_ = std::make_unique<Pipelines>();
       sweeps_ = std::make_unique<Sweeps>();
@@ -1278,30 +1280,24 @@ private:
   }
 
   // What a pipeline needs of the equation.  No compiler is a pipeline that will
-  // never compile: a poisoned equation and an interpreting backend both arrive
-  // here as one, and so does a host with no JIT.
+  // never compile: an interpreting backend arrives here as one, and so does a
+  // host with no JIT.
   [[nodiscard]] Setting setting() const {
     Setting out;
     if constexpr (std::same_as<T, double>) {
       out.options = effective_options();
-      if (!bad_) {
 #ifdef DDX_HAS_JIT
-        if (options_.backend == jit::Backend::Compile ||
-            options_.backend == jit::Backend::Adapt) {
-          out.compiler = compiler();
-        }
-#endif
+      if (options_.backend == jit::Backend::Compile ||
+          options_.backend == jit::Backend::Adapt) {
+        out.compiler = compiler();
       }
+#endif
     }
     return out;
   }
 
-  // The graphs a pipeline computes.  A poisoned equation freezes an empty one:
-  // every accessor short-circuits before it, and dispatch() refuses on `bad_`.
+  // The graphs a pipeline computes.
   [[nodiscard]] Compiled frozen_for(Want want, const Cells &cells) const {
-    if (bad_) {
-      return {.graph = std::make_shared<const Graph<T>>()};
-    }
     // What the want adds past the values and the Jacobian, swept before the
     // freeze takes the lock.  Vjp and Jvp replace the Jacobian block rather
     // than add to it -- n columns instead of the pattern's nonzeros is the
@@ -1520,7 +1516,8 @@ private:
   const TensorKernelTable *kernels_ = nullptr;
   Jacobian jacobian_;
   // unique_ptr, not shared: its destructor is constexpr, which is what keeps a
-  // constant-evaluated equation destructible.  Null only there.
+  // constant-evaluated equation destructible.  Null there; a poisoned equation
+  // reads neither, and settle() leaves it without both.
   std::unique_ptr<Pipelines> pipelines_;
   // Every other sweep, built once on first ask under the arena's write lock.
   std::unique_ptr<Sweeps> sweeps_;
