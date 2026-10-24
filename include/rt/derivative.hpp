@@ -441,9 +441,9 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
   // Interned only then: a zero nothing reads would still shift every later id.
   if (std::ranges::contains(g.partial, no_node) ||
       std::ranges::contains(g.implicit, no_node)) {
-    const NodeId zero = b.constant(T{0});
-    std::ranges::replace(g.partial, no_node, zero);
-    std::ranges::replace(g.implicit, no_node, zero);
+    const NodeId literal = b.constant(T{0});
+    std::ranges::replace(g.partial, no_node, literal);
+    std::ranges::replace(g.implicit, no_node, literal);
   }
   return g;
 }
