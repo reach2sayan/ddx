@@ -537,3 +537,4 @@ build/
 
 # A solution file the IDE drops in the root; not part of the CMake build.
 /ddx.wsp
+/dhat.json

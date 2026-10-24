@@ -3,8 +3,8 @@
 // What computes a tensor node: a backend is a type satisfying TensorKernels,
 // a TensorKernelTable is that type erased to function pointers, and the
 // interpreter holds one table.  The reference backend below is plain loops with
-// nothing behind it; a consumer with Eigen or a BLAS includes its own header
-// (one ships beside this: rt/eigen_kernels.hpp) and hands the table over once.
+// nothing behind it; a consumer with Eigen or a BLAS writes a backend over it
+// (tests/eigen and tests/cblas each hold one) and hands the table over once.
 //
 // Spans at the boundary, not a library's types; a matrix is column-major, and
 // every vector a kernel sees is contiguous.  Results may differ between

@@ -1,0 +1,49 @@
+# conanfile.py built and consumed as a Conan package: Boost from
+# ConanCenter, libddx shared, no JIT, and tests/conan running the README's
+# first example against what was installed.
+name: Conan
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  conan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install compilers
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y gcc-14 g++-14 ninja-build
+
+      - name: Install Conan
+        run: pipx install conan
+
+      # The profile names the compiler outright: CMakeLists.txt otherwise picks
+      # the newest g++ on PATH, and the package id would describe another one.
+      - name: Conan profile
+        run: |
+          conan profile detect
+          cat > "$(conan config home)/profiles/ci" <<'PROFILE'
+          include(default)
+          [settings]
+          compiler=gcc
+          compiler.version=14
+          compiler.libcxx=libstdc++11
+          compiler.cppstd=23
+          build_type=Release
+          [conf]
+          tools.build:compiler_executables={"c": "gcc-14", "cpp": "g++-14"}
+          tools.cmake.cmaketoolchain:generator=Ninja
+          PROFILE
+
+      - name: Create and test the package
+        run: conan create . --profile:all=ci --build=missing
