@@ -13,6 +13,7 @@
 #include "rt/rebalance.hpp"
 #include "symbolic/entry.hpp" // CEntry
 #include "util/config.hpp"
+#include "util/export.hpp"
 #include "util/ranges.hpp" // to<C>() and append(), ours
 
 #include <boost/container/small_vector.hpp>
@@ -66,11 +67,9 @@ concept CColumns = std::ranges::contiguous_range<R> &&
 #ifdef DDX_HAS_JIT
 // One LLJIT for the process -- a static in a class template would be per
 // specialisation -- reached only from a compiling backend, so an interpret-only
-// program never brings LLVM up.
-[[nodiscard]] inline jit::Compiler *shared_compiler() {
-  static jit::compile_result<jit::Compiler> instance = jit::Compiler::create();
-  return instance ? &*instance : nullptr;
-}
+// program never brings LLVM up.  Defined in libddx, so a program and the
+// library share it.
+[[nodiscard]] DDX_API jit::Compiler *shared_compiler();
 #endif
 
 // What a sweep gives up around itself where the caller holds nothing.
@@ -1641,3 +1640,25 @@ template <impl::Numeric T = double> void release_tapes() noexcept {
   detail::thread_tapes<T>() = {};
 }
 } // namespace ddx::rt
+
+// The scalars libddx compiles the engine for once (src/rt/instances.cpp); a TU
+// here only instantiates what it inlines.  Any other T instantiates as before.
+// thread_tapes() is on the list for its thread_local: one set of tapes per
+// thread, not one per binary.  The visibility rides on the extern declaration,
+// which the definition follows.
+#define DDX_RT_INSTANCES(EXTERN, API, T)                                       \
+  EXTERN template class API ::ddx::rt::Arena<T>;                               \
+  EXTERN template class API ::ddx::rt::Graph<T>;                               \
+  EXTERN template class API ::ddx::rt::detail::Pipeline<T>;                    \
+  EXTERN template class API ::ddx::rt::detail::JacobianSurface<                \
+      ::ddx::rt::detail::Core<T>, T>;                                          \
+  EXTERN template class API ::ddx::rt::detail::Core<T>;                        \
+  EXTERN template class API ::ddx::rt::detail::Restricted<                     \
+      ::ddx::rt::detail::Core<T>>;                                             \
+  EXTERN template API ::ddx::rt::detail::ThreadTapes<T>                        \
+      & ::ddx::rt::detail::thread_tapes<T>();
+
+DDX_RT_INSTANCES(extern, DDX_API, double)
+DDX_RT_INSTANCES(extern, DDX_API, float)
+DDX_RT_INSTANCES(extern, DDX_API, long double)
+DDX_RT_INSTANCES(extern, DDX_API, int)

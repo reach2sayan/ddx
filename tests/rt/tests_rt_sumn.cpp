@@ -60,7 +60,7 @@ RE chained(const std::vector<RE> &x) {
   return acc;
 }
 
-std::vector<double> point(std::size_t n) {
+std::vector<double> ramp(std::size_t n) {
   std::vector<double> p(n);
   for (std::size_t i = 0; i < n; ++i) {
     p[i] = 0.3 + 0.17 * static_cast<double>(i);
@@ -106,7 +106,7 @@ TEST(RtSumN, ZeroTermsAreDroppedAndMinusNegates) {
   acc -= x[1];
   acc -= x[0] * x[1];
   const auto root = acc.id(b); // formed here, so the sweep below has it
-  const auto p = point(2);
+  const auto p = ramp(2);
   const auto values = ddx::rt::evaluate_all(b, p);
   EXPECT_DOUBLE_EQ(values[root], p[0] - p[1] - p[0] * p[1]);
 }
@@ -126,7 +126,7 @@ TEST(RtSumN, ACopyOfAnAccumulatorKeepsItsValue) {
   const std::size_t n = b.size();
   EXPECT_EQ(acc.id(b), grown);
   EXPECT_EQ(b.size(), n);
-  const auto p = point(3);
+  const auto p = ramp(3);
   const auto values = ddx::rt::evaluate_all(b, p);
   EXPECT_DOUBLE_EQ(values[kept], p[0] + p[1] + p[2]);
   EXPECT_DOUBLE_EQ(values[grown],
@@ -145,7 +145,7 @@ TEST(RtSumN, ValueGradientHvpAndHessianMatchTheChain) {
   const auto ps = ddx::rt::derive_hvp(sum, fs);
   const auto pc = ddx::rt::derive_hvp(chain, fc);
 
-  auto at = point(n);
+  auto at = ramp(n);
   for (std::size_t i = 0; i < n; ++i) {
     at.push_back(1.0 - 0.1 * static_cast<double>(i)); // the direction
   }
@@ -172,7 +172,7 @@ TEST(RtSumN, FusedAndUnfusedSchedulesAgree) {
   // Fused, the product terms' multiplies are nobody's to compute.
   EXPECT_LT(fused.schedule().size(), plain.schedule().size());
 
-  const auto p = point(6);
+  const auto p = ramp(6);
   std::vector<double> tf(fused.tape_rows()), tp(plain.tape_rows());
   ddx::rt::evaluate_into(
       b, p, fused.schedule(), std::span<double>{tf},
@@ -209,7 +209,7 @@ TEST(RtSumN, RebalanceBlocksTheSum) {
   ASSERT_EQ(moved.size(), 1u);
   EXPECT_NE(moved[0], f);
   EXPECT_NE(b[moved[0]].op, OpCode::SumN);
-  const auto p = point(6);
+  const auto p = ramp(6);
   const auto values = ddx::rt::evaluate_all(b, p);
   expect_close(values[moved[0]], values[f], 1e-13);
 }

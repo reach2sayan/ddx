@@ -12,7 +12,7 @@
 namespace {
 using RV = ddx::rt::Expression<>;
 
-auto model() {
+auto quadratic_form() {
   return ddx::rt::equation([] {
     const RV x = ddx::rt::vec("x", 4);
     const std::vector<double> m{1.0, 0.5, -0.25, 2.0, 0.0, 1.5,  0.75, -1.0,
@@ -23,8 +23,8 @@ auto model() {
 } // namespace
 
 TEST(JitTensor, RefusesTheCompileAndSweepsInstead) {
-  const auto swept = model();
-  auto compiled = model();
+  const auto swept = quadratic_form();
+  auto compiled = quadratic_form();
   compiled.options({.backend = ddx::jit::Backend::Compile});
   // The refusal lands like a kernel would: waited for, then not there.
   EXPECT_FALSE(compiled.wait_for_kernel());

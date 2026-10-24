@@ -18,6 +18,7 @@
 
 namespace {
 using ddx::rt::Arena;
+using models::composition;
 using models::RE;
 
 // Zero-padded: a slot is the symbol's place in the alphabet, so x9 has to sort
@@ -30,19 +31,6 @@ std::vector<RE> species(Arena<> &b, std::size_t n) {
     x.push_back(var(b, std::format("x{:0{}}", i, width)));
   }
   return x;
-}
-
-// An equimolar-ish composition summing to one.
-std::vector<double> composition(std::size_t n) {
-  std::vector<double> pt(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    pt[i] = (1.0 + 0.3 * static_cast<double>(i % 5)) / static_cast<double>(n);
-  }
-  const double total = std::accumulate(pt.begin(), pt.end(), 0.0);
-  for (double &v : pt) {
-    v /= total;
-  }
-  return pt;
 }
 
 // Central differences on the interpreter: independent of the sweep.

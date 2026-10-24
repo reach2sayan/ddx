@@ -167,13 +167,13 @@ TEST(RtSystem, AnEmptyRangeIsNoGraph) {
 // Construction sweeps the Jacobian and nothing else: at n = 128 the coloured
 // Hessian the constructor used to sweep is minutes in a debug build, so this
 // finishing at all is the check.  The time is printed, not asserted.
-constexpr std::size_t species = 128;
+constexpr std::size_t many_species = 128;
 
 TEST(RtSystem, BuildingSweepsOnlyTheJacobian) {
   const auto start = std::chrono::steady_clock::now();
   const auto eq = ddx::rt::equation([] {
     std::vector<RE> x;
-    for (const std::size_t i : std::views::iota(0uz, species)) {
+    for (const std::size_t i : std::views::iota(0uz, many_species)) {
       x.push_back(ddx::rt::var(std::format("x{:03}", i)));
     }
     return models::mse(x);
@@ -181,8 +181,9 @@ TEST(RtSystem, BuildingSweepsOnlyTheJacobian) {
   const std::chrono::duration<double, std::milli> built =
       std::chrono::steady_clock::now() - start;
   ASSERT_FALSE(eq.poisoned());
-  EXPECT_EQ(eq.jacobian_columns(), species);
-  std::printf("[ ddx ] n = %zu built in %.1f ms\n", species, built.count());
+  EXPECT_EQ(eq.jacobian_columns(), many_species);
+  std::printf("[ ddx ] n = %zu built in %.1f ms\n", many_species,
+              built.count());
 }
 
 // prepare() builds the lane, so the threads below only ever read it -- and

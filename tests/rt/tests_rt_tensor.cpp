@@ -40,17 +40,8 @@ std::vector<RE> symbols(std::size_t n) {
   return x;
 }
 
-std::vector<double> composition(std::size_t n) {
-  std::vector<double> pt(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    pt[i] = (1.0 + 0.3 * static_cast<double>(i % 5)) / static_cast<double>(n);
-  }
-  const double total = std::accumulate(pt.begin(), pt.end(), 0.0);
-  for (double &v : pt) {
-    v /= total;
-  }
-  return pt;
-}
+using models::composition;
+
 std::vector<double> direction(std::size_t n) {
   std::vector<double> d(n);
   for (std::size_t i = 0; i < n; ++i) {
