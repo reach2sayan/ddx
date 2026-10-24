@@ -48,8 +48,15 @@ if (NOT DDX_SANITIZE STREQUAL "off")
     if (MSVC)
         message(WARNING "DDX_SANITIZE=${DDX_SANITIZE} ignored: MSVC has no such sanitizer")
     else ()
-        add_compile_options(-fsanitize=${DDX_SANITIZE} -fno-omit-frame-pointer -g)
-        add_link_options(-fsanitize=${DDX_SANITIZE})
+        set(sanitize -fsanitize=${DDX_SANITIZE})
+        # The null family turns off -fdelete-null-pointer-checks, and GCC then
+        # cannot fold `&member == 0` in a constant expression: every constexpr
+        # test stops compiling.
+        if (DDX_SANITIZE STREQUAL "undefined")
+            list(APPEND sanitize -fno-sanitize=null,nonnull-attribute,returns-nonnull-attribute)
+        endif ()
+        add_compile_options(${sanitize} -fno-omit-frame-pointer -g)
+        add_link_options(${sanitize})
     endif ()
 endif ()
 
