@@ -383,7 +383,7 @@ lanes_apply(const Arena<T> &b, NodeId i, const Node<T> &n,
             U *DDX_RESTRICT out, auto &&lane, const Step &s,
             const TapeView<U> &t) {
   const auto &in = s.in;
-  const bool opaque = dispatch<U>(n.op, [&]<typename R>(R) {
+  const bool opaque = dispatch<U>(s.op, [&]<typename R>(R) {
     using Fn = typename R::functor;
     if constexpr (std::is_void_v<Fn>) {
       return true;
@@ -430,13 +430,13 @@ sweep_step(const Arena<T> &b, std::span<const Node<T>> nodes,
   // Not a switch on kind_of(): the shape below is 1.3.6's, and on a
   // libm-heavy graph (compare/'s swap) a kind test ahead of lanes_apply's own
   // switch costs 1.4x in mispredicted dispatch.
-  if (n.op == OpCode::Const) {
+  if (s.op == OpCode::Const) {
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = static_cast<U>(n.value);
     }
-  } else if (is_leaf(n.op)) {
+  } else if (is_leaf(s.op)) {
     const auto src = at + static_cast<std::ptrdiff_t>(
-                              input_column(inputs, n.op, index_of(n)) * W);
+                              input_column(inputs, s.op, index_of(n)) * W);
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }

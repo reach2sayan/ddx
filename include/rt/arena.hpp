@@ -144,14 +144,17 @@ struct Contraction {
 // never handed an order without the contractions resolved over it.  `out` and
 // `in` are where the sweep writes and reads: tape rows, which an arena walk
 // leaves as the ids and a freeze packs by liveness -- the ids above stay what
-// codegen and the cone read.
+// codegen and the cone read.  `op` is the node's, in what was padding: the
+// sweep dispatches on it without first loading the node.
 struct Step {
   NodeId node = no_node;
   Contraction fma{};
   std::uint32_t out = no_node;
   std::array<std::uint32_t, 3> in{no_node, no_node, no_node};
   bool fused = false; // a SumN under contraction: its product terms are fma
+  OpCode op = OpCode::Const;
 };
+static_assert(sizeof(Step) == 40);
 
 namespace detail {
 
@@ -1032,7 +1035,8 @@ schedule_of(const CNodeSource auto &nodes,
                        .fma = c,
                        .out = v,
                        .in = c ? std::array{c.x, c.y, c.z} : ops,
-                       .fused = on && op == OpCode::SumN};
+                       .fused = on && op == OpCode::SumN,
+                       .op = op};
          }) |
          impl::to<std::vector<Step>>();
 }
