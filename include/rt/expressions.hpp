@@ -1,7 +1,7 @@
 #pragma once
 
 #include "rt/apply.hpp"
-#include "rt/builder.hpp"
+#include "rt/arena.hpp"
 #include "rt/opcode.hpp"
 #include "util/config.hpp"
 #include "util/error.hpp"
@@ -31,9 +31,9 @@ namespace detail {
 // tensor factories in rt/tensor.hpp are the other way to a poisoned handle.
 struct Rooting {
   template <impl::Numeric T>
-  [[nodiscard]] static constexpr Builder<T> *
-  builder(const Expression<T> &e) noexcept {
-    return e.builder();
+  [[nodiscard]] static constexpr Arena<T> *
+  arena(const Expression<T> &e) noexcept {
+    return e.arena();
   }
   template <impl::Numeric T>
   [[nodiscard]] static constexpr std::optional<errc>
@@ -58,11 +58,11 @@ struct Rooting {
 template <impl::Numeric T = double>
 [[nodiscard]] Expression<T> named(OpCode op, std::string_view name) noexcept;
 template <impl::Numeric T>
-[[nodiscard]] constexpr Expression<T> named(Builder<T> &b, OpCode op,
+[[nodiscard]] constexpr Expression<T> named(Arena<T> &b, OpCode op,
                                             std::string_view name);
 
 // A handle onto one node, plus the arithmetic surface that builds more.  A null
-// builder is a literal not yet given to a graph, which is what lets
+// arena is a literal not yet given to a graph, which is what lets
 // Expression{1} exist for CFieldLike's constructible_from<int>.
 //
 // The node may be a vector or a matrix: `size()` elements per point, and the
@@ -75,7 +75,7 @@ template <impl::Numeric T>
 template <impl::Numeric T> class Expression {
 public:
   using value_type = T;
-  using builder_type = Builder<T>;
+  using arena_type = Arena<T>;
 
   constexpr Expression() = default;
 
@@ -87,12 +87,12 @@ public:
              impl::Numeric<V>)
   constexpr Expression(V v) : lit_{static_cast<T>(std::move(v))} {}
 
-  constexpr Expression(Builder<T> &b, NodeId id) noexcept
-      : builder_{&b}, id_{id},
+  constexpr Expression(Arena<T> &b, NodeId id) noexcept
+      : arena_{&b}, id_{id},
         shape_{detail::is_tensor(b[id]) ? shape_of(b, id) : Shape{0, 0}} {}
 
   [[nodiscard]] constexpr bool pending() const noexcept {
-    return builder_ == nullptr;
+    return arena_ == nullptr;
   }
   // Elements per point: zero for a scalar node or a pending literal.
   [[nodiscard]] constexpr std::uint32_t size() const noexcept {
@@ -111,15 +111,15 @@ public:
   // Give the node an identity in `b`, materialising a pending literal -- a
   // constant, or the row of `shape` it meets -- or a sum `+=` is still
   // accumulating.
-  [[nodiscard]] constexpr NodeId id(Builder<T> &b, Shape shape = {0, 0}) const {
-    if (builder_ == nullptr) {
+  [[nodiscard]] constexpr NodeId id(Arena<T> &b, Shape shape = {0, 0}) const {
+    if (arena_ == nullptr) {
       return shape.size() ? b.filled(shape, lit_) : b.constant(lit_);
     }
-    return sum_ ? b.sum_of(id_) : id_; // b may be a copy of builder_
+    return sum_ ? b.sum_of(id_) : id_; // b may be a copy of arena_
   }
   // The identity it has in its own arena; no_node for a pending literal.
   [[nodiscard]] constexpr NodeId id() const {
-    return builder_ ? id(*builder_) : no_node;
+    return arena_ ? id(*arena_) : no_node;
   }
 
   // One element of a vector, as a scalar.
@@ -133,7 +133,7 @@ public:
     if (i >= size()) {
       return poison(errc::tensor_shape);
     }
-    return {*builder_, builder_->make(OpCode::Gather, id(), no_node, no_node,
+    return {*arena_, arena_->make(OpCode::Gather, id(), no_node, no_node,
                                       static_cast<std::uint32_t>(i))};
   }
 
@@ -155,8 +155,8 @@ public:
     if (why) {
       return poison(*why);
     }
-    Builder<T> *b = nullptr;
-    ((b = b ? b : xs.builder()), ...);
+    Arena<T> *b = nullptr;
+    ((b = b ? b : xs.arena()), ...);
     if (b == nullptr) {
       return Expression{apply<T>(op, xs.literal()...)};
     }
@@ -178,7 +178,7 @@ public:
 
 private:
   [[nodiscard]] static constexpr Expression
-  zipped(OpCode op, Builder<T> &b, const Expression &l, const Expression &r) {
+  zipped(OpCode op, Arena<T> &b, const Expression &l, const Expression &r) {
     if (l.size() != 0 && r.size() != 0 && l.shape_ != r.shape_) {
       return poison(errc::tensor_shape);
     }
@@ -199,7 +199,7 @@ private:
                       no_node, std::to_underlying(op))};
   }
   [[nodiscard]] static constexpr Expression
-  picked(OpCode op, Builder<T> &b, const Expression &c, const Expression &t,
+  picked(OpCode op, Arena<T> &b, const Expression &c, const Expression &t,
          const Expression &f) {
     const Shape shape = t.size() ? t.shape() : (f.size() ? f.shape() : c.shape());
     const auto fits = [&](const Expression &e) {
@@ -262,15 +262,15 @@ public:
         return *this;
       }
     }
-    const NodeId t = o.id(*builder_);
-    if (builder_->is_constant(t, T{0})) {
+    const NodeId t = o.id(*arena_);
+    if (arena_->is_constant(t, T{0})) {
       return *this;
     }
     if (!sum_) {
-      id_ = builder_->push_term(no_node, id_);
+      id_ = arena_->push_term(no_node, id_);
       sum_ = true;
     }
-    id_ = builder_->push_term(id_, t);
+    id_ = arena_->push_term(id_, t);
     return *this;
   }
   constexpr Expression &operator-=(const Expression &o) { return *this += -o; }
@@ -344,10 +344,10 @@ private:
   template <impl::Numeric U>
   friend Expression<U> named(OpCode, std::string_view) noexcept;
   template <impl::Numeric U>
-  friend constexpr Expression<U> named(Builder<U> &, OpCode, std::string_view);
+  friend constexpr Expression<U> named(Arena<U> &, OpCode, std::string_view);
 
-  [[nodiscard]] constexpr Builder<T> *builder() const noexcept {
-    return builder_;
+  [[nodiscard]] constexpr Arena<T> *arena() const noexcept {
+    return arena_;
   }
 
   // Not a pending literal, which would materialise into the first graph it
@@ -364,16 +364,16 @@ private:
   // A mat_constant table, which is no row: arithmetic reads it as its
   // MatRow, gemv() in place.
   [[nodiscard]] constexpr bool is_matrix() const noexcept {
-    return builder_ != nullptr && !sum_ &&
-           builder_->op_of(id_) == OpCode::MatConst;
+    return arena_ != nullptr && !sum_ &&
+           arena_->op_of(id_) == OpCode::MatConst;
   }
   [[nodiscard]] constexpr Expression row() const {
     return is_matrix()
-               ? Expression{*builder_, builder_->make(OpCode::MatRow, id_)}
+               ? Expression{*arena_, arena_->make(OpCode::MatRow, id_)}
                : *this;
   }
 
-  Builder<T> *builder_ = nullptr;
+  Arena<T> *arena_ = nullptr;
   NodeId id_ = no_node; // a node, or while sum_ the arena's pending entry
   Shape shape_{0, 0};
   bool sum_ = false;
@@ -387,7 +387,7 @@ private:
 // like a parameter, and a root of the residual implicit() names, so no
 // derivative treats it as fixed and every one carries dz/dx = -F_x / F_z.
 template <impl::Numeric T>
-[[nodiscard]] constexpr Expression<T> named(Builder<T> &b, OpCode op,
+[[nodiscard]] constexpr Expression<T> named(Arena<T> &b, OpCode op,
                                             std::string_view name) {
   const NodeId id = b.input(op, name);
   return id == no_node ? Expression<T>::poison(errc::name_clash)
@@ -398,7 +398,7 @@ template <impl::Numeric T>
 // differentiates as though it held.
 template <impl::Numeric T, std::invocable<const Expression<T> &> F>
 [[nodiscard]] constexpr Expression<T>
-implicit(Builder<T> &b, std::string_view name, F &&residual) {
+implicit(Arena<T> &b, std::string_view name, F &&residual) {
   const Expression<T> z = named(b, OpCode::Implicit, name);
   if (!detail::Rooting::why(z)) {
     const Expression<T> f = std::invoke(DDX_FWD(residual), z);
@@ -409,11 +409,11 @@ implicit(Builder<T> &b, std::string_view name, F &&residual) {
 }
 // The direction a seeded product is taken along
 template <impl::Numeric T>
-[[nodiscard]] constexpr Expression<T> seed(Builder<T> &b, std::uint32_t slot) {
+[[nodiscard]] constexpr Expression<T> seed(Arena<T> &b, std::uint32_t slot) {
   return Expression<T>{b, b.seed_node(slot)};
 }
 template <impl::Numeric T>
-[[nodiscard]] constexpr Expression<T> lit(Builder<T> &b, const T &v) {
+[[nodiscard]] constexpr Expression<T> lit(Arena<T> &b, const T &v) {
   return Expression<T>{b, b.constant(v)};
 }
 
@@ -421,7 +421,7 @@ template <impl::Numeric T>
 // graph, and every derivative through it reads the partials it supplies.
 template <impl::Numeric T> class ExternFunction {
 public:
-  constexpr ExternFunction(Builder<T> *b, std::uint32_t index) noexcept
+  constexpr ExternFunction(Arena<T> *b, std::uint32_t index) noexcept
       : b_{b}, index_{index} {}
   constexpr explicit ExternFunction(errc why) noexcept : why_{why} {}
 
@@ -455,7 +455,7 @@ public:
   }
 
 private:
-  Builder<T> *b_ = nullptr;
+  Arena<T> *b_ = nullptr;
   std::uint32_t index_ = 0;
   std::optional<errc> why_;
 };
@@ -467,7 +467,7 @@ private:
 // and must not throw.
 template <impl::Numeric T>
 [[nodiscard]] ExternFunction<T>
-extern_fn(Builder<T> &b, ExternRecord record,
+extern_fn(Arena<T> &b, ExternRecord record,
           std::type_identity_t<ExternFn<T>> fn) {
   if (!record.valid() || !fn) {
     return ExternFunction<T>{errc::extern_shape};
@@ -486,13 +486,13 @@ namespace detail {
 template <std::size_t, impl::Numeric T> using Repeat = Expression<T>;
 
 template <impl::Numeric T>
-inline thread_local Builder<T> *current_arena = nullptr;
+inline thread_local Arena<T> *current_arena = nullptr;
 
 // The runtime counterpart of scoped_seed; the arena is not a constant, so it
 // comes in as an argument.
 template <impl::Numeric T>
-[[nodiscard]] auto scoped_arena(Builder<T> &b) noexcept {
-  return impl::scoped_value<Builder<T> *>{current_arena<T>, &b};
+[[nodiscard]] auto scoped_arena(Arena<T> &b) noexcept {
+  return impl::scoped_value<Arena<T> *>{current_arena<T>, &b};
 }
 
 } // namespace detail
@@ -518,7 +518,7 @@ extern_fn(ExternRecord record, std::type_identity_t<ExternFn<T>> fn) {
 #define DDX_RT_INPUT(fn, Op, ...)                                              \
   template <impl::Numeric T>                                                   \
     requires(OpCode::Op != OpCode::Implicit)                                   \
-  [[nodiscard]] constexpr Expression<T> fn(Builder<T> &b,                      \
+  [[nodiscard]] constexpr Expression<T> fn(Arena<T> &b,                      \
                                            std::string_view name) {            \
     return named(b, OpCode::Op, name);                                         \
   }                                                                            \

@@ -19,19 +19,19 @@
 // {value, partials...} yields the Jacobian columns.
 
 namespace {
-using ddx::rt::Builder;
+using ddx::rt::Arena;
 using ddx::rt::Graph;
 
 void expect_jacobian_matches_interpreter(auto build, std::size_t nvars,
                                          std::size_t n = 32) {
-  Builder<> b;
+  Arena<> b;
   std::vector<ddx::rt::Expression<>> vars;
   static constexpr const char *names[] = {"x", "y", "z"};
   for (std::size_t i = 0; i < nvars; ++i) {
     vars.push_back(var(b, names[i]));
   }
   const auto root = build(b, vars);
-  // The sweep is repeated for the reference values; the builder runs its own.
+  // The sweep is repeated for the reference values; the arena runs its own.
   const auto reference_jacobian = ddx::rt::derive_jacobian(b, root.id(b));
   const auto kernel = must_compile(
       ddx::rt::GraphBuilder{b}.value(root).build_jacobian().finish());
@@ -74,22 +74,22 @@ void expect_jacobian_matches_interpreter(auto build, std::size_t nvars,
 
 TEST(JitJacobian, MatchesTheInterpreter) {
   expect_jacobian_matches_interpreter(
-      [](Builder<> &, auto &v) { return exp(v[0]) * sin(v[1]); }, 2);
+      [](Arena<> &, auto &v) { return exp(v[0]) * sin(v[1]); }, 2);
   expect_jacobian_matches_interpreter(
-      [](Builder<> &, auto &v) { return v[0] / v[1]; }, 2);
+      [](Arena<> &, auto &v) { return v[0] / v[1]; }, 2);
   expect_jacobian_matches_interpreter(
-      [](Builder<> &, auto &v) { return pow(v[0], v[1]); }, 2);
+      [](Arena<> &, auto &v) { return pow(v[0], v[1]); }, 2);
   expect_jacobian_matches_interpreter(
-      [](Builder<> &, auto &v) { return log(v[0]) * sqrt(v[1]) + tanh(v[2]); },
+      [](Arena<> &, auto &v) { return log(v[0]) * sqrt(v[1]) + tanh(v[2]); },
       3);
   expect_jacobian_matches_interpreter(
-      [](Builder<> &, auto &v) { return erf(v[0]) + cbrt(v[1]); }, 2);
+      [](Arena<> &, auto &v) { return erf(v[0]) + cbrt(v[1]); }, 2);
   // abs and max/min put sign nodes in the Jacobian graph, which codegen emits
   // as compare-and-select rather than a libm call.
   expect_jacobian_matches_interpreter(
-      [](Builder<> &, auto &v) { return abs(v[0] - v[1]) * v[1]; }, 2);
+      [](Arena<> &, auto &v) { return abs(v[0] - v[1]) * v[1]; }, 2);
   expect_jacobian_matches_interpreter(
-      [](Builder<> &, auto &v) {
+      [](Arena<> &, auto &v) {
         return max(v[0] * v[0], v[1]) + min(v[0], v[1]);
       },
       2);
@@ -100,7 +100,7 @@ TEST(JitJacobian, MatchesDdxThroughTheBridge) {
   constexpr auto y = ddx::var<"y">;
   const auto f = exp(x) * sin(y) + x * y;
 
-  Builder<> b;
+  Arena<> b;
   const auto root = ddx::rt::to_graph(b, f);
   const auto kernel = must_compile(
       ddx::rt::GraphBuilder{b}.value(root).build_jacobian().finish());
@@ -130,7 +130,7 @@ namespace {
 // The Hessian arrives compressed by colour, so the kernel reports its column
 // count rather than leaving the caller to derive it from n.
 TEST(JitHessian, ThirdBlockCarriesTheColouredHessian) {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = exp(x) * sin(y) + x * x * y;

@@ -75,7 +75,7 @@ TEST(RtText, BuildsTheSameArenaAsTheCppSpelling) {
   // the order of an operator's operands unspecified, and an arena records the
   // order it was built in, so `exp(x) * sin(y) + x * 2.0` written as one line
   // is the same graph under whichever numbering the compiler happened to pick.
-  ddx::rt::Builder<> written;
+  ddx::rt::Arena<> written;
   const auto x = var(written, "x");
   const auto y = var(written, "y");
   const auto left = exp(x);
@@ -84,7 +84,7 @@ TEST(RtText, BuildsTheSameArenaAsTheCppSpelling) {
   const auto scaled = x * 2.0;
   const auto by_hand = product + scaled;
 
-  ddx::rt::Builder<> parsed;
+  ddx::rt::Arena<> parsed;
   const auto ast = parse("exp(x)*sin(y) + x*2");
   ASSERT_TRUE(ast.has_value());
   const auto lowered = lower(parsed, *ast);
@@ -105,12 +105,12 @@ TEST(RtText, BuildsTheSameArenaAsTheCppSpelling) {
 // makes the same ones the operators do -- node for node, `1` included.
 TEST(RtText, ComposesEqualityAsTheOperatorsDo) {
   const auto same_arena = [](const std::string_view source, auto &&build) {
-    ddx::rt::Builder<> written;
+    ddx::rt::Arena<> written;
     const auto x = var(written, "x");
     const auto y = var(written, "y");
     const auto by_hand = build(x, y);
 
-    ddx::rt::Builder<> parsed;
+    ddx::rt::Arena<> parsed;
     const auto ast = parse(source);
     ASSERT_TRUE(ast.has_value()) << source;
     const auto lowered = lower(parsed, *ast);
@@ -143,7 +143,7 @@ TEST(RtText, ReadsEveryLiteralAtTheScalarType) {
   EXPECT_DOUBLE_EQ(value_of("2. * x", 3.0), 6.0);
 
   // Read at T rather than at double and narrowed: 0.1f is not float(0.1).
-  ddx::rt::Builder<float> arena;
+  ddx::rt::Arena<float> arena;
   const auto ast = parse("0.1");
   ASSERT_TRUE(ast.has_value());
   const auto lowered = lower(arena, *ast);
@@ -152,7 +152,7 @@ TEST(RtText, ReadsEveryLiteralAtTheScalarType) {
 }
 
 TEST(RtText, FoldsWhatNeverNeededAGraph) {
-  ddx::rt::Builder<> arena;
+  ddx::rt::Arena<> arena;
   const auto ast = parse("3 + 4");
   ASSERT_TRUE(ast.has_value());
   const auto lowered = lower(arena, *ast);
@@ -242,7 +242,7 @@ TEST(RtText, TakesOneStringPerFunction) {
   EXPECT_EQ(sys->arity(), 2U);
 
   // The same system tests/rt/tests_rt_newton.cpp builds by hand.
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto by_hand = ddx::rt::equation(x * x + y * y - 4.0, x * y - 1.0);

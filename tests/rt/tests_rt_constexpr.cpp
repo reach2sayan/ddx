@@ -16,11 +16,11 @@
 // not constexpr, and neither is the JIT.
 
 namespace {
-using ddx::rt::Builder;
+using ddx::rt::Arena;
 using RE = ddx::rt::Expression<>;
 
 consteval double build_and_evaluate() {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * x + y;
@@ -30,7 +30,7 @@ static_assert(build_and_evaluate() == 13.0);
 
 // The rewrites fold at compile time exactly as they do at run time.
 consteval bool rewrites_hold() {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   return (x + RE{0}).id(b) == x.id(b) && (x * RE{1}).id(b) == x.id(b) &&
@@ -41,7 +41,7 @@ static_assert(rewrites_hold());
 
 // Interning is a compile-time property too: the same subtree twice is one node.
 consteval std::size_t nodes_for_repeated_subtree() {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = exp(x) * sin(y);
@@ -52,7 +52,7 @@ static_assert(nodes_for_repeated_subtree() == 5);
 
 // A Jacobian, swept and evaluated entirely during constant evaluation.
 consteval double partial_of_product() {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * y;
@@ -65,7 +65,7 @@ static_assert(partial_of_product() == 4.0);
 // rejects it outright, so this one sweep is GCC-only.
 #if defined(__GNUC__) && !defined(__clang__)
 consteval double transcendental_jacobian() {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto f = sin(x) * x;
   const auto g = ddx::rt::derive_jacobian(b, f.id(b));
@@ -80,7 +80,7 @@ static_assert(transcendental_jacobian() == 0.0);
 consteval bool bridge_agrees_with_equation() {
   constexpr auto x = ddx::var<"x">;
   constexpr auto y = ddx::var<"y">;
-  Builder<> b;
+  Arena<> b;
   const auto root = ddx::rt::to_graph(b, x * y + x);
   const double viaGraph =
       ddx::rt::evaluate(b, root.id(b), std::array{3.0, 4.0});
@@ -91,7 +91,7 @@ static_assert(bridge_agrees_with_equation());
 // Liveness is a property of the arena, so the pass the freeze runs is itself a
 // constant expression -- what the freeze then does with it is not.
 consteval std::size_t live_from_root() {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * x;
@@ -143,7 +143,7 @@ static_assert(unowned_cell_reads() == 99);
 // The counts a caller sizes its buffers by come off the constructor's own
 // sweep, so they answer without a frozen graph.
 consteval std::size_t column_counts() {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x * y, x + y);

@@ -55,7 +55,7 @@ jobs:
       # The vendored mdspan is the one genuine exception.
       #
       # What still holds: a quoted include resolves inside include/, and the
-      # core reaches rt/ only where symbolic Equation lowers onto its builder
+      # core reaches rt/ only where symbolic Equation lowers onto its arena
       # layer -- header-only, so ddx::ddx still links without libddx.
       - name: Header dependencies stay declared
         if: runner.os == 'Linux'
@@ -74,7 +74,7 @@ jobs:
                          || echo "$f:$n: $h"
                      done)
           # The core reaches into rt/ through symbolic/equation.hpp alone, and only
-          # for the builder layer it lowers onto.
+          # for the arena layer it lowers onto.
           core=$(grep -rnE '#[[:space:]]*include[[:space:]]*"rt/' include --include='*.hpp' \
                  | grep -v '^include/rt/' \
                  | grep -vE '^include/symbolic/equation\.hpp:[0-9]+:#include "rt/(bridge|derivative|interpret)\.hpp"' \

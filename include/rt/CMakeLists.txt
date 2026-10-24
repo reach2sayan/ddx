@@ -1,7 +1,7 @@
 target_sources(ddx_rt INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/opcode.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/apply.hpp>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/builder.hpp>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/arena.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/expressions.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/interpret.hpp>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/kernels.hpp>

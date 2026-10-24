@@ -754,7 +754,7 @@ protected:
 
   // The arena is the equation's own from here: one it was lent is copied, so
   // nothing another equation or the caller builds can move a node under it.
-  constexpr Core(std::unique_ptr<Builder<T>> arena, std::vector<NodeId> roots)
+  constexpr Core(std::unique_ptr<Arena<T>> arena, std::vector<NodeId> roots)
       : arena_(std::move(arena)), roots_(std::move(roots)) {
     // An implicit no derivative could carry refuses the whole equation, as a
     // poisoned output would; so does a vector where an output must be a
@@ -808,21 +808,21 @@ protected:
   }
   // The arena the outputs were built in: the first that names one, since a
   // literal output names none.
-  [[nodiscard]] static constexpr Builder<T> *
+  [[nodiscard]] static constexpr Arena<T> *
   arena_of(std::span<const Expression<T>> outputs) noexcept {
     const auto named = std::ranges::find_if(
-        outputs, [](const auto &e) { return Rooting::builder(e) != nullptr; });
-    return named == outputs.end() ? nullptr : Rooting::builder(*named);
+        outputs, [](const auto &e) { return Rooting::arena(e) != nullptr; });
+    return named == outputs.end() ? nullptr : Rooting::arena(*named);
   }
 
   // The arena the outputs will be read in -- `owned`, or a copy of the one
   // they were built in -- and their roots there.
-  [[nodiscard]] static constexpr std::pair<std::unique_ptr<Builder<T>>,
+  [[nodiscard]] static constexpr std::pair<std::unique_ptr<Arena<T>>,
                                            std::vector<NodeId>>
   rooted(std::span<const Expression<T>> outputs,
-         std::unique_ptr<Builder<T>> owned) {
+         std::unique_ptr<Arena<T>> owned) {
     auto arena = owned ? std::move(owned)
-                       : std::make_unique<Builder<T>>(*arena_of(outputs));
+                       : std::make_unique<Arena<T>>(*arena_of(outputs));
     auto roots = outputs | std::views::transform([&arena](const auto &e) {
                    return e.id(*arena);
                  }) |
@@ -833,7 +833,7 @@ protected:
   // The three ways an equation comes to be, for whichever class wraps this.
   template <typename D>
   [[nodiscard]] static constexpr D make(std::span<const Expression<T>> outputs,
-                                        std::unique_ptr<Builder<T>> owned) {
+                                        std::unique_ptr<Arena<T>> owned) {
     if (const auto why = why_not(outputs)) {
       return D{*why};
     }
@@ -1513,7 +1513,7 @@ private:
     }
   }
 
-  std::unique_ptr<Builder<T>> arena_;
+  std::unique_ptr<Arena<T>> arena_;
   std::vector<NodeId> roots_;
   jit::Options options_{};
   // Null: the process default, read at each freeze.
@@ -1623,7 +1623,7 @@ struct Dynamic {
 // Run `assemble` inside a fresh arena, and hand both back.
 template <impl::Numeric T>
 [[nodiscard]] auto assemble(std::invocable auto &&assemble) {
-  auto arena = std::make_unique<Builder<T>>();
+  auto arena = std::make_unique<Arena<T>>();
   auto built = [&] {
     const auto scope = scoped_arena(*arena);
     return std::invoke(DDX_FWD(assemble));

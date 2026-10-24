@@ -12,7 +12,7 @@
 // quadratic convergence is the sharp test.
 
 namespace {
-using ddx::rt::Builder;
+using ddx::rt::Arena;
 using models::RE;
 
 // By hand: a linear solver would be more machinery than the thing under test.
@@ -27,7 +27,7 @@ TEST(RtNewton, SolvesASystemBuiltAtRuntime) {
   //   x^2 + y^2 = 4
   //   x * y     = 1
   // so x^2 = 2 + sqrt(3), and the root is (1.93185..., 0.51763...).
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto system = ddx::rt::equation(x * x + y * y - 4.0, x * y - 1.0);
@@ -57,7 +57,7 @@ TEST(RtNewton, SolvesASystemBuiltAtRuntime) {
 // a flash calculation does.
 TEST(RtNewton, SolvesPengRobinsonForCompressibility) {
   constexpr std::size_t species = 6;
-  Builder<> b;
+  Arena<> b;
   std::vector<RE> composition;
   for (std::size_t i = 0; i < species; ++i) {
     composition.push_back(var(b, "x" + std::to_string(i)));
@@ -92,7 +92,7 @@ TEST(RtNewton, SolvesPengRobinsonForCompressibility) {
 
 // Build once, solve many: one Equation re-used across a parameter sweep.
 TEST(RtNewton, OneEquationServesAWholeSweep) {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto c = var(b, "c");
   const auto f = ddx::rt::equation(x * x - c); // root: x = sqrt(c)

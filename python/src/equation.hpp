@@ -61,9 +61,9 @@ public:
   using Want = rt::Want;
 
   // The arena is copied: the expressions that built it stay usable.
-  PyEquation(const std::shared_ptr<rt::Builder<double>> &arena,
+  PyEquation(const std::shared_ptr<rt::Arena<double>> &arena,
              std::vector<rt::NodeId> roots)
-      : PyCore{std::make_unique<rt::Builder<double>>(*arena), std::move(roots)},
+      : PyCore{std::make_unique<rt::Arena<double>>(*arena), std::move(roots)},
         symbols_{*sound().symbols()}, inputs_{*inputs()} {}
 
 private:

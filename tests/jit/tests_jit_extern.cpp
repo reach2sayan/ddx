@@ -125,7 +125,7 @@ TEST(JitExtern, AKernelOutlivesItsGraphAndKeepsItsObject) {
   auto c = ddx::jit::Compiler::create();
   ASSERT_TRUE(c.has_value()) << c.error().detail;
   const auto kernel = [&] {
-    ddx::rt::Builder<> b;
+    ddx::rt::Arena<> b;
     const auto a = ddx::rt::var(b, "a");
     const auto bb = ddx::rt::var(b, "b");
     const auto g = ddx::rt::extern_fn(b, {.name = "g", .arity = 2}, g_of);

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "rt/builder.hpp"
+#include "rt/arena.hpp"
 #include "rt/coupling.hpp"
 #include "rt/dense.hpp"
 #include "rt/derivative.hpp"
@@ -112,7 +112,7 @@ inline constexpr auto want_values = [] {
 }
 
 // One of a thing per output block, in the order the kernel writes them.  The
-// ids a builder collects, the spans a frozen graph lends, the counts read off
+// ids an arena collects, the spans a frozen graph lends, the counts read off
 // them and the columns codegen loads are the same three names, said once.
 // (jit::KernelShape cannot share it: the core may not include rt/.)
 template <std::semiregular Per> struct PerBlock {
@@ -181,7 +181,7 @@ constexpr void scatter_blocks(const OutputRows &rows, std::span<const T> tape,
   }
 }
 
-// A builder frozen into per-node arrays, the form codegen walks: three operand
+// An arena frozen into per-node arrays, the form codegen walks: three operand
 // slots each, so position is the index, and lists for the n-ary nodes.
 template <impl::Numeric T = double> class Graph {
 public:
@@ -196,7 +196,7 @@ public:
   // `contract` is settled here, not per sweep: it decides the arithmetic, so
   // changing it afterwards means freezing again.
   // `directions` is how many direction columns the call hands, read or not.
-  [[nodiscard]] static Graph freeze(const Builder<T> &b, OutputBlocks blocks,
+  [[nodiscard]] static Graph freeze(const Arena<T> &b, OutputBlocks blocks,
                                     Colouring colouring = {},
                                     Sparsity jacobian = {},
                                     bool contract = true,
@@ -238,7 +238,7 @@ public:
     }
     g.mark_live();
     g.contract(contract);
-    // Read off what survived rather than taken from the builder, so a
+    // Read off what survived rather than taken from the arena, so a
     // pipeline that kept no seed keeps the kernel it had.
     for (const NodeId v : g.schedule_ | std::views::transform(&Step::node)) {
       if (g.properties_[v].op == OpCode::Seed) {
@@ -267,7 +267,7 @@ public:
   }
 
   // Every output a value.
-  [[nodiscard]] static Graph freeze(const Builder<T> &b,
+  [[nodiscard]] static Graph freeze(const Arena<T> &b,
                                     std::span<const NodeId> values,
                                     bool contract = true) {
     OutputBlocks blocks;
@@ -428,10 +428,10 @@ private:
 //   GraphBuilder{b}.values({f0, f1}).build_jacobian().finish()
 //   GraphBuilder{b}.value(f).build_jacobian().build_hessian().finish()
 //
-// The class template argument is deduced from the builder.
+// The class template argument is deduced from the arena.
 template <impl::Numeric T = double> class GraphBuilder {
 public:
-  explicit constexpr GraphBuilder(Builder<T> &b) noexcept : builder_{&b} {}
+  explicit constexpr GraphBuilder(Arena<T> &b) noexcept : arena_{&b} {}
 
   // The function the kernel computes.
   constexpr GraphBuilder &value(const Expression<T> &root) {
@@ -442,7 +442,7 @@ public:
   constexpr GraphBuilder &values(std::initializer_list<Expression<T>> roots) {
     roots_ =
         roots |
-        std::views::transform([&](const auto &e) { return e.id(*builder_); }) |
+        std::views::transform([&](const auto &e) { return e.id(*arena_); }) |
         impl::to<std::vector<NodeId>>();
     blocks_.values = roots_;
     return *this;
@@ -473,16 +473,16 @@ public:
 
   // Every partial, in symbol order.  One reverse sweep per function.
   constexpr GraphBuilder &build_jacobian() {
-    return jacobian_from(rt::derive_jacobian(*builder_, roots_));
+    return jacobian_from(rt::derive_jacobian(*arena_, roots_));
   }
 
   // Compressed by colour, not n x n: a handful of columns when banded.
   GraphBuilder &build_hessian() {
-    return hessian_from(rt::derive_hessian(*builder_, roots_.front()));
+    return hessian_from(rt::derive_hessian(*arena_, roots_.front()));
   }
 
   [[nodiscard]] Graph<T> finish(bool contract = true) const {
-    return Graph<T>::freeze(*builder_, blocks_, colouring_, jacobian_pattern_,
+    return Graph<T>::freeze(*arena_, blocks_, colouring_, jacobian_pattern_,
                             contract);
   }
 
@@ -497,13 +497,13 @@ private:
     return block(&OutputBlocks::hessian, h.compressed);
   }
 
-  Builder<T> *builder_;
+  Arena<T> *arena_;
   std::vector<NodeId> roots_;
   OutputBlocks blocks_;
   Colouring colouring_;
   Sparsity jacobian_pattern_;
 };
 
-template <impl::Numeric T> GraphBuilder(Builder<T> &) -> GraphBuilder<T>;
+template <impl::Numeric T> GraphBuilder(Arena<T> &) -> GraphBuilder<T>;
 
 } // namespace ddx::rt

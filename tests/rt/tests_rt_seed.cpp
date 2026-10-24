@@ -12,7 +12,7 @@ namespace {
 using ddx::rt::Graph;
 
 TEST(RtSeed, ReadsTheColumnAfterTheSymbols) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto f = x * x + seed(b, 0);
 
@@ -23,7 +23,7 @@ TEST(RtSeed, ReadsTheColumnAfterTheSymbols) {
 }
 
 TEST(RtSeed, SlotsAreTheirOwnSpace) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * seed(b, 1) + y * seed(b, 0);
@@ -34,14 +34,14 @@ TEST(RtSeed, SlotsAreTheirOwnSpace) {
 }
 
 TEST(RtSeed, AskingTwiceInternsOnce) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto a = seed(b, 0);
   const auto c = seed(b, 0);
   EXPECT_EQ(a.id(b), c.id(b));
 }
 
 TEST(RtSeed, WidensTheGraphArity) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto f = x + seed(b, 0);
   const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
@@ -52,7 +52,7 @@ TEST(RtSeed, WidensTheGraphArity) {
 
 // The regression guard for every graph that existed before seeds did.
 TEST(RtSeed, AGraphWithoutSeedsIsUnchanged) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * y;
@@ -62,7 +62,7 @@ TEST(RtSeed, AGraphWithoutSeedsIsUnchanged) {
 }
 
 TEST(RtSeed, ADeadSeedDoesNotWiden) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   [[maybe_unused]] const auto unused = seed(b, 0);
   const auto f = x * x;

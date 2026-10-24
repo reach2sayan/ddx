@@ -507,7 +507,7 @@ private:
   // any live Impl will do.
   struct Warm {
     explicit Warm(const std::shared_ptr<I> &impl) {
-      rt::Builder<double> b;
+      rt::Arena<double> b;
       const auto x = rt::var(b, "x");
       const auto y = rt::var(b, "y");
       // Off the same table the emitter emits from: what LLVM touches lazily

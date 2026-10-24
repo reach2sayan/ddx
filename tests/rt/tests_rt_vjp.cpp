@@ -27,7 +27,7 @@ std::vector<double> dense_row_vector(const std::vector<double> &jac,
 }
 
 TEST(RtVjp, MatchesTheDenseJacobianForASystem) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq =
@@ -50,7 +50,7 @@ TEST(RtVjp, MatchesTheDenseJacobianForASystem) {
 }
 
 TEST(RtVjp, AUnitCovectorIsOneJacobianRow) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x * x * y, log(x) + y);
@@ -69,7 +69,7 @@ TEST(RtVjp, AUnitCovectorIsOneJacobianRow) {
 }
 
 TEST(RtVjp, AtOneOutputItIsTheScaledGradient) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto eq = ddx::rt::equation(x * x * x);
 
@@ -79,7 +79,7 @@ TEST(RtVjp, AtOneOutputItIsTheScaledGradient) {
 }
 
 TEST(RtVjp, RefusesACovectorOfTheWrongLength) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x + y, x * y);
@@ -91,7 +91,7 @@ TEST(RtVjp, RefusesACovectorOfTheWrongLength) {
 }
 
 TEST(RtVjp, BatchAgreesWithThePointSpelling) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   auto eq = ddx::rt::equation(exp(x) * y, x * x - y);
@@ -129,7 +129,7 @@ TEST(RtVjp, BatchAgreesWithThePointSpelling) {
 }
 
 TEST(RtVjp, CostsFewerColumnsThanTheJacobian) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   std::vector<ddx::rt::Expression<>> v;
   for (const char *name : {"a", "b", "c", "d"}) {
     v.push_back(var(b, name));

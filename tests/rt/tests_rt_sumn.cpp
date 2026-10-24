@@ -18,11 +18,11 @@
 // to rounding, and the sum is the smaller arena.
 
 namespace {
-using ddx::rt::Builder;
+using ddx::rt::Arena;
 using ddx::rt::OpCode;
 using models::RE;
 
-std::vector<RE> symbols(Builder<> &b, std::size_t n) {
+std::vector<RE> symbols(Arena<> &b, std::size_t n) {
   std::vector<RE> x;
   for (std::size_t i = 0; i < n; ++i) {
     x.push_back(var(b, std::format("x{:02}", i)));
@@ -73,21 +73,21 @@ void expect_close(double got, double want, double rel) {
 }
 
 TEST(RtSumN, ALoopOfPlusEqualsIsOneNode) {
-  Builder<> sum;
+  Arena<> sum;
   const auto root = summed(symbols(sum, 6));
   const auto &node = sum[root.id(sum)];
   EXPECT_EQ(node.op, OpCode::SumN);
   EXPECT_EQ(node.aux, kTerms);
   EXPECT_EQ(ddx::rt::arguments(sum, root.id(sum)).size(), kTerms);
 
-  Builder<> chain;
+  Arena<> chain;
   (void)chained(symbols(chain, 6)).id(chain);
   // The chain's k - 1 Add nodes against the one SumN, and nothing else.
   EXPECT_EQ(chain.size(), sum.size() + kTerms - 2);
 }
 
 TEST(RtSumN, TwoTermsAreTheChainsAdd) {
-  Builder<> b;
+  Arena<> b;
   const auto x = symbols(b, 2);
   auto acc = x[0];
   acc += x[1];
@@ -97,7 +97,7 @@ TEST(RtSumN, TwoTermsAreTheChainsAdd) {
 }
 
 TEST(RtSumN, ZeroTermsAreDroppedAndMinusNegates) {
-  Builder<> b;
+  Arena<> b;
   const auto x = symbols(b, 2);
   auto acc = x[0];
   acc += 0.0;
@@ -112,7 +112,7 @@ TEST(RtSumN, ZeroTermsAreDroppedAndMinusNegates) {
 }
 
 TEST(RtSumN, ACopyOfAnAccumulatorKeepsItsValue) {
-  Builder<> b;
+  Arena<> b;
   const auto x = symbols(b, 3);
   auto acc = x[0];
   acc += x[1];
@@ -135,7 +135,7 @@ TEST(RtSumN, ACopyOfAnAccumulatorKeepsItsValue) {
 
 TEST(RtSumN, ValueGradientHvpAndHessianMatchTheChain) {
   constexpr std::size_t n = 6;
-  Builder<> sum, chain;
+  Arena<> sum, chain;
   const auto fs = summed(symbols(sum, n)).id(sum);
   const auto fc = chained(symbols(chain, n)).id(chain);
   const auto gs = ddx::rt::derive_jacobian(sum, fs);
@@ -164,7 +164,7 @@ TEST(RtSumN, ValueGradientHvpAndHessianMatchTheChain) {
 // The frozen graph fuses a product term into the running sum where it
 // contracts an Add; unfused it adds the term's own row.  Both are the sum.
 TEST(RtSumN, FusedAndUnfusedSchedulesAgree) {
-  Builder<> b;
+  Arena<> b;
   const auto x = symbols(b, 6);
   const auto f = summed(x).id(b);
   const auto fused = ddx::rt::Graph<>::freeze(b, std::array{f}, true);
@@ -188,7 +188,7 @@ TEST(RtSumN, FusedAndUnfusedSchedulesAgree) {
 // derivative through the sum.
 TEST(RtSumN, SweepsAtADualScalar) {
   using D = ddx::impl::Dual<double>;
-  Builder<> b;
+  Arena<> b;
   const auto x = symbols(b, 2);
   auto acc = x[0] * x[1];
   acc += x[0] * x[0];
@@ -202,7 +202,7 @@ TEST(RtSumN, SweepsAtADualScalar) {
 
 // The kernel's blocked summation reads a SumN as the spine it already is.
 TEST(RtSumN, RebalanceBlocksTheSum) {
-  Builder<> b;
+  Arena<> b;
   const auto x = symbols(b, 6);
   const auto f = summed(x).id(b);
   const auto moved = ddx::rt::detail::rebalance(b, std::span{&f, 1});
@@ -219,7 +219,7 @@ TEST(RtSumN, RebalanceBlocksTheSum) {
 // record; the terms and their derivatives are what remains of it.
 TEST(RtSumN, MseSumsItsPairTermsInOneNode) {
   constexpr std::size_t n = 64;
-  Builder<> b;
+  Arena<> b;
   const auto f = models::mse(symbols(b, n)).id(b);
   const auto g = ddx::rt::derive_jacobian(b, f);
   std::printf("[ ARENA    ] mse n=%zu: %zu nodes with the gradient\n", n,

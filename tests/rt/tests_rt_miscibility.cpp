@@ -13,9 +13,9 @@
 //   f''   = -2c + k/(x(1-x))        exactly
 
 namespace {
-using ddx::rt::Builder;
+using ddx::rt::Arena;
 
-auto free_energy(Builder<> &b, double c, double k) {
+auto free_energy(Arena<> &b, double c, double k) {
   return ddx::rt::equation(models::regular_solution(var(b, "x"), c, k));
 }
 
@@ -29,7 +29,7 @@ constexpr double second_derivative(double x, double c, double k) {
 TEST(RtMiscibility, HalfIsAlwaysStationary) {
   for (const double c : {2.0, 0.4, 0.0, -1.5}) {
     for (const double k : {0.25, -0.25}) {
-      Builder<> b;
+      Arena<> b;
       EXPECT_NEAR((*free_energy(b, c, k).jacobian(0.5))[0], 0.0, 1e-15)
           << "c=" << c << " k=" << k;
     }
@@ -39,7 +39,7 @@ TEST(RtMiscibility, HalfIsAlwaysStationary) {
 TEST(RtMiscibility, HessianMatchesTheClosedForm) {
   for (const double c : {2.0, 0.4, -1.5}) {
     for (const double k : {0.25, -0.25}) {
-      Builder<> b;
+      Arena<> b;
       const auto f = free_energy(b, c, k);
       for (const double x : {0.05, 0.25, 0.5, 0.8}) {
         EXPECT_NEAR((*f.hessian(x))[0], second_derivative(x, c, k), 1e-12)
@@ -52,15 +52,15 @@ TEST(RtMiscibility, HessianMatchesTheClosedForm) {
 // c > 2k opens the gap: x = 1/2 turns from a minimum into a maximum.
 TEST(RtMiscibility, TheGapOpensWhenEnthalpyBeatsEntropy) {
   constexpr double k = 0.25;
-  Builder<> b1;
+  Arena<> b1;
   EXPECT_LT((*free_energy(b1, 1.0, k).hessian(0.5))[0], 0.0)
       << "c > 2k: a maximum";
-  Builder<> b2;
+  Arena<> b2;
   EXPECT_GT((*free_energy(b2, 0.4, k).hessian(0.5))[0], 0.0)
       << "c < 2k: a minimum";
 
   // k < 0 inverts the curvature at the ends, so no interior gap for any c.
-  Builder<> b3;
+  Arena<> b3;
   const auto inverted = free_energy(b3, 2.0, -k);
   EXPECT_LT((*inverted.hessian(0.02))[0], 0.0) << "concave at the edge";
 }
@@ -69,7 +69,7 @@ TEST(RtMiscibility, TheGapOpensWhenEnthalpyBeatsEntropy) {
 TEST(RtMiscibility, NewtonFindsTwoSymmetricMinima) {
   constexpr double c = 1.0;
   constexpr double k = 0.25; // c > 2k, so the gap is open
-  Builder<> b;
+  Arena<> b;
   const auto f = free_energy(b, c, k);
   ASSERT_LT((*f.hessian(0.5))[0], 0.0) << "no gap to find";
 

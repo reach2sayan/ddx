@@ -28,7 +28,7 @@ std::vector<double> dense_column(const std::vector<double> &jac, std::size_t m,
 }
 
 TEST(RtJvp, MatchesTheDenseJacobianTimesTheDirection) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(exp(x * y), x * x - y, log(x) + sin(y));
@@ -50,7 +50,7 @@ TEST(RtJvp, MatchesTheDenseJacobianTimesTheDirection) {
 // The independent oracle: a dual point agrees without going near tangent_sweep.
 TEST(RtJvp, AgreesWithADualPointThroughTheInterpreter) {
   using D = ddx::impl::Dual<double>;
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = exp(x * y) + sin(x) * y;
@@ -68,7 +68,7 @@ TEST(RtJvp, AgreesWithADualPointThroughTheInterpreter) {
 }
 
 TEST(RtJvp, AUnitDirectionIsOneJacobianColumn) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x * x * y, log(x) + y);
@@ -87,7 +87,7 @@ TEST(RtJvp, AUnitDirectionIsOneJacobianColumn) {
 }
 
 TEST(RtJvp, RefusesADirectionOfTheWrongLength) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x + y);
@@ -99,7 +99,7 @@ TEST(RtJvp, RefusesADirectionOfTheWrongLength) {
 }
 
 TEST(RtJvp, BatchAgreesWithThePointSpelling) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   auto eq = ddx::rt::equation(exp(x) * y, x * x - y);
@@ -137,7 +137,7 @@ TEST(RtJvp, BatchAgreesWithThePointSpelling) {
 }
 
 TEST(RtJvp, CostsOneColumnPerFunction) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   std::vector<ddx::rt::Expression<>> v;
   for (const char *name : {"a", "b", "c", "d", "e"}) {
     v.push_back(var(b, name));
@@ -155,7 +155,7 @@ TEST(RtJvp, CostsOneColumnPerFunction) {
 // The refactor gate: DiffMode::Symbolic is now n tangent_sweep calls with unit
 // seeds, and must still emit the same arithmetic reverse mode does.
 TEST(RtJvp, SymbolicModeStillAgreesWithReverse) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = exp(x * y) + log(x) * sin(y);

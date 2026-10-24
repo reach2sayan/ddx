@@ -1,7 +1,7 @@
 #pragma once
 
 #include "error.hpp"
-#include "rt/builder.hpp"
+#include "rt/arena.hpp"
 #include "rt/expressions.hpp"
 #include "rt/opcode.hpp"
 #include "rt/tensor.hpp" // pack
@@ -16,7 +16,7 @@
 #include <vector>
 
 // The handle Python holds: an rt::Expression that owns its arena.
-// rt::Expression stores a *non-owning* Builder* because in C++ an arena's
+// rt::Expression stores a *non-owning* Arena* because in C++ an arena's
 // lifetime is lexical; a Python closure can capture a symbol and outlive
 // everything.  Shared ownership is the whole of what this adds.
 //
@@ -30,7 +30,7 @@ namespace ddx::py {
 class PyExpression {
 public:
   using Base = rt::Expression<double>;
-  using Arena = std::shared_ptr<rt::Builder<double>>;
+  using SharedArena = std::shared_ptr<rt::Arena<double>>;
 
   constexpr PyExpression() = default;
 
@@ -39,7 +39,7 @@ public:
   // own folding -- two pending literals never reach a graph.
   // NOLINTNEXTLINE(google-explicit-constructor)
   constexpr PyExpression(double v) : expression_(v) {}
-  PyExpression(Base e, Arena a) noexcept
+  PyExpression(Base e, SharedArena a) noexcept
       : expression_(e), arena_(std::move(a)) {}
 
   [[nodiscard]] constexpr bool poisoned() const noexcept {
@@ -48,7 +48,7 @@ public:
 
   // A factory or reduction raises where it refused -- a shape, a missing
   // arena -- rather than carrying the poison on to equation().
-  [[nodiscard]] static PyExpression checked(const Base &e, Arena arena) {
+  [[nodiscard]] static PyExpression checked(const Base &e, SharedArena arena) {
     if (const auto why = rt::detail::Rooting::why(e)) {
       fail_with(*why);
     }
@@ -56,8 +56,8 @@ public:
   }
   // The arena the scalars name, else `fallback`: the model running now.
   [[nodiscard]] static PyExpression pack(std::span<const PyExpression> scalars,
-                                         const Arena &fallback) {
-    Arena arena = fallback;
+                                         const SharedArena &fallback) {
+    SharedArena arena = fallback;
     for (const PyExpression &e : scalars) {
       if (e.arena_) {
         arena = e.arena_;
@@ -109,7 +109,7 @@ public:
 
   // The id this names in `arena`, or a refusal: an id from another arena would
   // index this one at random.  A pending literal materialises into it.
-  [[nodiscard]] rt::NodeId root_in(rt::Builder<double> &arena) const {
+  [[nodiscard]] rt::NodeId root_in(rt::Arena<double> &arena) const {
     if (arena_ && arena_.get() != &arena) {
       fail_with(errc::no_graph);
     }
@@ -169,11 +169,11 @@ public:
   }
 
   // Null exactly while this is a pending literal, which names no graph yet.
-  [[nodiscard]] constexpr const Arena &arena() const noexcept { return arena_; }
+  [[nodiscard]] constexpr const SharedArena &arena() const noexcept { return arena_; }
 
 private:
   Base expression_;
-  Arena arena_;
+  SharedArena arena_;
 };
 
 // A reduction to a scalar, or any other composition that may refuse, raises

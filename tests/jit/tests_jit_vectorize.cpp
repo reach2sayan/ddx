@@ -17,7 +17,7 @@
 // asserted both ways: scalar under the default, vector when a caller opts in.
 
 namespace {
-using ddx::rt::Builder;
+using ddx::rt::Arena;
 using ddx::rt::Graph;
 
 // Any width: libmvec offers 2, 4 and 8, and the choice is the host's.
@@ -38,7 +38,7 @@ constexpr bool host_has_libmvec =
 #endif
 
 std::string ir_for(auto build, std::size_t nvars, ddx::jit::Options opt = {}) {
-  Builder<> b;
+  Arena<> b;
   std::vector<ddx::rt::Expression<>> vars;
   static constexpr const char *names[] = {"x", "y"};
   for (std::size_t i = 0; i < nvars; ++i) {
@@ -123,7 +123,7 @@ TEST(JitVectorize, VecLibCapsADerivedWidth) {
 
 TEST(JitVectorize, JacobianLoopVectorises) {
   // Wider and sharing subexpressions, and still has to vectorise.
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto graph = ddx::rt::GraphBuilder{b}
@@ -138,7 +138,7 @@ TEST(JitVectorize, JacobianLoopVectorises) {
 // need a runtime alias check per pair of columns and give up past a handful;
 // the body is emitted wide instead, so the column count is not a question.
 TEST(JitVectorize, WideTranscendentalJacobianIsVector) {
-  Builder<> b;
+  Arena<> b;
   std::vector<ddx::rt::Expression<>> v;
   for (std::size_t i = 0; i < 16; ++i) {
     v.push_back(var(b, "x" + std::to_string(i)));
@@ -172,7 +172,7 @@ TEST(JitVectorize, EveryVectorSymbolResolves) {
   if constexpr (!host_has_libmvec) {
     GTEST_SKIP() << "libmvec is glibc on x86-64";
   }
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   auto f = sin(x) + cos(x) + exp(x) + log(x) + tanh(x) + erf(x) + cbrt(x);
   f = f + atan(x) + asinh(x) + pow(x, ddx::rt::Expression<>{3});
@@ -199,7 +199,7 @@ namespace {
 
 // operator<< goes through the formatter, as it does for an expression.
 TEST(JitVectorize, IrStreamsAndFormatsAlike) {
-  Builder<> b;
+  Arena<> b;
   const auto x = var(b, "x");
   const auto graph = Graph<>::freeze(b, std::array{sin(x).id(b)});
   const ddx::jit::Ir ir{compiler(), graph};

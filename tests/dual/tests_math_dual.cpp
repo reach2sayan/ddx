@@ -9,7 +9,7 @@ TEST(NewMathFunctions, MaxMinTiesAverageAndNaNPropagatesSymmetrically) {
   EXPECT_DOUBLE_EQ(tie[0], 0.5);
   EXPECT_DOUBLE_EQ(tie[1], 0.5);
   // A NaN operand propagates from either side, value and derivative both;
-  // fmax-style dropping would depend on the builder's operand order.
+  // fmax-style dropping would depend on the arena's operand order.
   const double qnan = std::nan("");
   EXPECT_TRUE(std::isnan(max(x, y).eval(qnan, 2.0)));
   EXPECT_TRUE(std::isnan(max(x, y).eval(2.0, qnan)));

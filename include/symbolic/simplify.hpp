@@ -14,7 +14,7 @@
 
 // The type-level half of the simplifier: ops/algebra.hpp's predicates answered
 // with type traits, run by the operator factories in values.hpp so a tree is
-// born folded.  rt/builder.hpp answers the same predicates by node id.
+// born folded.  rt/arena.hpp answers the same predicates by node id.
 namespace ddx::impl::detail {
 
 // Type identity is structural identity only for a stateless tree.  A Lit<T>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "rt/builder.hpp"
+#include "rt/arena.hpp"
 #include "rt/expressions.hpp"
 #include "rt/opcode.hpp"
 
@@ -36,7 +36,7 @@ namespace detail {
 // A maximal single-use Add spine's terms, left to right: the blocked sum has to
 // reassociate the same sequence, not a different one.
 template <impl::Numeric T>
-[[nodiscard]] auto spine_terms(const Builder<T> &b, NodeId top,
+[[nodiscard]] auto spine_terms(const Arena<T> &b, NodeId top,
                                std::span<const std::uint32_t> uses,
                                const std::vector<bool> &root) {
   // `root` is a flag, not an extra use: a root nothing else reads would then
@@ -64,7 +64,7 @@ template <impl::Numeric T>
 // `blocks` interleaved partial sums, combined pairwise.
 template <impl::Numeric T>
 [[nodiscard]] constexpr NodeId
-blocked_sum(Builder<T> &b, std::span<const NodeId> terms, std::size_t blocks) {
+blocked_sum(Arena<T> &b, std::span<const NodeId> terms, std::size_t blocks) {
   // Inline up to the default block count, so a round never touches the heap.
   using Partials = boost::container::small_vector<Expression<T>, 16>;
   const auto as_expr = [&b](NodeId t) { return Expression<T>{b, t}; };
@@ -96,7 +96,7 @@ blocked_sum(Builder<T> &b, std::span<const NodeId> terms, std::size_t blocks) {
 // reverse sweep inherits the shape.
 template <impl::Numeric T>
 [[nodiscard]] constexpr std::vector<NodeId>
-rebalance(Builder<T> &b, std::span<const NodeId> roots, std::size_t blocks = 16,
+rebalance(Arena<T> &b, std::span<const NodeId> roots, std::size_t blocks = 16,
           std::size_t least = 16) {
   const auto size = static_cast<NodeId>(b.size());
   const std::vector live = detail::reachable(b, roots);

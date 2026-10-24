@@ -13,12 +13,12 @@
 // which -- getting it wrong is silent wrong arithmetic, not a crash.
 
 namespace {
-using ddx::rt::Builder;
+using ddx::rt::Arena;
 using ddx::rt::Graph;
 
 
 // x, y, then v0, v1 -- the order input_column() states.
-Graph<> seeded_graph(Builder<> &b) {
+Graph<> seeded_graph(Arena<> &b) {
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * x * seed(b, 0) + exp(y) * seed(b, 1);
@@ -26,14 +26,14 @@ Graph<> seeded_graph(Builder<> &b) {
 }
 
 TEST(JitSeed, KernelArityCountsTheSeeds) {
-  Builder<> b;
+  Arena<> b;
   const auto graph = seeded_graph(b);
   ASSERT_EQ(graph.arity(), 4u);
   EXPECT_EQ(must_compile(graph).shape().arity, 4u);
 }
 
 TEST(JitSeed, MatchesTheInterpreterToTheBit) {
-  Builder<> b;
+  Arena<> b;
   const auto graph = seeded_graph(b);
   const auto kernel = must_compile(graph);
 
@@ -68,7 +68,7 @@ TEST(JitSeed, MatchesTheInterpreterToTheBit) {
 // A seed slot is not a symbol slot: reading the direction out of the symbol
 // half of `xs` would still typecheck and still run.
 TEST(JitSeed, DirectionIsNotReadAsASymbol) {
-  Builder<> b;
+  Arena<> b;
   const auto graph = seeded_graph(b);
   const auto kernel = must_compile(graph);
 

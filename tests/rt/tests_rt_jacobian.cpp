@@ -52,7 +52,7 @@ void expect_close(double got, double want) {
 // before lowering, so the two sides' columns line up by name.
 template <ddx::impl::CExpression E, std::size_t N>
 void expect_agrees_with_ddx(const E &e, std::array<double, N> pt) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto root = ddx::rt::to_graph(b, e);
   const auto g = ddx::rt::derive_jacobian(b, root.id(b));
   const auto values = ddx::rt::evaluate_all(b, std::span<const double>{pt});
@@ -90,7 +90,7 @@ TEST(RtJacobian, Arithmetic) {
 
 template <typename E>
 constexpr bool bridges =
-    requires(ddx::rt::Builder<> &b, const E &e) { ddx::rt::to_graph(b, e); };
+    requires(ddx::rt::Arena<> &b, const E &e) { ddx::rt::to_graph(b, e); };
 
 // rt has no leaf that reads a symbol and differentiates to zero, so a frozen
 // one is refused rather than lowered live.  A Jacobian row comes back thawed,
@@ -137,10 +137,10 @@ TEST(RtJacobian, SharedAndNested) {
 // max, min and abs have no entry in the compile-time derivative table, so they
 // are checked against central differences on the interpreter instead.
 TEST(RtJacobian, SelectingOpsAgainstFiniteDifferences) {
-  using ddx::rt::Builder;
+  using ddx::rt::Arena;
   using ddx::rt::Expression;
   const auto check = [](auto build, std::array<double, 2> pt) {
-    Builder<> b;
+    Arena<> b;
     const auto vx = var(b, "x");
     const auto vy = var(b, "y");
     const auto f = build(vx, vy);
@@ -167,7 +167,7 @@ TEST(RtJacobian, SelectingOpsAgainstFiniteDifferences) {
 
 TEST(RtJacobian, DerivFromValueReusesThePrimalNode) {
   // exp's derivative is the primal, so the sweep must not build a second exp.
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto vx = var(b, "x");
   const auto f = exp(vx);
   const auto g = ddx::rt::derive_jacobian(b, f.id(b));
@@ -211,7 +211,7 @@ static_assert(!std::equality_comparable<ddx::rt::Expression<>>);
 static_assert(ddx::impl::CCommutativeMultiply<ddx::rt::Expression<>>);
 
 TEST(RtJacobian, UnusedSymbolHasZeroPartial) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto vx = var(b, "x");
   const auto vy = var(b, "y");
   const auto f = vx * vx;
@@ -255,7 +255,7 @@ TEST(RtJacobian, UnaryRulesAgree) {
 // bare partial.  It reads it from the same rules, seeded with a unit adjoint.
 TEST(RtJacobian, ForwardModeAgreesWithReverse) {
   const auto check = [](auto build, std::array<double, 2> pt) {
-    ddx::rt::Builder<> b;
+    ddx::rt::Arena<> b;
     const auto vx = var(b, "x");
     const auto vy = var(b, "y");
     const auto f = build(vx, vy);
@@ -291,7 +291,7 @@ TEST(RtJacobian, ForwardModeAgreesWithReverse) {
 // by that, and the dense spelling has to put the other 20 back.
 TEST(RtJacobian, ABandedSystemKeepsOnlyTheCellsThatExist) {
   static constexpr std::size_t n = 6;
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
 
   const auto name = [](std::size_t i) { return "x" + std::to_string(i); };
   std::vector<ddx::rt::Expression<double>> x;
@@ -343,7 +343,7 @@ TEST(RtJacobian, ABandedSystemKeepsOnlyTheCellsThatExist) {
 // The three ways to read one Jacobian -- dense, compressed-plus-pattern, and a
 // sweep of the nodes -- are the same numbers.
 TEST(RtJacobian, DenseCompressedAndTheNodesAllAgree) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto z = var(b, "z");
@@ -383,7 +383,7 @@ TEST(RtJacobian, DenseCompressedAndTheNodesAllAgree) {
 // and a and b get no column at all -- the pattern is exact here where a support
 // walk would have called them live.
 TEST(RtJacobian, AFoldedPartialIsAStructuralHole) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto a = var(b, "a");
   const auto bb = var(b, "b");
   const auto c = var(b, "c");
@@ -426,7 +426,7 @@ TEST(RtJacobian, AFoldedPartialIsAStructuralHole) {
 // caller can place a column of the compressed block it is handed.
 TEST(RtJacobian, HessianCellPlacesEveryCompressedColumn) {
   static constexpr std::size_t n = 6;
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   std::vector<ddx::rt::Expression<double>> x;
   for (const std::size_t i : std::views::iota(0uz, n)) {
     x.push_back(var(b, "x" + std::to_string(i)));
@@ -706,7 +706,7 @@ TEST(RtJacobian, ComparisonsAgreeWithTheKernelAtNaN) {
 //
 // This does *not* test a select whose two arms are the same node: `make` folds
 // that to the arm before a node exists
-// (RtBuilder.SelectFoldsWhereABinaryWould), so a test built through the
+// (RtArena.SelectFoldsWhereABinaryWould), so a test built through the
 // factories would be checking the fold.  The rule still has to handle it -- see
 // SharedArmsThroughTheLoaderStillSum below, which reaches it the one way that
 // bypasses `make`.
@@ -758,7 +758,7 @@ TEST(RtJacobian, BothArmsOfASelectOverASharedSubexpression) {
 
 // pow's exponent partial is a^b * log(a), 0 * -inf at a == 0, and its base
 // partial b * a^(b-1) is 0 * inf there at b == 0.  On the graph the rule guards
-// both with a select; with a literal exponent the builder folds the guard away
+// both with a select; with a literal exponent the arena folds the guard away
 // and the partial is the node it always was.
 TEST(RtJacobian, PowAtAZeroBaseIsGuardedOnTheGraph) {
   const auto eq = ddx::rt::equation([] {
@@ -783,7 +783,7 @@ TEST(RtJacobian, PowAtAZeroBaseIsGuardedOnTheGraph) {
 
   // A literal exponent: equal(3, 0) folds to 0, the product to 0, and the
   // select to its false arm -- 3 * (x * x), no Select node anywhere in it.
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = ddx::rt::var(b, "x");
   const auto cubic = ddx::rt::derive_jacobian<ddx::impl::DiffMode::Reverse>(
       b, pow(x, 3.0).id(b));

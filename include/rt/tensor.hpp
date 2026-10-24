@@ -13,7 +13,7 @@
 // vector, gemv(M, v, true) for rt::transpose(M) % v.  A mat_constant table is
 // read as its row, in place.
 
-#include "rt/builder.hpp"
+#include "rt/arena.hpp"
 #include "rt/expressions.hpp"
 #include "util/error.hpp"
 #include "util/ranges.hpp"
@@ -35,9 +35,9 @@ namespace detail {
 // The arena a vector is built in: the first scalar that names one, else the
 // equation() callback's.
 template <impl::Numeric T>
-[[nodiscard]] Builder<T> *arena_of(std::span<const Expression<T>> scalars) {
+[[nodiscard]] Arena<T> *arena_of(std::span<const Expression<T>> scalars) {
   for (const auto &s : scalars) {
-    if (Builder<T> *const b = Rooting::builder(s)) {
+    if (Arena<T> *const b = Rooting::arena(s)) {
       return b;
     }
   }
@@ -63,7 +63,7 @@ template <impl::Numeric T>
 }
 // A table's rows and columns, which shape_of() leaves to the table itself.
 template <impl::Numeric T>
-[[nodiscard]] constexpr Shape matrix_shape(const Builder<T> &b,
+[[nodiscard]] constexpr Shape matrix_shape(const Arena<T> &b,
                                            const Expression<T> &m) {
   if (b.op_of(m.id()) != OpCode::MatConst) {
     return m.shape();
@@ -87,7 +87,7 @@ not_a_vector(const auto &...vs) {
 // vector of n symbols is n Var leaves and symbols() is unchanged.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T>
-pack(Builder<T> &b, std::span<const Expression<T>> scalars) {
+pack(Arena<T> &b, std::span<const Expression<T>> scalars) {
   if (scalars.empty()) {
     return detail::refused<T>(errc::tensor_shape);
   }
@@ -106,7 +106,7 @@ pack(Builder<T> &b, std::span<const Expression<T>> scalars) {
 }
 template <impl::Numeric T = double>
 [[nodiscard]] Expression<T> pack(std::span<const Expression<T>> scalars) {
-  Builder<T> *const b = detail::arena_of(scalars);
+  Arena<T> *const b = detail::arena_of(scalars);
   return b == nullptr ? detail::refused<T>(errc::outside_equation)
                       : pack(*b, scalars);
 }
@@ -121,7 +121,7 @@ template <impl::Numeric T>
 
 // n symbols named `name[0]` .. `name[n-1]`, packed: the one piece of sugar.
 template <impl::Numeric T>
-[[nodiscard]] Expression<T> vec(Builder<T> &b, std::string_view name,
+[[nodiscard]] Expression<T> vec(Arena<T> &b, std::string_view name,
                                 std::size_t n) {
   const auto symbols = std::views::iota(0uz, n) |
                        std::views::transform([&](std::size_t i) {
@@ -132,12 +132,12 @@ template <impl::Numeric T>
 }
 template <impl::Numeric T = double>
 [[nodiscard]] Expression<T> vec(std::string_view name, std::size_t n) {
-  return detail::in_arena<T>([&](Builder<T> &b) { return vec(b, name, n); });
+  return detail::in_arena<T>([&](Arena<T> &b) { return vec(b, name, n); });
 }
 
 // A constant vector or matrix, column-major.
 template <impl::Numeric T>
-[[nodiscard]] constexpr Expression<T> vec_constant(Builder<T> &b,
+[[nodiscard]] constexpr Expression<T> vec_constant(Arena<T> &b,
                                                    std::span<const T> data) {
   if (data.empty()) {
     return detail::refused<T>(errc::tensor_shape);
@@ -148,7 +148,7 @@ template <impl::Numeric T = double>
 [[nodiscard]] Expression<T>
 vec_constant(std::span<const std::type_identity_t<T>> data) {
   return detail::in_arena<T>(
-      [&](Builder<T> &b) { return vec_constant(b, data); });
+      [&](Arena<T> &b) { return vec_constant(b, data); });
 }
 template <impl::Numeric T = double>
 [[nodiscard]] Expression<T> vec_constant(std::initializer_list<T> data) {
@@ -157,7 +157,7 @@ template <impl::Numeric T = double>
 
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T>
-mat_constant(Builder<T> &b, std::size_t rows, std::size_t cols,
+mat_constant(Arena<T> &b, std::size_t rows, std::size_t cols,
              std::span<const T> data) {
   if (rows == 0 || cols == 0 || data.size() != rows * cols) {
     return detail::refused<T>(errc::tensor_shape);
@@ -170,7 +170,7 @@ template <impl::Numeric T = double>
 mat_constant(std::size_t rows, std::size_t cols,
              std::span<const std::type_identity_t<T>> data) {
   return detail::in_arena<T>(
-      [&](Builder<T> &b) { return mat_constant(b, rows, cols, data); });
+      [&](Arena<T> &b) { return mat_constant(b, rows, cols, data); });
 }
 
 // The reductions to a scalar.
@@ -179,7 +179,7 @@ template <impl::Numeric T>
   if (const auto why = detail::not_a_vector(v)) {
     return detail::refused<T>(*why);
   }
-  Builder<T> &b = *detail::Rooting::builder(v);
+  Arena<T> &b = *detail::Rooting::arena(v);
   return {b, b.make(OpCode::Sum, v.id())};
 }
 template <impl::Numeric T>
@@ -189,9 +189,9 @@ template <impl::Numeric T>
     return detail::refused<T>(*why);
   }
   // Either side may be a literal, which takes the other's width.
-  Builder<T> *const b = detail::Rooting::builder(u)
-                            ? detail::Rooting::builder(u)
-                            : detail::Rooting::builder(v);
+  Arena<T> *const b = detail::Rooting::arena(u)
+                            ? detail::Rooting::arena(u)
+                            : detail::Rooting::arena(v);
   const Shape shape = u.size() ? u.shape() : v.shape();
   if (b == nullptr || shape.size() == 0 ||
       (u.size() != 0 && v.size() != 0 && u.shape() != v.shape()) ||
@@ -209,8 +209,8 @@ gemv(const Expression<T> &m, const Expression<T> &v, bool transposed = false) {
   if (const auto why = detail::poisoned(m, v)) {
     return detail::refused<T>(*why);
   }
-  Builder<T> *const b = detail::Rooting::builder(m);
-  if (b == nullptr || v.size() == 0 || detail::Rooting::builder(v) != b) {
+  Arena<T> *const b = detail::Rooting::arena(m);
+  if (b == nullptr || v.size() == 0 || detail::Rooting::arena(v) != b) {
     return detail::refused<T>(errc::tensor_shape);
   }
   const Shape shape = detail::matrix_shape(*b, m);
@@ -248,7 +248,7 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> operator%(const Expression<T> &l,
                                                 const Expression<T> &r) {
   const auto is_matrix = [](const Expression<T> &e) {
-    Builder<T> *const b = detail::Rooting::builder(e);
+    Arena<T> *const b = detail::Rooting::arena(e);
     return b != nullptr && !detail::Rooting::why(e) &&
            detail::matrix_shape(*b, e).cols > 1;
   };
@@ -265,8 +265,8 @@ template <impl::Numeric T>
   if (const auto why = detail::not_a_vector(u, w)) {
     return detail::refused<T>(*why);
   }
-  Builder<T> *const b = detail::Rooting::builder(u);
-  if (detail::Rooting::builder(w) != b || u.shape().cols != 1 ||
+  Arena<T> *const b = detail::Rooting::arena(u);
+  if (detail::Rooting::arena(w) != b || u.shape().cols != 1 ||
       w.shape().cols != 1) {
     return detail::refused<T>(errc::tensor_shape);
   }
@@ -288,7 +288,7 @@ add_at(const Expression<T> &v, const Expression<T> &s, std::size_t i) {
   if (i >= v.size() || !detail::Rooting::scalar(s)) {
     return detail::refused<T>(errc::tensor_shape);
   }
-  Builder<T> &b = *detail::Rooting::builder(v);
+  Arena<T> &b = *detail::Rooting::arena(v);
   return {b, b.make(OpCode::AddAt, v.id(), s.id(b), no_node,
                     static_cast<std::uint32_t>(i))};
 }

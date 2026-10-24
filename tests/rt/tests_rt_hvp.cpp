@@ -11,7 +11,7 @@
 // so a wrong rule for the Seed leaf shows up as a wrong number here.
 
 namespace {
-using ddx::rt::Builder;
+using ddx::rt::Arena;
 
 // The point, then the direction, in the order input_column() states.
 std::vector<double> widened(std::span<const double> x,
@@ -38,7 +38,7 @@ std::vector<double> reference_product(const ddx::rt::Hessian &h,
 void expect_hvp_matches_hessian(auto build, std::size_t nvars,
                                 std::span<const double> x,
                                 std::span<const double> v) {
-  Builder<> b;
+  Arena<> b;
   std::vector<ddx::rt::Expression<>> vars;
   static constexpr const char *names[] = {"a", "b", "c", "d", "e", "f"};
   for (const std::size_t i : std::views::iota(0uz, nvars)) {
@@ -60,7 +60,7 @@ void expect_hvp_matches_hessian(auto build, std::size_t nvars,
 }
 
 // Dense coupling: colours == n, the worst case for the coloured path.
-auto dense = [](Builder<> &, auto &v) {
+auto dense = [](Arena<> &, auto &v) {
   auto acc = ddx::rt::Expression<>{0};
   for (const auto &a : v) {
     for (const auto &c : v) {
@@ -72,7 +72,7 @@ auto dense = [](Builder<> &, auto &v) {
 
 // Separable: one colour, and every off-diagonal cell structurally zero, so the
 // fold's terms mostly vanish before a node exists.
-auto separable = [](Builder<> &, auto &v) {
+auto separable = [](Arena<> &, auto &v) {
   auto acc = ddx::rt::Expression<>{0};
   for (const auto &a : v) {
     acc = acc + sin(a) * sin(a);
@@ -106,7 +106,7 @@ TEST(RtHvp, IsLinearInTheDirection) {
   const std::array v{2.0, -1.0, 0.5};
   const std::array scaled{4.0, -2.0, 1.0};
 
-  Builder<> b;
+  Arena<> b;
   const auto p = var(b, "a");
   const auto q = var(b, "b");
   const auto r = var(b, "c");
@@ -122,7 +122,7 @@ TEST(RtHvp, IsLinearInTheDirection) {
 }
 
 TEST(RtHvp, CarriesTheGradient) {
-  Builder<> b;
+  Arena<> b;
   const auto p = var(b, "a");
   const auto q = var(b, "b");
   const auto root = (p * p * q).id(b);

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "rt/apply.hpp"
-#include "rt/builder.hpp"
+#include "rt/arena.hpp"
 #include "rt/kernels.hpp"
 #include "util/config.hpp"
 
@@ -131,7 +131,7 @@ template <typename U> struct TapeView {
 // `lane` by value here and in the two below, for the reason lanes_apply
 // gives.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
-DDX_NOINLINE constexpr void lanes_extern(const Builder<T> &b, NodeId v, U *out,
+DDX_NOINLINE constexpr void lanes_extern(const Arena<T> &b, NodeId v, U *out,
                                          auto lane, const TapeView<U> &t) {
   if constexpr (std::same_as<U, T>) {
     const auto [fn, component] = extern_of(b[v]);
@@ -156,7 +156,7 @@ DDX_NOINLINE constexpr void lanes_extern(const Builder<T> &b, NodeId v, U *out,
 // VecConst -- which the interpreter does itself.  At any scalar but double
 // the rows are zero: computes_at() keeps such a sweep away.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
-DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
+DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
                                          const Node<T> &n, U *out, auto lane,
                                          const TapeView<U> &t) {
   if constexpr (!std::same_as<U, double> || !std::same_as<T, double>) {
@@ -330,7 +330,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Builder<T> &b, NodeId v,
 // term's product is formed, not fused: fma(x, y, 0) would turn its -0.0 into
 // +0.0.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
-DDX_NOINLINE constexpr void lanes_sum(const Builder<T> &b, NodeId v, bool fused,
+DDX_NOINLINE constexpr void lanes_sum(const Arena<T> &b, NodeId v, bool fused,
                                       U *DDX_RESTRICT out, auto lane,
                                       const TapeView<U> &t) {
   const auto row = [&](NodeId u) { return lane(t.row(u)); };
@@ -362,7 +362,7 @@ DDX_NOINLINE constexpr void lanes_sum(const Builder<T> &b, NodeId v, bool fused,
 // a sweep of scalars nothing.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_ALWAYS_INLINE constexpr void
-lanes_opaque(const Builder<T> &b, NodeId v, const Node<T> &n, bool fused,
+lanes_opaque(const Arena<T> &b, NodeId v, const Node<T> &n, bool fused,
              U *out, auto &&lane, const TapeView<U> &t) {
   if (on_tensors(n)) {
     lanes_tensor<W>(b, v, n, out, lane, t);
@@ -379,7 +379,7 @@ lanes_opaque(const Builder<T> &b, NodeId v, const Node<T> &n, bool fused,
 // and the tape base with it -- reloaded on every step of the sweep.
 template <std::size_t W, impl::Numeric T, typename U>
 DDX_ALWAYS_INLINE constexpr void
-lanes_apply(const Builder<T> &b, NodeId i, const Node<T> &n,
+lanes_apply(const Arena<T> &b, NodeId i, const Node<T> &n,
             U *DDX_RESTRICT out, auto &&lane, const Step &s,
             const TapeView<U> &t) {
   const auto &in = s.in;
@@ -416,7 +416,7 @@ lanes_apply(const Builder<T> &b, NodeId i, const Node<T> &n,
 // extern -- makes the compiler reload the arena's base on the next step.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_ALWAYS_INLINE constexpr void
-sweep_step(const Builder<T> &b, std::span<const Node<T>> nodes,
+sweep_step(const Arena<T> &b, std::span<const Node<T>> nodes,
            const Inputs &inputs, const Step &s, auto at, auto &&lane,
            const TapeView<U> &t) {
   const NodeId i = s.node;
@@ -456,7 +456,7 @@ sweep_step(const Builder<T> &b, std::span<const Node<T>> nodes,
 template <std::size_t W, impl::Numeric T, std::ranges::random_access_range R,
           impl::Numeric U>
   requires impl::Numeric<std::ranges::range_value_t<R>>
-constexpr void evaluate_block(const Builder<T> &b, const R &point_lanes,
+constexpr void evaluate_block(const Arena<T> &b, const R &point_lanes,
                               std::span<const Step> schedule, std::span<U> tape,
                               const detail::TapeView<U> &tensors = {}) {
   const auto lane = detail::lanes_of<W>(tape);
@@ -472,7 +472,7 @@ constexpr void evaluate_block(const Builder<T> &b, const R &point_lanes,
 // other than the graph's asks first: apply() answers U{} for an op the scalar
 // lacks, and a zero node is a wrong number with nothing to say so.
 template <impl::Numeric U, impl::Numeric T>
-[[nodiscard]] constexpr bool computes_at(const Builder<T> &b,
+[[nodiscard]] constexpr bool computes_at(const Arena<T> &b,
                                          std::span<const NodeId> roots) {
   const auto live = detail::reachable(b, roots);
   return std::ranges::all_of(detail::live_ids(live),
@@ -481,7 +481,7 @@ template <impl::Numeric U, impl::Numeric T>
 
 template <impl::Numeric T, std::ranges::random_access_range R>
   requires impl::Numeric<std::ranges::range_value_t<R>>
-[[nodiscard]] constexpr auto evaluate(const Builder<T> &b, NodeId root,
+[[nodiscard]] constexpr auto evaluate(const Arena<T> &b, NodeId root,
                                       const R &point) {
   return evaluate_all(b, point)[root];
 }
@@ -493,7 +493,7 @@ template <impl::Numeric T, std::ranges::random_access_range R>
 // implementation of it.
 template <impl::Numeric T, std::ranges::random_access_range R, impl::Numeric U>
   requires impl::Numeric<std::ranges::range_value_t<R>>
-constexpr void evaluate_into(const Builder<T> &b, const R &point,
+constexpr void evaluate_into(const Arena<T> &b, const R &point,
                              std::span<const Step> schedule, std::span<U> v,
                              const detail::TapeView<U> &tensors = {}) {
   evaluate_block<1>(b, point, schedule, v, tensors);
@@ -509,11 +509,11 @@ class ArenaWalk {
 public:
   constexpr ArenaWalk() = default;
   template <impl::Numeric T>
-  constexpr ArenaWalk(const Builder<T> &b, auto ids)
+  constexpr ArenaWalk(const Arena<T> &b, auto ids)
       : schedule_{schedule_of(b, ids)}, layout_{tensor_layout(b, schedule_)} {}
   // Every node, in id order: a child always precedes its parent.
   template <impl::Numeric T>
-  constexpr explicit ArenaWalk(const Builder<T> &b)
+  constexpr explicit ArenaWalk(const Arena<T> &b)
       : ArenaWalk{b,
                   std::views::iota(NodeId{0}, static_cast<NodeId>(b.size()))} {}
 
@@ -523,7 +523,7 @@ public:
 
   template <impl::Numeric T, impl::Numeric U>
   constexpr void
-  operator()(const Builder<T> &b, const auto &point, std::span<U> values,
+  operator()(const Arena<T> &b, const auto &point, std::span<U> values,
              std::span<U> vtape,
              const TensorKernelTable &kernels = reference_table) const {
     // At a scalar other than the arena's, an op U lacks answers U{}: the
@@ -540,7 +540,7 @@ public:
   // Into tapes of its own; the values come back.
   template <impl::Numeric T>
   [[nodiscard]] constexpr auto
-  operator()(const Builder<T> &b,
+  operator()(const Arena<T> &b,
              const std::ranges::random_access_range auto &point,
              const TensorKernelTable &kernels = reference_table) const {
     using U = std::ranges::range_value_t<decltype(point)>;
@@ -562,7 +562,7 @@ private:
 template <impl::Numeric T, std::ranges::random_access_range R>
   requires impl::Numeric<std::ranges::range_value_t<R>>
 [[nodiscard]] constexpr auto
-evaluate_reachable(const Builder<T> &b, std::span<const NodeId> roots,
+evaluate_reachable(const Arena<T> &b, std::span<const NodeId> roots,
                    const R &point,
                    const TensorKernelTable &kernels = reference_table) {
   return detail::ArenaWalk{b, detail::live_ids(detail::reachable(b, roots))}(
@@ -575,7 +575,7 @@ evaluate_reachable(const Builder<T> &b, std::span<const NodeId> roots,
 template <impl::Numeric T, std::ranges::random_access_range R>
   requires impl::Numeric<std::ranges::range_value_t<R>>
 [[nodiscard]] constexpr auto
-evaluate_all(const Builder<T> &b, const R &point,
+evaluate_all(const Arena<T> &b, const R &point,
              const TensorKernelTable &kernels = reference_table) {
   return detail::ArenaWalk{b}(b, point, kernels);
 }

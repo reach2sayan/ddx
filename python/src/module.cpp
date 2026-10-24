@@ -3,7 +3,7 @@
 #include "error.hpp"
 #include "expression.hpp"
 
-#include "rt/builder.hpp"
+#include "rt/arena.hpp"
 #include "rt/expressions.hpp"
 #include "rt/tensor.hpp"
 #include "rt/text/ast.hpp"
@@ -39,7 +39,7 @@ namespace {
 // The arena a model is assembled in, for the duration of the call.  Ours rather
 // than the one rt::var(name) reads, because what has to survive is the shared
 // ownership: every symbol below goes through the two-argument rt::var.
-thread_local std::shared_ptr<rt::Builder<double>> current_arena;
+thread_local std::shared_ptr<rt::Arena<double>> current_arena;
 
 // The exception type Python sees.  Deliberately leaked: it is a type object
 // that lives as long as the module, and a translator is a plain function
@@ -80,7 +80,7 @@ pyb::handle error_class;
 }
 
 // The model running now, for a vector that names no scalar of it.
-[[nodiscard]] PyExpression::Arena arena_now() {
+[[nodiscard]] PyExpression::SharedArena arena_now() {
   if (!current_arena) {
     fail_with(errc::outside_equation);
   }
@@ -90,7 +90,7 @@ pyb::handle error_class;
 // One root, or m of them from a tuple or list.  The count is a runtime value
 // throughout, which is why these bindings sit below impl::Equation.
 [[nodiscard]] std::vector<rt::NodeId> roots_of(const pyb::object &built,
-                                               rt::Builder<double> &arena) {
+                                               rt::Arena<double> &arena) {
   const bool many =
       pyb::isinstance<pyb::tuple>(built) || pyb::isinstance<pyb::list>(built);
   const auto returned =
@@ -119,7 +119,7 @@ pyb::handle error_class;
 // read before any of them is an equation -- a symbol the second function
 // introduces still wants a slot.
 [[nodiscard]] pyb::object text_equation(std::span<const std::string> sources) {
-  auto arena = std::make_shared<rt::Builder<double>>();
+  auto arena = std::make_shared<rt::Arena<double>>();
   pyb::list built;
   for (const std::string &source : sources) {
     built.append(pyb::cast(PyExpression{unwrap(rt::text::parse(source).and_then(
@@ -137,7 +137,7 @@ pyb::handle error_class;
 // comes back -- rt::equation(assemble)'s three steps, with the output count a
 // number rather than a template parameter.
 [[nodiscard]] pyb::object make_equation(const pyb::object &model) {
-  auto arena = std::make_shared<rt::Builder<double>>();
+  auto arena = std::make_shared<rt::Arena<double>>();
   pyb::object built;
   {
     // RAII, and load-bearing: if the model raises, pybind11 unwinds through

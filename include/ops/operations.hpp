@@ -196,7 +196,7 @@ DDX_ADL_BINARY_IMPL(hypot_impl, hypot)
 DDX_ADL_BINARY_IMPL(midpoint_impl, midpoint)
 #undef DDX_ADL_BINARY_IMPL
 // A tie averages the operands and an unordered pair returns (a-b)*0, NaN from
-// either side: both symmetric, and so stable under the graph builder's
+// either side: both symmetric, and so stable under the arena's
 // commutative reordering.  On a Dual a == b compares only the value level, so
 // the derivative parts are averaged rather than picked from a side.  On an
 // arithmetic scalar the only tie that is not simply `a` is the signed zeros,

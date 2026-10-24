@@ -71,7 +71,7 @@ struct Swept {
 // The widest vector of consecutive symbols the model packs, where it is most
 // of them; else every symbol.
 template <impl::Numeric T>
-[[nodiscard]] Swept swept_of(const Builder<T> &b, NodeId root) {
+[[nodiscard]] Swept swept_of(const Arena<T> &b, NodeId root) {
   const auto all = static_cast<std::uint32_t>(b.symbols().size());
   const auto run = [&b](NodeId v) -> Swept {
     const auto args = arguments(b, v);
@@ -100,7 +100,7 @@ template <impl::Numeric T>
 
 template <impl::Numeric T> class DenseSweep {
 public:
-  DenseSweep(Builder<T> &b, std::span<const NodeId> partials, Swept swept)
+  DenseSweep(Arena<T> &b, std::span<const NodeId> partials, Swept swept)
       : b_{b}, at_{swept.at}, n_{swept.width}, row_(b.size(), no_node),
         mat_(b.size()), source_{gathered(partials.subspan(at_, n_))} {
     // Partials gathered from one vector are read through its tangent, so the
@@ -573,7 +573,7 @@ private:
     }
     return out;
   }
-  Builder<T> &b_;
+  Arena<T> &b_;
   std::uint32_t at_; // the first swept symbol
   std::uint32_t n_;
   std::vector<NodeId> row_;
@@ -587,7 +587,7 @@ private:
 } // namespace detail
 
 template <impl::Numeric T>
-[[nodiscard]] DenseHessian derive_dense_hessian(Builder<T> &b, NodeId root) {
+[[nodiscard]] DenseHessian derive_dense_hessian(Arena<T> &b, NodeId root) {
   const auto g = build_reverse_jacobian(b, root);
   detail::DenseSweep<T> sweep{b, g.partial, detail::swept_of(b, root)};
   return {.value = g.value,

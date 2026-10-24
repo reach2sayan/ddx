@@ -180,7 +180,7 @@ TEST(RtEquationHvp, BatchAgreesWithThePointSpelling) {
 // sweep are the same arithmetic in the same order and bit equality is honest.
 #ifdef DDX_HAS_JIT
 TEST(RtEquationHvp, TheKernelAgreesWithTheSweepToTheBit) {
-  ddx::rt::Builder<> b;
+  ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto z = var(b, "z");
