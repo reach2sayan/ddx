@@ -787,11 +787,8 @@ TEST(RtJacobian, PowAtAZeroBaseIsGuardedOnTheGraph) {
   const auto x = ddx::rt::var(b, "x");
   const auto cubic = ddx::rt::derive_jacobian<ddx::impl::DiffMode::Reverse>(
       b, pow(x, 3.0).id(b));
-  const auto live = ddx::rt::detail::reachable(
-      b.size(), std::span<const ddx::rt::NodeId>{&cubic.partial[0], 1},
-      [&b](ddx::rt::NodeId v, auto &&mark) {
-        std::ranges::for_each(ddx::rt::detail::operands_of(b, v), mark);
-      });
+  const auto live =
+      ddx::rt::detail::reachable(b, std::span{&cubic.partial[0], 1});
   for (std::size_t v = 0; v < b.size(); ++v) {
     EXPECT_FALSE(live[v] && b[static_cast<ddx::rt::NodeId>(v)].op ==
                                 ddx::rt::OpCode::Select)

@@ -356,10 +356,7 @@ private:
 
   // Nothing but the outputs and what they reach needs to be emitted.
   void mark_live() {
-    live_ = detail::reachable(properties_.size(), outputs_,
-                              [this](NodeId v, auto &&mark) {
-                                detail::for_each_operand(*this, v, mark);
-                              });
+    live_ = detail::reachable(*this, outputs_);
     live_order_.reserve(
         static_cast<std::size_t>(std::ranges::count(live_, true)));
     impl::append(live_order_, detail::live_ids(live_));
@@ -375,16 +372,16 @@ private:
       return;
     }
     const std::vector<bool> live = detail::reachable(
-        properties_.size(), outputs_, [this](NodeId v, auto &&mark) {
-          if (const Contraction c = contraction_at(*this, v)) {
+        *this, outputs_, [](const Graph &g, NodeId v, auto &&mark) {
+          if (const Contraction c = contraction_at(g, v)) {
             mark(c.x);
             mark(c.y);
             mark(c.z);
             return;
           }
-          if (op_of(v) == OpCode::SumN) {
-            for (const NodeId t : arguments(*this, v)) {
-              if (const Contraction c = product_of(*this, t)) {
+          if (g.op_of(v) == OpCode::SumN) {
+            for (const NodeId t : arguments(g, v)) {
+              if (const Contraction c = product_of(g, t)) {
                 mark(c.x);
                 mark(c.y);
               } else {
@@ -393,7 +390,7 @@ private:
             }
             return;
           }
-          detail::for_each_operand(*this, v, mark);
+          detail::for_each_operand(g, v, mark);
         });
     schedule_ = detail::schedule_of(
         *this, live_order_ |

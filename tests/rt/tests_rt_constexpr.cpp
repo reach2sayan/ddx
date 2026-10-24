@@ -97,14 +97,7 @@ consteval std::size_t live_from_root() {
   const auto f = x * x;
   (void)(x + y); // a node the root does not reach
   const ddx::rt::NodeId root = f.id(b);
-  const auto live = ddx::rt::detail::reachable(
-      b.size(), std::span{&root, 1}, [&b](ddx::rt::NodeId v, auto &&mark) {
-        for (const ddx::rt::NodeId u : b.operands(v)) {
-          if (u != ddx::rt::no_node) {
-            mark(u);
-          }
-        }
-      });
+  const auto live = ddx::rt::detail::reachable(b, std::span{&root, 1});
   return static_cast<std::size_t>(std::ranges::count(live, true));
 }
 static_assert(live_from_root() == 2); // x and x * x

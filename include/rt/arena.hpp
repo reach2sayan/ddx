@@ -204,20 +204,6 @@ namespace detail {
   return kind_of(node.op) == Kind::Tensor || is_tensor(node);
 }
 
-// Ids are topological, so one descending pass settles it.  Not a filtered view:
-// the body marks entries the pass has not reached.
-[[nodiscard]] constexpr std::vector<bool>
-reachable(std::size_t n, std::span<const NodeId> roots, auto &&operands_of) {
-  std::vector<bool> live(n, false);
-  std::ranges::for_each(roots, [&](NodeId r) { live[r] = true; });
-  for (NodeId v = static_cast<NodeId>(n); v-- > 0;) {
-    if (live[v]) {
-      operands_of(v, [&](NodeId u) { live[u] = true; });
-    }
-  }
-  return live;
-}
-
 // The operands a node actually has.  Arity is at most three and the absent ones
 // are no_node, so every walker would otherwise repeat the same skip.  Not for
 // a node with a list (has_list), whose `a` is no operand: for_each_operand
@@ -303,6 +289,27 @@ constexpr void for_each_operand(const auto &s, NodeId v, auto &&f) {
   } else {
     std::ranges::for_each(operands_of(s, v), f);
   }
+}
+
+inline constexpr auto every_operand = [](const auto &s, NodeId v, auto &&mark) {
+  for_each_operand(s, v, mark);
+};
+
+// The roots' cone, which every walker asks for first; `reaches` marks what a
+// node reads.  Ids are topological, so one descending pass settles it.  Not a
+// filtered view: the body marks entries the pass has not reached.
+template <typename Reach = decltype(every_operand)>
+[[nodiscard]] constexpr std::vector<bool>
+reachable(const auto &nodes, std::span<const NodeId> roots,
+          Reach reaches = every_operand) {
+  std::vector<bool> live(nodes.size(), false);
+  std::ranges::for_each(roots, [&](NodeId r) { live[r] = true; });
+  for (NodeId v = static_cast<NodeId>(nodes.size()); v-- > 0;) {
+    if (live[v]) {
+      reaches(nodes, v, [&](NodeId u) { live[u] = true; });
+    }
+  }
+  return live;
 }
 } // namespace detail
 
@@ -1182,15 +1189,6 @@ tensor_layout(const auto &s, std::span<const Step> schedule,
     }
   }
   return out;
-}
-
-// The roots' cone in an arena, which every walker below asks for first.
-template <impl::Numeric T>
-[[nodiscard]] constexpr std::vector<bool>
-reachable(const Arena<T> &b, std::span<const NodeId> roots) {
-  return reachable(b.size(), roots, [&b](NodeId v, auto &&mark) {
-    for_each_operand(b, v, mark);
-  });
 }
 
 // The ids a liveness pass kept, ascending.
