@@ -4,6 +4,7 @@ import math
 import operator
 from collections.abc import Callable
 
+import numpy as np
 import pytest
 
 import ddx
@@ -171,7 +172,8 @@ def test_in_place_multiply_and_divide_fold_like_their_chains() -> None:
     at = [0.7, 1.3]
     assert folded.evaluate(at) == pytest.approx(chained.evaluate(at), rel=1e-14)
     assert folded.gradient(at) == pytest.approx(chained.gradient(at), rel=1e-13)
-    assert folded.hessian(at) == pytest.approx(chained.hessian(at), rel=1e-12)
+    for got, want in zip(folded.hessian(at), chained.hessian(at), strict=True):
+        np.testing.assert_allclose(got, want, rtol=1e-12)
 
 
 def test_literals_fold_without_reaching_a_graph() -> None:
