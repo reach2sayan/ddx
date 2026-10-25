@@ -1,9 +1,15 @@
 #include "rt/core.hpp"
 
-DDX_RT_INSTANCES(, , double)
-DDX_RT_INSTANCES(, , float)
-DDX_RT_INSTANCES(, , long double)
-DDX_RT_INSTANCES(, , int)
+#ifdef _MSC_VER
+#pragma warning(disable : 4251) // see rt/core.hpp
+#endif
+
+template class DDX_INSTANCE_API ddx::rt::Arena<double>;
+template class DDX_INSTANCE_API ddx::rt::Arena<float>;
+template class DDX_INSTANCE_API ddx::rt::Graph<double>;
+template class DDX_INSTANCE_API ddx::rt::Graph<float>;
+DDX_RT_INSTANCES(, DDX_INSTANCE_API, double)
+DDX_RT_INSTANCES(, DDX_INSTANCE_API, float)
 
 #ifdef DDX_HAS_JIT
 namespace ddx::rt::detail {

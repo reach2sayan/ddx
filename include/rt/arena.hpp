@@ -5,6 +5,7 @@
 #include "rt/opcode.hpp"
 #include "util/config.hpp"
 #include "util/error.hpp"
+#include "util/export.hpp"
 #include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>
@@ -33,7 +34,7 @@ using NodeId = std::uint32_t;
 inline constexpr NodeId no_node = ~NodeId{0};
 
 template <impl::Numeric T> class Expression;
-template <impl::Numeric T = double> class Arena;
+template <impl::Numeric T = double> class DDX_TEMPLATE_API Arena;
 
 // Befriended by Arena: naming an input is this one primitive's alone, and
 // var(), param() and implicit() are its spellings.
@@ -396,7 +397,7 @@ struct Shape {
 
 // Nodes are interned as they are formed, so an id *is* the identity of a
 // subexpression -- where the compile-time side compares types.
-template <impl::Numeric T> class Arena {
+template <impl::Numeric T> class DDX_TEMPLATE_API Arena {
 public:
   using value_type = T;
   using node_type = Node<T>;
@@ -1204,3 +1205,6 @@ tensor_layout(const auto &s, std::span<const Step> schedule,
 } // namespace detail
 
 } // namespace ddx::rt
+
+DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::Arena<double>)
+DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::Arena<float>)

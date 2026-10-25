@@ -1,4 +1,5 @@
 #include "ddx.hpp"
+#include "jit/format.hpp"
 #include "jit/kernel.hpp"
 #include "jit/tests_jit_common.hpp"
 #include "rt/bridge.hpp"
@@ -337,6 +338,86 @@ TEST(JitValue, EveryLaneWidthAgreesToTheBit) {
   }
 }
 
+// float lowers over its own element type, libm names (sinf) and trampoline:
+// every op of the table and its partials, at every width, against the scalar
+// kernel and the float sweep.
+TEST(JitValue, AFloatGraphAgreesAcrossWidthsAndWithTheSweep) {
+  Arena<float> b;
+  const auto x = var(b, "x");
+  const auto y = var(b, "y");
+  auto f = x / (y + 1.0f) - x * y;
+#define DDX_TEST_OP(fn, Op, label, ...) f = f + fn(x * 0.5f);
+  DDX_UNARY_MATH_TABLE(DDX_TEST_OP)
+#undef DDX_TEST_OP
+  f = f + pow(x, y) + atan2(x, y) + hypot(x, y) + abs(x - y) + max(x, y) +
+      min(x, y) + sign(x - y);
+  const auto graph =
+      ddx::rt::GraphBuilder{b}.value(f).build_jacobian().finish();
+  const auto ir = std::format("{}", ddx::jit::Ir{compiler(), graph});
+  EXPECT_NE(ir.find("float"), std::string::npos);
+  EXPECT_EQ(ir.find("double"), std::string::npos);
+
+  constexpr std::size_t n = 13;
+  std::vector<float> cx(n), cy(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    cx[i] = 0.2f + 0.05f * static_cast<float>(i);
+    cy[i] = 0.9f - 0.03f * static_cast<float>(i);
+  }
+  const std::array<const float *, 2> xs{cx.data(), cy.data()};
+  const auto run = [&](ddx::jit::Lanes lanes) {
+    ddx::jit::Options o;
+    o.codegen.lanes = lanes;
+    const auto kernel = must_compile(graph, o);
+    std::vector<float> value(n), dx(n), dy(n);
+    float *const values[]{value.data()};
+    const std::array<float *, 2> partials{dx.data(), dy.data()};
+    kernel(xs, values, partials, {}, n);
+    return std::array{value, dx, dy};
+  };
+
+  const auto scalar = run(ddx::jit::Lanes::scalar());
+  for (const auto lanes :
+       {*ddx::jit::Lanes::exactly(4), *ddx::jit::Lanes::exactly(8),
+        *ddx::jit::Lanes::exactly(16), ddx::jit::Lanes::derived()}) {
+    const auto wide = run(lanes);
+    for (std::size_t k = 0; k < wide.size(); ++k) {
+      for (std::size_t i = 0; i < n; ++i) {
+        EXPECT_EQ(std::bit_cast<std::uint32_t>(wide[k][i]),
+                  std::bit_cast<std::uint32_t>(scalar[k][i]))
+            << "block " << k << ", lanes " << spelled(lanes) << " at " << i;
+      }
+    }
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::array point{cx[i], cy[i]};
+    const float want = ddx::rt::evaluate(b, f.id(b), point);
+    EXPECT_EQ(std::bit_cast<std::uint32_t>(scalar[0][i]),
+              std::bit_cast<std::uint32_t>(want))
+        << "at " << i << ": " << scalar[0][i] << " vs " << want;
+  }
+}
+
+// Through the equation: Core<float> launches a pipeline and runs its kernel.
+TEST(JitValue, AFloatEquationRunsItsKernel) {
+  const auto build = [] {
+    Arena<float> b;
+    const auto x = var(b, "x");
+    const auto y = var(b, "y");
+    return ddx::rt::equation(sin(x * y) + exp(y) / (x + 1.0f) +
+                             pow(x, y) + cbrt(y));
+  };
+  const auto swept = build();
+  auto compiled = build();
+  compiled.options({.backend = ddx::jit::Backend::Compile, .points = 1});
+  ASSERT_TRUE(compiled.wait_for_kernel());
+  ASSERT_TRUE(compiled.uses_kernel());
+  for (const float x : {0.3f, 0.7f, 1.1f, 2.9f}) {
+    const std::array p{x, 1.3f};
+    EXPECT_EQ(*compiled.jacobian(p), *swept.jacobian(p)) << "x = " << x;
+    EXPECT_EQ(*compiled.evaluate(p), *swept.evaluate(p)) << "x = " << x;
+  }
+}
+
 // The codegen level rides on the module, so one JIT serves compiles at several,
 // and all four must agree to the bit -- which is what lets the default be the
 // cheapest.  Level 0 qualifies only because contraction moved into the graph:
@@ -488,7 +569,7 @@ TEST(JitValue, AgreesWithDdxThroughTheBridge) {
 // rt::Equation::run() interprets when there is no kernel, so an empty Kernel
 // must be falsy and bring-up must report its refusal rather than throw.
 TEST(JitValue, AnUnbuiltKernelIsFalsyAndCreateAnswersWithAResult) {
-  const ddx::jit::Kernel none;
+  const ddx::jit::Kernel<double> none;
   EXPECT_FALSE(static_cast<bool>(none));
   EXPECT_EQ(none.shape().arity, 0u);
   EXPECT_EQ(none.shape().outputs(), 0u);
@@ -899,7 +980,7 @@ TEST(JitValue, SeparateCompilesCoexist) {
 // A Kernel shares ownership of the JIT its code lives in; without that share
 // this call lands in an unmapped page.
 TEST(JitValue, KernelOutlivesItsCompiler) {
-  ddx::jit::Kernel kernel;
+  ddx::jit::Kernel<double> kernel;
   {
     auto local = *ddx::jit::Compiler::create();
     Arena<> b;

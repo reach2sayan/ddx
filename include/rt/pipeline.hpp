@@ -4,6 +4,7 @@
 #include "rt/graph.hpp"
 #include "rt/kernels.hpp"
 #include "util/config.hpp" // DDX_FWD
+#include "util/export.hpp"
 
 #include <array>
 #include <atomic>
@@ -34,9 +35,10 @@ struct Guarded {
 
 // One rung's compile.  Copied out by pending(), so a caller waits holding no
 // lock of ours.
-using Pending = std::shared_future<jit::compile_result<jit::Kernel>>;
+template <impl::Numeric T>
+using Pending = std::shared_future<jit::compile_result<jit::Kernel<T>>>;
 // Polling a shared_future from many threads is well-defined.
-[[nodiscard]] inline bool landed(const Pending &p) {
+template <impl::Numeric T> [[nodiscard]] bool landed(const Pending<T> &p) {
   using namespace std::chrono_literals;
   return p.valid() && p.wait_for(0s) == std::future_status::ready;
 }
@@ -49,7 +51,7 @@ template <impl::Numeric T> struct Compiled {
   // chain is latency, and left alone for the sweep, where the same rewrite
   // costs tape locality.  Aliases `graph` where they agree.
   std::shared_ptr<const Graph<T>> compile_graph{};
-  jit::Kernel kernel{};
+  jit::Kernel<T> kernel{};
   // Rungs share one pool and need not land in the order they were asked for,
   // so this is what refuses a late one.
   jit::OptLevel level = jit::OptLevel::O0;
@@ -57,7 +59,7 @@ template <impl::Numeric T> struct Compiled {
   // so a table the equation is handed later means a new pipeline.
   const TensorKernelTable *kernels = nullptr;
 
-  [[nodiscard]] std::shared_ptr<const Compiled> with(jit::Kernel k,
+  [[nodiscard]] std::shared_ptr<const Compiled> with(jit::Kernel<T> k,
                                                      jit::OptLevel l) const {
     return std::make_shared<const Compiled>(
         Compiled{.graph = graph,
@@ -77,7 +79,7 @@ struct Setting {
 };
 
 // Two rungs: a cheap compile that lands soon, then the requested level.
-template <impl::Numeric T> class Pipeline {
+template <impl::Numeric T> class DDX_TEMPLATE_API Pipeline {
 public:
   using Held = Compiled<T>;
   static constexpr std::size_t Rungs = 2;
@@ -111,7 +113,7 @@ public:
 
   // The cheapest rung, so a caller waits on it holding no lock of ours -- and,
   // on the Python side, none of its own either.
-  [[nodiscard]] Pending pending() const {
+  [[nodiscard]] Pending<T> pending() const {
     [[maybe_unused]] const auto read = lock_.read();
     return rungs_.front().pending;
   }
@@ -138,14 +140,14 @@ private:
   // `level` is also the rank: a higher rung may replace a lower one, never the
   // other way about.
   struct Rung {
-    Pending pending; // set once, then read
+    Pending<T> pending; // set once, then read
     jit::OptLevel level = jit::OptLevel::O0;
   };
 
   // Whether the batch bought a rung.  False once every rung is spoken for, so
   // a settled pipeline never writes to the counter at all.
   [[nodiscard]] bool count(std::size_t n, const Setting &setting) {
-    if constexpr (std::same_as<T, double>) {
+    if constexpr (jit::CKernelScalar<T>) {
       if (n == 0 || setting.compiler == nullptr ||
           setting.options.backend != jit::Backend::Adapt) {
         return false;
@@ -167,7 +169,7 @@ private:
   void prepare([[maybe_unused]] Want want, const Setting &setting,
                auto &&freeze) {
     ready_ = std::make_shared<const Held>(freeze());
-    if constexpr (std::same_as<T, double>) {
+    if constexpr (jit::CKernelScalar<T>) {
       if (setting.compiler == nullptr) {
         return;
       }
@@ -183,7 +185,7 @@ private:
   // Under the write lock and idempotent: two threads may both arrive owing a
   // rung, and the second re-reads an `asked` the first has already moved.
   void climb(const Setting &setting) {
-    if constexpr (std::same_as<T, double>) {
+    if constexpr (jit::CKernelScalar<T>) {
       // No compiler, no ladder: count() never counted, so nothing was bought.
       if (setting.options.backend != jit::Backend::Adapt ||
           setting.compiler == nullptr) {
@@ -215,7 +217,9 @@ private:
 
   // Cheapest rung first, so it is also first in the pool's queue: codegen 0
   // lands sooner for a slower kernel, and every level agrees to the bit.
-  void launch(const Setting &setting) {
+  void launch(const Setting &setting)
+    requires jit::CKernelScalar<T>
+  {
     std::size_t next = 0;
     if (setting.options.codegen.codegen_level > jit::OptLevel::O0) {
       rungs_[next++] = rung(setting, jit::OptLevel::O0, ready_->compile_graph);
@@ -226,27 +230,30 @@ private:
 
   [[nodiscard]] Rung
   rung([[maybe_unused]] const Setting &setting, jit::OptLevel level,
-       [[maybe_unused]] const std::shared_ptr<const Graph<T>> &from) {
+       [[maybe_unused]] const std::shared_ptr<const Graph<T>> &from)
+    requires jit::CKernelScalar<T>
+  {
 #ifdef DDX_HAS_JIT
     jit::Options opt = setting.options;
     opt.codegen.codegen_level = level;
-    return {Pending{setting.compiler->compile_async(from, opt)}, level};
+    return {Pending<T>{setting.compiler->compile_async(from, opt)}, level};
 #else
-    return {Pending{}, level};
+    return {Pending<T>{}, level};
 #endif
   }
 
   // Republish rather than write into what a reader holds; a rung that lost the
   // race is dropped rather than allowed to demote a live kernel.
   void adopt() {
-    jit::Kernel best;
+    jit::Kernel<T> best;
     jit::OptLevel level = jit::OptLevel::O0;
     for (Rung &rung : rungs_) {
       if (!landed(rung.pending)) {
         continue;
       }
       // A refused compile leaves the kernel empty, and the sweep stays.
-      if (auto came = rung.pending.get(); came && (!best || rung.level > level)) {
+      if (auto came = rung.pending.get();
+          came && (!best || rung.level > level)) {
         best = *std::move(came);
         level = rung.level;
       }

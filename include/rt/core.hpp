@@ -72,15 +72,16 @@ concept CColumns = std::ranges::contiguous_range<R> &&
 [[nodiscard]] DDX_API jit::Compiler *shared_compiler();
 #endif
 
-// What a sweep gives up around itself where the caller holds nothing.
-struct Nothing {};
+// What a sweep gives up around itself where the caller holds nothing.  Visible,
+// since an instantiation is no more visible than its arguments: Core<T>.
+struct DDX_API Nothing {};
 
-template <typename C> class Restricted;
+template <typename C> class DDX_TEMPLATE_API Restricted;
 
 // The Jacobian spellings an equation and its restrict() view share.  `D`
 // supplies at<W>(), dispatch(), unit() and jacobian_sparsity(), the pattern
 // its cells are laid out by.
-template <typename D, impl::Numeric T> class JacobianSurface {
+template <typename D, impl::Numeric T> class DDX_TEMPLATE_API JacobianSurface {
   using Want = rt::Want;
 
 public:
@@ -257,7 +258,8 @@ template <impl::Numeric T> struct ThreadTapes {
 };
 // Block scope: GCC 15 never registers the destructor of a thread_local variable
 // template named from a template, so every thread exit leaked its tapes.
-template <impl::Numeric T> [[nodiscard]] ThreadTapes<T> &thread_tapes() {
+template <impl::Numeric T>
+[[nodiscard]] DDX_TEMPLATE_API ThreadTapes<T> &thread_tapes() {
   thread_local ThreadTapes<T> kept;
   return kept;
 }
@@ -267,7 +269,7 @@ template <impl::Numeric T> [[nodiscard]] ThreadTapes<T> &thread_tapes() {
 // the Python Equation are this plus the spellings their callers want.  `Yield`
 // is what a sweep gives up while it runs: the GIL, on the Python side.
 template <impl::Numeric T, std::default_initializable Yield = Nothing>
-class Core : public JacobianSurface<Core<T, Yield>, T> {
+class DDX_TEMPLATE_API Core : public JacobianSurface<Core<T, Yield>, T> {
   // Freezes its own pipelines through checked(), over cells of this Jacobian.
   friend class Restricted<Core>;
   using Surface = JacobianSurface<Core, T>;
@@ -1283,7 +1285,7 @@ private:
   // host with no JIT.
   [[nodiscard]] Setting setting() const {
     Setting out;
-    if constexpr (std::same_as<T, double>) {
+    if constexpr (jit::CKernelScalar<T>) {
       out.options = effective_options();
 #ifdef DDX_HAS_JIT
       if (options_.backend == jit::Backend::Compile ||
@@ -1378,7 +1380,7 @@ private:
   // swept graph.
   [[nodiscard]] bool rebalances([[maybe_unused]] Want want) const {
 #ifdef DDX_HAS_JIT
-    if constexpr (std::same_as<T, double>) {
+    if constexpr (jit::CKernelScalar<T>) {
       // No kernel is lowered over tensor rows, so no rebalanced copy either.
       // The roots' cone, not the arena: a dense Hessian swept earlier leaves
       // tensor nodes no scalar root reads.  Read under the lock, as a sweep on
@@ -1432,7 +1434,7 @@ private:
   void run(const Compiled &c, std::span<const T *const> xs,
            const Columns<T> &out, std::size_t n) const {
     [[maybe_unused]] const auto held = sweeping();
-    if constexpr (std::same_as<T, double>) {
+    if constexpr (jit::CKernelScalar<T>) {
       if (c.kernel) {
         c.kernel(xs, out.values, out.jacobian, out.hessian, n);
         return;
@@ -1531,7 +1533,7 @@ private:
 // cells alone, so the partials of the others are never computed.  It reads the
 // equation it came from and must not outlive it.
 template <typename C>
-class Restricted
+class DDX_TEMPLATE_API Restricted
     : public JacobianSurface<Restricted<C>, typename C::value_type> {
   using T = typename C::value_type;
   using Want = rt::Want;
@@ -1644,11 +1646,13 @@ template <impl::Numeric T = double> void release_tapes() noexcept {
 // The scalars libddx compiles the engine for once (src/rt/instances.cpp); a TU
 // here only instantiates what it inlines.  Any other T instantiates as before.
 // thread_tapes() is on the list for its thread_local: one set of tapes per
-// thread, not one per binary.  The visibility rides on the extern declaration,
-// which the definition follows.
+// thread, not one per binary.  Arena and Graph declare theirs beside the class
+// (DDX_EXTERN_INSTANCE).  The visibility is DDX_TEMPLATE_API's on GCC and
+// Clang and DDX_INSTANCE_API's on MSVC, which refuses dllexport on an extern
+// declaration (C4910): libddx's own TUs skip these there, and instances.cpp
+// exports at the definition.  C4251 is the std:: members of an exported class:
+// both sides of the boundary share one STL.
 #define DDX_RT_INSTANCES(EXTERN, API, T)                                       \
-  EXTERN template class API ::ddx::rt::Arena<T>;                               \
-  EXTERN template class API ::ddx::rt::Graph<T>;                               \
   EXTERN template class API ::ddx::rt::detail::Pipeline<T>;                    \
   EXTERN template class API ::ddx::rt::detail::JacobianSurface<                \
       ::ddx::rt::detail::Core<T>, T>;                                          \
@@ -1658,7 +1662,14 @@ template <impl::Numeric T = double> void release_tapes() noexcept {
   EXTERN template API ::ddx::rt::detail::ThreadTapes<T>                        \
       & ::ddx::rt::detail::thread_tapes<T>();
 
-DDX_RT_INSTANCES(extern, DDX_API, double)
-DDX_RT_INSTANCES(extern, DDX_API, float)
-DDX_RT_INSTANCES(extern, DDX_API, long double)
-DDX_RT_INSTANCES(extern, DDX_API, int)
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4251)
+#endif
+#if !(defined(_MSC_VER) && defined(DDX_BUILDING))
+DDX_RT_INSTANCES(extern, DDX_INSTANCE_API, double)
+DDX_RT_INSTANCES(extern, DDX_INSTANCE_API, float)
+#endif
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
