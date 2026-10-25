@@ -4,6 +4,7 @@
 #include "util/error.hpp"
 #include "util/export.hpp"
 
+#include <array>
 #include <concepts>
 #include <cstdint>
 #include <string>
@@ -27,13 +28,11 @@ struct LiteralIndex {
 };
 using Leaf = std::variant<std::monostate, NameIndex, LiteralIndex>;
 
-// A node before it has a value type: an opcode, its operands, and -- for the
-// two leaves -- the index that names it.
+// A node before it has a value type: an opcode, the operands its arity names
+// (the rest no_term), and -- for the two leaves -- the index that names it.
 struct Term {
   OpCode op = OpCode::Const;
-  std::uint32_t a = no_term;
-  std::uint32_t b = no_term;
-  std::uint32_t c = no_term; // only a select reaches it
+  std::array<std::uint32_t, 3> in{no_term, no_term, no_term};
   Leaf leaf{};
 };
 

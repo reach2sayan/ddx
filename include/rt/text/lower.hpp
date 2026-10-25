@@ -58,6 +58,14 @@ form(const Ast &ast, std::span<const Expression<T>> symbols,
                      const std::uint32_t i) -> result<Expr> {
     return i < from.size() ? result<Expr>{from[i]} : fail(errc::bad_syntax);
   };
+  // The op over its first sizeof...(I) operands, every one already built.
+  const auto over =
+      [&]<std::size_t... I>(std::index_sequence<I...>) -> result<Expr> {
+    const auto stands = [&built](std::uint32_t i) { return i < built.size(); };
+    return std::ranges::all_of(std::span{t.in}.first(sizeof...(I)), stands)
+               ? result<Expr>{Expr::form(t.op, built[t.in[I]]...)}
+               : fail(errc::bad_syntax);
+  };
 
   switch (kind_of(t.op)) {
   case Kind::Const:
@@ -81,23 +89,11 @@ form(const Ast &ast, std::span<const Expression<T>> symbols,
         },
         t.leaf);
   case Kind::Unary:
-    return at(built, t.a).transform([&t](const Expr &u) {
-      return Expr::form(t.op, u);
-    });
-  case Kind::Ternary:
-    return at(built, t.a).and_then([&](const Expr &c) {
-      return at(built, t.b).and_then([&](const Expr &x) {
-        return at(built, t.c).transform([&](const Expr &y) {
-          return Expr::form(t.op, c, x, y);
-        });
-      });
-    });
+    return over(std::make_index_sequence<1>{});
   case Kind::Binary:
-    return at(built, t.a).and_then([&](const Expr &l) {
-      return at(built, t.b).transform([&](const Expr &r) {
-        return Expr::form(t.op, l, r);
-      });
-    });
+    return over(std::make_index_sequence<2>{});
+  case Kind::Ternary:
+    return over(std::make_index_sequence<3>{});
   case Kind::Extern:
   case Kind::Nary:
   case Kind::Tensor:

@@ -6,6 +6,8 @@
 #include <boost/parser/parser.hpp>
 
 #include <algorithm>
+#include <array>
+#include <concepts>
 #include <cstdint>
 #include <optional>
 #include <ranges>
@@ -65,6 +67,15 @@ struct Building {
   ast.terms.push_back(t);
   return static_cast<std::uint32_t>(ast.terms.size() - 1);
 }
+// An `Op` term over its operands, the arity checked as it compiles.
+template <OpCode Op, std::same_as<std::uint32_t>... Ids>
+  requires(sizeof...(Ids) == arity_of(Op))
+[[nodiscard]] constexpr std::uint32_t
+append(Ast &ast, std::integral_constant<OpCode, Op>, const Ids... in) {
+  Term t{.op = Op};
+  std::ranges::copy(std::array{in...}, t.in.begin());
+  return append(ast, t);
+}
 
 // Where `word` sits in `table`, putting it there if it does not yet.
 [[nodiscard]] constexpr std::uint32_t intern(std::vector<std::string> &table,
@@ -90,8 +101,7 @@ namespace act {
 // it is the grammar, not the action, that makes it right-associative.
 template <OpCode Op>
 constexpr auto fold = [](auto &ctx) {
-  _val(ctx) =
-      append(_globals(ctx).ast, {.op = Op, .a = _val(ctx), .b = _attr(ctx)});
+  _val(ctx) = append(_globals(ctx).ast, opcode<Op>, _val(ctx), _attr(ctx));
 };
 
 // `a > b` is `b < a` and `a >= b` is `b <= a`: only two comparison opcodes
@@ -99,8 +109,7 @@ constexpr auto fold = [](auto &ctx) {
 // same composition rt::gt and rt::ge make in expressions.hpp.
 template <OpCode Op>
 constexpr auto fold_swapped = [](auto &ctx) {
-  _val(ctx) =
-      append(_globals(ctx).ast, {.op = Op, .a = _attr(ctx), .b = _val(ctx)});
+  _val(ctx) = append(_globals(ctx).ast, opcode<Op>, _attr(ctx), _val(ctx));
 };
 
 // `a == b` is `le(a,b) * le(b,a)` -- both ways round, so a NaN operand answers
@@ -110,9 +119,9 @@ constexpr auto equal = [](auto &ctx) {
   Ast &ast = _globals(ctx).ast;
   const std::uint32_t l = _val(ctx);
   const std::uint32_t r = _attr(ctx);
-  const auto le = append(ast, {.op = OpCode::Le, .a = l, .b = r});
-  const auto ge = append(ast, {.op = OpCode::Le, .a = r, .b = l});
-  _val(ctx) = append(ast, {.op = OpCode::Mul, .a = le, .b = ge});
+  const auto le = append(ast, opcode<OpCode::Le>, l, r);
+  const auto ge = append(ast, opcode<OpCode::Le>, r, l);
+  _val(ctx) = append(ast, opcode<OpCode::Mul>, le, ge);
 };
 constexpr auto unequal = [](auto &ctx) {
   equal(ctx);
@@ -120,16 +129,16 @@ constexpr auto unequal = [](auto &ctx) {
   const auto one =
       append(ast, {.op = OpCode::Const,
                    .leaf = LiteralIndex{intern(ast.literals, "1")}});
-  const auto negated = append(ast, {.op = OpCode::Neg, .a = _val(ctx)});
-  _val(ctx) = append(ast, {.op = OpCode::Add, .a = one, .b = negated});
+  const auto negated = append(ast, opcode<OpCode::Neg>, _val(ctx));
+  _val(ctx) = append(ast, opcode<OpCode::Add>, one, negated);
 };
 
 // There is no Sub opcode -- the label "-" is unary Neg -- so a difference is
 // the sum of a negation, which is what the C++ operator- builds as well.
 constexpr auto subtract = [](auto &ctx) {
   Ast &ast = _globals(ctx).ast;
-  const auto negated = append(ast, {.op = OpCode::Neg, .a = _attr(ctx)});
-  _val(ctx) = append(ast, {.op = OpCode::Add, .a = _val(ctx), .b = negated});
+  const auto negated = append(ast, opcode<OpCode::Neg>, _attr(ctx));
+  _val(ctx) = append(ast, opcode<OpCode::Add>, _val(ctx), negated);
 };
 
 template <typename Index>
@@ -152,9 +161,9 @@ constexpr auto capture = [](auto &ctx) {
 // A run of signs is one bit -- `- -x` is x -- kept in the rule's local.
 constexpr auto flip = [](auto &ctx) { _locals(ctx) = !_locals(ctx); };
 constexpr auto signed_operand = [](auto &ctx) {
-  _val(ctx) = _locals(ctx) ? append(_globals(ctx).ast,
-                                    {.op = OpCode::Neg, .a = _attr(ctx)})
-                           : _attr(ctx);
+  _val(ctx) = _locals(ctx)
+                  ? append(_globals(ctx).ast, opcode<OpCode::Neg>, _attr(ctx))
+                  : _attr(ctx);
 };
 
 // The whole of the function table is opcode_of, callable and arity_of, so a
@@ -177,12 +186,9 @@ constexpr auto apply = [](auto &ctx) {
   } else if (arity_of(*op) != invocation.args.size()) {
     refuse(errc::wrong_argument_count);
   } else {
-    const auto arg = [&invocation](const std::size_t i) {
-      return invocation.args.size() > i ? invocation.args[i] : no_term;
-    };
-    _val(ctx) = append(
-        building.ast,
-        {.op = *op, .a = invocation.args.front(), .b = arg(1), .c = arg(2)});
+    Term t{.op = *op};
+    std::ranges::copy(invocation.args, t.in.begin());
+    _val(ctx) = append(building.ast, t);
   }
 };
 

@@ -93,7 +93,7 @@ TEST(RtText, BuildsTheSameArenaAsTheCppSpelling) {
   // Node for node: interning makes the arena a function of the model, so equal
   // models are the same bytes and not merely the same answers.
   const auto same = [](const auto &l, const auto &r) {
-    return l.op == r.op && l.a == r.a && l.b == r.b && l.aux == r.aux &&
+    return l.op == r.op && l.in == r.in && l.payload == r.payload &&
            l.value == r.value;
   };
   EXPECT_TRUE(std::ranges::equal(written.nodes(), parsed.nodes(), same));
@@ -116,7 +116,7 @@ TEST(RtText, ComposesEqualityAsTheOperatorsDo) {
     const auto lowered = lower(parsed, *ast);
     ASSERT_TRUE(lowered.has_value()) << source;
     const auto same = [](const auto &l, const auto &r) {
-      return l.op == r.op && l.a == r.a && l.b == r.b && l.aux == r.aux &&
+      return l.op == r.op && l.in == r.in && l.payload == r.payload &&
              l.value == r.value;
     };
     EXPECT_TRUE(std::ranges::equal(written.nodes(), parsed.nodes(), same))
@@ -205,7 +205,7 @@ TEST(RtText, LowersADifferenceAsTheSumOfANegation) {
   ASSERT_TRUE(ast.has_value());
   const auto &root = ast->terms[ast->root];
   EXPECT_EQ(root.op, ddx::rt::OpCode::Add);
-  EXPECT_EQ(ast->terms[root.b].op, ddx::rt::OpCode::Neg);
+  EXPECT_EQ(ast->terms[root.in[1]].op, ddx::rt::OpCode::Neg);
 }
 
 TEST(RtText, RefusesWhatItCannotMean) {

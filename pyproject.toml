@@ -97,9 +97,10 @@ test-command = "pytest -q {package}/python/tests"
 
 # LLVM comes from Conan (contrib/conan), built once and cached by release.yml.
 # The manylinux image's own python3 is too old for Conan; a build's is not.
+# The profile asks every package for Ninja, and only llvm-core brings its own.
 [tool.cibuildwheel.linux]
 archs = ["x86_64"]
-before-all = 'export PATH=/opt/python/cp312-cp312/bin:$PATH && pip install -q conan && conan profile detect --exist-ok && conan remote add ddx /project/contrib/conan --type=local-recipes-index --force && conan install /project -pr:a /project/contrib/conan/profile -o "&:jit=True" -o "&:boost=False" --build=missing -of /project/.deps/conan'
+before-all = 'export PATH=/opt/python/cp312-cp312/bin:$PATH && pip install -q conan ninja && conan profile detect --exist-ok && conan remote add ddx /project/contrib/conan --type=local-recipes-index --force && conan install /project -pr:a /project/contrib/conan/profile -o "&:jit=True" -o "&:boost=False" --build=missing -of /project/.deps/conan'
 environment = { CONAN_HOME = "/project/.deps/conan-home", CMAKE_PREFIX_PATH = "/project/.deps/conan/build/Release/generators" }
 
 # A short CONAN_HOME and output folder keep LLVM's build tree under MAX_PATH.

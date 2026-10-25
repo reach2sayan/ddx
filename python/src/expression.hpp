@@ -98,7 +98,8 @@ public:
     }
     const rt::Node<double> &n = (*arena_)[expression_.id()];
     if (n.op == rt::OpCode::MatConst) {
-      const auto &t = arena_->tensors()[rt::detail::index_of(n)];
+      const auto &t =
+          arena_->tensors()[rt::detail::get<rt::TensorRef>(n).value];
       return {t.rows, t.cols};
     }
     const rt::Shape s = expression_.shape();
@@ -129,7 +130,7 @@ public:
       return std::format("Expression({})", n.value);
     case rt::OpCode::Var:
       return std::format("Expression({})",
-                         arena_->symbols()[rt::detail::index_of(n)]);
+                         arena_->symbols()[rt::detail::get<rt::Slot>(n).value]);
     default:
       // The op and the identity, not the subtree: an id *is* the identity of a
       // subexpression here.
