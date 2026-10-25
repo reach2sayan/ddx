@@ -1,5 +1,4 @@
-# The flags our own targets are built with.  Nothing here touches the INTERFACE
-# libraries: a flag reaches a target only through ddx_target_flags().
+# The flags our own targets are built with, applied by ddx_target_flags().
 include_guard(GLOBAL)
 
 option(ENABLE_NATIVE_ARCH "Build optimized for this machine" ON)
@@ -10,19 +9,12 @@ if (MSVC)
     set(DDX_WARNINGS /Wall /wd4061 /wd4623 /wd4625 /wd4626 /wd5026 /wd5027
                      /wd4710 /wd4711 /wd4868 /wd4820 /wd5045 /wd5246 /wd4514
                      /wd4324 /wd5266 /wd4866 /wd4371 /wd4686)
-    # Two the compiler is wrong about, not the code: C4548 reads every C++23
-    # multidimensional subscript `m[i, j]` as a comma expression whose left
-    # operand is discarded, and C5264 calls the template-parameter object a
-    # literal `named<"x">` creates an unused const variable.
+    # False positives: C4548 on C++23 `m[i, j]`, C5264 on `named<"x">`.
     list(APPEND DDX_WARNINGS /wd4548 /wd5264)
     list(APPEND DDX_WARNINGS /external:anglebrackets /external:W0)
     set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
     list(APPEND DDX_CODEGEN_FLAGS /EHs-c- /D_HAS_EXCEPTIONS=0 /wd4577)
-    # CMake's default flags carry /EHsc, which ddx_target_flags() then
-    # overrides on every one of our targets -- and cl reports each override as
-    # D9025, a command-line warning no source change can silence.  Drop it from
-    # the global flags instead; each target names its own model below, and a
-    # dependency that wants exceptions (GoogleTest) passes its own /EHsc.
+    # Overriding CMake's default /EHsc per target is warning D9025; drop it here.
     string(REGEX REPLACE "[/-]EHsc *" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
     string(STRIP "${CMAKE_CXX_FLAGS}" CMAKE_CXX_FLAGS)
 else ()
@@ -41,8 +33,7 @@ else ()
     set(DDX_WARNINGS -Wall -Wextra -Wpedantic -Wfatal-errors)
 endif ()
 
-# Only when we are the top-level project: a consumer's launcher is its own call.
-# The sloppiness lets ccache hit on TUs that force-include the tests' PCH.
+# Top level only.  The sloppiness lets ccache hit on TUs using the tests' PCH.
 option(DDX_CCACHE "Compile through ccache when it is found" ON)
 if (DDX_CCACHE AND PROJECT_IS_TOP_LEVEL AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
     find_program(DDX_CCACHE_PROGRAM ccache)
@@ -60,9 +51,7 @@ if (NOT DDX_SANITIZE STREQUAL "off")
         message(WARNING "DDX_SANITIZE=${DDX_SANITIZE} ignored: MSVC has no such sanitizer")
     else ()
         set(sanitize -fsanitize=${DDX_SANITIZE})
-        # The null family turns off -fdelete-null-pointer-checks, and GCC then
-        # cannot fold `&member == 0` in a constant expression: every constexpr
-        # test stops compiling.
+        # The null checks stop GCC folding `&member == 0` in constant expressions.
         if (DDX_SANITIZE STREQUAL "undefined")
             list(APPEND sanitize -fno-sanitize=null,nonnull-attribute,returns-nonnull-attribute)
         endif ()
@@ -79,7 +68,6 @@ function(ddx_target_flags target)
     if (arg_EXCEPTIONS)
         list(REMOVE_ITEM flags -fno-exceptions /EHs-c- /D_HAS_EXCEPTIONS=0)
         if (MSVC)
-            # Nothing supplies the model once the global /EHsc is gone.
             list(APPEND flags /EHsc)
         endif ()
     endif ()

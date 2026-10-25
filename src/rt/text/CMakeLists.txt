@@ -1,6 +1,5 @@
-# The grammar: the one object in libddx compiled with exceptions, since
-# Boost.Parser's parse() is a try/catch.  An OBJECT library so it can carry
-# its own flags.
+# The grammar, the one libddx object built with exceptions: Boost.Parser's
+# parse() is a try/catch.
 add_library(ddx_text_objs OBJECT parse.cpp)
 
 set_target_properties(ddx_text_objs PROPERTIES

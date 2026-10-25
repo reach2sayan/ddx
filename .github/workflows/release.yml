@@ -6,14 +6,9 @@
 # publishing when the NUGET_USER repository variable names the nuget.org
 # profile; without it the .nupkg rides the GitHub Release alone.
 #
-# Linux wheels carry the JIT: LLVM is built as archives inside the manylinux
-# container by scripts/build_llvm.py, once, and cached under .deps -- the
-# checkout is what cibuildwheel mounts at /project, so a cache on the host is
-# what the container's before-all finds.  Windows builds without the JIT
-# (pyproject.toml's override) and says so through ddx.has_jit.  No macOS
-# wheel: the tree is written to libstdc++ 14's C++23, and libc++ -- the only
-# standard library Homebrew's LLVM archives can be linked with -- has no
-# views::enumerate, cartesian_product, chunk, stride or ranges::fold.
+# Linux and Windows wheels carry the JIT, with LLVM from Conan (contrib/conan)
+# built in cibuildwheel's before-all and cached between runs.  No macOS wheel
+# yet: build.yml's macOS job has to prove the GCC toolchain first.
 name: Release
 
 on:
@@ -49,17 +44,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # The script is the key: a change to what it builds is a new prefix.
-      # Restore and save separately: before-all builds LLVM inside the
-      # cibuildwheel step, and a wheel failing after it must not cost the
-      # archives -- the save below runs either way.
-      - name: Restore LLVM archives (Linux)
-        if: runner.os == 'Linux'
-        id: llvm
+      # Restored and saved as two steps: a wheel failing after LLVM is built
+      # must not cost the hour.  Linux's CONAN_HOME is under the checkout,
+      # which cibuildwheel mounts at /project.
+      - name: Restore Conan packages
+        id: conan
         uses: actions/cache/restore@v4
         with:
-          path: .deps/llvm-20
-          key: llvm-manylinux_2_28-x86_64-${{ hashFiles('scripts/build_llvm.py') }}
+          path: ${{ runner.os == 'Windows' && 'C:\c\p' || '.deps/conan-home/p' }}
+          key: conan-wheels-${{ matrix.os }}-${{ hashFiles('contrib/conan/**', 'conanfile.py') }}
 
       # build[uv] wants a uv of its own on the two hosts that build outside a
       # container; the Linux container brings one.
@@ -79,15 +72,22 @@ jobs:
       # A full version: cibuildwheel publishes no floating major tag.
       - uses: pypa/cibuildwheel@v3.4.1
 
-      # Only a prefix that reached its LLVMConfig: a key can be written once,
-      # and a partial build saved under it would be restored as if whole.
-      - name: Save LLVM archives (Linux)
-        if: always() && runner.os == 'Linux' && steps.llvm.outputs.cache-hit != 'true'
-            && hashFiles('.deps/llvm-20/lib/cmake/llvm/LLVMConfig.cmake') != ''
+      # Only once LLVM is whole: a key is written once.
+      - name: LLVM installed
+        id: llvm
+        if: always()
+        shell: bash
+        run: |
+          for d in .deps/conan C:/c/out; do
+            [ -f "$d/build/Release/generators/LLVMConfig.cmake" ] && echo "done=true" >> "$GITHUB_OUTPUT"
+          done; true
+
+      - name: Save Conan packages
+        if: always() && steps.conan.outputs.cache-hit != 'true' && steps.llvm.outputs.done == 'true'
         uses: actions/cache/save@v4
         with:
-          path: .deps/llvm-20
-          key: ${{ steps.llvm.outputs.cache-primary-key }}
+          path: ${{ runner.os == 'Windows' && 'C:\c\p' || '.deps/conan-home/p' }}
+          key: ${{ steps.conan.outputs.cache-primary-key }}
 
       - uses: actions/upload-artifact@v6
         with:

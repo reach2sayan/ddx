@@ -80,17 +80,8 @@ ENABLE_NATIVE_ARCH = "OFF"
 # python/CMakeLists.txt installs the two shared objects into the package itself;
 # the headers and the CMake package are not a wheel's business.
 DDX_INSTALL = "OFF"
-# Where the Linux presets look too.  A path that does not exist is searched
-# past, so another layout loses nothing; `-C cmake.define.LLVM_DIR=...` overrides.
+# Where the Linux presets look too; `-C cmake.define.LLVM_DIR=...` overrides.
 LLVM_DIR = "/usr/lib/llvm-20/lib/cmake/llvm"
-
-# No LLVM archives on Windows yet, so that wheel interprets and ddx.has_jit
-# says so.  `inherit`, or this one define is the whole table on Windows: no
-# extension module, and the headers installed into the wheel instead.
-[[tool.scikit-build.overrides]]
-if.platform-system = "win32"
-inherit.cmake.define = "append"
-cmake.define.DDX_BUILD_JIT = "OFF"
 
 # --- release wheels -----------------------------------------------------------
 # One wheel per CPython: pybind11 has no stable-ABI mode, and module.cpp's
@@ -104,22 +95,18 @@ build-verbosity = 1
 test-requires = "pytest"
 test-command = "pytest -q {package}/python/tests"
 
-# The archives are built in the container -- no package there has them -- and
-# scripts/build_llvm.py is idempotent, so a cached .deps skips the hour.  The
-# manylinux image's own python3 is too old for the script; one of the builds'
-# is not, and before-all runs before any of them is on the PATH.
-# CMAKE_PREFIX_PATH rather than LLVM_DIR: the same prefix holds the static zlib
-# and zstd LLVMConfig goes looking for.
+# LLVM comes from Conan (contrib/conan), built once and cached by release.yml.
+# The manylinux image's own python3 is too old for Conan; a build's is not.
 [tool.cibuildwheel.linux]
 archs = ["x86_64"]
-before-all = "/opt/python/cp312-cp312/bin/python {project}/scripts/build_llvm.py /project/.deps/llvm-20"
-environment = { CMAKE_PREFIX_PATH = "/project/.deps/llvm-20" }
+before-all = 'export PATH=/opt/python/cp312-cp312/bin:$PATH && pip install -q conan && conan profile detect --exist-ok && conan remote add ddx /project/contrib/conan --type=local-recipes-index --force && conan install /project -pr:a /project/contrib/conan/profile -o "&:jit=True" -o "&:boost=False" --build=missing -of /project/.deps/conan'
+environment = { CONAN_HOME = "/project/.deps/conan-home", CMAKE_PREFIX_PATH = "/project/.deps/conan/build/Release/generators" }
 
-# No macOS section: the tree needs libstdc++'s C++23 ranges, and Homebrew's
-# LLVM archives are libc++-built, so there is no toolchain that links both.
-
+# A short CONAN_HOME and output folder keep LLVM's build tree under MAX_PATH.
 [tool.cibuildwheel.windows]
 archs = ["AMD64"]
+before-all = 'pip install -q conan && conan profile detect --exist-ok && conan remote add ddx {project}/contrib/conan --type=local-recipes-index --force && conan install {project} -pr:a {project}/contrib/conan/profile -o "&:jit=True" -o "&:boost=False" --build=missing -of C:/c/out'
+environment = { CONAN_HOME = "C:/c", CMAKE_PREFIX_PATH = "C:/c/out/build/Release/generators" }
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]

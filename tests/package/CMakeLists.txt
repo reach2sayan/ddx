@@ -31,6 +31,8 @@ endif ()
 # Every header the package ships, against the Boost it ships.
 get_target_property(DDX_INCLUDE_DIRS ddx::util INTERFACE_INCLUDE_DIRECTORIES)
 list(GET DDX_INCLUDE_DIRS 0 DDX_INCLUDE_DIR)
+# A file set's base directory is exported inside $<BUILD_INTERFACE:...>.
+string(REGEX REPLACE "^\\$<BUILD_INTERFACE:(.*)>$" "\\1" DDX_INCLUDE_DIR "${DDX_INCLUDE_DIR}")
 file(GLOB_RECURSE DDX_HEADERS RELATIVE "${DDX_INCLUDE_DIR}" "${DDX_INCLUDE_DIR}/*.hpp")
 list(FILTER DDX_HEADERS EXCLUDE REGEX "^boost/")
 if (NOT DDX_HEADERS)

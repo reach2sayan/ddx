@@ -1,18 +1,14 @@
 # Every third-party dependency.  Nothing downloads until its macro asks.
 #
 #   ddx_use_boost()            Boost, header-only, found or fetched  always
-#   ddx_use_llvm()             LLVM 20, found                        DDX_BUILD_JIT
+#   ddx_use_llvm()             LLVM 20, found (or Conan's)           DDX_BUILD_JIT
 #   ddx_use_googletest()       GoogleTest, fetched                   top-level only
 #   ddx_use_pybind11()         pybind11, found in the build env      DDX_BUILD_PYTHON
-#
-# Found or fetched: use the Boost you were given, download one only if
-# you were not.  -DBoost_ROOT=, CMAKE_PREFIX_PATH and toolchain files all work.
 include_guard(GLOBAL)
 
 include(FetchContent)
 
-# Skip CMake's user package registry: it records build trees, so a bare configure
-# can find another project's build tree instead of fetching.
+# The package registry records build trees; never find another project's.
 set(DDX_FIND_NO_REGISTRY NO_CMAKE_PACKAGE_REGISTRY NO_CMAKE_SYSTEM_PACKAGE_REGISTRY)
 
 # --- versions ---------------------------------------------------------------
@@ -34,8 +30,7 @@ FetchContent_Declare(googletest
 # which carries no CMake config until it is built.
 set(DDX_BOOST_INCLUDEDIR "" CACHE PATH "A raw Boost header tree to use (must hold boost/version.hpp); overrides both find_package and the fetch")
 set(DDX_BOOST_VERSION "1.92.0" CACHE STRING "Boost release to fetch when none is supplied")
-# A floor on what find_package may accept, so a distro Boost too old for ddx
-# falls through to the fetch instead of silently replacing it.
+# A distro Boost older than this falls through to the fetch.
 set(DDX_BOOST_MINIMUM "1.88" CACHE STRING "Oldest Boost a supplied one may be")
 set(DDX_BOOST_SHA256 "ea7b982002cc9dfbe59b0b217b206f470dc75f3de0bb2973d844118934d82411"
         CACHE STRING "SHA256 of the archive DDX_BOOST_VERSION names")
@@ -43,10 +38,8 @@ cmake_path(SET _ddx_deps_default NORMALIZE "${CMAKE_CURRENT_LIST_DIR}/../.deps")
 set(DDX_DEPS_DIR "${_ddx_deps_default}" CACHE PATH "Where fetched Boost is unpacked; shared by every build tree")
 unset(_ddx_deps_default)
 
-# SOURCE_SUBDIR names nothing, so MakeAvailable unpacks and stops.
-# SOURCE_DIR is shared between trees (one download); SUBBUILD_DIR and BINARY_DIR
-# cannot be -- a subbuild caches its generator, so sharing it fails the moment
-# two trees use different ones.
+# Unpacked only (SOURCE_SUBDIR names nothing), once for every build tree; the
+# subbuild caches its generator, so it stays per tree.
 FetchContent_Declare(boost
         URL https://github.com/boostorg/boost/releases/download/boost-${DDX_BOOST_VERSION}/boost-${DDX_BOOST_VERSION}-b2-nodocs.tar.xz
         URL_HASH SHA256=${DDX_BOOST_SHA256}
@@ -57,17 +50,15 @@ FetchContent_Declare(boost
         BINARY_DIR "${CMAKE_BINARY_DIR}/_deps/boost-${DDX_BOOST_VERSION}-build"
 )
 
-# DDX_BOOST_VENDORED is read by DdxInstall: only a Boost ddx fetched is carried
-# into the package.
+# DDX_BOOST_VENDORED: only a Boost ddx fetched is installed with it.
 macro(ddx_use_boost)
     if (NOT TARGET Boost::headers)
+        set(DDX_BOOST_VENDORED FALSE CACHE INTERNAL "ddx fetched Boost itself")
         if (DDX_BOOST_INCLUDEDIR)
             _ddx_adopt_boost("${DDX_BOOST_INCLUDEDIR}")
-            set(DDX_BOOST_VENDORED FALSE CACHE INTERNAL "ddx fetched Boost itself")
         else ()
             find_package(Boost ${DDX_BOOST_MINIMUM} QUIET CONFIG ${DDX_FIND_NO_REGISTRY})
             if (Boost_FOUND AND TARGET Boost::headers)
-                set(DDX_BOOST_VENDORED FALSE CACHE INTERNAL "ddx fetched Boost itself")
                 get_target_property(_ddx_boost_inc Boost::headers INTERFACE_INCLUDE_DIRECTORIES)
                 list(GET _ddx_boost_inc 0 DDX_BOOST_ROOT)
                 unset(_ddx_boost_inc)
@@ -101,8 +92,9 @@ macro(_ddx_adopt_boost root)
 endmacro()
 
 # --- LLVM -------------------------------------------------------------------
-# Found, then linked as archives, zlib and zstd included.  Sets
-# LLVM_DEFINITIONS_LIST and DDX_LLVM_LIBS for src/jit.
+# Found, never fetched: an installed LLVMConfig or Conan's llvm-core, whose
+# config has no LLVM_VERSION_MAJOR or llvm_map_components_to_libnames.
+# Sets LLVM_DEFINITIONS_LIST and DDX_LLVM_LIBS for src/jit.
 macro(ddx_use_llvm)
     if (NOT LLVM_FOUND)
         # A libz.so cached by an earlier configure would win over ZLIB_USE_STATIC_LIBS.
@@ -117,55 +109,77 @@ macro(ddx_use_llvm)
         foreach (_ddx_llvm_extra FFI LibEdit LibXml2 CURL)
             set(CMAKE_DISABLE_FIND_PACKAGE_${_ddx_llvm_extra} ON)
         endforeach ()
-        find_package(LLVM REQUIRED CONFIG)
+        find_package(LLVM CONFIG)
         foreach (_ddx_llvm_extra FFI LibEdit LibXml2 CURL)
             unset(CMAKE_DISABLE_FIND_PACKAGE_${_ddx_llvm_extra})
         endforeach ()
         unset(_ddx_llvm_extra)
         unset(ZLIB_USE_STATIC_LIBS)
+        if (NOT LLVM_FOUND)
+            message(FATAL_ERROR
+                    "DDX_BUILD_JIT is on and no LLVM ${DDX_LLVM_VERSION} was found; ddx "
+                    "never downloads it.  Either point CMake at an installed one "
+                    "(-DLLVM_DIR=<prefix>/lib/cmake/llvm, e.g. apt's "
+                    "/usr/lib/llvm-${DDX_LLVM_VERSION}/lib/cmake/llvm) or have Conan "
+                    "build it: `conan install . -o \"&:jit=True\" --build=missing` and "
+                    "configure with the conan_toolchain.cmake it writes.")
+        endif ()
         # LLVMConfig matches only an exact version request, so check the major here.
-        if (NOT LLVM_VERSION_MAJOR EQUAL DDX_LLVM_VERSION)
+        string(REGEX MATCH "^[0-9]+" _ddx_llvm_major "${LLVM_PACKAGE_VERSION}")
+        if (NOT _ddx_llvm_major EQUAL DDX_LLVM_VERSION)
             message(FATAL_ERROR
                     "ddx::jit is built against LLVM ${DDX_LLVM_VERSION}; found "
                     "${LLVM_PACKAGE_VERSION}.  Point CMake at it with "
-                    "-DLLVM_DIR=/usr/lib/llvm-${DDX_LLVM_VERSION}/lib/cmake/llvm.")
+                    "-DLLVM_DIR=<prefix>/lib/cmake/llvm.")
         endif ()
-        message(STATUS "LLVM ${LLVM_PACKAGE_VERSION} (${LLVM_INCLUDE_DIRS})")
+        unset(_ddx_llvm_major)
+        message(STATUS "LLVM ${LLVM_PACKAGE_VERSION} (${LLVM_DIR})")
         separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND "${LLVM_DEFINITIONS}")
-        llvm_map_components_to_libnames(DDX_LLVM_LIBS
-                core orcjit native passes support analysis target)
+        # core orcjit native passes support analysis target
+        set(DDX_LLVM_LIBS LLVMCore LLVMOrcJIT LLVMPasses LLVMSupport LLVMAnalysis LLVMTarget)
+        foreach (_ddx_llvm_part CodeGen AsmParser Desc Disassembler Info)
+            list(APPEND DDX_LLVM_LIBS LLVM${LLVM_NATIVE_ARCH}${_ddx_llvm_part})
+        endforeach ()
+        unset(_ddx_llvm_part)
     endif ()
     _ddx_llvm_archives()
 endmacro()
 
-# Refuse anything but archives, and retarget LLVMSupport's zstd to the static
-# one Findzstd defines beside it.  Idempotent; runs even when a parent found LLVM.
+# Archives only.  Conan's llvm-core always is; an LLVMConfig (LLVM_VERSION_MAJOR
+# set) is checked, and its zstd retargeted to the static one.
 function(_ddx_llvm_archives)
     set(missing "")
-    if (NOT TARGET LLVMCore)
-        string(APPEND missing "  LLVM's component archives (llvm-${DDX_LLVM_VERSION}-dev)\n")
-    endif ()
-    if (NOT TARGET zstd::libzstd_static)
-        string(APPEND missing "  libzstd.a (libzstd-dev)\n")
-    endif ()
-    set(zlib "")
-    if (TARGET ZLIB::ZLIB)
-        get_target_property(zlib ZLIB::ZLIB IMPORTED_LOCATION_RELEASE)
-        if (NOT zlib)
-            get_target_property(zlib ZLIB::ZLIB IMPORTED_LOCATION)
+    foreach (lib IN LISTS DDX_LLVM_LIBS)
+        if (NOT TARGET ${lib})
+            string(APPEND missing "  ${lib}, one of LLVM's component archives\n")
         endif ()
-    endif ()
-    if (NOT zlib MATCHES "\\${CMAKE_STATIC_LIBRARY_SUFFIX}$")
-        string(APPEND missing "  libz.a (zlib1g-dev)\n")
+    endforeach ()
+    if (DEFINED LLVM_VERSION_MAJOR)
+        if (NOT TARGET zstd::libzstd_static)
+            string(APPEND missing "  libzstd's archive (libzstd-dev on Debian/Ubuntu)\n")
+        endif ()
+        set(zlib "")
+        if (TARGET ZLIB::ZLIB)
+            get_target_property(zlib ZLIB::ZLIB IMPORTED_LOCATION_RELEASE)
+            if (NOT zlib)
+                get_target_property(zlib ZLIB::ZLIB IMPORTED_LOCATION)
+            endif ()
+        endif ()
+        if (NOT zlib MATCHES "\\${CMAKE_STATIC_LIBRARY_SUFFIX}$")
+            string(APPEND missing "  zlib's archive (zlib1g-dev on Debian/Ubuntu)\n")
+        endif ()
     endif ()
     if (missing)
         message(FATAL_ERROR
                 "libddx links LLVM and what it needs as archives, and these were "
-                "not found:\n${missing}")
+                "not found:\n${missing}"
+                "Conan's llvm-core has all of them: `conan install . -o \"&:jit=True\"`.")
     endif ()
-    get_target_property(deps LLVMSupport INTERFACE_LINK_LIBRARIES)
-    string(REPLACE "zstd::libzstd_shared" "zstd::libzstd_static" deps "${deps}")
-    set_property(TARGET LLVMSupport PROPERTY INTERFACE_LINK_LIBRARIES "${deps}")
+    if (DEFINED LLVM_VERSION_MAJOR)
+        get_target_property(deps LLVMSupport INTERFACE_LINK_LIBRARIES)
+        string(REPLACE "zstd::libzstd_shared" "zstd::libzstd_static" deps "${deps}")
+        set_property(TARGET LLVMSupport PROPERTY INTERFACE_LINK_LIBRARIES "${deps}")
+    endif ()
 endfunction()
 
 # --- pybind11 ---------------------------------------------------------------
@@ -181,10 +195,7 @@ macro(ddx_use_pybind11)
                     ERROR_QUIET)
             if (NOT pybind11_DIR)
                 message(FATAL_ERROR
-                        "${Python_EXECUTABLE} has no pybind11.  The `python` preset builds "
-                        "against .venv, so install it there: `uv sync`.  Left to search the "
-                        "machine, CMake finds whatever the distro packaged -- which is how a "
-                        "2.x shows up against a 3.0 request.")
+                        "${Python_EXECUTABLE} has no pybind11; `uv sync` installs it in .venv.")
             endif ()
         endif ()
         find_package(pybind11 3.0 CONFIG REQUIRED)
@@ -197,20 +208,5 @@ macro(ddx_use_googletest)
         set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
         set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
         FetchContent_MakeAvailable(googletest)
-        _ddx_silence_dependency(gtest gtest_main gmock gmock_main)
     endif ()
 endmacro()
-
-function(_ddx_silence_dependency)
-    if (NOT MSVC)
-        return ()
-    endif ()
-    foreach (target IN LISTS ARGV)
-        if (TARGET ${target})
-            # Not /W0: GoogleTest puts /W4 in its own CXX flags, and cl reports
-            # the override as D9025.  Its sources are clean at the level it
-            # picked, so take that level and only drop the warning-as-error.
-            set_target_properties(${target} PROPERTIES COMPILE_WARNING_AS_ERROR OFF)
-        endif ()
-    endforeach ()
-endfunction()
