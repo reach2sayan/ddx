@@ -437,15 +437,15 @@ emit_nodes(const Emitter<T> &emit, const rt::Graph<T> &g,
       const rt::OpCode op = rt::fold_op(p.op);
       llvm::Value *acc = nullptr;
       for (const rt::NodeId t : rt::arguments(g, v)) {
-        const rt::Contraction c =
+        const rt::Contraction prod =
             s.fused ? rt::product_of(g, t) : rt::Contraction{};
-        if (!c) {
+        if (!prod) {
           acc = acc ? emit.binary(op, acc, value[t]) : value[t];
         } else if (acc) {
-          acc = emit.fma(c, value[c.x], value[c.y], acc);
+          acc = emit.fma(prod, value[prod.x], value[prod.y], acc);
         } else {
-          acc = emit.binary(rt::OpCode::Mul, value[c.x], value[c.y]);
-          acc = c.negated ? emit.unary(rt::OpCode::Neg, acc) : acc;
+          acc = emit.binary(rt::OpCode::Mul, value[prod.x], value[prod.y]);
+          acc = prod.negated ? emit.unary(rt::OpCode::Neg, acc) : acc;
         }
       }
       value[v] = acc;

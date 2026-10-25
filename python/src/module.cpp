@@ -484,8 +484,8 @@ PYBIND11_MODULE(_ddx, m) {
       .value("O3", jit::OptLevel::O3)
       .finalize();
 
-  pyb::native_enum<PyEquation::Want> want{m, "Want", "enum.IntEnum",
-                                          "Which blocks a bound call fills."};
+  pyb::native_enum<PyEquation::Want> wants{m, "Want", "enum.IntEnum",
+                                           "Which blocks a bound call fills."};
   // JacobianJvp as JACOBIAN_JVP: an underscore before every inner capital.
   for (const rt::Want w : rt::want_values) {
     std::string name;
@@ -496,9 +496,9 @@ PYBIND11_MODULE(_ddx, m) {
       name.push_back(
           static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
     }
-    want.value(name.c_str(), w);
+    wants.value(name.c_str(), w);
   }
-  want.finalize();
+  wants.finalize();
 
   // Bound once, called repeatedly: `x` is written into and the blocks are read
   // back.  Not constructible from Python -- Equation.buffer() is the only way
