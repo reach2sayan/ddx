@@ -71,7 +71,15 @@ private:
 
 // Compile builds each kernel on the first call that needs it, and that call
 // waits for it.
-enum class Backend : std::uint8_t { Interpret, Compile };
+enum class Backend : std::uint8_t {
+  Interpret,
+  Compile,
+#ifdef __clang__
+  Adapt __attribute__((unavailable("removed; use Backend::Compile"))) = Compile
+#else
+  Adapt [[deprecated("removed; use Backend::Compile")]] = Compile
+#endif
+};
 
 // What decides the machine code, and nothing else: the identity a stored
 // object is matched against and the object cache is keyed on, so a field here
