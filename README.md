@@ -163,6 +163,10 @@ const auto sys = *rt::equation("x*x + y*y - 4", "x*y - 1");
 | Comparison | `<` `<=` `>` `>=` `==` `!=` — answer `1.0` or `0.0` |
 | Conditional | `select(cond, if_true, if_false)` |
 
+A loop of `+=`, `*=` or `/=` is stored as one node over all its terms, not a
+chain of one node per step, so a long sum or product stays cheap to evaluate
+and to differentiate; its value is the chain's, step for step.
+
 `select` evaluates both arms and differentiates the taken one; the condition is
 never differentiated. `abs′(0) = 0`, `max`/`min` split a tie in half, and
 `pow(0, b)` has zero partials.
