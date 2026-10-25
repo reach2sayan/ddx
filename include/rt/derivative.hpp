@@ -82,6 +82,23 @@ template <impl::Numeric T>
   return contribution(op, H<T>{1}, u, f);
 }
 
+// A fold as the chain it replaces: one (running value, term) pair per binary
+// step, the running value the node that chain would have had.  What a
+// product's or a quotient's rules read, one step at a time; a sum's never do.
+// The terms are copied out first: forming a node may reallocate the arena.
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::vector<std::pair<NodeId, NodeId>>
+fold_steps(Arena<T> &b, NodeId v) {
+  const OpCode op = fold_op(b.op_of(v));
+  const auto terms = arguments(b, v) | impl::to<std::vector<NodeId>>();
+  std::vector<std::pair<NodeId, NodeId>> steps{{terms[0], terms[1]}};
+  for (const NodeId t : terms | std::views::drop(2)) {
+    const auto [l, r] = steps.back();
+    steps.emplace_back(H<T>::form(op, H<T>{b, l}, H<T>{b, r}).id(b), t);
+  }
+  return steps;
+}
+
 } // namespace detail
 
 // One root's row of the Jacobian.  derive_jacobian() is an overload set:
@@ -305,11 +322,29 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
         add_to(arg, g, [&] { return a * c; });
       });
       break;
-    case Kind::Nary: // linear: every term takes the adjoint whole
-      for (const NodeId t : arguments(b, v)) {
-        add_to(t, g, [&] { return a; });
+    case Kind::Nary: {
+      if (op == OpCode::SumN) { // linear: every term takes the adjoint whole
+        for (const NodeId t : arguments(b, v)) {
+          add_to(t, g, [&] { return a; });
+        }
+        break;
       }
+      // The chain's rule, last step first: the adjoint reaching each running
+      // value is what its step hands its left operand.
+      const OpCode step = fold_op(op);
+      const auto steps = detail::fold_steps(b, v);
+      Expression<T> carried = a;
+      for (const auto &[left, term] : steps | std::views::reverse) {
+        const Expression<T> l = expr(left);
+        const Expression<T> r = expr(term);
+        add_to(term, g, [&] {
+          return detail::contribution_to<1>(step, carried, l, r);
+        });
+        carried = detail::contribution_to<0>(step, carried, l, r);
+      }
+      add_to(steps.front().first, g, [&] { return carried; });
       break;
+    }
     case Kind::Unary:
       add_to(node.a, g, [&] {
         return detail::contribution(op, a, expr(node.a), expr(v));
@@ -497,12 +532,33 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       d[v] = sum.id(b);
       break;
     }
-    case Kind::Nary: { // the sum of the terms' tangents, as a sum again
-      Expression<T> sum{0};
-      for (const NodeId t : arguments(b, v)) {
-        sum += Expression<T>{b, at(t)};
+    case Kind::Nary: {
+      if (op == OpCode::SumN) { // the sum of the terms' tangents, a sum again
+        Expression<T> sum{0};
+        for (const NodeId t : arguments(b, v)) {
+          sum += Expression<T>{b, at(t)};
+        }
+        d[v] = sum.id(b);
+        break;
       }
-      d[v] = sum.id(b);
+      // The chain's tangent, one step at a time: the running value's and,
+      // where it moves, the term's, each by its partial.
+      const OpCode step = fold_op(op);
+      const auto steps = detail::fold_steps(b, v);
+      const Expression<T> one{1};
+      Expression<T> carried{b, at(steps.front().first)};
+      for (const auto &[left, term] : steps) {
+        const Expression<T> l{b, left};
+        const Expression<T> r{b, term};
+        const Expression<T> pl = detail::contribution_to<0>(step, one, l, r);
+        if (!moves[term]) {
+          carried = pl * carried;
+          continue;
+        }
+        const Expression<T> pr = detail::contribution_to<1>(step, one, l, r);
+        carried = pl * carried + pr * Expression<T>{b, at(term)};
+      }
+      d[v] = carried.id(b);
       break;
     }
     case Kind::Const: // holds still, above

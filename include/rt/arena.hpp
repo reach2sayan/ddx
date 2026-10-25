@@ -667,11 +667,12 @@ private:
     return at;
   }
 
-  // A sum still being accumulated by `+=`: the terms so far as a list that
+  // A fold still being accumulated by `op=`: the terms so far as a list that
   // shares its prefix with every handle copied along the way, so a copy of an
-  // accumulator keeps the value it had.  Nothing is a node until the sum is
-  // read, and then once: one term is itself, two are an Add -- the chain's
-  // own folds and fma -- and more a SumN over the terms in order.
+  // accumulator keeps the value it had.  Nothing is a node until the fold is
+  // read, and then once: one term is itself, two are the binary op -- the
+  // chain's own folds and fma -- and more the Nary node over the terms in
+  // order.  An entry is only ever read under the one op that pushed it.
   template <impl::Numeric U> friend class Expression;
   struct Pending {
     NodeId term = no_node;
@@ -684,7 +685,7 @@ private:
     pending_.push_back({.term = term, .prev = prev});
     return static_cast<std::uint32_t>(pending_.size() - 1);
   }
-  [[nodiscard]] constexpr NodeId sum_of(std::uint32_t entry) {
+  [[nodiscard]] constexpr NodeId fold_of(OpCode fold, std::uint32_t entry) {
     if (pending_[entry].node != no_node) {
       return pending_[entry].node;
     }
@@ -695,8 +696,8 @@ private:
     std::ranges::reverse(terms);
     const NodeId node = terms.size() == 1 ? terms[0]
                         : terms.size() == 2
-                            ? make(OpCode::Add, terms[0], terms[1])
-                            : make(OpCode::SumN, list(terms), no_node, no_node,
+                            ? make(fold_op(fold), terms[0], terms[1])
+                            : make(fold, list(terms), no_node, no_node,
                                    static_cast<std::uint32_t>(terms.size()));
     pending_[entry].node = node;
     return node;

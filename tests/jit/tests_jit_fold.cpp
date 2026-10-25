@@ -12,9 +12,9 @@
 #include <cstdint>
 #include <vector>
 
-// A SumN is one step in the kernel as in the sweep: the terms into the running
-// sum in list order, a product term as the same fma.  Bit identity, fused and
-// not, value and gradient.
+// A fold is one step in the kernel as in the sweep: the terms into the running
+// value in list order, a product term of a sum as the same fma.  Bit identity,
+// fused and not, value and gradient.
 
 namespace {
 using ddx::rt::Arena;
@@ -43,16 +43,33 @@ RE summed(const std::vector<RE> &x) {
   }
   return acc;
 }
+// Near one, so forty steps stay finite.
+template <bool Quotient> RE multiplied(const std::vector<RE> &x) {
+  RE acc = x[0];
+  for (std::size_t t = 0; t < 40; ++t) {
+    const RE &a = x[t % x.size()];
+    const RE &c = x[(t * 5) % x.size()];
+    const RE step = t % 2 ? 1.0 + 0.1 * sin(a * c) : exp(0.05 * a) / (c + 1.0);
+    if constexpr (Quotient) {
+      acc /= step;
+    } else {
+      acc *= step;
+    }
+  }
+  return acc;
+}
 
-void expect_bit_identical(bool contract) {
+void expect_bit_identical(bool contract,
+                          RE (*built)(const std::vector<RE> &) = summed,
+                          ddx::rt::OpCode op = ddx::rt::OpCode::SumN) {
   constexpr std::size_t nvars = 3, n = 64;
   Arena<> b;
   std::vector<RE> x;
   for (const char *name : {"x", "y", "z"}) {
     x.push_back(var(b, name));
   }
-  const auto f = summed(x).id(b);
-  ASSERT_EQ(b[f].op, ddx::rt::OpCode::SumN);
+  const auto f = built(x).id(b);
+  ASSERT_EQ(b[f].op, op);
   const auto g = ddx::rt::derive_jacobian(b, f);
   const auto graph =
       Graph<>::freeze(b, {.values = {f}, .jacobian = g.partial, .hessian = {}},
@@ -101,5 +118,11 @@ void expect_bit_identical(bool contract) {
 
 TEST(JitSumN, FusedSumMatchesTheSweepToTheBit) { expect_bit_identical(true); }
 TEST(JitSumN, PlainSumMatchesTheSweepToTheBit) { expect_bit_identical(false); }
+TEST(JitFold, ProductMatchesTheSweepToTheBit) {
+  expect_bit_identical(true, multiplied<false>, ddx::rt::OpCode::ProdN);
+}
+TEST(JitFold, QuotientMatchesTheSweepToTheBit) {
+  expect_bit_identical(true, multiplied<true>, ddx::rt::OpCode::QuotN);
+}
 
 } // namespace

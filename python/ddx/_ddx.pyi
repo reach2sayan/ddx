@@ -132,6 +132,14 @@ class Expression:
     @typing.overload
     def __isub__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass
     @typing.overload
+    def __imul__(self, arg0: Expression) -> Expression: pass
+    @typing.overload
+    def __imul__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass
+    @typing.overload
+    def __itruediv__(self, arg0: Expression) -> Expression: pass
+    @typing.overload
+    def __itruediv__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass
+    @typing.overload
     def __radd__(self, arg0: Expression) -> Expression: pass
     @typing.overload
     def __radd__(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> Expression: pass

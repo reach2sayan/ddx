@@ -326,16 +326,31 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
   }
 }
 
-// A sum, W lanes of it: the terms in list order into the running sum, a
-// product term as one fma where the step is fused -- the same arithmetic the
-// Add chain it replaces took, one node and no dispatch per term.  The first
-// term's product is formed, not fused: fma(x, y, 0) would turn its -0.0 into
-// +0.0.
+// A fold, W lanes of it: the terms in list order into the running value --
+// the same arithmetic the chain it replaces took, one node and one dispatch
+// for every term.  In a sum a product term is one fma where the step is
+// fused.  The first term's product is formed, not fused: fma(x, y, 0) would
+// turn its -0.0 into +0.0.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
-DDX_NOINLINE constexpr void lanes_sum(const Arena<T> &b, NodeId v, bool fused,
-                                      U *DDX_RESTRICT out, auto lane,
-                                      const TapeView<U> &t) {
+DDX_NOINLINE constexpr void lanes_fold(const Arena<T> &b, NodeId v, OpCode op,
+                                       bool fused, U *DDX_RESTRICT out,
+                                       auto lane, const TapeView<U> &t) {
   const auto row = [&](NodeId u) { return lane(t.row(u)); };
+  if (op != OpCode::SumN) {
+    dispatch<U>(fold_op(op), [&]<typename R>(R) {
+      if constexpr (R::arity == 2) {
+        for (const auto [i, term] : arguments(b, v) | std::views::enumerate) {
+          const U *const r = row(term);
+          for (std::size_t k = 0; k < W; ++k) {
+            out[k] = i == 0 ? r[k]
+                            : supported<typename R::functor, U, R::ok>(out[k],
+                                                                      r[k]);
+          }
+        }
+      }
+    });
+    return;
+  }
   for (const auto [i, term] : arguments(b, v) | std::views::enumerate) {
     const Contraction c = fused ? product_of(b, term) : Contraction{};
     if (!c) {
@@ -359,7 +374,7 @@ DDX_NOINLINE constexpr void lanes_sum(const Arena<T> &b, NodeId v, bool fused,
   }
 }
 
-// The rows apply.hpp hands the interpreter whole: an extern's, a sum's and a
+// The rows apply.hpp hands the interpreter whole: an extern's, a fold's and a
 // tensor's.  The kind test sits here, past the opcode switch, where it costs
 // a sweep of scalars nothing.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
@@ -369,7 +384,7 @@ lanes_opaque(const Arena<T> &b, NodeId v, const Node<T> &n, bool fused,
   if (on_tensors(n)) {
     lanes_tensor<W>(b, v, n, out, lane, t);
   } else if (kind_of(n.op) == Kind::Nary) {
-    lanes_sum<W>(b, v, fused, out, lane, t);
+    lanes_fold<W>(b, v, n.op, fused, out, lane, t);
   } else {
     lanes_extern<W>(b, v, out, lane, t);
   }

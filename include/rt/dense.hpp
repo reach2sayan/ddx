@@ -426,10 +426,28 @@ private:
             std::span{Implicits::row(b_, index_of(node))}.subspan(at_, n_));
       }
       return no_node;
-    case Kind::Nary:
-      return std::ranges::fold_left(
-          arguments(b_, v), no_node,
-          [this](NodeId r, NodeId t) { return add(r, row(t)); });
+    case Kind::Nary: {
+      if (node.op == OpCode::SumN) {
+        return std::ranges::fold_left(
+            arguments(b_, v), no_node,
+            [this](NodeId r, NodeId t) { return add(r, row(t)); });
+      }
+      // The chain's rows, one step at a time, as the Binary arm takes each.
+      const OpCode step = fold_op(node.op);
+      const auto steps = fold_steps(b_, v);
+      NodeId r = row(steps.front().first);
+      for (const auto &[left, term] : steps) {
+        const E l = expr(left);
+        const E t = expr(term);
+        const E pl =
+            r == no_node ? E{0} : contribution_to<0>(step, E{1}, l, t);
+        const E pr = row(term) == no_node
+                         ? E{0}
+                         : contribution_to<1>(step, E{1}, l, t);
+        r = add(scaled(pl, r), scaled(pr, row(term)));
+      }
+      return r;
+    }
     case Kind::Extern: {
       NodeId r = no_node;
       extern_partials(b_, v, [&](NodeId arg, const E &c) {

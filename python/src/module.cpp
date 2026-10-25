@@ -274,13 +274,19 @@ PYBIND11_MODULE(_ddx, m) {
   infix("__ge__", nullptr, std::greater_equal<>{});
   infix("__eq__", nullptr, std::equal_to<>{});
   infix("__ne__", nullptr, std::not_equal_to<>{});
-  // On a copy, so `y = acc; acc += t` leaves y alone; a loop of += is one
-  // node of all its terms.
+  // On a copy, so `y = acc; acc += t` leaves y alone; a loop of +=, *= or /=
+  // is one node of all its terms.
   binop("__iadd__", [](PyExpression acc, const PyExpression &r) {
     return acc += r;
   });
   binop("__isub__", [](PyExpression acc, const PyExpression &r) {
     return acc += unary(rt::OpCode::Neg, r);
+  });
+  binop("__imul__", [](PyExpression acc, const PyExpression &r) {
+    return acc *= r;
+  });
+  binop("__itruediv__", [](PyExpression acc, const PyExpression &r) {
+    return acc /= r;
   });
   expression
       .def(

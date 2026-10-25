@@ -72,16 +72,18 @@ public:
     return checked(rt::pack(*arena, std::span<const Base>{bases}), arena);
   }
 
-  // The base's accumulating `+=`, with the arena put back: what a loop of
-  // `acc += term` builds as one node.  Python's `+=` rebinds the name to what
-  // __iadd__ answers, so this is called on a copy and no other reference to
-  // the old handle moves.
+  // The base's accumulating `+=`, `*=` and `/=`, with the arena put back:
+  // what a loop of `acc op= term` builds as one node.  Python's `op=` rebinds
+  // the name to what __iadd__ and its siblings answer, so these are called on
+  // a copy and no other reference to the old handle moves.
   PyExpression &operator+=(const PyExpression &o) {
-    expression_ += o.expression_;
-    if (!arena_) {
-      arena_ = o.arena_;
-    }
-    return *this;
+    return accumulate(o, [](Base &l, const Base &r) { l += r; });
+  }
+  PyExpression &operator*=(const PyExpression &o) {
+    return accumulate(o, [](Base &l, const Base &r) { l *= r; });
+  }
+  PyExpression &operator/=(const PyExpression &o) {
+    return accumulate(o, [](Base &l, const Base &r) { l /= r; });
   }
 
   // Elements per point: zero for a scalar.
@@ -172,6 +174,14 @@ public:
   [[nodiscard]] constexpr const SharedArena &arena() const noexcept { return arena_; }
 
 private:
+  PyExpression &accumulate(const PyExpression &o, auto &&fn) {
+    fn(expression_, o.expression_);
+    if (!arena_) {
+      arena_ = o.arena_;
+    }
+    return *this;
+  }
+
   Base expression_;
   SharedArena arena_;
 };

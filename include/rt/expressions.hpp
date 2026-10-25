@@ -109,13 +109,14 @@ public:
   [[nodiscard]] constexpr const T &literal() const noexcept { return lit_; }
 
   // Give the node an identity in `b`, materialising a pending literal -- a
-  // constant, or the row of `shape` it meets -- or a sum `+=` is still
+  // constant, or the row of `shape` it meets -- or a fold `op=` is still
   // accumulating.
   [[nodiscard]] constexpr NodeId id(Arena<T> &b, Shape shape = {0, 0}) const {
     if (arena_ == nullptr) {
       return shape.size() ? b.filled(shape, lit_) : b.constant(lit_);
     }
-    return sum_ ? b.sum_of(id_) : id_; // b may be a copy of arena_
+    // b may be a copy of arena_
+    return fold_ == OpCode::Const ? id_ : b.fold_of(fold_, id_);
   }
   // The identity it has in its own arena; no_node for a pending literal.
   [[nodiscard]] constexpr NodeId id() const {
@@ -242,44 +243,53 @@ public:
     return l + (-r);
   }
 
-  // `+=` on a scalar node accumulates: the terms are kept on the arena and
-  // become one node -- a SumN past two terms, an Add at two -- when the sum
-  // is first read, so a loop of `+=` is one node of k terms where `+` would
-  // be k.  A copy of an accumulator shares the terms so far and keeps its
-  // value.  A zero term is dropped, as `x + 0` folds.  Everything else --
-  // poison, a vector or a matrix, a pending literal on the left -- goes
-  // through the operator, which propagates poison and folds literals where an
-  // in-place version would take a poisoned accumulator, adopt the other
-  // side's arena and answer instead of refusing.  The parameter is the class
-  // type rather than a Numeric auto, so += accepts exactly what + accepts.
+  // `+=`, `*=` and `/=` on a scalar node accumulate: the terms are kept on
+  // the arena and become one node -- a fold past two terms, the binary op at
+  // two -- when the result is first read, so a loop of `op=` is one node of k
+  // terms where the operator would be k.  A copy of an accumulator shares the
+  // terms so far and keeps its value.  The op's identity on the right is
+  // dropped, as `x + 0` and `x * 1` fold.  Everything else -- poison, a vector
+  // or a matrix, a pending literal on the left -- goes through the operator,
+  // which propagates poison and folds literals where an in-place version
+  // would take a poisoned accumulator, adopt the other side's arena and
+  // answer instead of refusing.  The parameter is the class type rather than
+  // a Numeric auto, so `op=` accepts exactly what the operator accepts.
   constexpr Expression &operator+=(const Expression &o) {
+    return accumulate(OpCode::SumN, o);
+  }
+  constexpr Expression &operator-=(const Expression &o) { return *this += -o; }
+  constexpr Expression &operator*=(const Expression &o) {
+    return accumulate(OpCode::ProdN, o);
+  }
+  constexpr Expression &operator/=(const Expression &o) {
+    return accumulate(OpCode::QuotN, o);
+  }
+
+private:
+  constexpr Expression &accumulate(OpCode fold, const Expression &o) {
     if (why_ || o.why_ || pending() || size() || o.size() || is_matrix() ||
         o.is_matrix()) {
-      return *this = *this + o;
+      return *this = form(fold_op(fold), *this, o);
     }
+    const T identity = fold == OpCode::SumN ? T{0} : T{1};
     if constexpr (std::equality_comparable<T>) {
-      if (o.pending() && o.lit_ == T{0}) {
+      if (o.pending() && o.lit_ == identity) {
         return *this;
       }
     }
     const NodeId t = o.id(*arena_);
-    if (arena_->is_constant(t, T{0})) {
+    if (arena_->is_constant(t, identity)) {
       return *this;
     }
-    if (!sum_) {
-      id_ = arena_->push_term(no_node, id_);
-      sum_ = true;
+    if (fold_ != fold) {
+      id_ = arena_->push_term(no_node, id(*arena_));
+      fold_ = fold;
     }
     id_ = arena_->push_term(id_, t);
     return *this;
   }
-  constexpr Expression &operator-=(const Expression &o) { return *this += -o; }
-  constexpr Expression &operator*=(const Expression &o) {
-    return *this = *this * o;
-  }
-  constexpr Expression &operator/=(const Expression &o) {
-    return *this = *this / o;
-  }
+
+public:
 
 #define DDX_RT_UNFN(fn, Op, label, ...)                                        \
   friend constexpr Expression fn(const Expression &u) {                        \
@@ -364,7 +374,7 @@ private:
   // A mat_constant table, which is no row: arithmetic reads it as its
   // MatRow, gemv() in place.
   [[nodiscard]] constexpr bool is_matrix() const noexcept {
-    return arena_ != nullptr && !sum_ &&
+    return arena_ != nullptr && fold_ == OpCode::Const &&
            arena_->op_of(id_) == OpCode::MatConst;
   }
   [[nodiscard]] constexpr Expression row() const {
@@ -374,9 +384,9 @@ private:
   }
 
   Arena<T> *arena_ = nullptr;
-  NodeId id_ = no_node; // a node, or while sum_ the arena's pending entry
+  NodeId id_ = no_node; // a node, or while folding the arena's pending entry
   Shape shape_{0, 0};
-  bool sum_ = false;
+  OpCode fold_ = OpCode::Const; // the Nary op `op=` is accumulating, if any
   T lit_{};
   std::optional<errc> why_;
 };

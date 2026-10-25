@@ -4,6 +4,7 @@ import math
 import operator
 from collections.abc import Callable
 
+import numpy as np
 import pytest
 
 import ddx
@@ -140,6 +141,39 @@ def test_in_place_add_accumulates_and_leaves_copies_alone() -> None:
         return before
 
     assert kept.evaluate([2.0, 3.0]) == pytest.approx(2.0 + 3.0 + 3.0)
+
+
+def test_in_place_multiply_and_divide_fold_like_their_chains() -> None:
+    """*= and /= fold their terms as += does, and agree with the chain."""
+
+    def build(in_place: bool) -> ddx.Equation:
+        def model() -> ddx.Expression:
+            x, y = ddx.var("x"), ddx.var("y")
+            acc = x + 1.0
+            for k in range(6):
+                term = 1.0 + 0.1 * k * x * y
+                if in_place:
+                    acc *= term
+                else:
+                    acc = acc * term
+            for k in range(6):
+                term = y + 2.0 + 0.1 * k * x
+                if in_place:
+                    acc /= term
+                else:
+                    acc = acc / term
+            acc *= 1.0
+            acc /= 1.0
+            return acc
+
+        return ddx.equation(model)
+
+    folded, chained = build(True), build(False)
+    at = [0.7, 1.3]
+    assert folded.evaluate(at) == pytest.approx(chained.evaluate(at), rel=1e-14)
+    assert folded.gradient(at) == pytest.approx(chained.gradient(at), rel=1e-13)
+    for got, want in zip(folded.hessian(at), chained.hessian(at), strict=True):
+        np.testing.assert_allclose(got, want, rtol=1e-12)
 
 
 def test_literals_fold_without_reaching_a_graph() -> None:

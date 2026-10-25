@@ -60,7 +60,7 @@ void expect_hvp_matches_hessian(auto build, std::size_t nvars,
 }
 
 // Dense coupling: colours == n, the worst case for the coloured path.
-auto dense = [](Arena<> &, auto &v) {
+auto all_pairs = [](Arena<> &, auto &v) {
   auto acc = ddx::rt::Expression<>{0};
   for (const auto &a : v) {
     for (const auto &c : v) {
@@ -83,7 +83,7 @@ auto separable = [](Arena<> &, auto &v) {
 TEST(RtHvp, MatchesTheColouredHessianDenselyCoupled) {
   const std::array x{0.3, 0.7, 0.5};
   const std::array v{1.0, -2.0, 0.25};
-  expect_hvp_matches_hessian(dense, 3, x, v);
+  expect_hvp_matches_hessian(all_pairs, 3, x, v);
 }
 
 TEST(RtHvp, MatchesTheColouredHessianSeparable) {
@@ -97,7 +97,7 @@ TEST(RtHvp, AUnitDirectionIsOneHessianColumn) {
   for (const std::size_t j : std::views::iota(0uz, 3uz)) {
     std::array v{0.0, 0.0, 0.0};
     v[j] = 1.0;
-    expect_hvp_matches_hessian(dense, 3, x, v);
+    expect_hvp_matches_hessian(all_pairs, 3, x, v);
   }
 }
 
