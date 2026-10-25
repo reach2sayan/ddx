@@ -248,20 +248,20 @@ large sweep.
 ## Compiling
 
 Link `ddx::jit` and set options; the same calls answer the same results.
-Nothing compiles unless asked, and no call waits for a compile:
+Nothing compiles unless asked. Under `Compile`, the first call to each lane
+(Jacobian, Hessian, …) builds that lane's kernel and waits for it:
 
 ```cpp
 eq.options({.backend = rt::Backend::Compile, .points = 4096});
-eq.jacobian(xs, f, g, n);      // interpreted until the kernel lands
-eq.wait_for_kernel();          // the only call that blocks
+eq.wait_for_kernel();          // optional: build the Jacobian kernel now
+eq.jacobian(xs, f, g, n);      // compiled
 eq.uses_kernel();              // true
 ```
 
 | `Backend` | Is |
 |---|---|
 | `Interpret` | default; LLVM is never loaded |
-| `Compile` | compile now |
-| `Adapt` | compile once batch traffic pays for it; `warming()` reports progress |
+| `Compile` | compile each lane on its first call |
 
 | `jit::Options` field | Default | Is |
 |---|---|---|
@@ -272,11 +272,10 @@ eq.uses_kernel();              // true
 | `codegen.slp_vectorize`, `codegen.loop_vectorize` | `false` | extra vectorisation |
 | `codegen.veclib` | `None` | `Libmvec` for vector transcendentals |
 | `codegen.contract` | `DDX_FP_FLAGS` | fuse multiply-add |
-| `warm_points`, `hot_points` | `65536`, `1048576` | `Adapt` thresholds |
 | `cache_dir` | empty | reuse compiled objects across runs |
 | `time_passes` | `false` | per-pass timing to stderr |
 
-`kernel_level()` says which compiled tier is answering.
+`kernel_level()` says which `codegen_level` the answering kernel was built at.
 
 ## Python
 
