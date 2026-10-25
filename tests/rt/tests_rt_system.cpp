@@ -39,23 +39,23 @@ using RE = ddx::rt::Expression<>;
   });
 }
 
-constexpr std::array point{0.7, 1.3, -0.4};
+constexpr std::array system_point{0.7, 1.3, -0.4};
 
 TEST(RtSystem, JacobianStacksTheScalarRows) {
   const auto sys = five_system();
   ASSERT_FALSE(sys.poisoned());
   ASSERT_EQ(sys.outputs(), 5u);
   EXPECT_EQ(sys.value_columns(), 5u);
-  const auto J = *sys.jacobian(point);
-  const auto f = *sys.evaluate(point);
+  const auto J = *sys.jacobian(system_point);
+  const auto f = *sys.evaluate(system_point);
   ASSERT_EQ(J.size(), 15u);
   ASSERT_EQ(f.size(), 5u);
 
   const auto &pattern = sys.jacobian_pattern()->get();
   for (const std::size_t k : std::views::iota(0uz, 5uz)) {
     const auto eq = one_of_five(k);
-    EXPECT_DOUBLE_EQ(f[k], *eq.evaluate(point));
-    const auto row = *eq.jacobian(point);
+    EXPECT_DOUBLE_EQ(f[k], *eq.evaluate(system_point));
+    const auto row = *eq.jacobian(system_point);
     for (const std::size_t j : std::views::iota(0uz, 3uz)) {
       EXPECT_DOUBLE_EQ(J[k * 3 + j], row[j]) << "d f" << k << " / d x" << j;
     }
@@ -108,9 +108,10 @@ TEST(RtSystem, BatchJacobianMatchesThePointCalls) {
 TEST(RtSystem, OneOutputMembersRefuseASystem) {
   const auto sys = five_system();
   const std::array v{1.0, 0.0, 0.0};
-  EXPECT_EQ(sys.hvp(std::span<const double>{v}, point).error().code,
+  EXPECT_EQ(sys.hvp(std::span<const double>{v}, system_point).error().code,
             ddx::errc::not_single_output);
-  EXPECT_EQ(sys.hvp("x", point).error().code, ddx::errc::not_single_output);
+  EXPECT_EQ(sys.hvp("x", system_point).error().code,
+            ddx::errc::not_single_output);
   EXPECT_EQ(sys.univariate_derivative<1>(1.0).error().code,
             ddx::errc::not_single_output);
   EXPECT_EQ(sys.prepare({ddx::rt::Want::Hessian}).error().code,
@@ -120,17 +121,17 @@ TEST(RtSystem, OneOutputMembersRefuseASystem) {
   EXPECT_FALSE(sys.hessian_cell(0, 0).has_value());
   EXPECT_TRUE(
       sys.vjp(std::span<const double>{std::array{1.0, 0.0, 0.0, 0.0, 0.0}},
-              point)
+              system_point)
           .has_value());
 }
 
 // m x n x n off the arena, each block the scalar equation's Hessian.
 TEST(RtSystem, HessianStacksTheScalarHessians) {
   const auto sys = five_system();
-  const auto H = *sys.hessian(point);
+  const auto H = *sys.hessian(system_point);
   ASSERT_EQ(H.size(), 5u * 3u * 3u);
   for (const std::size_t k : std::views::iota(0uz, 5uz)) {
-    const auto h = *one_of_five(k).hessian(point);
+    const auto h = *one_of_five(k).hessian(system_point);
     for (const std::size_t c : std::views::iota(0uz, 9uz)) {
       EXPECT_NEAR(H[k * 9 + c], h[c], 1e-14 * std::max(1.0, std::abs(h[c])))
           << "output " << k << " cell " << c;
