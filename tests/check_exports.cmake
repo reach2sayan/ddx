@@ -1,16 +1,11 @@
 # No LLVM symbol leaves libddx, and nothing past the C runtime (on Windows, the
 # system DLLs) is needed to load it.
-#   cmake -DNM=<nm> -DDEPS=<readelf|otool|link> -DLIB=<libddx> -P check_exports.cmake
+#   cmake -DNM=<nm> -DDEPS=<readelf|link> -DLIB=<libddx> -P check_exports.cmake
 if (LIB MATCHES "\\.dll$")
     set(symbols_cmd "${DEPS}" /dump /nologo /exports "${LIB}")
     set(deps_cmd "${DEPS}" /dump /nologo /dependents "${LIB}")
     set(dep_line "\n +([^ \n]+\\.[Dd][Ll][Ll])")
     set(runtime "^(api-ms-win-.*|kernel32|kernelbase|advapi32|shell32|ole32|oleaut32|user32|psapi|ws2_32|ntdll|bcrypt|crypt32|msvcp140.*|vcruntime140.*|ucrtbased?)\\.dll$")
-elseif (LIB MATCHES "\\.dylib$")
-    set(symbols_cmd "${NM}" -gU "${LIB}")
-    set(deps_cmd "${DEPS}" -L "${LIB}")
-    set(dep_line "\n\t([^ \n]+) \\(compat")
-    set(runtime "^(libsystem|libc\\+\\+|libc\\+\\+abi|libstdc\\+\\+|libgcc_s|libunwind)[.]")
 else ()
     set(symbols_cmd "${NM}" -D --defined-only "${LIB}")
     set(deps_cmd "${DEPS}" -d "${LIB}")

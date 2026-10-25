@@ -52,10 +52,6 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y clang-20 gcc-14 g++-14 libeigen3-dev libopenblas-dev
 
-      - name: Install compilers (macOS)
-        if: runner.os == 'macOS'
-        run: brew install gcc@15 ninja
-
       # include/ names the standard library and Boost, and nothing else but the
       # vendored mdspan; the core reaches rt/ only through Equation's lowering.
       - name: Header dependencies stay declared

@@ -4,13 +4,7 @@
 
 #include <gtest/gtest.h>
 
-// Accelerate's plain cblas.h is the deprecated interface whatever
-// ACCELERATE_NEW_LAPACK says; only its umbrella header switches.
-#if defined(__APPLE__)
-#include <cblas_new.h>
-#else
 #include <cblas.h>
-#endif
 
 #include <algorithm>
 #include <cmath>

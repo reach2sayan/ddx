@@ -7,8 +7,7 @@
 # profile; without it the .nupkg rides the GitHub Release alone.
 #
 # Linux and Windows wheels carry the JIT, with LLVM from Conan (contrib/conan)
-# built in cibuildwheel's before-all and cached between runs.  No macOS wheel
-# yet: build.yml's macOS job has to prove the GCC toolchain first.
+# built in cibuildwheel's before-all and cached between runs.  No macOS wheel.
 name: Release
 
 on:

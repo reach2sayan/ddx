@@ -19,7 +19,7 @@ ddx_target_flags(ddx_python EXCEPTIONS)
 ddx_runtime_deps(ddx_python)
 
 set_target_properties(ddx_python PROPERTIES
-        INSTALL_RPATH "$<IF:$<PLATFORM_ID:Darwin>,@loader_path,$ORIGIN>")
+        INSTALL_RPATH "$ORIGIN")
 install(TARGETS ddx_python LIBRARY DESTINATION ddx)
 install(TARGETS ddx_rt
         LIBRARY DESTINATION ddx NAMELINK_SKIP

@@ -51,7 +51,6 @@
 *.map
 !src/jit/hide_llvm.map
 *.exp
-!src/jit/hide_llvm.exp
 
 # Precompiled Headers
 

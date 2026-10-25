@@ -46,12 +46,7 @@ target_compile_definitions(ddx_rt PUBLIC
 
 # LLVM swallowed and hidden; tests/check_exports.cmake holds that line.
 target_link_libraries(ddx_rt PRIVATE ${DDX_LLVM_LIBS})
-if (APPLE)
-    set(hide_llvm "${CMAKE_CURRENT_SOURCE_DIR}/hide_llvm.exp")
-    target_link_options(ddx_rt PRIVATE -Wl,-dead_strip
-            "-Wl,-unexported_symbols_list,${hide_llvm}")
-    set_property(TARGET ddx_rt APPEND PROPERTY LINK_DEPENDS "${hide_llvm}")
-elseif (NOT MSVC)
+if (NOT MSVC)
     # --exclude-libs hides LLVM's symbols; the map hides ddx's over LLVM types.
     set(hide_llvm "${CMAKE_CURRENT_SOURCE_DIR}/hide_llvm.map")
     target_link_options(ddx_rt PRIVATE -Wl,--exclude-libs,ALL -Wl,--gc-sections

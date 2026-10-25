@@ -1,7 +1,6 @@
 [![GCC 14](https://github.com/reach2sayan/ddx/actions/workflows/gcc.yml/badge.svg?branch=main)](https://github.com/reach2sayan/ddx/actions/workflows/gcc.yml)
 [![Clang 20](https://github.com/reach2sayan/ddx/actions/workflows/clang.yml/badge.svg?branch=main)](https://github.com/reach2sayan/ddx/actions/workflows/clang.yml)
 [![MSVC 2022](https://github.com/reach2sayan/ddx/actions/workflows/msvc.yml/badge.svg?branch=main)](https://github.com/reach2sayan/ddx/actions/workflows/msvc.yml)
-[![macOS GCC 15](https://github.com/reach2sayan/ddx/actions/workflows/macos.yml/badge.svg?branch=main)](https://github.com/reach2sayan/ddx/actions/workflows/macos.yml)
 [![Conan](https://github.com/reach2sayan/ddx/actions/workflows/conan.yml/badge.svg?branch=main)](https://github.com/reach2sayan/ddx/actions/workflows/conan.yml)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white)](#install)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](#python)
