@@ -486,6 +486,12 @@ TEST(RtTensor, TakesAKernelTable) {
 
 // Tensor rows compute at the equation's own scalar, through a table of it.
 namespace {
+auto narrowed(std::span<const double> v) {
+  return v |
+         std::views::transform([](double d) { return static_cast<float>(d); }) |
+         std::ranges::to<std::vector>();
+}
+
 template <typename T> auto scalar_typed_tensor_model(std::size_t n) {
   return ddx::rt::equation<T>([n] {
     const auto x = ddx::rt::vec<T>("x", n);
@@ -507,7 +513,7 @@ TEST(RtTensor, AFloatEquationComputesItsTensorRows) {
   const auto wide = scalar_typed_tensor_model<double>(n);
   const auto narrow = scalar_typed_tensor_model<float>(n);
   const auto at = composition(n);
-  std::vector<float> at_f(at.begin(), at.end());
+  const auto at_f = narrowed(at);
   const double v = *wide.evaluate(std::span<const double>{at});
   const float vf = *narrow.evaluate(std::span<const float>{at_f});
   expect_close(v, double{vf}, 1e-5, "value");
@@ -535,7 +541,7 @@ constexpr auto renamed_f_table =
 TEST(RtTensor, EachScalarHasItsOwnDefaultTable) {
   constexpr std::size_t n = 5;
   const auto at = composition(n);
-  const std::vector<float> at_f(at.begin(), at.end());
+  const auto at_f = narrowed(at);
   const auto plain = scalar_typed_tensor_model<float>(n);
   const auto want = *plain.gradient(std::span<const float>{at_f});
 
