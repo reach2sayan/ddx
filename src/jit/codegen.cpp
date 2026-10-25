@@ -78,7 +78,7 @@ template <CKernelScalar T> llvm::Function *trampoline_decl(llvm::Module &m) {
   llvm::PointerType *const ptr = llvm::PointerType::getUnqual(ctx);
   llvm::Type *const i64 = llvm::Type::getInt64Ty(ctx);
   llvm::FunctionCallee c = m.getOrInsertFunction(
-      trampoline_symbol<T>(),
+      libm_name<T>(trampoline_symbol),
       llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
                               {ptr, ptr, i64, ptr, i64}, false));
   auto *fn = llvm::cast<llvm::Function>(c.getCallee());

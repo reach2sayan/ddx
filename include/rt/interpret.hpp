@@ -534,10 +534,12 @@ public:
             std::ranges::all_of(schedule_, [&b](const Step &s) {
               return supports<U>(b[s.node].op);
             })));
-    evaluate_into(b, point, schedule_, values,
-                  TapeView<U>{.tensor_rows = layout_.rows,
-                              .vtape = vtape.data(),
-                              .kernels = table_at<U>(kernels)});
+    // No table at a scalar other than the arena's: no tensor row computes.
+    TapeView<U> tensors{.tensor_rows = layout_.rows, .vtape = vtape.data()};
+    if constexpr (std::same_as<U, T>) {
+      tensors.kernels = &kernels;
+    }
+    evaluate_into(b, point, schedule_, values, tensors);
   }
   // Into tapes of its own; the values come back.
   template <impl::Numeric T>
@@ -552,18 +554,6 @@ public:
   }
 
 private:
-  // The arena's table where the sweep is at the arena's scalar; no table at any
-  // other, where no tensor row is computed.
-  template <impl::Numeric U, impl::Numeric T>
-  static constexpr const TensorKernelTable<U> *
-  table_at(const TensorKernelTable<T> &kernels) noexcept {
-    if constexpr (std::same_as<U, T>) {
-      return &kernels;
-    } else {
-      return nullptr;
-    }
-  }
-
   std::vector<Step> schedule_;
   TensorLayout layout_;
 };

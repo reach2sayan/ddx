@@ -106,7 +106,7 @@ template <CKernelScalar T> void define_scalar(auto &def) {
   DDX_UNARY_MATH_TABLE(DDX_JIT_RUNTIME)
 #undef DDX_JIT_RUNTIME
   def(
-      detail::trampoline_symbol<T>(),
+      detail::libm_name<T>(detail::trampoline_symbol),
       +[](const void *fn, const T *in, std::uint64_t arity, T *answer,
           std::uint64_t components) noexcept {
         (*static_cast<const rt::ExternFn<T> *>(fn))(
@@ -561,10 +561,10 @@ struct Compiler::Impl {
   // The only shared mutable state: LLJIT is synchronised, but two threads
   // naming a module alike would hand it a duplicate symbol.
   std::atomic<unsigned> counter{0};
-  bool libmvec = false;  // Whether the vector forms resolve here
-  unsigned bits = 64;    // The host's vector register, in bits
-  unsigned veclib_f64 = 1; // The widest the vector library serves, per scalar
-  unsigned veclib_f32 = 1;
+  bool libmvec = false; // Whether the vector forms resolve here
+  unsigned bits = 64;   // The host's vector register, in bits
+  // The widest the vector library serves: double's, then float's.
+  std::array<unsigned, 2> veclib_lanes{1, 1};
 
   [[nodiscard]] static compile_result<std::shared_ptr<Impl>> bring_up() {
     init_native_target_once();
@@ -579,8 +579,8 @@ struct Compiler::Impl {
     impl->machine = *jtmb;
     impl->triple = jtmb->getTargetTriple().str();
     impl->bits = vector_bits(*jtmb);
-    impl->veclib_f64 = library_lanes<double>(jtmb->getTargetTriple());
-    impl->veclib_f32 = library_lanes<float>(jtmb->getTargetTriple());
+    impl->veclib_lanes = {library_lanes<double>(jtmb->getTargetTriple()),
+                          library_lanes<float>(jtmb->getTargetTriple())};
     impl->host = host_identity_of(*jtmb);
 
     // Not setNumCompileThreads: the backend runs on the thread that asked, and
@@ -697,8 +697,7 @@ struct Compiler::Impl {
                 .triple = self->triple,
                 .libmvec = self->libmvec,
                 .lanes = self->bits / unsigned{8 * sizeof(T)},
-                .veclib_lanes = std::same_as<T, float> ? self->veclib_f32
-                                                       : self->veclib_f64,
+                .veclib_lanes = self->veclib_lanes[std::same_as<T, float>],
                 .objects = self->objects,
                 .code = self};
   }

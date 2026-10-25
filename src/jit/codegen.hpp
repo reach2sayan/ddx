@@ -12,20 +12,14 @@
 namespace ddx::jit::detail {
 
 // C's spelling of a libm function at T: sin for double, sinf for float.
-template <CKernelScalar T> inline constexpr std::string_view libm_suffix = "";
-template <> inline constexpr std::string_view libm_suffix<float> = "f";
-
 template <CKernelScalar T>
 [[nodiscard]] std::string libm_name(std::string_view name) {
-  return std::string{name}.append(libm_suffix<T>);
+  return std::string{name} + (std::same_as<T, float> ? "f" : "");
 }
 
-// The runtime's way into a function the program supplied, defined beside
-// libm: ddx_call_extern(fn, in, arity, answer, components), suffixed as libm.
-template <CKernelScalar T>
-[[nodiscard]] std::string trampoline_symbol() {
-  return libm_name<T>("ddx_call_extern");
-}
+// The runtime's way into a function the program supplied, defined beside libm
+// and suffixed as it is: ddx_call_extern(fn, in, arity, answer, components).
+inline constexpr std::string_view trampoline_symbol = "ddx_call_extern";
 
 // One graph as a single counted loop over n points, `lanes` points per
 // iteration: the body is emitted over <lanes x T>, or over T when lanes is 1.
