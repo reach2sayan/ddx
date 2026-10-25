@@ -205,7 +205,7 @@ TEST(RtText, LowersADifferenceAsTheSumOfANegation) {
   ASSERT_TRUE(ast.has_value());
   const auto &root = ast->terms[ast->root];
   EXPECT_EQ(root.op, ddx::rt::OpCode::Add);
-  EXPECT_EQ(ast->terms[root.b].op, ddx::rt::OpCode::Neg);
+  EXPECT_EQ(ast->terms[root.in[1]].op, ddx::rt::OpCode::Neg);
 }
 
 TEST(RtText, RefusesWhatItCannotMean) {
