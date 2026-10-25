@@ -57,7 +57,7 @@ template <impl::Numeric T> struct Compiled {
   jit::OptLevel level = jit::OptLevel::O0;
   // What the sweep computes tensor rows with: resolved when the pipeline froze,
   // so a table the equation is handed later means a new pipeline.
-  const TensorKernelTable *kernels = nullptr;
+  const TensorKernelTable<T> *kernels = nullptr;
 
   [[nodiscard]] std::shared_ptr<const Compiled> with(jit::Kernel<T> k,
                                                      jit::OptLevel l) const {

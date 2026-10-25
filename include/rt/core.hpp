@@ -500,7 +500,7 @@ public:
   // What computes the tensor nodes: the process default
   // (rt::use_tensor_kernels) unless this equation is handed a table of its own.
   // A table decides the last bits, so the pipelines go with the old one.
-  auto &tensor_kernels(this auto &self, const TensorKernelTable &table) {
+  auto &tensor_kernels(this auto &self, const TensorKernelTable<T> &table) {
     if (&table == self.kernels_) {
       return self;
     }
@@ -508,7 +508,7 @@ public:
     self.pipelines_ = std::make_unique<Pipelines>();
     return self;
   }
-  [[nodiscard]] constexpr const TensorKernelTable &
+  [[nodiscard]] constexpr const TensorKernelTable<T> &
   tensor_kernels() const noexcept {
     if (kernels_ != nullptr) {
       return *kernels_;
@@ -516,9 +516,9 @@ public:
     // The process default lives in libddx, which constant evaluation cannot
     // reach; a constant-evaluated equation computes no tensor row anyway.
     if consteval {
-      return reference_table;
+      return reference_table<T>;
     }
-    return rt::tensor_kernels();
+    return rt::tensor_kernels<T>();
   }
 
   // Sweep and freeze `wants` now, so the calls that follow -- from any number
@@ -1444,7 +1444,7 @@ private:
   }
 
   // The block sweep, within ~1.4x of a kernel and not a sad path.
-  void interpret(const Graph<T> &graph, const TensorKernelTable &kernels,
+  void interpret(const Graph<T> &graph, const TensorKernelTable<T> &kernels,
                  std::span<const T *const> xs, const Columns<T> &out,
                  std::size_t n) const {
     const auto blocks = graph.output_rows();
@@ -1514,7 +1514,7 @@ private:
   std::vector<NodeId> roots_;
   jit::Options options_{};
   // Null: the process default, read at each freeze.
-  const TensorKernelTable *kernels_ = nullptr;
+  const TensorKernelTable<T> *kernels_ = nullptr;
   Jacobian jacobian_;
   // unique_ptr, not shared: its destructor is constexpr, which is what keeps a
   // constant-evaluated equation destructible.  Null there; a poisoned equation

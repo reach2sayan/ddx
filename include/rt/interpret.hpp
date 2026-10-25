@@ -108,8 +108,9 @@ template <std::size_t W, impl::Numeric U>
 
 // Where a sweep's rows are and what computes them: the scalar tape's layout,
 // the tensor tape -- `extent` elements per lane, laid out lane-major so each
-// lane's vector is contiguous -- and the kernel table.  Empty tensor rows is a
-// sweep with no tensor in it.
+// lane's vector is contiguous -- and the kernel table, at the sweep's scalar
+// and null where that is not the arena's.  Empty tensor rows is a sweep with
+// no tensor in it.
 template <typename U> struct TapeView {
   // By id, the tape row a node's value sits in; empty is the ids themselves,
   // which is what an arena walk's schedule says.  The hot path reads rows off
@@ -118,7 +119,7 @@ template <typename U> struct TapeView {
   std::span<const std::uint32_t> scalar_rows{};
   std::span<const TensorRow> tensor_rows{};
   U *vtape = nullptr;
-  const TensorKernelTable *kernels = nullptr;
+  const TensorKernelTable<U> *kernels = nullptr;
 
   [[nodiscard]] constexpr std::uint32_t row(NodeId v) const noexcept {
     return scalar_rows.empty() ? v : scalar_rows[v];
@@ -153,13 +154,14 @@ DDX_NOINLINE constexpr void lanes_extern(const Arena<T> &b, NodeId v, U *out,
 
 // A tensor node, W lanes of it: each lane's vector is one contiguous span
 // handed to the kernel table, except the copies -- Pack, Gather, AddAt, a
-// VecConst -- which the interpreter does itself.  At any scalar but double
-// the rows are zero: computes_at() keeps such a sweep away.
+// VecConst -- which the interpreter does itself.  At any scalar but the
+// arena's the rows are zero: computes_at() keeps such a sweep away.  So are
+// they at a field-like arena, which has no table to compute them.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
                                          const Node<T> &n, U *out, auto lane,
                                          const TapeView<U> &t) {
-  if constexpr (!std::same_as<U, double> || !std::same_as<T, double>) {
+  if constexpr (!std::same_as<U, T> || !std::floating_point<T>) {
     std::ranges::fill_n(out, W, U{});
   } else {
     assert(!t.tensor_rows.empty());
@@ -184,7 +186,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
     const auto mine = [self, w](std::size_t k) {
       return std::span<U>{self + k * w, w};
     };
-    const TensorKernelTable &kt = *t.kernels;
+    const TensorKernelTable<U> &kt = *t.kernels;
     // Lane k of a scalar operand.
     const auto at = [&](NodeId s, std::size_t k) { return lane(t.row(s))[k]; };
     for (std::size_t k = 0; k < W; ++k) {
@@ -525,7 +527,7 @@ public:
   constexpr void
   operator()(const Arena<T> &b, const auto &point, std::span<U> values,
              std::span<U> vtape,
-             const TensorKernelTable &kernels = reference_table) const {
+             const TensorKernelTable<T> &kernels = reference_table<T>) const {
     // At a scalar other than the arena's, an op U lacks answers U{}: the
     // caller asks computes_at() first, as univariate_derivative() does.
     assert((std::same_as<U, T> ||
@@ -535,14 +537,14 @@ public:
     evaluate_into(b, point, schedule_, values,
                   TapeView<U>{.tensor_rows = layout_.rows,
                               .vtape = vtape.data(),
-                              .kernels = &kernels});
+                              .kernels = table_at<U>(kernels)});
   }
   // Into tapes of its own; the values come back.
   template <impl::Numeric T>
   [[nodiscard]] constexpr auto
   operator()(const Arena<T> &b,
              const std::ranges::random_access_range auto &point,
-             const TensorKernelTable &kernels = reference_table) const {
+             const TensorKernelTable<T> &kernels = reference_table<T>) const {
     using U = std::ranges::range_value_t<decltype(point)>;
     std::vector<U> values(b.size()), vtape(extent());
     (*this)(b, point, std::span<U>{values}, std::span<U>{vtape}, kernels);
@@ -550,6 +552,18 @@ public:
   }
 
 private:
+  // The arena's table where the sweep is at the arena's scalar; no table at any
+  // other, where no tensor row is computed.
+  template <impl::Numeric U, impl::Numeric T>
+  static constexpr const TensorKernelTable<U> *
+  table_at(const TensorKernelTable<T> &kernels) noexcept {
+    if constexpr (std::same_as<U, T>) {
+      return &kernels;
+    } else {
+      return nullptr;
+    }
+  }
+
   std::vector<Step> schedule_;
   TensorLayout layout_;
 };
@@ -564,7 +578,7 @@ template <impl::Numeric T, std::ranges::random_access_range R>
 [[nodiscard]] constexpr auto
 evaluate_reachable(const Arena<T> &b, std::span<const NodeId> roots,
                    const R &point,
-                   const TensorKernelTable &kernels = reference_table) {
+                   const TensorKernelTable<T> &kernels = reference_table<T>) {
   return detail::ArenaWalk{b, detail::live_ids(detail::reachable(b, roots))}(
       b, point, kernels);
 }
@@ -576,7 +590,7 @@ template <impl::Numeric T, std::ranges::random_access_range R>
   requires impl::Numeric<std::ranges::range_value_t<R>>
 [[nodiscard]] constexpr auto
 evaluate_all(const Arena<T> &b, const R &point,
-             const TensorKernelTable &kernels = reference_table) {
+             const TensorKernelTable<T> &kernels = reference_table<T>) {
   return detail::ArenaWalk{b}(b, point, kernels);
 }
 

@@ -73,11 +73,16 @@ void scatter(const ddx::rt::Colouring &colouring,
 // A kernel table: the reference rows, with the four Eigen helps with replaced.
 // Over an Eigen built with EIGEN_USE_BLAS the products land in that BLAS.
 // map and zip stay the reference rows: a transcendental per element is the same
-// work under any library.
-struct EigenKernels : ddx::rt::reference::Kernels {
+// work under any library.  At either scalar, over Eigen's matrices of it.
+template <typename T>
+struct EigenKernels : ddx::rt::reference::Kernels<T> {
+  using typename ddx::rt::reference::Kernels<T>::In;
+  using typename ddx::rt::reference::Kernels<T>::Out;
+  using Dense = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>;
+  using Column = Eigen::Matrix<T, Eigen::Dynamic, 1>;
   static constexpr std::string_view name = "eigen";
-  using Vector = Eigen::Map<const Eigen::VectorXd>;
-  using Matrix = Eigen::Map<const Eigen::MatrixXd>;
+  using Vector = Eigen::Map<const Column>;
+  using Matrix = Eigen::Map<const Dense>;
 
   static void gemv(std::size_t r, std::size_t c, In m, In v, Out out,
                    bool transposed) noexcept {
@@ -85,22 +90,22 @@ struct EigenKernels : ddx::rt::reference::Kernels {
     const auto cols = static_cast<Eigen::Index>(c);
     const Matrix M(m.data(), rows, cols);
     if (transposed) {
-      Eigen::Map<Eigen::VectorXd> y(out.data(), cols);
+      Eigen::Map<Column> y(out.data(), cols);
       y.noalias() = M.transpose() * Vector(v.data(), rows);
     } else {
-      Eigen::Map<Eigen::VectorXd> y(out.data(), rows);
+      Eigen::Map<Column> y(out.data(), rows);
       y.noalias() = M * Vector(v.data(), cols);
     }
   }
-  [[nodiscard]] static double dot(In u, In v) noexcept {
+  [[nodiscard]] static T dot(In u, In v) noexcept {
     const auto n = static_cast<Eigen::Index>(u.size());
     return Vector(u.data(), n).dot(Vector(v.data(), n));
   }
-  static void scale(double s, In v, Out out) noexcept {
+  static void scale(T s, In v, Out out) noexcept {
     const auto n = static_cast<Eigen::Index>(v.size());
-    Eigen::Map<Eigen::VectorXd>(out.data(), n) = s * Vector(v.data(), n);
+    Eigen::Map<Column>(out.data(), n) = s * Vector(v.data(), n);
   }
-  [[nodiscard]] static double sum(In v) noexcept {
+  [[nodiscard]] static T sum(In v) noexcept {
     return Vector(v.data(), static_cast<Eigen::Index>(v.size())).sum();
   }
   static void gemm(std::size_t r, std::size_t k, std::size_t c, In a, In b,
@@ -108,13 +113,13 @@ struct EigenKernels : ddx::rt::reference::Kernels {
     const auto rows = static_cast<Eigen::Index>(r);
     const auto inner = static_cast<Eigen::Index>(k);
     const auto cols = static_cast<Eigen::Index>(c);
-    Eigen::Map<Eigen::MatrixXd> y(out.data(), rows, cols);
+    Eigen::Map<Dense> y(out.data(), rows, cols);
     y.noalias() = Matrix(a.data(), rows, inner) * Matrix(b.data(), inner, cols);
   }
 };
 
-constexpr ddx::rt::TensorKernelTable eigen_table =
-    ddx::rt::tensor_kernel_table<EigenKernels>();
+template <typename T>
+constexpr auto eigen_table = ddx::rt::tensor_kernel_table<EigenKernels<T>, T>();
 
 TEST(RtEigen, ABatchThroughColumnMajorMatrices) {
   const auto sys = ddx::rt::equation([] {
@@ -185,36 +190,44 @@ TEST(RtEigen, TheHessianBlockScattersDense) {
 
 // The Eigen kernel table under a tensor graph: the same numbers as the
 // reference table to rounding, and the table the equation says it ran on.
-TEST(RtEigen, KernelsAgreeWithTheReferenceTable) {
+template <typename T> void eigen_agrees_with_the_reference_table(double tol) {
   constexpr std::size_t n = 30;
-  std::vector<double> m(n * n);
+  std::vector<T> m(n * n);
   for (std::size_t i = 0; i < n; ++i) {
     for (std::size_t j = 0; j < n; ++j) {
-      m[i + j * n] = std::sin(static_cast<double>(i * 7 + j * 3));
+      m[i + j * n] =
+          static_cast<T>(std::sin(static_cast<double>(i * 7 + j * 3)));
     }
   }
   const auto model = [&] {
-    const auto x = ddx::rt::vec("x", n);
-    const auto M = ddx::rt::mat_constant(n, n, m);
-    return dot(x, gemv(M, x)) + sum(log(x) * gemv(M, x, true)) * 0.5;
+    const auto x = ddx::rt::vec<T>("x", n);
+    const auto M = ddx::rt::mat_constant<T>(n, n, m);
+    return dot(x, gemv(M, x)) + sum(log(x) * gemv(M, x, true)) * T(0.5);
   };
-  const auto reference = ddx::rt::equation(model);
-  auto eigen = ddx::rt::equation(model);
-  eigen.tensor_kernels(eigen_table);
+  const auto reference = ddx::rt::equation<T>(model);
+  auto eigen = ddx::rt::equation<T>(model);
+  eigen.tensor_kernels(eigen_table<T>);
   EXPECT_EQ(eigen.tensor_kernels().name, "eigen");
 
-  std::vector<double> at(n);
+  std::vector<T> at(n);
   for (std::size_t i = 0; i < n; ++i) {
-    at[i] = 0.5 + 0.01 * static_cast<double>(i);
+    at[i] = static_cast<T>(0.5 + 0.01 * static_cast<double>(i));
   }
-  const auto want_g = *reference.gradient(std::span<const double>{at});
-  const auto got_g = *eigen.gradient(std::span<const double>{at});
-  const auto want_h = *reference.hvp(at, std::span<const double>{at});
-  const auto got_h = *eigen.hvp(at, std::span<const double>{at});
+  const auto want_g = *reference.gradient(std::span<const T>{at});
+  const auto got_g = *eigen.gradient(std::span<const T>{at});
+  const auto want_h = *reference.hvp(at, std::span<const T>{at});
+  const auto got_h = *eigen.hvp(at, std::span<const T>{at});
   for (std::size_t i = 0; i < n; ++i) {
     EXPECT_NEAR(got_g[i], want_g[i],
-                1e-13 * std::max(1.0, std::abs(want_g[i])));
+                tol * std::max(1.0, std::abs(double{want_g[i]})));
     EXPECT_NEAR(got_h[i], want_h[i],
-                1e-13 * std::max(1.0, std::abs(want_h[i])));
+                tol * std::max(1.0, std::abs(double{want_h[i]})));
   }
+}
+
+TEST(RtEigen, KernelsAgreeWithTheReferenceTable) {
+  eigen_agrees_with_the_reference_table<double>(1e-13);
+}
+TEST(RtEigen, FloatKernelsAgreeWithTheReferenceTable) {
+  eigen_agrees_with_the_reference_table<float>(1e-4);
 }
