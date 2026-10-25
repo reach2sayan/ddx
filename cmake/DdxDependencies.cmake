@@ -93,7 +93,7 @@ endmacro()
 
 # --- LLVM -------------------------------------------------------------------
 # Found, never fetched: an installed LLVMConfig or Conan's llvm-core, whose
-# config has no LLVM_VERSION_MAJOR or llvm_map_components_to_libnames.
+# config has no llvm_map_components_to_libnames or LLVM_DEFINITIONS.
 # Sets LLVM_DEFINITIONS_LIST and DDX_LLVM_LIBS for src/jit.
 macro(ddx_use_llvm)
     if (NOT LLVM_FOUND)
@@ -145,8 +145,9 @@ macro(ddx_use_llvm)
     _ddx_llvm_archives()
 endmacro()
 
-# Archives only.  Conan's llvm-core always is; an LLVMConfig (LLVM_VERSION_MAJOR
-# set) is checked, and its zstd retargeted to the static one.
+# Archives only: a zlib with a library file must be the archive, and a
+# LLVMSupport that names the shared zstd is moved onto the static one.  Conan's
+# targets name no file and no shared zstd, so they pass as they are.
 function(_ddx_llvm_archives)
     set(missing "")
     foreach (lib IN LISTS DDX_LLVM_LIBS)
@@ -154,18 +155,21 @@ function(_ddx_llvm_archives)
             string(APPEND missing "  ${lib}, one of LLVM's component archives\n")
         endif ()
     endforeach ()
-    if (DEFINED LLVM_VERSION_MAJOR)
-        if (NOT TARGET zstd::libzstd_static)
+    get_target_property(deps LLVMSupport INTERFACE_LINK_LIBRARIES)
+    if (deps MATCHES "zstd::libzstd_shared")
+        if (TARGET zstd::libzstd_static)
+            string(REPLACE "zstd::libzstd_shared" "zstd::libzstd_static" deps "${deps}")
+            set_property(TARGET LLVMSupport PROPERTY INTERFACE_LINK_LIBRARIES "${deps}")
+        else ()
             string(APPEND missing "  libzstd's archive (libzstd-dev on Debian/Ubuntu)\n")
         endif ()
-        set(zlib "")
-        if (TARGET ZLIB::ZLIB)
-            get_target_property(zlib ZLIB::ZLIB IMPORTED_LOCATION_RELEASE)
-            if (NOT zlib)
-                get_target_property(zlib ZLIB::ZLIB IMPORTED_LOCATION)
-            endif ()
+    endif ()
+    if (TARGET ZLIB::ZLIB)
+        get_target_property(zlib ZLIB::ZLIB IMPORTED_LOCATION_RELEASE)
+        if (NOT zlib)
+            get_target_property(zlib ZLIB::ZLIB IMPORTED_LOCATION)
         endif ()
-        if (NOT zlib MATCHES "\\${CMAKE_STATIC_LIBRARY_SUFFIX}$")
+        if (zlib AND NOT zlib MATCHES "\\${CMAKE_STATIC_LIBRARY_SUFFIX}$")
             string(APPEND missing "  zlib's archive (zlib1g-dev on Debian/Ubuntu)\n")
         endif ()
     endif ()
@@ -174,11 +178,6 @@ function(_ddx_llvm_archives)
                 "libddx links LLVM and what it needs as archives, and these were "
                 "not found:\n${missing}"
                 "Conan's llvm-core has all of them: `conan install . -o \"&:jit=True\"`.")
-    endif ()
-    if (DEFINED LLVM_VERSION_MAJOR)
-        get_target_property(deps LLVMSupport INTERFACE_LINK_LIBRARIES)
-        string(REPLACE "zstd::libzstd_shared" "zstd::libzstd_static" deps "${deps}")
-        set_property(TARGET LLVMSupport PROPERTY INTERFACE_LINK_LIBRARIES "${deps}")
     endif ()
 endfunction()
 
