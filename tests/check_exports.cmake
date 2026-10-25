@@ -1,26 +1,37 @@
-# No symbol of a dependency libddx swallowed leaves it, and nothing past the C
-# runtime is needed to load it.
-#   cmake -DNM=<nm> -DREADELF=<readelf> -DLIB=<libddx.so>
-#         -DWHAT=<name> -DFORBID=<regex> -P check_exports.cmake
-execute_process(COMMAND "${NM}" -D --defined-only "${LIB}"
-        OUTPUT_VARIABLE symbols COMMAND_ERROR_IS_FATAL ANY)
-string(REGEX MATCHALL "[^\n]*(${FORBID})[^\n]*" leaked "${symbols}")
+# No LLVM symbol leaves libddx, and nothing past the C runtime (on Windows, the
+# system DLLs) is needed to load it.
+#   cmake -DNM=<nm> -DDEPS=<readelf|link> -DLIB=<libddx> -P check_exports.cmake
+if (LIB MATCHES "\\.dll$")
+    set(symbols_cmd "${DEPS}" /dump /nologo /exports "${LIB}")
+    set(deps_cmd "${DEPS}" /dump /nologo /dependents "${LIB}")
+    set(dep_line "\n +([^ \n]+\\.[Dd][Ll][Ll])")
+    set(runtime "^(api-ms-win-.*|kernel32|kernelbase|advapi32|shell32|ole32|oleaut32|user32|psapi|ws2_32|ntdll|bcrypt|crypt32|msvcp140.*|vcruntime140.*|ucrtbased?)\\.dll$")
+else ()
+    set(symbols_cmd "${NM}" -D --defined-only "${LIB}")
+    set(deps_cmd "${DEPS}" -d "${LIB}")
+    set(dep_line "\\(NEEDED\\)[^\n]*\\[([^]\n]*)\\]")
+    # libdl: LLVM's dlopen lives there before glibc 2.34.
+    set(runtime "^(libstdc\\+\\+|libc\\+\\+|libc\\+\\+abi|libunwind|libm|libgcc_s|libc|libdl|ld-linux)[.-]")
+endif ()
+
+execute_process(COMMAND ${symbols_cmd} OUTPUT_VARIABLE symbols COMMAND_ERROR_IS_FATAL ANY)
+string(REGEX MATCHALL "[^\n]*[Ll][Ll][Vv][Mm][^\n]*" leaked "${symbols}")
 if (leaked)
     list(LENGTH leaked count)
     list(SUBLIST leaked 0 5 sample)
     string(JOIN "\n  " sample ${sample})
-    message(FATAL_ERROR "${count} ${WHAT} symbols exported from ${LIB}, such as:\n  ${sample}")
+    message(FATAL_ERROR "${count} LLVM symbols exported from ${LIB}, such as:\n  ${sample}")
 endif ()
 
-# libdl: LLVM's dlopen lives there before glibc 2.34.
-execute_process(COMMAND "${READELF}" -d "${LIB}"
-        OUTPUT_VARIABLE dynamic COMMAND_ERROR_IS_FATAL ANY)
-string(REGEX MATCHALL "\\(NEEDED\\)[^\n]*" needed "${dynamic}")
+execute_process(COMMAND ${deps_cmd} OUTPUT_VARIABLE dynamic COMMAND_ERROR_IS_FATAL ANY)
+string(REGEX MATCHALL "${dep_line}" needed "${dynamic}")
 set(foreign "")
 foreach (entry IN LISTS needed)
-    string(REGEX REPLACE ".*\\[(.*)\\].*" "\\1" soname "${entry}")
-    if (NOT soname MATCHES "^(libstdc\\+\\+|libc\\+\\+|libc\\+\\+abi|libunwind|libm|libgcc_s|libc|libdl|ld-linux)[.-]")
-        list(APPEND foreign "${soname}")
+    string(REGEX REPLACE "${dep_line}" "\\1" path "${entry}")
+    cmake_path(GET path FILENAME name)
+    string(TOLOWER "${name}" lowered)
+    if (NOT lowered MATCHES "${runtime}")
+        list(APPEND foreign "${name}")
     endif ()
 endforeach ()
 if (foreign)

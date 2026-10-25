@@ -3,19 +3,9 @@
 ddx_use_googletest()
 include(GoogleTest)
 
-file(GLOB DDX_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
-add_executable(tests ${DDX_TEST_SOURCES})
-target_include_directories(tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(tests PRIVATE gtest_main ddx::rt)
-ddx_target_flags(tests)
-ddx_runtime_deps(tests)
-# Every test TU parses the same ~150k lines; the four GoogleTest targets compile
-# with identical flags, so one PCH serves them all.
+# Every test TU parses the same ~150k lines, so one PCH (on `tests`) serves all
+# four targets; unity batches share one instantiation of the runtime core.
 option(DDX_TEST_PCH "Precompile the headers every test includes" ON)
-if (DDX_TEST_PCH)
-    target_precompile_headers(tests PRIVATE <gtest/gtest.h> <ddx.hpp> <rt/equation.hpp>)
-endif ()
-# Batches share one instantiation of the runtime core instead of one per file.
 option(DDX_TEST_UNITY "Compile each test target in unity batches" ON)
 set(DDX_TEST_UNITY_BATCH 4 CACHE STRING "Test sources per unity batch")
 set(DDX_TEST_ENV "")
@@ -24,56 +14,38 @@ if (DDX_SANITIZE STREQUAL "thread")
         "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan.supp:ignore_noninstrumented_modules=1")
 endif ()
 
-set_target_properties(tests PROPERTIES UNITY_BUILD ${DDX_TEST_UNITY}
-        UNITY_BUILD_BATCH_SIZE ${DDX_TEST_UNITY_BATCH})
-gtest_discover_tests(tests ${DDX_TEST_ENV})
+function(ddx_test name glob)
+    file(GLOB sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${glob}")
+    add_executable(${name} ${sources})
+    target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(${name} PRIVATE gtest_main ddx::rt)
+    ddx_target_flags(${name})
+    ddx_runtime_deps(${name})
+    if (DDX_TEST_PCH AND name STREQUAL "tests")
+        target_precompile_headers(tests PRIVATE <gtest/gtest.h> <ddx.hpp> <rt/equation.hpp>)
+    elseif (DDX_TEST_PCH)
+        target_precompile_headers(${name} REUSE_FROM tests)
+    endif ()
+    set_target_properties(${name} PROPERTIES UNITY_BUILD ${DDX_TEST_UNITY}
+            UNITY_BUILD_BATCH_SIZE ${DDX_TEST_UNITY_BATCH})
+    gtest_discover_tests(${name} ${DDX_TEST_ENV})
+endfunction()
 
-file(GLOB DDX_DUAL_TEST_SOURCES CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/dual/*.cpp")
-add_executable(tests_dual ${DDX_DUAL_TEST_SOURCES})
-target_include_directories(tests_dual PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(tests_dual PRIVATE gtest_main ddx::rt)
-ddx_target_flags(tests_dual)
-ddx_runtime_deps(tests_dual)
-if (DDX_TEST_PCH)
-    target_precompile_headers(tests_dual REUSE_FROM tests)
-endif ()
-set_target_properties(tests_dual PROPERTIES UNITY_BUILD ${DDX_TEST_UNITY}
-        UNITY_BUILD_BATCH_SIZE ${DDX_TEST_UNITY_BATCH})
-gtest_discover_tests(tests_dual ${DDX_TEST_ENV})
-
-file(GLOB DDX_RT_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/rt/*.cpp")
-add_executable(tests_rt ${DDX_RT_TEST_SOURCES})
-target_include_directories(tests_rt PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(tests_rt PRIVATE gtest_main ddx::rt)
-ddx_target_flags(tests_rt)
-ddx_runtime_deps(tests_rt)
-if (DDX_TEST_PCH)
-    target_precompile_headers(tests_rt REUSE_FROM tests)
-endif ()
-set_target_properties(tests_rt PROPERTIES UNITY_BUILD ${DDX_TEST_UNITY}
-        UNITY_BUILD_BATCH_SIZE ${DDX_TEST_UNITY_BATCH})
-gtest_discover_tests(tests_rt ${DDX_TEST_ENV})
+ddx_test(tests "*.cpp")
+ddx_test(tests_dual "dual/*.cpp")
+ddx_test(tests_rt "rt/*.cpp")
 
 if (DDX_BUILD_JIT)
-    file(GLOB DDX_JIT_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/jit/*.cpp")
-    add_executable(tests_jit ${DDX_JIT_TEST_SOURCES})
-    target_include_directories(tests_jit PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(tests_jit PRIVATE gtest_main ddx::jit)
-    ddx_target_flags(tests_jit)
-    ddx_runtime_deps(tests_jit)
-    if (DDX_TEST_PCH)
-        target_precompile_headers(tests_jit REUSE_FROM tests)
-    endif ()
-    set_target_properties(tests_jit PROPERTIES UNITY_BUILD ${DDX_TEST_UNITY}
-            UNITY_BUILD_BATCH_SIZE ${DDX_TEST_UNITY_BATCH})
-    gtest_discover_tests(tests_jit ${DDX_TEST_ENV})
-
-    if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND DDX_SANITIZE STREQUAL "off")
+    ddx_test(tests_jit "jit/*.cpp")
+    if (DDX_SANITIZE STREQUAL "off")
+        if (MSVC)
+            set(exports_tool "${CMAKE_LINKER}")
+        else ()
+            set(exports_tool "${CMAKE_READELF}")
+        endif ()
         add_test(NAME jit.exports
-                COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM} -DREADELF=${CMAKE_READELF}
-                -DLIB=$<TARGET_FILE:ddx_rt> -DWHAT=LLVM -DFORBID=[Ll][Ll][Vv][Mm]
-                -P "${CMAKE_CURRENT_SOURCE_DIR}/check_exports.cmake")
+                COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM} -DDEPS=${exports_tool}
+                -DLIB=$<TARGET_FILE:ddx_rt> -P "${CMAKE_CURRENT_SOURCE_DIR}/check_exports.cmake")
     endif ()
 endif ()
 

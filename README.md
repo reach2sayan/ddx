@@ -64,12 +64,14 @@ find_package(ddx CONFIG REQUIRED COMPONENTS rt jit)
 |---|---|
 | `ddx::ddx` | header-only: compile-time expressions |
 | `ddx::rt` | runtime equations |
-| `ddx::jit` | `ddx::rt` with the LLVM backend (`-DDDX_BUILD_JIT=ON`, needs LLVM 20) |
+| `ddx::jit` | `ddx::rt` with the LLVM backend (`-DDDX_BUILD_JIT=ON`, needs an installed LLVM 20; ddx never downloads it) |
 
 Conan: `conan create .` packages it and `conan editable add .` uses the tree
-in place; consumers `find_package(ddx)` as above.  Also packaged for vcpkg
-(`--overlay-ports=contrib/vcpkg/ports`) and NuGet (`ddx`).  None of the three
-carries the JIT. Presets: `debug`, `release`, `debug_jit`,
+in place; consumers `find_package(ddx)` as above.  `-o "ddx/*:jit=True"` adds
+the JIT, with Conan building LLVM 20 from `contrib/conan`
+(`conan remote add ddx contrib/conan --type=local-recipes-index`).  Also
+packaged for vcpkg (`--overlay-ports=contrib/vcpkg/ports`) and NuGet (`ddx`),
+neither with the JIT. Presets: `debug`, `release`, `debug_jit`,
 `release_jit`, `python`.
 
 ## Equations
@@ -300,7 +302,7 @@ def f():
 value, gradient = f.jacobian([2.0, 3.0])
 ```
 
-Wheels for Linux x86_64 (JIT) and Windows x64 (interpreted), CPython 3.11–3.14.
+Wheels for Linux x86_64 and Windows x64, both with the JIT, CPython 3.11–3.14.
 See [python/README.md](python/README.md).
 
 ## Compile-time expressions

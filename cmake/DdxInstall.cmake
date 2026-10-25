@@ -1,4 +1,3 @@
-# Included from the top level once every exportable target exists.
 include_guard(GLOBAL)
 
 include(CMakePackageConfigHelpers)
@@ -11,11 +10,8 @@ install(TARGETS ${DDX_EXPORT_TARGETS}
         EXPORT ddxTargets
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-install(DIRECTORY "${PROJECT_SOURCE_DIR}/include/" DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-        FILES_MATCHING PATTERN "*.hpp")
-install(FILES "${PROJECT_BINARY_DIR}/include/util/version.hpp"
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/util")
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        FILE_SET HEADERS)
 
 # The Boost subset the installed headers reach -- only when ddx fetched it.  A
 # supplied Boost is the consumer's; the config below asks for it again.
@@ -36,19 +32,11 @@ install(EXPORT ddxTargets
         NAMESPACE ddx::
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ddx)
 
-# ddx's own licence, and those of what libddx and the installed headers carry.
 install(FILES "${PROJECT_SOURCE_DIR}/LICENSE.txt" "${PROJECT_SOURCE_DIR}/THIRD-PARTY-NOTICES.txt"
         DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
-# Two configs from one template: the build tree and the prefix hold Boost in
-# different places.  A supplied Boost is asked for again with find_dependency
-# rather than baked in as a build-machine path.
-if (DDX_BOOST_VENDORED)
-    set(DDX_BOOST_FIND_DEPENDENCY FALSE)
-else ()
-    set(DDX_BOOST_FIND_DEPENDENCY TRUE)
-endif ()
-
+# Two configs from one template: the build tree and the prefix hold a fetched
+# Boost in different places.
 set(DDX_BOOST_CONFIG_ROOT "${DDX_BOOST_ROOT}")
 configure_package_config_file(
         "${PROJECT_SOURCE_DIR}/cmake/ddx-config.cmake.in"

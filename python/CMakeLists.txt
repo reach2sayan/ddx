@@ -2,8 +2,7 @@
 #   ddx/_ddx.cpython-*.so   these bindings
 #   ddx/libddx.so.1         the library they link
 
-# A Windows wheel is MSVC-built: anything else links a runtime the wheel does
-# not carry, and the import fails on every machine but the builder's.
+# Anything but MSVC links a runtime a Windows wheel does not carry.
 if (WIN32 AND NOT MSVC)
     message(FATAL_ERROR "the Python module on Windows needs MSVC, not "
                         "${CMAKE_CXX_COMPILER_ID}; run from a developer prompt")
@@ -20,7 +19,7 @@ ddx_target_flags(ddx_python EXCEPTIONS)
 ddx_runtime_deps(ddx_python)
 
 set_target_properties(ddx_python PROPERTIES
-        INSTALL_RPATH "$<IF:$<PLATFORM_ID:Darwin>,@loader_path,$ORIGIN>")
+        INSTALL_RPATH "$ORIGIN")
 install(TARGETS ddx_python LIBRARY DESTINATION ddx)
 install(TARGETS ddx_rt
         LIBRARY DESTINATION ddx NAMELINK_SKIP
@@ -56,7 +55,7 @@ set_tests_properties(python.pytest PROPERTIES
         ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR};PYTHONDONTWRITEBYTECODE=1;DDX_PACKAGE_DIR=${CMAKE_CURRENT_BINARY_DIR}")
 
 # --- stubs --------------------------------------------------------------------
-# On request; the result is checked in.  Against the bare extension, not the package.
+# On request; the result is checked in.
 add_custom_target(ddx_python_stubs
         COMMAND ${CMAKE_COMMAND} -E env "PYTHONPATH=${DDX_PYTHON_PACKAGE}"
         "${Python_EXECUTABLE}" -m pybind11_stubgen _ddx

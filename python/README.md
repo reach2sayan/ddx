@@ -23,10 +23,11 @@ the library.
 | Wheel | JIT |
 |---|---|
 | Linux x86_64 (glibc 2.28+) | yes |
-| Windows x64 | no — calls interpret |
+| Windows x64 | yes |
 
 There is no macOS wheel; elsewhere, `pip install .` from a checkout of the
-[repository](https://github.com/reach2sayan/ddx) builds from source.
+[repository](https://github.com/reach2sayan/ddx) builds from source, and needs
+LLVM 20 installed (`-C cmake.define.DDX_BUILD_JIT=OFF` builds without it).
 `ddx.has_jit` says whether the copy you have was built with the LLVM backend.
 Everything below works either way; without it, calls interpret.
 

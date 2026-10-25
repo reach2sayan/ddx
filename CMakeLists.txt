@@ -24,76 +24,45 @@ include(DdxCompileOptions)
 include(DdxDependencies)
 
 # --- the library ------------------------------------------------------------
-# One INTERFACE target per header directory; ddx_util owns the include path.
-# ops/ and symbolic/ are fully constexpr: no run-time dependency in their path.
+# One INTERFACE target per header directory; ddx_util carries the headers.
 ddx_use_boost()
 find_package(Threads REQUIRED)
 
 configure_file(include/util/version.hpp.in
         "${CMAKE_CURRENT_BINARY_DIR}/include/util/version.hpp" @ONLY)
 
-add_library(ddx_util INTERFACE)
-add_library(ddx::util ALIAS ddx_util)
-set_target_properties(ddx_util PROPERTIES EXPORT_NAME util)
-target_include_directories(ddx_util INTERFACE
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
-        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-target_link_libraries(ddx_util INTERFACE Boost::headers)
+function(ddx_interface name)
+    add_library(ddx_${name} INTERFACE)
+    add_library(ddx::${name} ALIAS ddx_${name})
+    set_target_properties(ddx_${name} PROPERTIES EXPORT_NAME ${name})
+    target_link_libraries(ddx_${name} INTERFACE ${ARGN})
+endfunction()
 
-add_library(ddx_ops INTERFACE)
-add_library(ddx::ops ALIAS ddx_ops)
-set_target_properties(ddx_ops PROPERTIES EXPORT_NAME ops)
-target_link_libraries(ddx_ops INTERFACE ddx_util)
+ddx_interface(util Boost::headers)
+ddx_interface(ops ddx_util)
+ddx_interface(md ddx_util ddx_ops)
+ddx_interface(symbolic ddx_ops ddx_md)
+ddx_interface(dual ddx_symbolic)
 
-add_library(ddx_md INTERFACE)
-add_library(ddx::md ALIAS ddx_md)
-set_target_properties(ddx_md PROPERTIES EXPORT_NAME md)
-target_link_libraries(ddx_md INTERFACE ddx_util ddx_ops)
+file(GLOB_RECURSE ddx_headers CONFIGURE_DEPENDS include/*.hpp)
+target_sources(ddx_util INTERFACE FILE_SET HEADERS
+        BASE_DIRS include "${CMAKE_CURRENT_BINARY_DIR}/include"
+        FILES ${ddx_headers} "${CMAKE_CURRENT_BINARY_DIR}/include/util/version.hpp")
 
-add_library(ddx_symbolic INTERFACE)
-add_library(ddx::symbolic ALIAS ddx_symbolic)
-set_target_properties(ddx_symbolic PROPERTIES EXPORT_NAME symbolic)
-target_link_libraries(ddx_symbolic INTERFACE ddx_ops ddx_md)
-
-add_library(ddx_dual INTERFACE)
-add_library(ddx::dual ALIAS ddx_dual)
-set_target_properties(ddx_dual PROPERTIES EXPORT_NAME dual)
-target_link_libraries(ddx_dual INTERFACE ddx_symbolic)
+# Every header compiles on its own: target all_verify_interface_header_sets.
+option(DDX_VERIFY_HEADERS "Check that every public header is self-contained" OFF)
+set_property(TARGET ddx_util PROPERTY VERIFY_INTERFACE_HEADER_SETS ${DDX_VERIFY_HEADERS})
 
 add_library(ddx INTERFACE)
 add_library(ddx::ddx ALIAS ddx)
 target_link_libraries(ddx INTERFACE ddx_util ddx_ops ddx_md ddx_symbolic ddx_dual)
 
-# Header lists for the IDE; nothing is compiled from there.
-add_subdirectory(include)
-
 # --- libddx -----------------------------------------------------------------
 option(DDX_BUILD_JIT "Build the LLVM JIT backend into libddx" OFF)
 
 add_subdirectory(src/rt)
-add_subdirectory(include/rt)
-# Header types in every build, whether or not the JIT is compiled in.
-add_subdirectory(include/jit)
 
 if (DDX_BUILD_JIT)
-    # The JIT's defaults follow how the project itself was built.
-    if (DDX_FP_FLAGS)
-        set(DDX_JIT_DEFAULT_CONTRACT 1)
-    else ()
-        set(DDX_JIT_DEFAULT_CONTRACT 0)
-    endif ()
-
-    # No predefined macro carries the optimisation level, so CMake says.  Never 0.
-    string(TOUPPER "${CMAKE_BUILD_TYPE}" DDX_BUILD_TYPE_UPPER)
-    if (DDX_BUILD_TYPE_UPPER STREQUAL "DEBUG")
-        set(DDX_JIT_DEFAULT_OPT 1)
-    elseif (DDX_BUILD_TYPE_UPPER STREQUAL "RELEASE")
-        set(DDX_JIT_DEFAULT_OPT 3)
-    else ()
-        set(DDX_JIT_DEFAULT_OPT 2)
-    endif ()
-
     ddx_use_llvm()
     add_subdirectory(src/jit)
 endif ()

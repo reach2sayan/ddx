@@ -10,7 +10,7 @@ set(DDX_BUILD_JIT @DDX_BUILD_JIT@)
 # beside us.  CONFIG is required: a bare find_dependency(Boost) falls back to the
 # FindBoost module CMake 4 removed (CMP0167).
 if (NOT TARGET Boost::headers)
-    if (@DDX_BOOST_FIND_DEPENDENCY@)
+    if (NOT @DDX_BOOST_VENDORED@)
         find_dependency(Boost CONFIG)
     else ()
         add_library(Boost::headers INTERFACE IMPORTED)

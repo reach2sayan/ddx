@@ -1,5 +1,4 @@
-# libddx: the runtime graph's scalar-free part, and the engine for the scalars
-# rt/core.hpp names, compiled once.
+# libddx: the runtime graph and its engine for the scalars rt/core.hpp names.
 add_library(ddx_rt SHARED coupling.cpp instances.cpp kernels.cpp)
 add_library(ddx::rt ALIAS ddx_rt)
 

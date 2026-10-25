@@ -1,0 +1,14 @@
+# The profile CI and the wheels build with, over `conan profile detect`'s.
+include(default)
+
+[settings]
+compiler.cppstd=23
+# LLVM's own standard; it links into a C++23 libddx all the same.
+llvm-core/*:compiler.cppstd=17
+
+[conf]
+tools.cmake.cmaketoolchain:generator=Ninja
+tools.cmake.cmaketoolchain:user_presets=
+# Libraries only (the tools double the build), and no assertions: the recipe
+# ties them to build_type, which turns them on in Release.
+llvm-core/*:tools.cmake.cmaketoolchain:extra_variables={"LLVM_BUILD_TOOLS": "OFF", "LLVM_BUILD_UTILS": "OFF", "LLVM_ENABLE_ASSERTIONS": "OFF"}

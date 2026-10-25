@@ -1,12 +1,7 @@
-# The build every compiler runs.  Called only: the three per-compiler workflows
-# beside this one exist so each gets its own badge, and a badge names a
-# workflow, never a job within one.
-#
-# Two jobs.  `build` is the library as a default configure makes it, no JIT,
-# with the Python module on top, on every OS.  `jit` is the other half --
-# libddx with LLVM inside, the JIT tests, and the module against it -- and
-# runs where the LLVM archives can be had: Linux, from scripts/build_llvm.py,
-# an hour once and then a cache.
+# The build every compiler runs, called by the per-compiler workflows (one badge
+# each).  `conan build .` configures, builds and tests the library, the Python
+# module and the test suite, with the JIT and without.  Conan supplies LLVM
+# only (contrib/conan); Boost is left to CMake, fetched as for any user.
 name: Build
 
 on:
@@ -29,43 +24,41 @@ on:
 jobs:
   build:
     runs-on: ${{ inputs.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        jit: [ "False", "True" ]
+    name: build (jit=${{ matrix.jit }})
+    defaults:
+      run:
+        shell: bash
+    env:
+      # FindPython takes the interpreter that has pybind11 from here.
+      VIRTUAL_ENV: ${{ github.workspace }}/.venv
+      CONAN_OPTIONS: >-
+        -pr:a contrib/conan/profile -s:a build_type=${{ inputs.build_type }}
+        -o &:jit=${{ matrix.jit }} -o &:boost=False -o &:tests=True -o &:python=True
+        --build=missing
 
     steps:
       - uses: actions/checkout@v5
 
-      # The documented floor rather than a version above it, so what README.md
-      # promises is what CI proves.  g++-14 for the libstdc++ 14 floor
-      # (std::ranges::to), which clang on Linux compiles against too, so the
-      # line serves either Linux caller.  clang-20 for the Clang floor README.md
-      # documents.  Boost is fetched at a pinned hash and never found, and an
-      # installed ddx carries the headers in its own prefix, so tests/package
-      # needs none either.  Eigen and OpenBLAS are for tests_eigen and
-      # tests_cblas, which are built only where CMake finds them; ddx itself
-      # never links either.
+      # The documented floors: g++-14 (libstdc++ 14, which clang compiles
+      # against too) and clang-20.  Eigen and OpenBLAS feed tests_eigen and
+      # tests_cblas, built only where found.
       - name: Install compilers (Ubuntu)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -q
           sudo apt-get install -y clang-20 gcc-14 g++-14 libeigen3-dev libopenblas-dev
 
-      # include/ may name the standard library and Boost, and nothing else.
-      # Boost is not a third party here: it is fetched at a pinned hash and
-      # installed into ddx's own prefix, so it is as present as <vector> and a
-      # header should reach for the right library rather than the allowed one.
-      # The vendored mdspan is the one genuine exception.
-      #
-      # What still holds: a quoted include resolves inside include/, and the
-      # core reaches rt/ only where symbolic Equation lowers onto its arena
-      # layer -- header-only, so ddx::ddx still links without libddx.
+      # include/ names the standard library and Boost, and nothing else but the
+      # vendored mdspan; the core reaches rt/ only through Equation's lowering.
       - name: Header dependencies stay declared
-        if: runner.os == 'Linux'
-        shell: bash
+        if: runner.os == 'Linux' && matrix.jit == 'False'
         run: |
           angled=$(grep -rnE '#[[:space:]]*include[[:space:]]*<[^>]*/' include --include='*.hpp' \
                    | grep -v third_party | grep -v '<boost/' || true)
-          # A quoted include is one of ours and must resolve inside include/,
-          # as a header or as the .in template CMake configures into the build
-          # tree; one that does not is a bundled dependency under another spelling.
           quoted=$( { grep -rnE '#[[:space:]]*include[[:space:]]*"' include --include='*.hpp' \
                        | grep -v third_party || true; } \
                    | while IFS=: read -r f n rest; do
@@ -73,8 +66,6 @@ jobs:
                        [ -e "$(dirname "$f")/$h" ] || [ -e "include/$h" ] || [ -e "include/$h.in" ] \
                          || echo "$f:$n: $h"
                      done)
-          # The core reaches into rt/ through symbolic/equation.hpp alone, and only
-          # for the arena layer it lowers onto.
           core=$(grep -rnE '#[[:space:]]*include[[:space:]]*"rt/' include --include='*.hpp' \
                  | grep -v '^include/rt/' \
                  | grep -vE '^include/symbolic/equation\.hpp:[0-9]+:#include "rt/(bridge|derivative|interpret)\.hpp"' \
@@ -88,129 +79,53 @@ jobs:
           fi
           echo "include/ depends on the standard library and Boost only"
 
-      - name: Set build directory
-        id: strings
-        shell: bash
-        run: echo "build-dir=${GITHUB_WORKSPACE}/build" >> "$GITHUB_OUTPUT"
-
-      # The extension builds against an interpreter that has pybind11 -- the
-      # same .venv the `python` presets ask for, with what the dev group names.
-      - name: Python environment
-        shell: bash
+      - name: Python and Conan
         run: |
           pipx install uv
+          pipx install conan
           uv sync --group dev --no-install-project
 
-      - name: Configure CMake (Linux)
-        if: runner.os == 'Linux'
-        run: >
-          cmake -B ${{ steps.strings.outputs.build-dir }}
-          -DCMAKE_CXX_COMPILER=${{ inputs.cpp_compiler }}
-          -DCMAKE_C_COMPILER=${{ inputs.c_compiler }}
-          -DCMAKE_BUILD_TYPE=${{ inputs.build_type }}
-          -DDDX_BUILD_PYTHON=ON
-          -DPython_ROOT_DIR=${{ github.workspace }}/.venv
-          -DPython_FIND_VIRTUALENV=ONLY
-          -S ${{ github.workspace }}
-
-      - name: Configure CMake (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: >
-          cmake -B "${{ steps.strings.outputs.build-dir }}"
-          -DCMAKE_CXX_COMPILER=${{ inputs.cpp_compiler }}
-          -DCMAKE_C_COMPILER=${{ inputs.c_compiler }}
-          -DCMAKE_BUILD_TYPE=${{ inputs.build_type }}
-          -DDDX_BUILD_PYTHON=ON
-          -DPython_ROOT_DIR="${{ github.workspace }}/.venv"
-          -DPython_FIND_VIRTUALENV=ONLY
-          -S "${{ github.workspace }}"
-
-      # The Boost subset an installed ddx ships is a checked-in list, and a public
-      # header that names a new Boost library silently installs short without
-      # this.  Run after configuring, which is what fetches the Boost tree to
-      # read.  Linux only -- the answer is the same on every toolchain, because
-      # the list is directories, the per-compiler variants are siblings inside
-      # them, and the libraries that hide a variant in a subdirectory instead
-      # go in whole.
-      - name: Installed Boost list is current
-        if: runner.os == 'Linux'
-        run: python3 scripts/boost_headers.py --check --cxx ${{ inputs.cpp_compiler }}
-
-      - name: Build
-        run: cmake --build "${{ steps.strings.outputs.build-dir }}" --config ${{ inputs.build_type }}
-
-      - name: Build tests
-        run: cmake --build "${{ steps.strings.outputs.build-dir }}" --config ${{ inputs.build_type }} --target tests
-
-      # python.pytest is among these: the module is configured on.
-      - name: Test
-        working-directory: ${{ steps.strings.outputs.build-dir }}
-        run: ctest --build-config ${{ inputs.build_type }} --output-on-failure
-
-  jit:
-    if: startsWith(inputs.os, 'ubuntu')
-    runs-on: ${{ inputs.os }}
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install compilers (Ubuntu)
+      # Windows: a short CONAN_HOME keeps LLVM's build tree under MAX_PATH, and
+      # cl is what detect finds without CC/CXX.
+      - name: Conan profile
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y clang-20 gcc-14 g++-14 libeigen3-dev libopenblas-dev
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "CONAN_HOME=C:\\c" >> "$GITHUB_ENV"
+            export CONAN_HOME='C:\c'
+          else
+            echo "CC=${{ inputs.c_compiler }}" >> "$GITHUB_ENV"
+            echo "CXX=${{ inputs.cpp_compiler }}" >> "$GITHUB_ENV"
+            export CC=${{ inputs.c_compiler }} CXX=${{ inputs.cpp_compiler }}
+          fi
+          conan profile detect
+          conan remote add ddx contrib/conan --type=local-recipes-index
 
-      # Its own key, not the release workflow's: a prefix built here carries
-      # this runner's glibc, which a manylinux wheel must never link.
-      # Restored and saved as two steps rather than one actions/cache: that one
-      # saves when the job ends, and only if it passed, so a ddx build that
-      # fails throws an hour of LLVM away.  Saved here, the archives outlive
-      # whatever the build does with them.
-      - name: Restore LLVM archives
-        id: llvm
+      # Restored and saved as two steps: a failing ddx build must not throw away
+      # an hour of LLVM.
+      - name: Restore Conan packages
+        if: matrix.jit == 'True'
+        id: conan
         uses: actions/cache/restore@v4
         with:
-          path: .deps/llvm-20
-          key: llvm-${{ inputs.os }}-x86_64-${{ hashFiles('scripts/build_llvm.py') }}
+          path: ${{ runner.os == 'Windows' && 'C:\c\p' || '~/.conan2/p' }}
+          key: conan-${{ inputs.os }}-${{ inputs.cpp_compiler }}-${{ inputs.build_type }}-${{ hashFiles('contrib/conan/**', 'conanfile.py') }}
 
-      - name: LLVM archives
-        run: python3 scripts/build_llvm.py .deps/llvm-20
+      - name: Conan dependencies
+        if: matrix.jit == 'True'
+        run: conan install . $CONAN_OPTIONS
 
-      - name: Save LLVM archives
-        if: steps.llvm.outputs.cache-hit != 'true'
+      - name: Save Conan packages
+        if: matrix.jit == 'True' && steps.conan.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: .deps/llvm-20
-          key: ${{ steps.llvm.outputs.cache-primary-key }}
+          path: ${{ runner.os == 'Windows' && 'C:\c\p' || '~/.conan2/p' }}
+          key: ${{ steps.conan.outputs.cache-primary-key }}
 
-      # The extension builds against an interpreter that has pybind11 -- the
-      # same .venv the `python` preset asks for, with what the dev group names.
-      - name: Python environment
-        run: |
-          pipx install uv
-          uv sync --group dev --no-install-project
+      - name: Build and test
+        run: conan build . $CONAN_OPTIONS
 
-      - name: Configure CMake
-        run: >
-          cmake -B ${{ github.workspace }}/build
-          -DCMAKE_CXX_COMPILER=${{ inputs.cpp_compiler }}
-          -DCMAKE_C_COMPILER=${{ inputs.c_compiler }}
-          -DCMAKE_BUILD_TYPE=${{ inputs.build_type }}
-          -DDDX_BUILD_JIT=ON
-          -DDDX_BUILD_PYTHON=ON
-          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/.deps/llvm-20
-          -DPython_ROOT_DIR=${{ github.workspace }}/.venv
-          -DPython_FIND_VIRTUALENV=ONLY
-          -S ${{ github.workspace }}
-
-      - name: Build
-        run: cmake --build "${{ github.workspace }}/build" --config ${{ inputs.build_type }}
-
-      - name: Build tests
-        run: cmake --build "${{ github.workspace }}/build" --config ${{ inputs.build_type }} --target tests
-
-      # jit.* and python.pytest ride along: the JIT is configured on, so ctest
-      # has them.
-      - name: Test
-        working-directory: ${{ github.workspace }}/build
-        run: ctest --build-config ${{ inputs.build_type }} --output-on-failure
+      # The Boost subset an installed ddx ships is a checked-in list; configuring
+      # fetched the tree it is checked against.
+      - name: Installed Boost list is current
+        if: runner.os == 'Linux' && matrix.jit == 'False'
+        run: python3 scripts/boost_headers.py --check --cxx ${{ inputs.cpp_compiler }}
