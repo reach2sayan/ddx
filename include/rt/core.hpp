@@ -486,11 +486,6 @@ public:
     }
     self.options_ = opt;
     self.pipelines_ = std::make_unique<Pipelines>();
-    // Choosing a backend starts the build, so it overlaps whatever the caller
-    // does before their first call.
-    if (opt.backend != jit::Backend::Interpret && !self.poisoned()) {
-      (void)self.pipeline(Want::Jacobian);
-    }
     return self;
   }
   [[nodiscard]] const jit::Options &options() const noexcept {
@@ -538,9 +533,7 @@ public:
     return !poisoned() && static_cast<bool>(pipeline(Want::Jacobian)->kernel);
   }
 
-  // Which rung is answering, as its codegen level, and nothing where the sweep
-  // is.  Every rung gives the same bits, so this is the only way
-  // to see it climb.  Does not wait.
+  // The codegen level of the kernel answering, and nothing where the sweep is.
   [[nodiscard]] std::optional<jit::OptLevel> kernel_level() const {
     if (poisoned()) {
       return std::nullopt;
@@ -552,45 +545,9 @@ public:
     }
   }
 
-  // Block until the *first* rung of `want`'s pipeline lands -- rungs[0], the
-  // cheap compile -- and answer whether a kernel answers that pipeline. Nothing
-  // else waits.
-  //
-  // Under Adapt it waits for a rung already bought and buys none: a call that
-  // quietly overrode the counter would make every measurement of the policy a
-  // lie.  A caller who wants a kernel now asks for Backend::Compile.
+  // Build `want`'s pipeline now and answer whether a kernel answers it.
   [[nodiscard]] bool wait_for_kernel(Want want = Want::Jacobian) const {
-    if (poisoned()) {
-      return false;
-    }
-    (void)pipeline(want); // launches it, if nothing has yet
-    if (const auto first = pipeline_for(want).pending(); first.valid()) {
-      [[maybe_unused]] const Yield yielded{};
-      first.wait();
-    }
-    return static_cast<bool>(pipeline(want)->kernel);
-  }
-
-  // How far the Jacobian pipeline is toward its next rung, and nothing under
-  // any other backend, on a host with no compiler, or once there is none left.
-  // Without it a pipeline that is still counting and one whose compile was
-  // refused both read as no kernel.
-  struct Warmup {
-    std::size_t points;    // batch points this pipeline has been asked for
-    std::size_t threshold; // where the next rung is bought
-  };
-  [[nodiscard]] std::optional<Warmup> warming() const {
-    if (poisoned() || options_.backend != jit::Backend::Adapt ||
-        setting().compiler == nullptr) {
-      return std::nullopt;
-    }
-    const Pipeline &l = pipeline_for(Want::Jacobian);
-    const unsigned asked = l.asked();
-    return asked >= Pipeline::ladder()
-               ? std::nullopt
-               : std::optional{Warmup{.points = l.points(),
-                                      .threshold = Pipeline::rung_at(
-                                          asked, effective_options())}};
+    return !poisoned() && static_cast<bool>(pipeline(want)->kernel);
   }
 
   // One Taylor sweep: seed c[0] = x0, c[1] = 1, then un-normalise c[Order].
@@ -867,17 +824,14 @@ protected:
     return {.jacobian = jacobian_};
   }
 
-  // The pipeline for `want`, frozen on first ask.  `n` is the batch about to
-  // run and is what Adapt counts; an observer asks without buying anything.
-  [[nodiscard]] std::shared_ptr<const Compiled>
-  pipeline(Want want, std::size_t n = 0) const {
-    return pipeline_in(*pipelines_, every_cell(), want, n);
+  // The pipeline for `want`, frozen and compiled on first ask.
+  [[nodiscard]] std::shared_ptr<const Compiled> pipeline(Want want) const {
+    return pipeline_in(*pipelines_, every_cell(), want);
   }
   [[nodiscard]] std::shared_ptr<const Compiled>
-  pipeline_in(Pipelines &pipelines, const Cells &cells, Want want,
-              std::size_t n) const {
-    return pipelines[std::to_underlying(want)].snapshot(
-        want, n, setting(), [&] { return frozen_for(want, cells); });
+  pipeline_in(Pipelines &pipelines, const Cells &cells, Want want) const {
+    return pipelines[std::to_underlying(want)].template snapshot<Yield>(
+        setting(), [&] { return frozen_for(want, cells); });
   }
 
   [[nodiscard]] result<void> dispatch(Want want, std::span<const T *const> xs,
@@ -891,7 +845,7 @@ protected:
                                          std::span<const T *const> xs,
                                          const Columns<T> &out,
                                          std::size_t n) const {
-    return checked(pipelines, cells, want, xs, out, n)
+    return checked(pipelines, cells, want, xs, out)
         .transform([&](const std::shared_ptr<const Compiled> &c) {
           run(*c, xs, out, n);
         });
@@ -900,11 +854,10 @@ protected:
   // The pipeline a call runs on, once the call is known to fit it.
   [[nodiscard]] result<std::shared_ptr<const Compiled>>
   checked(Pipelines &pipelines, const Cells &cells, Want want,
-          std::span<const T *const> xs, const Columns<T> &out,
-          std::size_t n) const {
+          std::span<const T *const> xs, const Columns<T> &out) const {
     return ready(want).and_then(
         [&]() -> result<std::shared_ptr<const Compiled>> {
-          auto c = pipeline_in(pipelines, cells, want, n);
+          auto c = pipeline_in(pipelines, cells, want);
           // Columns, not nodes: a vector output is one column per element.
           const bool fits =
               xs.size() == c->graph->arity() &&
@@ -1276,10 +1229,6 @@ private:
 #pragma warning(pop)
 #endif
 
-  [[nodiscard]] Pipeline &pipeline_for(Want want) const {
-    return (*pipelines_)[std::to_underlying(want)];
-  }
-
   // What a pipeline needs of the equation.  No compiler is a pipeline that will
   // never compile: an interpreting backend arrives here as one, and so does a
   // host with no JIT.
@@ -1288,8 +1237,7 @@ private:
     if constexpr (jit::CKernelScalar<T>) {
       out.options = effective_options();
 #ifdef DDX_HAS_JIT
-      if (options_.backend == jit::Backend::Compile ||
-          options_.backend == jit::Backend::Adapt) {
+      if (options_.backend == jit::Backend::Compile) {
         out.compiler = compiler();
       }
 #endif
@@ -1376,8 +1324,7 @@ private:
   }
 
   // Whether the kernel for `want` is lowered from rebalanced roots, which are
-  // swept here on first ask: only Compile reads them, as Adapt climbs from the
-  // swept graph.
+  // swept here on first ask.
   [[nodiscard]] bool rebalances([[maybe_unused]] Want want) const {
 #ifdef DDX_HAS_JIT
     if constexpr (jit::CKernelScalar<T>) {
@@ -1430,7 +1377,7 @@ private:
     return options_.codegen.contract;
   }
 
-  // The kernel where one landed, else the sweep.
+  // The kernel where one compiled, else the sweep.
   void run(const Compiled &c, std::span<const T *const> xs,
            const Columns<T> &out, std::size_t n) const {
     [[maybe_unused]] const auto held = sweeping();

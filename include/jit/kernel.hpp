@@ -126,11 +126,6 @@ public:
   compile(const rt::Graph<T> &g, const Options &opt = {},
           CompileReport *report = nullptr);
 
-  // The future's destructor does not join: dropping it abandons the result.
-  template <CKernelScalar T>
-  [[nodiscard]] DDX_JIT_API std::shared_future<compile_result<Kernel<T>>>
-  compile_async(std::shared_ptr<const rt::Graph<T>> g, Options opt = {});
-
   // Links an object compiled earlier.  Nothing beyond the link is verified --
   // the cache key carries the host, options and graph digest for that -- and a
   // corrupt object is an error, not an abort.  The graph is what the object

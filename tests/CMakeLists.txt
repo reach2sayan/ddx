@@ -69,16 +69,6 @@ if (DDX_BUILD_JIT)
             UNITY_BUILD_BATCH_SIZE ${DDX_TEST_UNITY_BATCH})
     gtest_discover_tests(tests_jit ${DDX_TEST_ENV})
 
-    # Its own process: the assertion is the exit status.
-    add_executable(tests_jit_exit_stress jit/stress/exit_stress.cpp)
-    target_link_libraries(tests_jit_exit_stress PRIVATE ddx::jit)
-    ddx_target_flags(tests_jit_exit_stress)
-    ddx_runtime_deps(tests_jit_exit_stress)
-    add_test(NAME jit.exit_stress COMMAND tests_jit_exit_stress)
-    if (DDX_TEST_ENV)
-        set_tests_properties(jit.exit_stress ${DDX_TEST_ENV})
-    endif ()
-
     if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND DDX_SANITIZE STREQUAL "off")
         add_test(NAME jit.exports
                 COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM} -DREADELF=${CMAKE_READELF}

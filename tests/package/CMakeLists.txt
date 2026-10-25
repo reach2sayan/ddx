@@ -52,6 +52,17 @@ if (ddx_jit_FOUND)
     target_link_libraries(all_headers PRIVATE ddx::jit)
 endif ()
 
+# Windows has no rpath: libddx's DLLs go beside the executables, or the loader
+# raises a missing-DLL dialog that nobody on a CI runner dismisses.
+if (WIN32)
+    foreach (target IN ITEMS consumer all_headers)
+        add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_RUNTIME_DLLS:${target}> $<TARGET_FILE_DIR:${target}>
+                COMMAND_EXPAND_LISTS)
+    endforeach ()
+endif ()
+
 enable_testing()
 add_test(NAME consumer_runs COMMAND consumer)
 add_test(NAME all_headers_runs COMMAND all_headers)

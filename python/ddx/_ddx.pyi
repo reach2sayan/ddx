@@ -19,7 +19,6 @@ class Backend(enum.IntEnum):
     """
     Whether an equation compiles its graph.
     """
-    ADAPT: typing.ClassVar[Backend]  # value = <Backend.ADAPT: 2>
     COMPILE: typing.ClassVar[Backend]  # value = <Backend.COMPILE: 1>
     INTERPRET: typing.ClassVar[Backend]  # value = <Backend.INTERPRET: 0>
     @classmethod
@@ -230,10 +229,6 @@ class _Options:
     @lanes.setter
     def lanes(self, arg0: typing.SupportsInt | typing.SupportsIndex | None) -> None: pass
     @property
-    def hot_points(self) -> int: pass
-    @hot_points.setter
-    def hot_points(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None: pass
-    @property
     def opt_level(self) -> OptLevel: pass
     @opt_level.setter
     def opt_level(self, arg0: OptLevel) -> None: pass
@@ -241,10 +236,6 @@ class _Options:
     def points(self) -> int: pass
     @points.setter
     def points(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None: pass
-    @property
-    def warm_points(self) -> int: pass
-    @warm_points.setter
-    def warm_points(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None: pass
     
 class errc(enum.IntEnum):
     """

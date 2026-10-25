@@ -1,8 +1,6 @@
 #include "codegen.hpp"
 
 #include "cache.hpp"
-#include "rt/derivative.hpp"
-#include "rt/expressions.hpp"
 #include "spelling.hpp"
 
 #include <boost/hash2/fnv1a.hpp>
@@ -32,7 +30,6 @@
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/TargetSelect.h>
-#include <llvm/Support/ThreadPool.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
 
@@ -44,7 +41,6 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
-#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -480,73 +476,12 @@ private:
   CompileReport &rep_;
 };
 
+} // namespace
+
 // --- objects kept between runs -----------------------------------------------
 //
 // Not compiling the same graph twice dominates every other optimisation here: a
 // compile costs seconds against a graph's microseconds.
-//
-// Where a background compile runs.  Not a member of Impl: a Kernel holds a
-// share of the Impl it came from, so the last share can be dropped on a worker,
-// and a pool joined from its own thread deadlocks.
-//
-// `warm_` is a member so the order is a class invariant.  LLVM registers atexit
-// entries lazily *while it compiles*, and anything registered after this object
-// is destroyed before it -- so the pool's join would run workers against freed
-// state.  Compiling inside a member that completes first puts LLVM's entries
-// strictly below the pool's.  Templated only to avoid naming the private Impl.
-template <typename I>
-  requires requires(const std::shared_ptr<I> &impl, const rt::Graph<double> &g,
-                    CompileReport &rep) {
-    {
-      I::run(impl, g, Options{}, rep)
-    } -> std::same_as<compile_result<Kernel<double>>>;
-  }
-class CompilePool : private impl::pinned {
-public:
-  // Brought up once, and never torn down before the statics its workers touch.
-  [[nodiscard]] static CompilePool &shared(const std::shared_ptr<I> &impl) {
-    static CompilePool instance{impl};
-    return instance;
-  }
-
-  [[nodiscard]] llvm::DefaultThreadPool &threads() noexcept { return threads_; }
-
-private:
-  explicit CompilePool(const std::shared_ptr<I> &impl) : warm_(impl) {}
-
-  // Constructing one compiles something, which is what makes LLVM register;
-  // any live Impl will do.  At every scalar, since each lowers its own way.
-  struct Warm {
-    explicit Warm(const std::shared_ptr<I> &impl) {
-      warm<double>(impl);
-      warm<float>(impl);
-    }
-    template <CKernelScalar T> static void warm(const std::shared_ptr<I> &impl) {
-      rt::Arena<T> b;
-      const auto x = rt::var(b, "x");
-      const auto y = rt::var(b, "y");
-      // Off the same table the emitter emits from: what LLVM touches lazily
-      // follows the ops, so enumerate them.
-      auto e = x / (y + T{1}) - x * y;
-#define DDX_JIT_WARM(fn, Op, label, ...) e += fn(x);
-      DDX_UNARY_MATH_TABLE(DDX_JIT_WARM)
-#undef DDX_JIT_WARM
-      e += pow(x, y) + atan2(x, y) + hypot(x, y);
-      e += abs(x) + max(x, y) + min(x, y) + sign(x) + (-x);
-      // Jacobian too: reverse mode emits ops the value alone never reaches.
-      const auto g =
-          rt::GraphBuilder<T>{b}.value(e).build_jacobian().finish();
-      CompileReport discard;
-      (void)I::run(impl, g, Options{}, discard);
-    }
-  };
-
-  Warm warm_; // LLVM registers while this runs, so before we do
-  llvm::DefaultThreadPool threads_;
-};
-
-} // namespace
-
 struct Compiler::Impl {
   // Before `jit` and it must stay there: the compile layer holds a pointer to
   // this, and members are destroyed in reverse declaration order.
@@ -773,25 +708,6 @@ compile_result<Kernel<T>> Compiler::compile(const rt::Graph<T> &g,
   return Impl::run(impl_, g, opt, report != nullptr ? *report : discard);
 }
 
-// packaged_task, never std::async: only the latter's future joins in its
-// destructor, putting a compile on the critical path of whoever dropped it.
-template <CKernelScalar T>
-std::shared_future<compile_result<Kernel<T>>>
-Compiler::compile_async(std::shared_ptr<const rt::Graph<T>> g, Options opt) {
-  auto task = std::make_shared<std::packaged_task<compile_result<Kernel<T>>()>>(
-      [self = impl_, graph = std::move(g), opt] {
-        CompileReport discard;
-        return Impl::run(self, *graph, opt, discard);
-      });
-  auto landing = task->get_future().share();
-  // The task holds the future as well as the promise, so a caller dropping its
-  // copy never tears the shared state down under a running compile.  The
-  // shared_ptr is because std::function must be copyable.
-  CompilePool<Impl>::shared(impl_).threads().async(
-      [task, landing] { std::invoke(*task); });
-  return landing;
-}
-
 template <CKernelScalar T>
 compile_result<Kernel<T>> Compiler::adopt(std::span<const std::byte> object,
                                           std::string_view symbol,
@@ -816,8 +732,6 @@ compile_result<std::string> Compiler::render_ir(const rt::Graph<T> &g,
 #define DDX_JIT_INSTANCES(T)                                                   \
   template compile_result<Kernel<T>> Compiler::compile(                        \
       const rt::Graph<T> &, const Options &, CompileReport *);                 \
-  template std::shared_future<compile_result<Kernel<T>>>                       \
-  Compiler::compile_async(std::shared_ptr<const rt::Graph<T>>, Options);       \
   template compile_result<Kernel<T>> Compiler::adopt(                          \
       std::span<const std::byte>, std::string_view, const rt::Graph<T> &);     \
   template compile_result<std::string> Compiler::render_ir(                    \
