@@ -730,11 +730,11 @@ compile_result<std::string> Compiler::render_ir(const rt::Graph<T> &g,
 }
 
 #define DDX_JIT_INSTANCES(T)                                                   \
-  template compile_result<Kernel<T>> Compiler::compile(                        \
+  template DDX_INSTANCE_API compile_result<Kernel<T>> Compiler::compile(       \
       const rt::Graph<T> &, const Options &, CompileReport *);                 \
-  template compile_result<Kernel<T>> Compiler::adopt(                          \
+  template DDX_INSTANCE_API compile_result<Kernel<T>> Compiler::adopt(         \
       std::span<const std::byte>, std::string_view, const rt::Graph<T> &);     \
-  template compile_result<std::string> Compiler::render_ir(                    \
+  template DDX_INSTANCE_API compile_result<std::string> Compiler::render_ir(   \
       const rt::Graph<T> &, const Options &) const;
 DDX_JIT_INSTANCES(double)
 DDX_JIT_INSTANCES(float)
