@@ -135,7 +135,7 @@ template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_NOINLINE constexpr void lanes_extern(const Arena<T> &b, NodeId v, U *out,
                                          auto lane, const TapeView<U> &t) {
   if constexpr (std::same_as<U, T>) {
-    const auto [fn, component] = extern_of(b[v]);
+    const auto [fn, component] = get<ExternRef>(b[v]);
     const ExternEntry<T> &e = b.externs()[fn];
     const auto args = arguments(b, v);
     boost::container::small_vector<T, 8> in(args.size());
@@ -172,12 +172,13 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
     // A table's MatRow is the table, read in place rather than copied out
     // per sweep; only its transpose is a row of its own.
     const auto table = [&b](NodeId u) {
-      return is_table(b, u) && !is_transposed(b[u]);
+      return is_table(b, u) && get<Orientation>(b[u]) == Orientation::plain;
     };
     // Lane k of node u, as the kernels read it.
     const auto in = [&](NodeId u, std::size_t k) {
       if (table(u)) {
-        return std::span<const U>{b.tensors()[index_of(b[b[u].a])].data};
+        return std::span<const U>{
+            b.tensors()[get<TensorRef>(b[b[u].in[0]]).value].data};
       }
       const auto [base, w] = row(u);
       return std::span<const U>{base + k * w, w};
@@ -193,33 +194,34 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
       const auto to = mine(k);
       switch (n.op) {
       case OpCode::VecConst:
-        std::ranges::copy(b.tensors()[index_of(n)].data, to.begin());
+        std::ranges::copy(b.tensors()[get<TensorRef>(n).value].data,
+                          to.begin());
         break;
       case OpCode::Pack:
         std::ranges::transform(arguments(b, v), to.begin(),
                                [&](NodeId s) { return at(s, k); });
         break;
       case OpCode::Gather:
-        out[k] = in(n.a, k)[index_of(n)];
+        out[k] = in(n.in[0], k)[get<Element>(n).value];
         break;
       case OpCode::Map:
-        kt.map(inner_of(n), in(n.a, k), to);
+        kt.map(get<OpCode>(n), in(n.in[0], k), to);
         break;
       case OpCode::Zip:
-        kt.zip(inner_of(n), in(n.a, k), in(n.b, k), to);
+        kt.zip(get<OpCode>(n), in(n.in[0], k), in(n.in[1], k), to);
         break;
       case OpCode::Scale:
-        kt.scale(at(n.a, k), in(n.b, k), to);
+        kt.scale(at(n.in[0], k), in(n.in[1], k), to);
         break;
       case OpCode::Sum:
-        out[k] = kt.sum(in(n.a, k));
+        out[k] = kt.sum(in(n.in[0], k));
         break;
       case OpCode::Dot:
-        out[k] = kt.dot(in(n.a, k), in(n.b, k));
+        out[k] = kt.dot(in(n.in[0], k), in(n.in[1], k));
         break;
       case OpCode::AddAt:
-        std::ranges::copy(in(n.a, k), to.begin());
-        to[index_of(n)] += at(n.b, k);
+        std::ranges::copy(in(n.in[0], k), to.begin());
+        to[get<Element>(n).value] += at(n.in[1], k);
         break;
       // The matrix rows.  Shapes come off the arena, as the widths do; a
       // matrix is column-major.
@@ -230,9 +232,11 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         // Every other MatRow is a transpose: of the table, or of a row.
         const Shape m = shape_of(b, v); // cols x rows of the source
         const std::span<const U> from =
-            b.op_of(n.a) == OpCode::MatConst
-                ? std::span<const U>{b.tensors()[index_of(b[n.a])].data}
-                : in(n.a, k);
+            b.op_of(n.in[0]) == OpCode::MatConst
+                ? std::span<
+                      const U>{b.tensors()[get<TensorRef>(b[n.in[0]]).value]
+                                   .data}
+                : in(n.in[0], k);
         for (std::size_t i = 0; i < m.cols; ++i) {
           for (std::size_t j = 0; j < m.rows; ++j) {
             to[j + i * m.rows] = from[i + j * m.cols];
@@ -241,7 +245,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         break;
       }
       case OpCode::Diag: {
-        const auto d = in(n.a, k);
+        const auto d = in(n.in[0], k);
         std::ranges::fill(to, U{});
         for (std::size_t i = 0; i < d.size(); ++i) {
           to[i + i * d.size()] = d[i];
@@ -249,16 +253,16 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         break;
       }
       case OpCode::Outer: {
-        const auto u = in(n.a, k);
-        const auto g = in(n.b, k);
+        const auto u = in(n.in[0], k);
+        const auto g = in(n.in[1], k);
         for (std::size_t j = 0; j < g.size(); ++j) {
           kt.scale(g[j], u, to.subspan(j * u.size(), u.size()));
         }
         break;
       }
       case OpCode::RowScale: { // diag(a) M: every column scaled by a
-        const auto d = in(n.a, k);
-        const auto m = in(n.b, k);
+        const auto d = in(n.in[0], k);
+        const auto m = in(n.in[1], k);
         for (std::size_t j = 0; j < m.size() / d.size(); ++j) {
           kt.zip(OpCode::Mul, d, m.subspan(j * d.size(), d.size()),
                  to.subspan(j * d.size(), d.size()));
@@ -266,8 +270,8 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         break;
       }
       case OpCode::ColScale: { // M diag(b): column j scaled by b[j]
-        const auto m = in(n.a, k);
-        const auto d = in(n.b, k);
+        const auto m = in(n.in[0], k);
+        const auto d = in(n.in[1], k);
         const std::size_t rows = m.size() / d.size();
         for (std::size_t j = 0; j < d.size(); ++j) {
           kt.scale(d[j], m.subspan(j * rows, rows), to.subspan(j * rows, rows));
@@ -275,14 +279,15 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         break;
       }
       case OpCode::MatVec: {
-        const Shape m = shape_of(b, n.a);
-        kt.gemv(m.rows, m.cols, in(n.a, k), in(n.b, k), to, is_transposed(n));
+        const Shape m = shape_of(b, n.in[0]);
+        kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), to,
+                get<Orientation>(n) == Orientation::transposed);
         break;
       }
       case OpCode::MatMul: {
-        const Shape l = shape_of(b, n.a);
-        kt.gemm(l.rows, l.cols, shape_of(b, n.b).cols, in(n.a, k), in(n.b, k),
-                to);
+        const Shape l = shape_of(b, n.in[0]);
+        kt.gemm(l.rows, l.cols, shape_of(b, n.in[1]).cols, in(n.in[0], k),
+                in(n.in[1], k), to);
         break;
       }
       case OpCode::StackRows: { // item i is row i: (i, j) at i + j rows
@@ -296,22 +301,22 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         break;
       }
       case OpCode::RowOf: {
-        const auto from = in(n.a, k);
-        const std::size_t rows = shape_of(b, n.a).rows;
+        const auto from = in(n.in[0], k);
+        const std::size_t rows = shape_of(b, n.in[0]).rows;
         for (std::size_t j = 0; j < to.size(); ++j) {
-          to[j] = from[index_of(n) + j * rows];
+          to[j] = from[get<Element>(n).value + j * rows];
         }
         break;
       }
-      case OpCode::Select: { // copied, so the arm not taken never meets a 0
+      case OpCode::VSelect: { // copied, so the arm not taken never meets a 0
         const auto chosen = [](U c) { return c != U{0}; }; // as select_impl
-        const auto on = in(n.b, k);
-        const auto off = in(n.c, k);
-        if (!is_tensor(b[n.a])) {
-          std::ranges::copy(chosen(at(n.a, k)) ? on : off, to.begin());
+        const auto on = in(n.in[1], k);
+        const auto off = in(n.in[2], k);
+        if (!is_tensor(b[n.in[0]])) {
+          std::ranges::copy(chosen(at(n.in[0], k)) ? on : off, to.begin());
           break;
         }
-        const auto c = in(n.a, k);
+        const auto c = in(n.in[0], k);
         for (std::size_t j = 0; j < to.size(); ++j) {
           to[j] = chosen(c[j]) ? on[j] : off[j];
         }
@@ -452,8 +457,9 @@ sweep_step(const Arena<T> &b, std::span<const Node<T>> nodes,
       out[k] = static_cast<U>(n.value);
     }
   } else if (is_leaf(s.op)) {
-    const auto src = at + static_cast<std::ptrdiff_t>(
-                              input_column(inputs, s.op, index_of(n)) * W);
+    const auto src =
+        at + static_cast<std::ptrdiff_t>(
+                 input_column(inputs, s.op, get<Slot>(n).value) * W);
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }

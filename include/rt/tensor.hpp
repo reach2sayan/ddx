@@ -68,7 +68,7 @@ template <impl::Numeric T>
   if (b.op_of(m.id()) != OpCode::MatConst) {
     return m.shape();
   }
-  const auto &data = b.tensors()[index_of(b[m.id()])];
+  const auto &data = b.tensors()[get<TensorRef>(b[m.id()]).value];
   return {.rows = data.rows, .cols = data.cols};
 }
 // Why the operands are not all vector nodes of an arena, if they are not: a
@@ -217,10 +217,13 @@ gemv(const Expression<T> &m, const Expression<T> &v, bool transposed = false) {
   if (shape.cols == 1 || v.size() != (transposed ? shape.rows : shape.cols)) {
     return detail::refused<T>(errc::tensor_shape);
   }
-  const NodeId rows = b->op_of(m.id()) == OpCode::MatConst
-                         ? b->make(OpCode::MatRow, m.id())
-                         : m.id();
-  return {*b, b->make(OpCode::MatVec, rows, v.id(), no_node, transposed)};
+  const NodeId rows =
+      b->op_of(m.id()) == OpCode::MatConst
+          ? b->make(opcode<OpCode::MatRow>, Orientation::plain, m.id())
+          : m.id();
+  return {*b, b->make(opcode<OpCode::MatVec>,
+                      transposed ? Orientation::transposed : Orientation::plain,
+                      rows, v.id())};
 }
 
 namespace detail {
@@ -289,8 +292,8 @@ add_at(const Expression<T> &v, const Expression<T> &s, std::size_t i) {
     return detail::refused<T>(errc::tensor_shape);
   }
   Arena<T> &b = *detail::Rooting::arena(v);
-  return {b, b.make(OpCode::AddAt, v.id(), s.id(b), no_node,
-                    static_cast<std::uint32_t>(i))};
+  return {b, b.make(opcode<OpCode::AddAt>,
+                    Element{static_cast<std::uint32_t>(i)}, v.id(), s.id(b))};
 }
 } // namespace detail
 

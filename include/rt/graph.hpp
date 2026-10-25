@@ -190,8 +190,8 @@ public:
   struct NodeRecord {
     OpCode op = OpCode::Const;
     T value{};
-    std::uint32_t aux = 0;
-    BOOST_DESCRIBE_CLASS(NodeRecord, (), (op, value, aux), (), ())
+    std::uint32_t payload = 0; // read through detail::get
+    BOOST_DESCRIBE_CLASS(NodeRecord, (), (op, value, payload), (), ())
   };
 
   // `contract` is settled here, not per sweep: it decides the arithmetic, so
@@ -231,11 +231,9 @@ public:
     g.properties_.reserve(b.size());
     g.operands_.reserve(b.size());
     for (const Node<T> &n : b.nodes()) {
-      g.properties_.push_back({.op = n.op, .value = n.value, .aux = n.aux});
-      // The operands the arity names; the rest read as no operand.
-      std::array operands{n.a, n.b, n.c};
-      std::ranges::fill(operands | std::views::drop(arity_of(n.op)), no_node);
-      g.operands_.push_back(operands);
+      g.properties_.push_back(
+          {.op = n.op, .value = n.value, .payload = n.payload});
+      g.operands_.push_back(n.in);
     }
     g.mark_live();
     g.contract(contract);
@@ -243,9 +241,9 @@ public:
     // pipeline that kept no seed keeps the kernel it had.
     for (const NodeId v : g.schedule_ | std::views::transform(&Step::node)) {
       if (g.properties_[v].op == OpCode::Seed) {
-        g.inputs_.directions =
-            std::max(g.inputs_.directions,
-                     std::size_t{detail::index_of(g.properties_[v])} + 1);
+        g.inputs_.directions = std::max(
+            g.inputs_.directions,
+            std::size_t{detail::get<Slot>(g.properties_[v]).value} + 1);
       }
       g.has_tensors_ |= detail::on_tensors(g.properties_[v]);
     }

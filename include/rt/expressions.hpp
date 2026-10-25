@@ -134,8 +134,9 @@ public:
     if (i >= size()) {
       return poison(errc::tensor_shape);
     }
-    return {*arena_, arena_->make(OpCode::Gather, id(), no_node, no_node,
-                                      static_cast<std::uint32_t>(i))};
+    return {*arena_,
+            arena_->make(opcode<OpCode::Gather>,
+                         Element{static_cast<std::uint32_t>(i)}, id())};
   }
 
   // One node of `op` over its operands.  Pending literals fold without
@@ -168,12 +169,11 @@ public:
       return {*b, b->make(op, xs.id(*b)...)};
     }
     if constexpr (sizeof...(xs) == 1) {
-      return {*b, b->make(OpCode::Map, xs.id(*b)..., no_node, no_node,
-                          std::to_underlying(op))};
+      return {*b, b->make(opcode<OpCode::Map>, op, xs.id(*b)...)};
     } else if constexpr (sizeof...(xs) == 2) {
       return zipped(op, *b, xs...);
     } else {
-      return picked(op, *b, xs...);
+      return picked(*b, xs...);
     }
   }
 
@@ -196,12 +196,13 @@ private:
         return poison(errc::tensor_shape);
       }
     }
-    return {b, b.make(OpCode::Zip, l.id(b, vec.shape_), r.id(b, vec.shape_),
-                      no_node, std::to_underlying(op))};
+    return {b, b.make(opcode<OpCode::Zip>, op, l.id(b, vec.shape_),
+                      r.id(b, vec.shape_))};
   }
-  [[nodiscard]] static constexpr Expression
-  picked(OpCode op, Arena<T> &b, const Expression &c, const Expression &t,
-         const Expression &f) {
+  [[nodiscard]] static constexpr Expression picked(Arena<T> &b,
+                                                   const Expression &c,
+                                                   const Expression &t,
+                                                   const Expression &f) {
     const Shape shape = t.size() ? t.shape() : (f.size() ? f.shape() : c.shape());
     const auto fits = [&](const Expression &e) {
       return e.size() == 0 || e.shape() == shape;
@@ -216,7 +217,7 @@ private:
                  ? e.id(b, shape)
                  : b.make(OpCode::Scale, e.id(b), b.ones(shape));
     };
-    return {b, b.make(op, c.id(b), arm(t), arm(f), 1)};
+    return {b, b.make(OpCode::VSelect, c.id(b), arm(t), arm(f))};
   }
 
 public:
@@ -379,7 +380,8 @@ private:
   }
   [[nodiscard]] constexpr Expression row() const {
     return is_matrix()
-               ? Expression{*arena_, arena_->make(OpCode::MatRow, id_)}
+               ? Expression{*arena_, arena_->make(opcode<OpCode::MatRow>,
+                                                  Orientation::plain, id_)}
                : *this;
   }
 

@@ -57,9 +57,9 @@ constexpr void fold(boost::hash2::fnv1a_64 &h, const auto &v) {
 }
 
 // Bumped by hand for what neither the digest nor the entry can see: the
-// emitter, the pass pipeline, the ABI.  Folded into the key, so a bump misses
-// rather than refuses.
-constexpr std::uint32_t kEpoch = 4;
+// emitter, the pass pipeline, the ABI, the opcode numbering the digest folds.
+// Folded into the key, so a bump misses rather than refuses.
+constexpr std::uint32_t kEpoch = 5;
 
 // The file: a tag, the format, the key, a CRC over everything after it, the
 // two lengths, then the symbol and the object.  Little-endian throughout.

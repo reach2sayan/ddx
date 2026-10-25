@@ -159,51 +159,26 @@ static_assert(sizeof(Step) == 40);
 
 namespace detail {
 
-// What a node's `aux` word holds, by op -- the table in rt/opcode.hpp.  Reads
-// go through these; only a node being formed or copied spells `aux`.
-[[nodiscard]] constexpr std::uint32_t index_of(const auto &node) noexcept {
-  return node.aux;
-}
-[[nodiscard]] constexpr std::uint32_t count_of(const auto &node) noexcept {
-  return node.aux;
-}
-[[nodiscard]] constexpr bool is_transposed(const auto &node) noexcept {
-  return node.aux != 0;
-}
-[[nodiscard]] constexpr ExternRef extern_of(const auto &node) noexcept {
-  return ExternRef::of(node.aux);
-}
-// The inner opcode a Map or Zip applies elementwise.
-[[nodiscard]] constexpr OpCode inner_of(const auto &node) noexcept {
-  return static_cast<OpCode>(node.aux);
+// A node's payload, as the type its op's row names -- the one way the word is
+// read.  Only interning and copying handle the word itself.
+template <typename P> [[nodiscard]] constexpr P get(const auto &node) noexcept {
+  assert(info(node.op).payload == payload_index<P>);
+  return from_word<P>(node.payload);
 }
 // The opcode whose rule a node follows: a Map or Zip is its inner one.
 [[nodiscard]] constexpr OpCode effective_op(const auto &node) noexcept {
-  return node.op == OpCode::Map || node.op == OpCode::Zip ? inner_of(node)
+  return node.op == OpCode::Map || node.op == OpCode::Zip ? get<OpCode>(node)
                                                           : node.op;
 }
-// Whether a node's value is a vector row rather than a scalar.  The tensor ops
-// that read vectors into a scalar -- Gather, Sum, Dot -- are not, and MatConst
-// is a table its MatRow reads, not a row anything sweeps; a Select is one
-// over tensor arms.
+// Whether a node's value is a vector row rather than a scalar or a table.
 [[nodiscard]] constexpr bool is_tensor(const auto &node) noexcept {
-  switch (node.op) {
-  case OpCode::Gather:
-  case OpCode::Sum:
-  case OpCode::Dot:
-  case OpCode::MatConst:
-    return false;
-  case OpCode::Select:
-    return node.aux != 0;
-  default:
-    return kind_of(node.op) == Kind::Tensor;
-  }
+  return yields_of(node.op) == Yields::Row;
 }
 // Whether a node's value is one scalar: no row, and no table either.
 [[nodiscard]] constexpr bool is_scalar(const auto &node) noexcept {
-  return !is_tensor(node) && node.op != OpCode::MatConst;
+  return yields_of(node.op) == Yields::Scalar;
 }
-// Whether a node runs on the tensor sweep: a tensor op, or a tensor Select.
+// Whether a node runs on the tensor sweep: a tensor op, or a VSelect.
 [[nodiscard]] constexpr bool on_tensors(const auto &node) noexcept {
   return kind_of(node.op) == Kind::Tensor || is_tensor(node);
 }
@@ -219,19 +194,19 @@ namespace detail {
 
 } // namespace detail
 
+// The operands arity_of(op) names, the rest no_node; for a node with a list
+// (has_list), in[0] is where the list starts.  The payload is the word
+// detail::get reads as the type the op's row names.
 template <impl::Numeric T> struct Node {
   OpCode op = OpCode::Const;
-  NodeId a = no_node;
-  NodeId b = no_node;
-  NodeId c = no_node;    // the third operand, which only a select has
-  T value{};             // Const
-  std::uint32_t aux = 0; // per op: see rt/opcode.hpp and index_of() et al.
-  BOOST_DESCRIBE_CLASS(Node, (), (op, a, b, c, value, aux), (), ())
+  std::array<NodeId, 3> in{no_node, no_node, no_node};
+  T value{}; // Const
+  std::uint32_t payload = 0;
+  BOOST_DESCRIBE_CLASS(Node, (), (op, in, value, payload), (), ())
 };
 
-// A select's third operand lands in padding the two-operand layout already
-// carried.  Pinned rather than assumed: a member above `value` would silently
-// widen every node in every arena.
+// Pinned rather than assumed: a member above `value` would silently widen
+// every node in every arena.
 static_assert(sizeof(Node<double>) == 32);
 
 // The data behind a VecConst or MatConst leaf, column-major; a vector is one
@@ -267,7 +242,7 @@ template <impl::Numeric T> struct Model {
   }
   [[nodiscard]] constexpr OpCode op_of(NodeId v) const { return nodes[v].op; }
   [[nodiscard]] constexpr std::array<NodeId, 3> operands(NodeId v) const {
-    return {nodes[v].a, nodes[v].b, nodes[v].c};
+    return nodes[v].in;
   }
   [[nodiscard]] constexpr std::size_t size() const { return nodes.size(); }
 };
@@ -279,8 +254,8 @@ template <impl::Numeric T> struct Model {
                                                           NodeId v) {
   const OpCode op = s.op_of(v);
   const std::size_t count =
-      is_extern(op) ? s.externs()[detail::extern_of(s[v]).function].arity
-                    : detail::count_of(s[v]);
+      is_extern(op) ? s.externs()[detail::get<ExternRef>(s[v]).function].arity
+                    : detail::get<Count>(s[v]).value;
   return s.lists().subspan(s.operands(v)[0], count); // `a` is the offset
 }
 
@@ -335,21 +310,23 @@ struct Shape {
     const auto [a, b, c] = s.operands(v);
     switch (s.op_of(v)) {
     case OpCode::VecConst:
-      return {.rows = s.tensors()[detail::index_of(s[v])].rows, .cols = 1};
+      return {.rows = s.tensors()[detail::get<TensorRef>(s[v]).value].rows,
+              .cols = 1};
     case OpCode::MatConst:
       return {.rows = 0, .cols = 0};
     case OpCode::MatRow: {
       // A table, or -- the dense sweep's transpose -- a computed matrix.
       const auto table = [&] {
-        const auto &m = s.tensors()[detail::index_of(s[a])];
+        const auto &m = s.tensors()[detail::get<TensorRef>(s[a]).value];
         return Shape{.rows = m.rows, .cols = m.cols};
       };
       const Shape m = s.op_of(a) == OpCode::MatConst ? table() : shape_of(s, a);
-      return detail::is_transposed(s[v]) ? Shape{.rows = m.cols, .cols = m.rows}
-                                         : m;
+      return detail::get<Orientation>(s[v]) == Orientation::transposed
+                 ? Shape{.rows = m.cols, .cols = m.rows}
+                 : m;
     }
     case OpCode::Pack:
-      return {.rows = detail::count_of(s[v]), .cols = 1};
+      return {.rows = detail::get<Count>(s[v]).value, .cols = 1};
     case OpCode::Diag: {
       const std::uint32_t w = shape_of(s, a).rows;
       return {.rows = w, .cols = w};
@@ -358,12 +335,15 @@ struct Shape {
       return {.rows = shape_of(s, a).rows, .cols = shape_of(s, b).rows};
     case OpCode::MatVec: {
       const Shape m = shape_of(s, a);
-      return {.rows = detail::is_transposed(s[v]) ? m.cols : m.rows, .cols = 1};
+      return {.rows = detail::get<Orientation>(s[v]) == Orientation::transposed
+                          ? m.cols
+                          : m.rows,
+              .cols = 1};
     }
     case OpCode::MatMul:
       return {.rows = shape_of(s, a).rows, .cols = shape_of(s, b).cols};
     case OpCode::StackRows:
-      return {.rows = detail::count_of(s[v]),
+      return {.rows = detail::get<Count>(s[v]).value,
               .cols = shape_of(s, arguments(s, v)[0]).rows};
     case OpCode::RowOf:
       return {.rows = shape_of(s, a).cols, .cols = 1};
@@ -375,7 +355,7 @@ struct Shape {
       break;
     case OpCode::Scale:
     case OpCode::RowScale:
-    case OpCode::Select:
+    case OpCode::VSelect:
       v = b;
       break;
     default:
@@ -441,15 +421,18 @@ public:
           {.rows = rows, .cols = cols, .data = {data.begin(), data.end()}});
       at = std::prev(model_.tensors.end());
     }
-    return intern({.op = cols == 1 ? OpCode::VecConst : OpCode::MatConst,
-                   .aux = static_cast<std::uint32_t>(
-                       std::distance(model_.tensors.begin(), at))});
+    const TensorRef ref{
+        static_cast<std::uint32_t>(std::distance(model_.tensors.begin(), at))};
+    return cols == 1 ? make(opcode<OpCode::VecConst>, ref)
+                     : make(opcode<OpCode::MatConst>, ref);
   }
   // A row of `shape` holding v everywhere: a matrix is the table's MatRow.
   [[nodiscard]] constexpr NodeId filled(Shape shape, const T &v) {
     const NodeId t =
         tensor_const(shape.rows, shape.cols, std::vector<T>(shape.size(), v));
-    return shape.cols == 1 ? t : make(OpCode::MatRow, t);
+    return shape.cols == 1
+               ? t
+               : make(opcode<OpCode::MatRow>, Orientation::plain, t);
   }
   [[nodiscard]] constexpr NodeId zeros(Shape shape) {
     return filled(shape, T{0});
@@ -457,55 +440,41 @@ public:
   [[nodiscard]] constexpr NodeId ones(Shape shape) {
     return filled(shape, T{1});
   }
-  // The vector of `scalars` -- or, as StackRows, the matrix whose rows are
-  // `items`.
+  // The vector of `items` -- or, as StackRows, the matrix whose rows they are.
   [[nodiscard]] constexpr NodeId pack(std::span<const NodeId> items,
                                       OpCode op = OpCode::Pack) {
-    assert(!items.empty());
-    return make(op, list(items), no_node, no_node,
-                static_cast<std::uint32_t>(items.size()));
+    assert(op == OpCode::Pack || op == OpCode::StackRows);
+    return listed(op, items);
   }
 
-  // A node with a list, a tensor node or an extern call is formed with its
-  // aux word and past fold() -- no identity below reads a vector or a list --
-  // and past the commutative swap, which is a Zip's inner op's business and not
-  // Zip's.
+  // An `Op` node and what it carries: the arity and the payload's type are
+  // checked as it compiles.
+  template <OpCode Op, std::same_as<NodeId>... Ids>
+    requires(sizeof...(Ids) == arity_of(Op))
+  [[nodiscard]] constexpr NodeId make(std::integral_constant<OpCode, Op>,
+                                      payload_of_t<Op> payload, Ids... in) {
+    return formed({.op = Op, .in = padded(in...), .payload = to_word(payload)});
+  }
+  // An op chosen at run time, which carries nothing.
   [[nodiscard]] constexpr NodeId make(OpCode op, NodeId a, NodeId b = no_node,
-                                      NodeId c = no_node,
-                                      std::uint32_t aux = 0) {
-    if (has_list(op) || kind_of(op) == Kind::Tensor) {
-      return intern({.op = op, .a = a, .b = b, .c = c, .aux = aux});
-    }
-    assert(aux == 0 || op == OpCode::Select);
-    // fold() and the commutative swap are both binary questions; a third
-    // operand means neither applies, and asking would hand a binary functor
-    // three arguments.
-    if (c == no_node) {
-      if (const auto folded = fold(op, a, b)) {
-        return *folded;
-      }
-      if (is_commutative<T>(op) && b != no_node && b < a) {
-        std::swap(a, b);
-      }
-    } else if (const auto chosen = fold_select(a, b, c)) {
-      return *chosen;
-    }
-    return intern({.op = op, .a = a, .b = b, .c = c, .aux = aux});
+                                      NodeId c = no_node) {
+    assert(detail::info(op).payload == payload_index<NoPayload>);
+    return formed({.op = op, .in = {a, b, c}});
   }
 
   // The same node over remapped operands -- or over its remapped list --
   // what a rewrite that keeps every operation forms.
   [[nodiscard]] constexpr NodeId rebuild(NodeId v, auto &&remap) {
-    Node<T> n = model_[v]; // by value: list() and make() may reallocate
+    Node<T> n = model_[v]; // by value: list() and formed() may reallocate
     if (has_list(n.op)) {
-      n.a = list(arguments(*this, v) | std::views::transform(remap) |
-                 impl::to<std::vector<NodeId>>());
-      return make(n.op, n.a, no_node, no_node, n.aux);
+      n.in[0] = list(arguments(*this, v) | std::views::transform(remap) |
+                     impl::to<std::vector<NodeId>>());
+    } else {
+      std::ranges::transform(n.in, n.in.begin(), [&](NodeId u) {
+        return u == no_node ? no_node : remap(u);
+      });
     }
-    for (NodeId *const u : {&n.a, &n.b, &n.c}) {
-      *u = *u == no_node ? no_node : remap(*u);
-    }
-    return make(n.op, n.a, n.b, n.c, n.aux);
+    return formed(n);
   }
 
   [[nodiscard]] constexpr const Node<T> &operator[](NodeId id) const {
@@ -588,8 +557,9 @@ public:
         return n.value == v;
       }
       return n.op == OpCode::VecConst &&
-             std::ranges::all_of(model_.tensors[detail::index_of(n)].data,
-                                 [&v](const T &x) { return x == v; });
+             std::ranges::all_of(
+                 model_.tensors[detail::get<TensorRef>(n).value].data,
+                 [&v](const T &x) { return x == v; });
     } else {
       return false;
     }
@@ -610,7 +580,7 @@ private:
     const auto k = *named_index(op);
     const auto index = static_cast<std::uint32_t>(model_.names[k].size());
     model_.names[k].emplace_back(name);
-    ids_[k].push_back(intern({.op = op, .aux = index}));
+    ids_[k].push_back(intern({.op = op, .payload = to_word(Slot{index})}));
     by_name_.insert(at, {.op = op, .index = index});
     if (op == OpCode::Implicit) {
       model_.closures.push_back(no_node);
@@ -625,7 +595,7 @@ private:
   template <impl::Numeric U, std::invocable<const Expression<U> &> F>
   friend constexpr Expression<U> implicit(Arena<U> &, std::string_view, F &&);
   constexpr void close(NodeId z, NodeId f, std::optional<errc> why) {
-    NodeId &closure = model_.closures[detail::index_of(model_.nodes[z])];
+    NodeId &closure = model_.closures[detail::get<Slot>(model_.nodes[z]).value];
     if (why || closure != no_node) {
       broken_ = broken_.value_or(why.value_or(errc::closed_twice));
     } else {
@@ -650,9 +620,8 @@ private:
   template <impl::Numeric U> friend class ExternFunction;
   constexpr NodeId extern_call(std::uint32_t function,
                                std::span<const NodeId> args) {
-    return intern({.op = OpCode::Extern,
-                   .a = list(args),
-                   .aux = ExternRef{.function = function}.packed()});
+    return make(opcode<OpCode::Extern>, ExternRef{.function = function},
+                list(args));
   }
 
   // Where `ids` sit in the pool: the run already there that spells them, else
@@ -697,8 +666,7 @@ private:
     const NodeId node = terms.size() == 1 ? terms[0]
                         : terms.size() == 2
                             ? make(fold_op(fold), terms[0], terms[1])
-                            : make(fold, list(terms), no_node, no_node,
-                                   static_cast<std::uint32_t>(terms.size()));
+                            : listed(fold, terms);
     pending_[entry].node = node;
     return node;
   }
@@ -708,11 +676,10 @@ private:
   friend constexpr void detail::extern_partials(Arena<U> &, NodeId, Sink &&);
   constexpr NodeId extern_component(NodeId v, std::uint32_t component) {
     const Node<T> n = model_[v]; // by value: intern() may reallocate
-    return intern({.op = OpCode::ExternD,
-                   .a = n.a,
-                   .aux = ExternRef{.function = detail::extern_of(n).function,
-                                    .component = component}
-                              .packed()});
+    return make(opcode<OpCode::ExternD>,
+                ExternRef{.function = detail::get<ExternRef>(n).function,
+                          .component = component},
+                n.in[0]);
   }
 
   // dz/ds for each implicit, by the implicit-function theorem, built the first
@@ -725,12 +692,12 @@ private:
   template <impl::Numeric U>
   friend constexpr Expression<U> seed(Arena<U> &, std::uint32_t);
   [[nodiscard]] constexpr NodeId seed_node(std::uint32_t index) {
-    return intern({.op = OpCode::Seed, .aux = index});
+    return intern({.op = OpCode::Seed, .payload = to_word(Slot{index})});
   }
 
   static constexpr std::uint64_t payload_of(const Node<T> &n) {
     if (n.op != OpCode::Const) {
-      return std::uint64_t{n.aux};
+      return std::uint64_t{n.payload};
     }
     // Anything wider than a word lands in one bucket and is separated by
     // `same` below.
@@ -742,10 +709,10 @@ private:
   }
 
   static constexpr bool same(const Node<T> &l, const Node<T> &r) {
-    if (l.op != r.op || l.a != r.a || l.b != r.b || l.c != r.c) {
+    if (l.op != r.op || l.in != r.in) {
       return false;
     } else if (l.op != OpCode::Const) {
-      return l.aux == r.aux;
+      return l.payload == r.payload;
     }
     return identical(l.value, r.value);
   }
@@ -770,9 +737,7 @@ private:
       h *= murmur_mix_64;
       h ^= h >> 33;
     };
-    mix(n.a);
-    mix(n.b);
-    mix(n.c);
+    std::ranges::for_each(n.in, mix);
     mix(payload_of(n));
     return static_cast<std::size_t>(h);
   }
@@ -887,7 +852,7 @@ private:
     case Take::NumeratorOfB:
       return cancel_quotient(b, a);
     case Take::OperandOfA:
-      return model_.nodes[a].a;
+      return model_.nodes[a].in[0];
     case Take::SquareOfA:
       // No recursion back into this rule: Mul carries no Same identity.
       return make(OpCode::Mul, a, a);
@@ -926,6 +891,48 @@ private:
                                                          : apply_rule(*r, a, b);
   }
 
+  // `ids` padded to three operands with no_node.
+  [[nodiscard]] static constexpr std::array<NodeId, 3>
+  padded(std::same_as<NodeId> auto... ids) {
+    std::array<NodeId, 3> in{no_node, no_node, no_node};
+    std::ranges::copy(std::array<NodeId, sizeof...(ids)>{ids...}, in.begin());
+    return in;
+  }
+
+  // A node with a list or a tensor node is interned as given: past fold() --
+  // no identity below reads a vector or a list -- and past the commutative
+  // swap, which is a Zip's inner op's business and not Zip's.  fold() and the
+  // swap are binary questions, and a select's are fold_select()'s.
+  [[nodiscard]] constexpr NodeId formed(Node<T> n) {
+    auto &[a, b, c] = n.in;
+    if (has_list(n.op) || kind_of(n.op) == Kind::Tensor) {
+      return intern(n);
+    }
+    if (kind_of(n.op) == Kind::Ternary) {
+      if (const auto chosen = fold_select(a, b, c)) {
+        return *chosen;
+      }
+    } else {
+      if (const auto folded = fold(n.op, a, b)) {
+        return *folded;
+      }
+      if (is_commutative<T>(n.op) && b != no_node && b < a) {
+        std::swap(a, b);
+      }
+    }
+    return intern(n);
+  }
+
+  // A Count-carrying node -- a Pack, a StackRows or a fold -- over `items`.
+  [[nodiscard]] constexpr NodeId listed(OpCode op,
+                                        std::span<const NodeId> items) {
+    assert(!items.empty() && detail::info(op).payload == payload_index<Count>);
+    return formed(
+        {.op = op,
+         .in = padded(list(items)),
+         .payload = to_word(Count{static_cast<std::uint32_t>(items.size())})});
+  }
+
   // A literal condition has already chosen, read as select_impl reads it (any
   // nonzero, NaN included, is true), and two equal arms leave nothing to
   // choose.  What lets PowOpFn guard its 0 * inf at no cost to the graphs that
@@ -947,8 +954,8 @@ private:
   constexpr std::optional<NodeId> cancel_quotient(NodeId quotient,
                                                   NodeId factor) const {
     const Node<T> &q = model_.nodes[quotient];
-    return q.op == OpCode::Div && q.b == factor ? std::optional{q.a}
-                                                : std::nullopt;
+    return q.op == OpCode::Div && q.in[1] == factor ? std::optional{q.in[0]}
+                                                    : std::nullopt;
   }
 
   Model<T> model_;
@@ -1170,7 +1177,8 @@ tensor_layout(const auto &s, std::span<const Step> schedule,
     const auto at = static_cast<std::uint32_t>(p);
     // A table's MatRow is the table, read in place: no row of its own.
     if (is_tensor(s[step.node]) &&
-        !(is_table(s, step.node) && !is_transposed(s[step.node]))) {
+        !(is_table(s, step.node) &&
+          get<Orientation>(s[step.node]) == Orientation::plain)) {
       const std::uint32_t w = width_of(s, step.node);
       const auto fit = std::ranges::find(free, w, &TensorRow::width);
       if (fit == free.end()) {

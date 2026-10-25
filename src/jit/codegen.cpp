@@ -426,9 +426,10 @@ emit_nodes(const Emitter<T> &emit, const rt::Graph<T> &g,
       value[v] = emit.constant(p.value);
       break;
     case rt::Kind::Input:
-      value[v] = emit.load(cols.inputs[rt::input_column(
-                               g.inputs(), p.op, rt::detail::index_of(p))],
-                           index, mask, "");
+      value[v] =
+          emit.load(cols.inputs[rt::input_column(
+                        g.inputs(), p.op, rt::detail::get<rt::Slot>(p).value)],
+                    index, mask, "");
       break;
     case rt::Kind::Nary: {
       // The terms into the running value in list order, a product term of a
@@ -454,7 +455,7 @@ emit_nodes(const Emitter<T> &emit, const rt::Graph<T> &g,
     case rt::Kind::Extern: {
       // One call per (function, argument list), whichever component asked
       // first; the rest are loads off the same answer.
-      const auto [fn, component] = rt::detail::extern_of(p);
+      const auto [fn, component] = rt::detail::get<rt::ExternRef>(p);
       auto [answers, fresh] = called.try_emplace({fn, operands[0]});
       if (fresh) {
         const auto args =

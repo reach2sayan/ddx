@@ -77,6 +77,8 @@ template <impl::Numeric T> inline constexpr bool probes_Le = probes_Lt<T>;
 template <impl::Numeric T>
 inline constexpr bool probes_Select =
     impl::CArithmetic<T> || std::equality_comparable<T>;
+template <impl::Numeric T>
+inline constexpr bool probes_VSelect = probes_Select<T>;
 
 // sign_impl only compares, so ordering is the whole requirement.
 template <impl::Numeric T>
@@ -145,7 +147,7 @@ dispatch(OpCode op, auto &&visit) {
 #undef DDX_RT_DISPATCH
     // A tensor row is the interpreter's as well, through its kernel table, and
     // at no scalar but the graph's own.
-#define DDX_RT_DISPATCH(fn, Op, label, arity, kind)                            \
+#define DDX_RT_DISPATCH(fn, Op, label, arity, ...)                             \
   case OpCode::Op:                                                             \
     return visit(Row<void, false, arity>{});
     DDX_RT_TENSOR_TABLE(DDX_RT_DISPATCH)

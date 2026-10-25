@@ -78,11 +78,11 @@ template <impl::Numeric T>
     if (b.op_of(args[0]) != OpCode::Var) {
       return {};
     }
-    const std::uint32_t first = index_of(b[args[0]]);
+    const std::uint32_t first = get<Slot>(b[args[0]]).value;
     const bool consecutive =
         std::ranges::all_of(std::views::iota(0uz, args.size()), [&](auto j) {
           return b.op_of(args[j]) == OpCode::Var &&
-                 index_of(b[args[j]]) == first + j;
+                 get<Slot>(b[args[j]]).value == first + j;
         });
     return consecutive ? Swept{.at = first,
                                .width = static_cast<std::uint32_t>(args.size())}
@@ -139,8 +139,8 @@ private:
   // e_i, interned once per i and width.
   [[nodiscard]] NodeId unit(std::uint32_t i) { return unit(i, n_); }
   [[nodiscard]] NodeId unit(std::uint32_t i, std::uint32_t width) {
-    return b_.make(OpCode::AddAt, b_.zeros({width}), b_.constant(T{1}), no_node,
-                   i);
+    return b_.make(opcode<OpCode::AddAt>, Element{i}, b_.zeros({width}),
+                   b_.constant(T{1}));
   }
   // The rows of `ids` as a matrix, a zero row for an id nothing moves.
   [[nodiscard]] NodeId stacked(const auto &ids) {
@@ -157,12 +157,13 @@ private:
     if (partials.size() != n_ || b_.op_of(partials.front()) != OpCode::Gather) {
       return std::nullopt;
     }
-    const NodeId source = b_[partials.front()].a;
+    const NodeId source = b_[partials.front()].in[0];
     const bool in_order =
         width_of(b_, source) == n_ &&
         std::ranges::all_of(std::views::iota(0u, n_), [&](std::uint32_t i) {
           const Node<T> &g = b_[partials[i]];
-          return g.op == OpCode::Gather && g.a == source && index_of(g) == i;
+          return g.op == OpCode::Gather && g.in[0] == source &&
+                 get<Element>(g).value == i;
         });
     return in_order ? std::optional{source} : std::nullopt;
   }
@@ -197,7 +198,8 @@ private:
       };
       matrices.push_back(
           b_.make(OpCode::MatMul,
-                  b_.make(OpCode::MatRow, rows(&Term::a), no_node, no_node, 1),
+                  b_.make(opcode<OpCode::MatRow>, Orientation::transposed,
+                          rows(&Term::a)),
                   rows(&Term::b)));
     }
     // The block is an output row; a table's MatRow has none (interpret.hpp
@@ -228,14 +230,14 @@ private:
       return b_.pack(std::views::iota(0u, all) |
                          std::views::transform([&](std::uint32_t s) {
                            return held(s) ? zero
-                                          : b_.make(OpCode::RowOf, m, no_node,
-                                                    no_node, s - at_);
+                                          : b_.make(opcode<OpCode::RowOf>,
+                                                    Element{s - at_}, m);
                          }) |
                          impl::to<std::vector<NodeId>>(),
                      OpCode::StackRows);
     };
     const auto transposed = [this](NodeId m) {
-      return b_.make(OpCode::MatRow, m, no_node, no_node, 1);
+      return b_.make(opcode<OpCode::MatRow>, Orientation::transposed, m);
     };
     // The swept block at (at_, at_): its columns spread by way of the
     // transpose, then its rows.
@@ -305,9 +307,9 @@ private:
       };
       NodeId a = no_node;
       if (inner.op == OpCode::RowScale) {
-        a = b_.make(OpCode::RowScale, rescaled(inner.a), inner.b);
+        a = b_.make(OpCode::RowScale, rescaled(inner.in[0]), inner.in[1]);
       } else if (!vector && inner.op == OpCode::ColScale) {
-        a = b_.make(OpCode::ColScale, inner.a, rescaled(inner.b));
+        a = b_.make(OpCode::ColScale, inner.in[0], rescaled(inner.in[1]));
       } else { // a RowScale, so the next diagonal folds into it
         a = b_.make(OpCode::RowScale,
                     vector ? m.id(b_, {rows})
@@ -330,11 +332,12 @@ private:
     case Term::Kind::Identity:
       return unit(i);
     case Term::Kind::Diag:
-      return b_.make(OpCode::AddAt, zeros(), expr(t.a)[i].id(b_), no_node, i);
+      return b_.make(opcode<OpCode::AddAt>, Element{i}, zeros(),
+                     expr(t.a)[i].id(b_));
     case Term::Kind::Outer:
       return scaled(expr(t.a)[i], t.b);
     case Term::Kind::Dense:
-      return b_.make(OpCode::RowOf, t.a, no_node, no_node, i);
+      return b_.make(opcode<OpCode::RowOf>, Element{i}, t.a);
     }
     std::unreachable();
   }
@@ -348,8 +351,8 @@ private:
     case Term::Kind::Outer:
       return scaled(dot(u, expr(t.a)), t.b);
     case Term::Kind::Dense:
-      return b_.make(OpCode::MatVec, t.a, u.id(b_, {shape_of(b_, t.a).rows}),
-                     no_node, 1);
+      return b_.make(opcode<OpCode::MatVec>, Orientation::transposed, t.a,
+                     u.id(b_, {shape_of(b_, t.a).rows}));
     }
     std::unreachable();
   }
@@ -360,13 +363,13 @@ private:
   }
   // A matrix M (or M^T) that no symbol moves -- a table, or one computed from
   // parameters -- applied on the left of a term.
-  [[nodiscard]] Term gemv(NodeId matrix, bool transposed, const Term &t) {
+  [[nodiscard]] Term gemv(NodeId matrix, Orientation orientation,
+                          const Term &t) {
     const bool table = is_table(b_, matrix);
-    const NodeId c =
-        table || transposed
-            ? b_.make(OpCode::MatRow, table ? b_[matrix].a : matrix, no_node,
-                      no_node, transposed)
-            : matrix;
+    const NodeId c = table || orientation == Orientation::transposed
+                         ? b_.make(opcode<OpCode::MatRow>, orientation,
+                                   table ? b_[matrix].in[0] : matrix)
+                         : matrix;
     switch (t.kind) {
     case Term::Kind::Identity:
       ++n2_;
@@ -377,7 +380,7 @@ private:
               .a = b_.make(OpCode::ColScale, c, t.a)};
     case Term::Kind::Outer:
       return {.kind = Term::Kind::Outer,
-              .a = b_.make(OpCode::MatVec, matrix, t.a, no_node, transposed),
+              .a = b_.make(opcode<OpCode::MatVec>, orientation, matrix, t.a),
               .b = t.b};
     case Term::Kind::Dense:
       ++n3_;
@@ -399,7 +402,7 @@ private:
   // only through the symbol vector's Pack is the identity term, and no row.
   [[nodiscard]] NodeId row(NodeId u) {
     if (row_[u] == no_node && b_.op_of(u) == OpCode::Var) {
-      const std::uint32_t j = index_of(b_[u]);
+      const std::uint32_t j = get<Slot>(b_[u]).value;
       if (j >= at_ && j < at_ + n_) {
         row_[u] = unit(j - at_);
       }
@@ -423,7 +426,8 @@ private:
     case Kind::Input:
       if (node.op == OpCode::Implicit) {
         return b_.pack(
-            std::span{Implicits::row(b_, index_of(node))}.subspan(at_, n_));
+            std::span{Implicits::row(b_, get<Slot>(node).value)}.subspan(at_,
+                                                                         n_));
       }
       return no_node;
     case Kind::Nary: {
@@ -457,30 +461,32 @@ private:
     }
     // A partial is built only to scale a row there is.
     case Kind::Unary:
-      return row(node.a) == no_node
+      return row(node.in[0]) == no_node
                  ? no_node
-                 : scaled(partial(node.op, expr(node.a), expr(v)), row(node.a));
+                 : scaled(partial(node.op, expr(node.in[0]), expr(v)),
+                          row(node.in[0]));
     case Kind::Binary: {
       // Both partials before either product: `make` orders a commutative
       // node's operands by id.
-      const E l = expr(node.a);
-      const E r = expr(node.b);
-      const E pl = row(node.a) == no_node
+      const E l = expr(node.in[0]);
+      const E r = expr(node.in[1]);
+      const E pl = row(node.in[0]) == no_node
                        ? E{0}
                        : contribution_to<0>(node.op, E{1}, l, r);
-      const E pr = row(node.b) == no_node
+      const E pr = row(node.in[1]) == no_node
                        ? E{0}
                        : contribution_to<1>(node.op, E{1}, l, r);
-      return add(scaled(pl, row(node.a)), scaled(pr, row(node.b)));
+      return add(scaled(pl, row(node.in[0])), scaled(pr, row(node.in[1])));
     }
     case Kind::Ternary: { // picked, so the row not taken is never scaled by 0
-      if (row(node.b) == no_node && row(node.c) == no_node) {
+      if (row(node.in[1]) == no_node && row(node.in[2]) == no_node) {
         return no_node;
       }
       const auto or_zeros = [this](NodeId r) {
         return expr(r == no_node ? zeros() : r);
       };
-      return select(expr(node.a), or_zeros(row(node.b)), or_zeros(row(node.c)))
+      return select(expr(node.in[0]), or_zeros(row(node.in[1])),
+                    or_zeros(row(node.in[2])))
           .id(b_, {n_});
     }
     case Kind::Tensor:
@@ -489,14 +495,14 @@ private:
         return no_node;
       case OpCode::Gather:
         return std::ranges::fold_left(
-            mat_[node.a], no_node, [&](NodeId r, const Term &t) {
-              return add(r, row_of(t, index_of(node)));
+            mat_[node.in[0]], no_node, [&](NodeId r, const Term &t) {
+              return add(r, row_of(t, get<Element>(node).value));
             });
       case OpCode::Sum:
-        return left(expr(b_.ones(shape_of(b_, node.a))), mat_[node.a]);
+        return left(expr(b_.ones(shape_of(b_, node.in[0]))), mat_[node.in[0]]);
       case OpCode::Dot:
-        return add(left(expr(node.a), mat_[node.b]),
-                   left(expr(node.b), mat_[node.a]));
+        return add(left(expr(node.in[0]), mat_[node.in[1]]),
+                   left(expr(node.in[1]), mat_[node.in[0]]));
       default:
         std::unreachable();
       }
@@ -520,48 +526,49 @@ private:
       break;
     // A partial is built only to scale terms there are.
     case OpCode::Map:
-      if (!mat_[node.a].empty()) {
-        out =
-            scale(partial(inner_of(node), expr(node.a), expr(v)), mat_[node.a]);
+      if (!mat_[node.in[0]].empty()) {
+        out = scale(partial(get<OpCode>(node), expr(node.in[0]), expr(v)),
+                    mat_[node.in[0]]);
       }
       break;
     case OpCode::Zip: {
-      const E u = expr(node.a);
-      const E w = expr(node.b);
-      const E pu = mat_[node.a].empty()
+      const E u = expr(node.in[0]);
+      const E w = expr(node.in[1]);
+      const E pu = mat_[node.in[0]].empty()
                        ? E{0}
-                       : contribution_to<0>(inner_of(node), E{1}, u, w);
-      const E pw = mat_[node.b].empty()
+                       : contribution_to<0>(get<OpCode>(node), E{1}, u, w);
+      const E pw = mat_[node.in[1]].empty()
                        ? E{0}
-                       : contribution_to<1>(inner_of(node), E{1}, u, w);
-      out = scale(pu, mat_[node.a]);
-      impl::append(out, scale(pw, mat_[node.b]));
+                       : contribution_to<1>(get<OpCode>(node), E{1}, u, w);
+      out = scale(pu, mat_[node.in[0]]);
+      impl::append(out, scale(pw, mat_[node.in[1]]));
       break;
     }
     case OpCode::Scale: {
-      const E s = expr(node.a);
-      out = scale(s, mat_[node.b]);
-      if (row(node.a) != no_node) {
+      const E s = expr(node.in[0]);
+      out = scale(s, mat_[node.in[1]]);
+      if (row(node.in[0]) != no_node) {
         ++n2_;
         out.push_back(
-            {.kind = Term::Kind::Outer, .a = node.b, .b = row(node.a)});
+            {.kind = Term::Kind::Outer, .a = node.in[1], .b = row(node.in[0])});
       }
       break;
     }
     case OpCode::MatVec:
-      refused_ = refused_ || !mat_[node.a].empty();
-      out = mat_[node.b] | std::views::transform([&](const Term &t) {
-              return gemv(node.a, is_transposed(node), t);
+      refused_ = refused_ || !mat_[node.in[0]].empty();
+      out = mat_[node.in[1]] | std::views::transform([&](const Term &t) {
+              return gemv(node.in[0], get<Orientation>(node), t);
             }) |
             impl::to<Terms>();
       break;
     case OpCode::MatRow: // a table
       break;
     case OpCode::Outer:
-      refused_ = refused_ || !mat_[node.a].empty() || !mat_[node.b].empty();
+      refused_ =
+          refused_ || !mat_[node.in[0]].empty() || !mat_[node.in[1]].empty();
       break;
-    case OpCode::Select: {
-      if (mat_[node.b].empty() && mat_[node.c].empty()) {
+    case OpCode::VSelect: {
+      if (mat_[node.in[1]].empty() && mat_[node.in[2]].empty()) {
         break;
       }
       // A vector condition spread along each row of the w x n terms.
@@ -569,21 +576,24 @@ private:
       const auto block = [&](const Terms &ts) {
         return expr(ts.empty() ? b_.zeros({w, n_}) : summed(ts));
       };
-      const E c = expr(node.a);
-      const E cond = c.size() ? expr(b_.make(OpCode::Outer, node.a, ones())) : c;
+      const E c = expr(node.in[0]);
+      const E cond =
+          c.size() ? expr(b_.make(OpCode::Outer, node.in[0], ones())) : c;
       ++n2_;
-      out.push_back({.kind = Term::Kind::Dense,
-                     .a = select(cond, block(mat_[node.b]), block(mat_[node.c]))
-                              .id(b_, {w, n_})});
+      out.push_back(
+          {.kind = Term::Kind::Dense,
+           .a = select(cond, block(mat_[node.in[1]]), block(mat_[node.in[2]]))
+                    .id(b_, {w, n_})});
       break;
     }
     case OpCode::AddAt:
-      out = mat_[node.a];
-      if (row(node.b) != no_node) {
+      out = mat_[node.in[0]];
+      if (row(node.in[1]) != no_node) {
         ++n2_;
-        out.push_back({.kind = Term::Kind::Outer,
-                       .a = unit(index_of(node), width_of(b_, node.a)),
-                       .b = row(node.b)});
+        out.push_back(
+            {.kind = Term::Kind::Outer,
+             .a = unit(get<Element>(node).value, width_of(b_, node.in[0])),
+             .b = row(node.in[1])});
       }
       break;
     default:

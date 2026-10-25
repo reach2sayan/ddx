@@ -143,7 +143,7 @@ struct Implicits {
 // it, and differ only in what they do with the pair.
 template <impl::Numeric T, typename Sink>
 constexpr void extern_partials(Arena<T> &b, NodeId v, Sink &&sink) {
-  const auto [fn, at] = detail::extern_of(b[v]);
+  const auto [fn, at] = detail::get<ExternRef>(b[v]);
   const ExternRecord &e = b.externs()[fn];
   for (const auto [l, arg] : arguments(b, v) | std::views::enumerate) {
     if (const auto up = e.up(at, static_cast<std::size_t>(l))) {
@@ -166,7 +166,7 @@ template <impl::Numeric T>
   const auto live = reachable(b, wanted);
   return std::ranges::any_of(live_ids(live), [&b](NodeId v) {
     return kind_of(b[v].op) == Kind::Extern &&
-           b.externs()[detail::extern_of(b[v]).function].order < 2;
+           b.externs()[detail::get<ExternRef>(b[v]).function].order < 2;
   });
 }
 
@@ -346,20 +346,20 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
       break;
     }
     case Kind::Unary:
-      add_to(node.a, g, [&] {
-        return detail::contribution(op, a, expr(node.a), expr(v));
+      add_to(node.in[0], g, [&] {
+        return detail::contribution(op, a, expr(node.in[0]), expr(v));
       });
       break;
     case Kind::Ternary: {
       // Here rather than in ops/adjoints.hpp: two arms of different types is
       // what a type-encoded tree cannot hold, so there is no compile-time rule
       // to share with.  Nothing reaches the condition -- it chooses.
-      const Expression<T> cond = expr(node.a);
-      if (moves(node.b)) {
-        add_to(node.b, both(g, cond).id(b), [&] { return a; });
+      const Expression<T> cond = expr(node.in[0]);
+      if (moves(node.in[1])) {
+        add_to(node.in[1], both(g, cond).id(b), [&] { return a; });
       }
-      if (moves(node.c)) {
-        add_to(node.c, both(g, select(cond, zero, one)).id(b),
+      if (moves(node.in[2])) {
+        add_to(node.in[2], both(g, select(cond, zero, one)).id(b),
                [&] { return a; });
       }
       break;
@@ -367,14 +367,14 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
     case Kind::Binary: {
       // Both rules before either sum: `make` orders a commutative node's
       // operands by id, so the order nodes are built in is part of the answer.
-      const Expression<T> l = expr(node.a);
-      const Expression<T> r = expr(node.b);
+      const Expression<T> l = expr(node.in[0]);
+      const Expression<T> r = expr(node.in[1]);
       const Expression<T> cl =
-          moves(node.a) ? detail::contribution_to<0>(op, a, l, r) : zero;
+          moves(node.in[0]) ? detail::contribution_to<0>(op, a, l, r) : zero;
       const Expression<T> cr =
-          moves(node.b) ? detail::contribution_to<1>(op, a, l, r) : zero;
-      add_to(node.a, g, [&] { return cl; });
-      add_to(node.b, g, [&] { return cr; });
+          moves(node.in[1]) ? detail::contribution_to<1>(op, a, l, r) : zero;
+      add_to(node.in[0], g, [&] { return cl; });
+      add_to(node.in[1], g, [&] { return cr; });
       break;
     }
     case Kind::Tensor: {
@@ -395,46 +395,53 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
         break;
       }
       case OpCode::Gather:
-        add_to(node.a, g, [&] {
-          return detail::add_at(expr(b.zeros(shape_of(b, node.a))), a,
-                                detail::index_of(node));
+        add_to(node.in[0], g, [&] {
+          return detail::add_at(expr(b.zeros(shape_of(b, node.in[0]))), a,
+                                detail::get<Element>(node).value);
         });
         break;
       case OpCode::Scale:
-        add_to(node.a, g, [&] { return dot(a, expr(node.b)); });
-        add_to(node.b, g, [&] { return expr(node.a) * a; });
+        add_to(node.in[0], g, [&] { return dot(a, expr(node.in[1])); });
+        add_to(node.in[1], g, [&] { return expr(node.in[0]) * a; });
         break;
       case OpCode::Sum:
-        add_to(node.a, g,
-               [&] { return a * expr(b.ones(shape_of(b, node.a))); });
+        add_to(node.in[0], g,
+               [&] { return a * expr(b.ones(shape_of(b, node.in[0]))); });
         break;
       case OpCode::Dot:
-        add_to(node.a, g, [&] { return a * expr(node.b); });
-        add_to(node.b, g, [&] { return a * expr(node.a); });
+        add_to(node.in[0], g, [&] { return a * expr(node.in[1]); });
+        add_to(node.in[1], g, [&] { return a * expr(node.in[0]); });
         break;
       case OpCode::AddAt:
-        add_to(node.a, g, [&] { return a; });
-        add_to(node.b, g, [&] { return a[detail::index_of(node)]; });
+        add_to(node.in[0], g, [&] { return a; });
+        add_to(node.in[1], g,
+               [&] { return a[detail::get<Element>(node).value]; });
         break;
       case OpCode::MatRow: // a table: nothing moves it
         break;
       case OpCode::MatVec: {
         // y = M v moves v by M^T a and M by a v^T; y = M^T v, by M a and v a^T.
-        const bool t = detail::is_transposed(node);
-        add_to(node.b, g, [&] {
-          return expr(b.make(OpCode::MatVec, node.a, adj[v], no_node, !t));
+        const bool t =
+            detail::get<Orientation>(node) == Orientation::transposed;
+        add_to(node.in[1], g, [&] {
+          return expr(b.make(opcode<OpCode::MatVec>,
+                             t ? Orientation::plain : Orientation::transposed,
+                             node.in[0], adj[v]));
         });
-        add_to(node.a, g, [&] {
-          return expr(t ? b.make(OpCode::Outer, node.b, adj[v])
-                        : b.make(OpCode::Outer, adj[v], node.b));
+        add_to(node.in[0], g, [&] {
+          return expr(t ? b.make(OpCode::Outer, node.in[1], adj[v])
+                        : b.make(OpCode::Outer, adj[v], node.in[1]));
         });
         break;
       }
       case OpCode::Outer: // u w^T: u moves by A w, w by A^T u
-        add_to(node.a, g,
-               [&] { return expr(b.make(OpCode::MatVec, adj[v], node.b)); });
-        add_to(node.b, g, [&] {
-          return expr(b.make(OpCode::MatVec, adj[v], node.a, no_node, 1));
+        add_to(node.in[0], g, [&] {
+          return expr(b.make(opcode<OpCode::MatVec>, Orientation::plain, adj[v],
+                             node.in[1]));
+        });
+        add_to(node.in[1], g, [&] {
+          return expr(b.make(opcode<OpCode::MatVec>, Orientation::transposed,
+                             adj[v], node.in[0]));
         });
         break;
       default: // the dense sweep's own rows, built under no root
@@ -466,9 +473,11 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
                 .implicit = std::vector<NodeId>(implicits, no_node)};
   for (const auto [v, node] : std::views::enumerate(b.nodes().first(n))) {
     if (node.op == OpCode::Var) {
-      g.partial[detail::index_of(node)] = adj[static_cast<std::size_t>(v)];
+      g.partial[detail::get<Slot>(node).value] =
+          adj[static_cast<std::size_t>(v)];
     } else if (node.op == OpCode::Implicit) {
-      g.implicit[detail::index_of(node)] = adj[static_cast<std::size_t>(v)];
+      g.implicit[detail::get<Slot>(node).value] =
+          adj[static_cast<std::size_t>(v)];
     }
   }
   // A symbol the expression never mentions has no leaf, so no adjoint reached
@@ -566,7 +575,8 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
     case Kind::Input: // a symbol or an implicit: a param or a seed holds still
       if (node.op == OpCode::Implicit) {
         // dz = sum_s dz/dx_s dx_s: z moves with every symbol its residual does.
-        const auto dz = detail::Implicits::row(b, detail::index_of(node));
+        const auto dz =
+            detail::Implicits::row(b, detail::get<Slot>(node).value);
         d[v] = std::ranges::fold_left(
                    std::views::zip(dz, tangent) |
                        std::views::transform([&b](const auto &pair) {
@@ -576,35 +586,36 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
                    Expression<T>{0}, std::plus<>{})
                    .id(b);
       } else {
-        d[v] = tangent[detail::index_of(node)];
+        d[v] = tangent[detail::get<Slot>(node).value];
       }
       break;
     case Kind::Unary: {
-      const Expression<T> u{b, node.a};
+      const Expression<T> u{b, node.in[0]};
       const Expression<T> self{b, v};
-      d[v] =
-          (detail::partial(op, u, self) * Expression<T>{b, at(node.a)}).id(b);
+      d[v] = (detail::partial(op, u, self) * Expression<T>{b, at(node.in[0])})
+                 .id(b);
       break;
     }
     case Kind::Ternary:
       // select(c, dt, df): the condition picks the derivative as it picks
       // the value.
-      d[v] = select(Expression<T>{b, node.a}, Expression<T>{b, at(node.b)},
-                    Expression<T>{b, at(node.c)})
-                 .id(b);
+      d[v] =
+          select(Expression<T>{b, node.in[0]}, Expression<T>{b, at(node.in[1])},
+                 Expression<T>{b, at(node.in[2])})
+              .id(b);
       break;
     case Kind::Binary: {
       // Both partials before either product, as in the reverse sweep.
-      const Expression<T> l{b, node.a};
-      const Expression<T> r{b, node.b};
+      const Expression<T> l{b, node.in[0]};
+      const Expression<T> r{b, node.in[1]};
       const Expression<T> one{1};
       const Expression<T> pl =
-          moves[node.a] ? detail::contribution_to<0>(op, one, l, r) : one;
+          moves[node.in[0]] ? detail::contribution_to<0>(op, one, l, r) : one;
       const Expression<T> pr =
-          moves[node.b] ? detail::contribution_to<1>(op, one, l, r) : one;
+          moves[node.in[1]] ? detail::contribution_to<1>(op, one, l, r) : one;
       d[v] = moved(
-          v, node.a, [&] { return pl * dv(node.a); }, node.b,
-          [&] { return pr * dv(node.b); });
+          v, node.in[0], [&] { return pl * dv(node.in[0]); }, node.in[1],
+          [&] { return pr * dv(node.in[1]); });
       break;
     }
     case Kind::Tensor: {
@@ -620,43 +631,51 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
         break;
       }
       case OpCode::Gather:
-        d[v] = dv(node.a)[detail::index_of(node)].id(b);
+        d[v] = dv(node.in[0])[detail::get<Element>(node).value].id(b);
         break;
       case OpCode::Scale:
         d[v] = moved(
-            v, node.a, [&] { return dv(node.a) * expr(node.b); }, node.b,
-            [&] { return expr(node.a) * dv(node.b); });
+            v, node.in[0], [&] { return dv(node.in[0]) * expr(node.in[1]); },
+            node.in[1], [&] { return expr(node.in[0]) * dv(node.in[1]); });
         break;
       case OpCode::Sum:
-        d[v] = sum(dv(node.a)).id(b);
+        d[v] = sum(dv(node.in[0])).id(b);
         break;
       case OpCode::Dot:
         d[v] = moved(
-            v, node.a, [&] { return dot(dv(node.a), expr(node.b)); }, node.b,
-            [&] { return dot(expr(node.a), dv(node.b)); });
+            v, node.in[0],
+            [&] { return dot(dv(node.in[0]), expr(node.in[1])); }, node.in[1],
+            [&] { return dot(expr(node.in[0]), dv(node.in[1])); });
         break;
       case OpCode::AddAt:
-        d[v] = b.make(OpCode::AddAt, at(node.a), at(node.b), no_node, node.aux);
+        d[v] = b.make(opcode<OpCode::AddAt>, detail::get<Element>(node),
+                      at(node.in[0]), at(node.in[1]));
         break;
       case OpCode::MatVec:
         d[v] = moved(
-            v, node.a,
+            v, node.in[0],
             [&] {
-              return expr(b.make(OpCode::MatVec, at(node.a), node.b, no_node,
-                                 node.aux));
+              return expr(b.make(opcode<OpCode::MatVec>,
+                                 detail::get<Orientation>(node), at(node.in[0]),
+                                 node.in[1]));
             },
-            node.b,
+            node.in[1],
             [&] {
-              return expr(b.make(OpCode::MatVec, node.a, at(node.b), no_node,
-                                 node.aux));
+              return expr(b.make(opcode<OpCode::MatVec>,
+                                 detail::get<Orientation>(node), node.in[0],
+                                 at(node.in[1])));
             });
         break;
       case OpCode::Outer:
         d[v] = moved(
-            v, node.a,
-            [&] { return expr(b.make(OpCode::Outer, at(node.a), node.b)); },
-            node.b,
-            [&] { return expr(b.make(OpCode::Outer, node.a, at(node.b))); });
+            v, node.in[0],
+            [&] {
+              return expr(b.make(OpCode::Outer, at(node.in[0]), node.in[1]));
+            },
+            node.in[1],
+            [&] {
+              return expr(b.make(OpCode::Outer, node.in[0], at(node.in[1])));
+            });
         break;
       default: // the dense sweep's own rows, built under no root
         std::unreachable();

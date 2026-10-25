@@ -1445,8 +1445,9 @@ Census census(const ddx::rt::Arena<> &b, const ddx::rt::DenseHessian &h) {
   for (const ddx::rt::NodeId v : ddx::rt::detail::live_ids(block)) {
     const auto op = b.op_of(v);
     // A table's MatRow is read in place, never written.
-    const bool in_place =
-        ddx::rt::is_table(b, v) && !ddx::rt::detail::is_transposed(b[v]);
+    const bool in_place = ddx::rt::is_table(b, v) &&
+                          ddx::rt::detail::get<ddx::rt::Orientation>(b[v]) ==
+                              ddx::rt::Orientation::plain;
     if (gradient[v] || !ddx::rt::detail::is_tensor(b[v]) || in_place) {
       continue;
     }

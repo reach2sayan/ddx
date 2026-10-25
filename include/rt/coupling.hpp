@@ -334,23 +334,23 @@ template <impl::Numeric T>
       break;
     case Kind::Input:
       if (node.op == OpCode::Var) {
-        here.set(detail::index_of(node));
+        here.set(detail::get<Slot>(node).value);
       } else if (node.op == OpCode::Implicit) {
         // Whatever its residual reads, and nonlinearly: z is a root, not a
         // sum.  The sweep's dz/dx nodes are not in the arena yet, so the
         // closure is read here rather than discovered.
-        const NodeId f = b.closures()[detail::index_of(node)];
+        const NodeId f = b.closures()[detail::get<Slot>(node).value];
         const auto through = detail::reachable(b, std::span{&f, 1});
         for (const auto [u, leaf] : b.nodes() | std::views::enumerate) {
           if (leaf.op == OpCode::Var && through[static_cast<NodeId>(u)]) {
-            here.set(detail::index_of(leaf));
+            here.set(detail::get<Slot>(leaf).value);
           }
         }
         detail::couple(rows, here, here);
       }
       break;
     case Kind::Unary:
-      here = of(node.a);
+      here = of(node.in[0]);
       // Negation is linear; anything else couples its argument with itself.
       if (op != OpCode::Neg) {
         detail::couple(rows, here, here);
@@ -374,8 +374,8 @@ template <impl::Numeric T>
     case Kind::Ternary:
       // As linear as an Add: it chooses between two derivatives rather than
       // combining them.
-      here = of(node.b);
-      here |= of(node.c);
+      here = of(node.in[1]);
+      here |= of(node.in[2]);
       break;
     case Kind::Binary:
       // Zero derivative everywhere it exists, so no support and no coupling --
@@ -383,9 +383,9 @@ template <impl::Numeric T>
       if (op == OpCode::Lt || op == OpCode::Le) {
         break;
       }
-      here = of(node.a);
-      here |= of(node.b);
-      if (!step(op, of(node.a), of(node.b))) {
+      here = of(node.in[0]);
+      here |= of(node.in[1]);
+      if (!step(op, of(node.in[0]), of(node.in[1]))) {
         detail::couple(rows, here, here);
       }
       break;
@@ -397,7 +397,7 @@ template <impl::Numeric T>
       detail::for_each_operand(b, v, [&](NodeId u) { here |= of(u); });
       if (op == OpCode::Scale || op == OpCode::Dot || op == OpCode::MatVec ||
           op == OpCode::Outer) {
-        detail::couple(rows, of(node.a), of(node.b));
+        detail::couple(rows, of(node.in[0]), of(node.in[1]));
       }
       break;
     }

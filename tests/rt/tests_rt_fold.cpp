@@ -112,7 +112,7 @@ TEST_P(RtFold, ALoopIsOneNode) {
   const auto root = folded(fold_symbols(fold, 6));
   const auto &node = fold[root.id(fold)];
   EXPECT_EQ(node.op, GetParam().op);
-  EXPECT_EQ(node.aux, kTerms + 1);
+  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::Count>(node).value, kTerms + 1);
   EXPECT_EQ(ddx::rt::arguments(fold, root.id(fold)).size(), kTerms + 1);
 
   Arena<> chain;
@@ -394,7 +394,9 @@ TEST(RtSumN, MseSumsItsPairTermsInOneNode) {
       b.nodes() | std::views::filter([](const auto &node) {
         return node.op == OpCode::SumN;
       }) |
-      std::views::transform([](const auto &node) { return node.aux; }));
+      std::views::transform([](const auto &node) {
+        return ddx::rt::detail::get<ddx::rt::Count>(node).value;
+      }));
   std::printf("[ ARENA    ] widest sum: %u terms\n", widest);
   EXPECT_GT(widest, n * n * 9 / 10);
 }

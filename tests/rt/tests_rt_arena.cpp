@@ -135,9 +135,9 @@ TEST(RtArena, SlotsAreDeclarationOrder) {
   const auto a = var(b, "a");
 
   EXPECT_EQ(b.symbols(), (std::vector<std::string>{"z", "a"}));
-  EXPECT_EQ(b[z.id(b)].aux, 0u);
-  EXPECT_EQ(b[a.id(b)].aux, 1u);
-  EXPECT_EQ(b[s.id(b)].a, z.id(b)) << "the subexpression still names z";
+  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::Slot>(b[z.id(b)]).value, 0u);
+  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::Slot>(b[a.id(b)]).value, 1u);
+  EXPECT_EQ(b[s.id(b)].in[0], z.id(b)) << "the subexpression still names z";
 }
 
 // One namespace for every named input: a parameter cannot take a symbol's name,
@@ -151,8 +151,8 @@ TEST(RtArena, ParamsShareTheNamespaceAndNumberTheirOwnSlots) {
   EXPECT_EQ(b.symbols(), (std::vector<std::string>{"x", "y"}));
   EXPECT_EQ(b.params(), (std::vector<std::string>{"k"}));
   EXPECT_EQ(b[k.id(b)].op, ddx::rt::OpCode::Param);
-  EXPECT_EQ(b[k.id(b)].aux, 0u);
-  EXPECT_EQ(b[y.id(b)].aux, 1u);
+  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::Slot>(b[k.id(b)]).value, 0u);
+  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::Slot>(b[y.id(b)]).value, 1u);
   EXPECT_EQ(ddx::rt::param(b, "k").id(b), k.id(b));
   EXPECT_TRUE(ddx::rt::param(b, "x").poisoned()) << "x is a symbol";
   EXPECT_TRUE(var(b, "k").poisoned()) << "k is a parameter";
