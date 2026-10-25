@@ -308,6 +308,18 @@ template <impl::Numeric T>
   const auto of = [&](NodeId u) -> const SymbolSet & {
     return support[rank[u]];
   };
+  // What a field op couples between the supports of its operands; false
+  // for any other op, which couples their union with itself.
+  const auto step = [&rows](OpCode op, const SymbolSet &l,
+                            const SymbolSet &r) {
+    if (op == OpCode::Mul) {
+      detail::couple(rows, l, r);
+    } else if (op == OpCode::Div) {
+      detail::couple(rows, l, r);
+      detail::couple(rows, r, r);
+    }
+    return op == OpCode::Add || op == OpCode::Mul || op == OpCode::Div;
+  };
   for (const NodeId v : detail::live_ids(live)) {
     rank[v] = static_cast<NodeId>(support.size());
     SymbolSet &here = support.emplace_back(n);
@@ -350,8 +362,14 @@ template <impl::Numeric T>
       detail::couple(rows, here, here);
       break;
     case Kind::Nary:
-      // A sum is as linear as an Add: the terms' union, no coupling.
-      unite(arguments(b, v));
+      // The chain's couplings, step by step: the running value's support
+      // against each term's.  A sum's steps couple nothing.
+      for (const auto [k, t] : arguments(b, v) | std::views::enumerate) {
+        if (k > 0) {
+          step(fold_op(op), here, of(t));
+        }
+        here |= of(t);
+      }
       break;
     case Kind::Ternary:
       // As linear as an Add: it chooses between two derivatives rather than
@@ -367,14 +385,7 @@ template <impl::Numeric T>
       }
       here = of(node.a);
       here |= of(node.b);
-      if (op == OpCode::Add) {
-        break; // linear: contributes nothing
-      } else if (op == OpCode::Mul) {
-        detail::couple(rows, of(node.a), of(node.b));
-      } else if (op == OpCode::Div) {
-        detail::couple(rows, of(node.a), of(node.b));
-        detail::couple(rows, of(node.b), of(node.b));
-      } else {
+      if (!step(op, of(node.a), of(node.b))) {
         detail::couple(rows, here, here);
       }
       break;

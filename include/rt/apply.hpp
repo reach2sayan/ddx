@@ -135,8 +135,9 @@ dispatch(OpCode op, auto &&visit) {
 #undef DDX_RT_DISPATCH
     // A call is opaque to every scalar: the interpreter calls the function
     // itself, and supports() saying no is what keeps a Taylor sweep away from
-    // one.  A sum is the interpreter's too, and adds at every scalar.
-#define DDX_RT_DISPATCH(fn, Op, label, arity, kind)                            \
+    // one.  A fold is the interpreter's too, and its op is a field op, computed
+    // at every scalar.
+#define DDX_RT_DISPATCH(fn, Op, label, arity, kind, ...)                       \
   case OpCode::Op:                                                             \
     return visit(Row<void, Kind::kind == Kind::Nary, arity>{});
     DDX_RT_EXTERN_TABLE(DDX_RT_DISPATCH)

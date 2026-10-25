@@ -81,11 +81,15 @@ namespace ddx::rt {
 #define DDX_RT_EXTERN_TABLE(X)                                                 \
   X(extern_call, Extern, "extern", 1, Extern)                                  \
   X(extern_partial, ExternD, "extern_d", 1, Extern)
-// A sum of `slot` terms in list order: what a chain of += builds, one node
-// where a chain of Add would be one per term.  Every product term is fused
-// into the running sum as an Add fuses its one (contraction_at), so a sum of
-// products is a loop of fma.
-#define DDX_RT_NARY_TABLE(X) X(sum_n, SumN, "sum_n", 1, Nary)
+// A left fold of `slot` terms in list order, ((t0 op t1) op t2) ..., the op
+// the last cell: what a chain of +=, *= or /= builds, one node where a chain
+// of the binary op would be one per term.  In a sum every product term is
+// fused into the running sum as an Add fuses its one (contraction_at), so a
+// sum of products is a loop of fma.
+#define DDX_RT_NARY_TABLE(X)                                                   \
+  X(sum_n, SumN, "sum_n", 1, Nary, Add)                                        \
+  X(prod_n, ProdN, "prod_n", 1, Nary, Mul)                                     \
+  X(quot_n, QuotN, "quot_n", 1, Nary, Div)
 
 // A node whose value is a vector of `width` scalars per point, or a scalar
 // read off one.  Operands are ids like any other; `aux` is what the row
@@ -211,7 +215,7 @@ inline constexpr std::array op_info = [] {
   t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 3, Kind::Ternary};
   DDX_RT_TERNARY_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
-#define DDX_RT_ROW(fn, Op, label, arity, kind)                                 \
+#define DDX_RT_ROW(fn, Op, label, arity, kind, ...)                            \
   t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, arity, Kind::kind};
   DDX_RT_EXTERN_TABLE(DDX_RT_ROW)
   DDX_RT_NARY_TABLE(DDX_RT_ROW)
@@ -285,6 +289,28 @@ static_assert(std::ranges::all_of(std::views::iota(0uz, op_count), [](auto i) {
 }));
 [[nodiscard]] constexpr bool is_extern(OpCode op) noexcept {
   return kind_of(op) == Kind::Extern;
+}
+// The binary op a Nary node folds its terms with.
+[[nodiscard]] constexpr OpCode fold_op(OpCode op) noexcept {
+  switch (op) {
+#define DDX_RT_FOLD(fn, Op, label, arity, kind, binary)                        \
+  case OpCode::Op:                                                             \
+    return OpCode::binary;
+    DDX_RT_NARY_TABLE(DDX_RT_FOLD)
+#undef DDX_RT_FOLD
+  default:
+    std::unreachable();
+  }
+}
+// The Nary node that folds with `binary`, if one does.
+[[nodiscard]] constexpr std::optional<OpCode> fold_of(OpCode binary) noexcept {
+#define DDX_RT_FOLD(fn, Op, label, arity, kind, bin)                           \
+  if (binary == OpCode::bin) {                                                 \
+    return OpCode::Op;                                                         \
+  }
+  DDX_RT_NARY_TABLE(DDX_RT_FOLD)
+#undef DDX_RT_FOLD
+  return std::nullopt;
 }
 // Whether `a` is where the node's list starts in Model::lists rather than an
 // operand: an extern's arguments, a Pack's or StackRows' items, a sum's terms.

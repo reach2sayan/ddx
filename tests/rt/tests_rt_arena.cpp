@@ -164,7 +164,7 @@ TEST(RtArena, ParamsShareTheNamespaceAndNumberTheirOwnSlots) {
 // accumulator written either way lands on the same node -- which interning
 // makes an id comparison.
 // Two terms are the long form's own Add; the other compound operators build
-// what their operator builds.  Past two terms `+=` is a SumN: tests_rt_sumn.
+// what their operator builds.  Past two terms `+=` is a SumN: tests_rt_fold.
 TEST(RtArena, CompoundAssignmentBuildsWhatTheLongFormBuilds) {
   Arena<> b;
   const auto x = var(b, "x");

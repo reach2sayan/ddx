@@ -431,14 +431,16 @@ emit_nodes(const Emitter<T> &emit, const rt::Graph<T> &g,
                            index, mask, "");
       break;
     case rt::Kind::Nary: {
-      // The terms into the running sum in list order, a product term as the
-      // fma the sweep takes where the step is fused; the first term is formed.
+      // The terms into the running value in list order, a product term of a
+      // sum as the fma the sweep takes where the step is fused; the first
+      // term is formed.
+      const rt::OpCode op = rt::fold_op(p.op);
       llvm::Value *acc = nullptr;
       for (const rt::NodeId t : rt::arguments(g, v)) {
         const rt::Contraction c =
             s.fused ? rt::product_of(g, t) : rt::Contraction{};
         if (!c) {
-          acc = acc ? emit.binary(rt::OpCode::Add, acc, value[t]) : value[t];
+          acc = acc ? emit.binary(op, acc, value[t]) : value[t];
         } else if (acc) {
           acc = emit.fma(c, value[c.x], value[c.y], acc);
         } else {
