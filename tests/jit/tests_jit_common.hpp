@@ -19,10 +19,10 @@ ddx::jit::Compiler &compiler() {
   return *c;
 }
 
-ddx::jit::Kernel must_compile(auto &&...args) {
+auto must_compile(auto &&...args) {
   auto k = compiler().compile(static_cast<decltype(args) &&>(args)...);
   EXPECT_TRUE(k.has_value()) << (k ? std::string{} : k.error().detail);
-  return k ? std::move(*k) : ddx::jit::Kernel{};
+  return k ? std::move(*k) : typename decltype(k)::value_type{};
 }
 
 } // namespace

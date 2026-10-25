@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <concepts>
 #include <cstdint>
 #include <map>
 #include <ranges>
@@ -56,11 +57,10 @@ llvm::Intrinsic::ID intrinsic_for(rt::OpCode op) {
 // The IR spelling of -fno-math-errno: without it a call is assumed to write
 // errno, which blocks hoisting across it.
 llvm::Function *libm_decl(llvm::Module &m, std::string_view name,
-                          unsigned args) {
-  llvm::Type *f64 = llvm::Type::getDoubleTy(m.getContext());
-  llvm::SmallVector<llvm::Type *, 2> params(args, f64);
-  llvm::FunctionCallee c =
-      m.getOrInsertFunction(name, llvm::FunctionType::get(f64, params, false));
+                          llvm::Type *scalar, unsigned args) {
+  llvm::SmallVector<llvm::Type *, 2> params(args, scalar);
+  llvm::FunctionCallee c = m.getOrInsertFunction(
+      name, llvm::FunctionType::get(scalar, params, false));
   auto *fn = llvm::cast<llvm::Function>(c.getCallee());
   fn->setMemoryEffects(llvm::MemoryEffects::none());
   fn->setDoesNotThrow();
@@ -73,12 +73,12 @@ llvm::Function *libm_decl(llvm::Module &m, std::string_view name,
 // by the runtime beside libm: `ddx_call_extern(fn, in, arity, answer,
 // components)`.  The function itself comes off the kernel's extern table, so
 // the object holds no address.
-llvm::Function *trampoline_decl(llvm::Module &m) {
+template <CKernelScalar T> llvm::Function *trampoline_decl(llvm::Module &m) {
   llvm::LLVMContext &ctx = m.getContext();
   llvm::PointerType *const ptr = llvm::PointerType::getUnqual(ctx);
   llvm::Type *const i64 = llvm::Type::getInt64Ty(ctx);
   llvm::FunctionCallee c = m.getOrInsertFunction(
-      trampoline_symbol,
+      libm_name<T>(trampoline_symbol),
       llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
                               {ptr, ptr, i64, ptr, i64}, false));
   auto *fn = llvm::cast<llvm::Function>(c.getCallee());
@@ -87,16 +87,17 @@ llvm::Function *trampoline_decl(llvm::Module &m) {
   return fn;
 }
 
-// W points per iteration, as a double at W == 1 and <W x double> otherwise.
-// Every IRBuilder operation is typed on `ty`, so only the memory accesses and
-// the calls with no vector intrinsic tell the two apart.
+// W points per iteration, as a T at W == 1 and <W x T> otherwise.  Every
+// IRBuilder operation is typed on `ty`, so only the memory accesses and the
+// calls with no vector intrinsic tell the two apart.
 struct LaneType {
   unsigned width;
+  llvm::Type *scalar;
   llvm::Type *ty;
   [[nodiscard]] constexpr bool vector() const noexcept { return width > 1; }
 };
 
-class Emitter {
+template <CKernelScalar T> class Emitter {
 public:
   Emitter(llvm::Module &m, llvm::IRBuilder<> &b, LaneType lanes,
           llvm::Value *externs)
@@ -107,30 +108,30 @@ public:
     return llvm::ConstantFP::get(lanes_.ty, v);
   }
 
-  // Columns are plain double*, so no alignment past the element's is claimed.
+  // Columns are plain T*, so no alignment past the element's is claimed.
   // A load past the batch reads inactive lanes as 1.0: never stored, and inside
   // every op's domain, so a scalarised libm call cannot hit a pole.
   [[nodiscard]] llvm::Value *load(llvm::Value *column, llvm::Value *index,
                                   llvm::Value *mask,
                                   const llvm::Twine &name) const {
     llvm::Value *const at =
-        b_.CreateInBoundsGEP(b_.getDoubleTy(), column, index);
+        b_.CreateInBoundsGEP(lanes_.scalar, column, index);
     if (!lanes_.vector()) {
       return b_.CreateLoad(lanes_.ty, at, name);
     }
-    return b_.CreateMaskedLoad(lanes_.ty, at, llvm::Align(alignof(double)),
+    return b_.CreateMaskedLoad(lanes_.ty, at, llvm::Align(alignof(T)),
                                mask, constant(1.0), name);
   }
 
   void store(llvm::Value *v, llvm::Value *column, llvm::Value *index,
              llvm::Value *mask) const {
     llvm::Value *const at =
-        b_.CreateInBoundsGEP(b_.getDoubleTy(), column, index);
+        b_.CreateInBoundsGEP(lanes_.scalar, column, index);
     if (!lanes_.vector()) {
       b_.CreateStore(v, at);
       return;
     }
-    b_.CreateMaskedStore(v, at, llvm::Align(alignof(double)), mask);
+    b_.CreateMaskedStore(v, at, llvm::Align(alignof(T)), mask);
   }
 
   llvm::Value *unary(rt::OpCode op, llvm::Value *u) const {
@@ -196,31 +197,32 @@ public:
     llvm::Function *const kernel = b_.GetInsertBlock()->getParent();
     llvm::IRBuilder<> entry(&kernel->getEntryBlock(),
                             kernel->getEntryBlock().getFirstInsertionPt());
-    llvm::Type *const f64 = b_.getDoubleTy();
+    llvm::Type *const scalar = lanes_.scalar;
     llvm::Type *const i64 = b_.getInt64Ty();
     const auto components = e.size();
     llvm::Value *const in = entry.CreateAlloca(
-        f64, llvm::ConstantInt::get(i64, e.arity), "extern.in");
+        scalar, llvm::ConstantInt::get(i64, e.arity), "extern.in");
     llvm::Value *const answer = entry.CreateAlloca(
-        f64, llvm::ConstantInt::get(i64, components), "extern.out");
+        scalar, llvm::ConstantInt::get(i64, components), "extern.out");
     llvm::Value *const fn = b_.CreateLoad(
         b_.getPtrTy(),
         b_.CreateConstInBoundsGEP1_64(b_.getPtrTy(), externs_, index),
         "extern.fn");
-    llvm::Function *const trampoline = trampoline_decl(m_);
+    llvm::Function *const trampoline = trampoline_decl<T>(m_);
 
     Answers out(components * lanes_.width);
     per_lane(args, [&](unsigned lane, llvm::ArrayRef<llvm::Value *> scalars) {
       for (const auto [j, a] : scalars | std::views::enumerate) {
         b_.CreateStore(a, b_.CreateConstInBoundsGEP1_64(
-                              f64, in, static_cast<std::uint64_t>(j)));
+                              scalar, in, static_cast<std::uint64_t>(j)));
       }
       b_.CreateCall(trampoline,
                     {fn, in, llvm::ConstantInt::get(i64, e.arity), answer,
                      llvm::ConstantInt::get(i64, components)});
       for (const std::size_t c : std::views::iota(0uz, components)) {
         out[c * lanes_.width + lane] =
-            b_.CreateLoad(f64, b_.CreateConstInBoundsGEP1_64(f64, answer, c));
+            b_.CreateLoad(scalar,
+                          b_.CreateConstInBoundsGEP1_64(scalar, answer, c));
       }
     });
     return out;
@@ -256,8 +258,8 @@ private:
       if (id != llvm::Intrinsic::not_intrinsic) {
         fn = llvm::Intrinsic::getOrInsertDeclaration(&m_, id, {lanes_.ty});
       } else {
-        fn =
-            libm_decl(m_, rt::label_of(op), static_cast<unsigned>(args.size()));
+        fn = libm_decl(m_, libm_name<T>(rt::label_of(op)), lanes_.scalar,
+                       static_cast<unsigned>(args.size()));
         scalarise = lanes_.vector();
       }
     }
@@ -319,8 +321,9 @@ private:
   mutable std::array<Callee, rt::op_count> callees_{};
 };
 
+template <CKernelScalar T>
 llvm::Function *declare_kernel(llvm::Module &m, llvm::StringRef name,
-                               const rt::Graph<double> &g) {
+                               const rt::Graph<T> &g) {
   llvm::LLVMContext &ctx = m.getContext();
   llvm::Type *const i64 = llvm::Type::getInt64Ty(ctx);
   llvm::PointerType *const ptr = llvm::PointerType::getUnqual(ctx);
@@ -378,8 +381,9 @@ struct HoistedColumns {
   rt::PerBlock<ColumnValues> out;
 };
 
+template <CKernelScalar T>
 HoistedColumns hoist_columns(llvm::IRBuilder<> &b, llvm::Function &fn,
-                             const rt::Graph<double> &g) {
+                             const rt::Graph<T> &g) {
   llvm::PointerType *const ptr = llvm::PointerType::getUnqual(fn.getContext());
 
   const auto load_columns = [&](unsigned arg, std::size_t count,
@@ -402,11 +406,13 @@ HoistedColumns hoist_columns(llvm::IRBuilder<> &b, llvm::Function &fn,
 
 // Ids are topological, so one pass needs no worklist.  Under contraction the
 // adds carry their product and the multiplies they swallowed are never reached.
+template <CKernelScalar T>
 [[nodiscard]] std::vector<llvm::Value *>
-emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
+emit_nodes(const Emitter<T> &emit, const rt::Graph<T> &g,
            const HoistedColumns &cols, llvm::Value *index, llvm::Value *mask) {
   std::vector<llvm::Value *> value(g.size(), nullptr);
-  std::map<std::pair<std::uint32_t, rt::NodeId>, Emitter::Answers> called;
+  std::map<std::pair<std::uint32_t, rt::NodeId>, typename Emitter<T>::Answers>
+      called;
   for (const rt::Step &s : g.schedule()) {
     const auto &[v, c] = std::pair{s.node, s.fma};
     const auto &p = g[v];
@@ -475,7 +481,8 @@ emit_nodes(const Emitter &emit, const rt::Graph<double> &g,
   return value;
 }
 
-void emit_stores(const Emitter &emit, const rt::Graph<double> &g,
+template <CKernelScalar T>
+void emit_stores(const Emitter<T> &emit, const rt::Graph<T> &g,
                  const HoistedColumns &cols,
                  std::span<llvm::Value *const> value, llvm::Value *index,
                  llvm::Value *mask) {
@@ -491,8 +498,9 @@ void emit_stores(const Emitter &emit, const rt::Graph<double> &g,
 
 } // namespace
 
+template <CKernelScalar T>
 std::unique_ptr<llvm::Module>
-emit_module(llvm::LLVMContext &ctx, const rt::Graph<double> &g,
+emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g,
             llvm::StringRef name, const unsigned width,
             const llvm::DataLayout &layout, llvm::StringRef triple) {
   auto m = std::make_unique<llvm::Module>("ddx.jit", ctx);
@@ -502,11 +510,14 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<double> &g,
   m->setTargetTriple(triple);
   llvm::Function *const fn = declare_kernel(*m, name, g);
   llvm::Type *const i64 = llvm::Type::getInt64Ty(ctx);
-  llvm::Type *const f64 = llvm::Type::getDoubleTy(ctx);
+  llvm::Type *const scalar = std::same_as<T, float>
+                                 ? llvm::Type::getFloatTy(ctx)
+                                 : llvm::Type::getDoubleTy(ctx);
   llvm::Argument *const count = fn->getArg(4);
-  const LaneType lanes{.width = width,
-                       .ty = width > 1 ? llvm::FixedVectorType::get(f64, width)
-                                       : f64};
+  const LaneType lanes{
+      .width = width,
+      .scalar = scalar,
+      .ty = width > 1 ? llvm::FixedVectorType::get(scalar, width) : scalar};
 
   auto *const entry = llvm::BasicBlock::Create(ctx, "entry", fn);
   auto *const loop = llvm::BasicBlock::Create(ctx, "loop", fn);
@@ -541,12 +552,12 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<double> &g,
     mask = b.CreateICmpSLT(step, b.CreateVectorSplat(width, remaining), "mask");
   }
 
-  const Emitter emit(*m, b, lanes, fn->getArg(5));
+  const Emitter<T> emit(*m, b, lanes, fn->getArg(5));
   const std::vector<llvm::Value *> value =
       emit_nodes(emit, g, cols, index, mask);
   emit_stores(emit, g, cols, value, index, mask);
 
-  // nuw/nsw: n counts doubles the caller has allocated, so n + W is nowhere
+  // nuw/nsw: n counts points the caller has allocated, so n + W is nowhere
   // near either bound.  It is what lets SCEV name an exact trip count.
   llvm::Value *const next =
       b.CreateAdd(index, llvm::ConstantInt::get(i64, width), "i.next",
@@ -559,5 +570,12 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<double> &g,
 
   return llvm::verifyFunction(*fn, &llvm::errs()) ? nullptr : std::move(m);
 }
+
+template std::unique_ptr<llvm::Module>
+emit_module(llvm::LLVMContext &, const rt::Graph<double> &, llvm::StringRef,
+            unsigned, const llvm::DataLayout &, llvm::StringRef);
+template std::unique_ptr<llvm::Module>
+emit_module(llvm::LLVMContext &, const rt::Graph<float> &, llvm::StringRef,
+            unsigned, const llvm::DataLayout &, llvm::StringRef);
 
 } // namespace ddx::jit::detail

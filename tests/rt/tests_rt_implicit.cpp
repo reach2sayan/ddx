@@ -55,11 +55,11 @@ TEST(RtImplicit, ResidualIsZeroAtTheRootTheCallerSupplies) {
 
 // --- a cubic EoS -------------------------------------------------------------
 
-constexpr std::size_t species = 4;
+constexpr std::size_t eos_species = 4;
 
 [[nodiscard]] std::vector<RE> fractions() {
   std::vector<RE> x;
-  for (const std::size_t i : std::views::iota(0uz, species)) {
+  for (const std::size_t i : std::views::iota(0uz, eos_species)) {
     x.push_back(ddx::rt::var(std::format("x{}", i)));
   }
   return x;
@@ -94,7 +94,7 @@ template <typename Cubic>
   x.push_back(z);
   for (int it = 0; it < 100; ++it) {
     const double r = *f.evaluate(x);
-    const double slope = (*f.jacobian(x))[species];
+    const double slope = (*f.jacobian(x))[eos_species];
     x.back() -= r / slope;
     if (std::abs(r) < 1e-15) {
       break;
@@ -119,7 +119,7 @@ TEST(RtImplicit, ACubicAgainstDifferencesThatReSolveIt) {
   const auto g = *eq.gradient(with(x, z));
   const auto H = *eq.hessian(with(x, z));
   constexpr double h = 1e-6;
-  for (const std::size_t j : std::views::iota(0uz, species)) {
+  for (const std::size_t j : std::views::iota(0uz, eos_species)) {
     auto ahead = x;
     auto behind = x;
     ahead[j] += h;
@@ -134,9 +134,10 @@ TEST(RtImplicit, ACubicAgainstDifferencesThatReSolveIt) {
     // The Hessian column along x_j, from the gradient at the re-solved roots.
     const auto ga = *eq.gradient(with(ahead, za));
     const auto gb = *eq.gradient(with(behind, zb));
-    for (const std::size_t i : std::views::iota(0uz, species)) {
+    for (const std::size_t i : std::views::iota(0uz, eos_species)) {
       const double dd = (ga[i] - gb[i]) / (2 * h);
-      EXPECT_NEAR(H[i * species + j], dd, 1e-5 * std::max(1.0, std::abs(dd)))
+      EXPECT_NEAR(H[i * eos_species + j], dd,
+                  1e-5 * std::max(1.0, std::abs(dd)))
           << "d2/dx" << i << "dx" << j;
     }
   }
@@ -146,15 +147,16 @@ TEST(RtImplicit, ABatchCarriesAColumnOfRoots) {
   const auto f = cubic();
   const auto eq = with_implicit_z();
   constexpr std::size_t n = 64;
-  std::vector<std::vector<double>> columns(species + 1, std::vector<double>(n));
+  std::vector<std::vector<double>> columns(eos_species + 1,
+                                           std::vector<double>(n));
   for (const std::size_t i : std::views::iota(0uz, n)) {
     const double t = static_cast<double>(i) / n;
     const std::vector<double> x{0.3 + 0.1 * t, 0.25, 0.25 - 0.1 * t, 0.2};
     const double z = solve(f, x, 1.0);
-    for (const std::size_t j : std::views::iota(0uz, species)) {
+    for (const std::size_t j : std::views::iota(0uz, eos_species)) {
       columns[j][i] = x[j];
     }
-    columns[species][i] = z;
+    columns[eos_species][i] = z;
   }
   const auto in =
       columns | std::views::transform([](const auto &c) { return c.data(); }) |

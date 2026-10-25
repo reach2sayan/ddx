@@ -112,14 +112,16 @@ and matrices takes the whole arm under a scalar condition and element by
 element under a condition of the arms' shape, a scalar arm taking the other's
 shape; the arm not taken never reaches a derivative, even where it is
 infinite. They compute at
-`double`, are never an output, and are computed by a kernel table —
-`rt::use_tensor_kernels(table)` or `eq.tensor_kernels(table)`, built with
-`rt::tensor_kernel_table<K>()` over a type satisfying `rt::TensorKernels`.
-Inherit `rt::reference::Kernels` and replace only the rows your library does
-better; `tests/eigen` and `tests/cblas` each hold one, Eigen and any CBLAS:
+the equation's scalar (`double` or `float`), are never an output, and are
+computed by a kernel table of that scalar — `rt::use_tensor_kernels(table)` or
+`eq.tensor_kernels(table)`, built with `rt::tensor_kernel_table<K, T>()` over a
+type satisfying `rt::TensorKernels<K, T>` (`T` defaults to `double`). Inherit
+`rt::reference::Kernels<T>` and replace only the rows your library does better;
+`tests/eigen` and `tests/cblas` each hold one, Eigen and any CBLAS, at both
+scalars. Each scalar has its own process default, `rt::tensor_kernels<T>()`:
 
 ```cpp
-struct Blas : rt::reference::Kernels {
+struct Blas : rt::reference::Kernels<> {
   static constexpr std::string_view name = "cblas";
   static void gemv(std::size_t r, std::size_t c, In m, In v, Out out, bool t) noexcept {
     cblas_dgemv(CblasColMajor, t ? CblasTrans : CblasNoTrans, int(r), int(c), 1.0,
@@ -127,7 +129,7 @@ struct Blas : rt::reference::Kernels {
   }
 };
 constexpr auto blas = rt::tensor_kernel_table<Blas>();
-rt::use_tensor_kernels(blas);
+rt::use_tensor_kernels(blas);   // a float table, built over Kernels<float>, sets float's
 ```
 
 
@@ -246,20 +248,20 @@ large sweep.
 ## Compiling
 
 Link `ddx::jit` and set options; the same calls answer the same results.
-Nothing compiles unless asked, and no call waits for a compile:
+Nothing compiles unless asked. Under `Compile`, the first call to each lane
+(Jacobian, Hessian, …) builds that lane's kernel and waits for it:
 
 ```cpp
 eq.options({.backend = rt::Backend::Compile, .points = 4096});
-eq.jacobian(xs, f, g, n);      // interpreted until the kernel lands
-eq.wait_for_kernel();          // the only call that blocks
+eq.wait_for_kernel();          // optional: build the Jacobian kernel now
+eq.jacobian(xs, f, g, n);      // compiled
 eq.uses_kernel();              // true
 ```
 
 | `Backend` | Is |
 |---|---|
 | `Interpret` | default; LLVM is never loaded |
-| `Compile` | compile now |
-| `Adapt` | compile once batch traffic pays for it; `warming()` reports progress |
+| `Compile` | compile each lane on its first call |
 
 | `jit::Options` field | Default | Is |
 |---|---|---|
@@ -270,11 +272,10 @@ eq.uses_kernel();              // true
 | `codegen.slp_vectorize`, `codegen.loop_vectorize` | `false` | extra vectorisation |
 | `codegen.veclib` | `None` | `Libmvec` for vector transcendentals |
 | `codegen.contract` | `DDX_FP_FLAGS` | fuse multiply-add |
-| `warm_points`, `hot_points` | `65536`, `1048576` | `Adapt` thresholds |
 | `cache_dir` | empty | reuse compiled objects across runs |
 | `time_passes` | `false` | per-pass timing to stderr |
 
-`kernel_level()` says which compiled tier is answering.
+`kernel_level()` says which `codegen_level` the answering kernel was built at.
 
 ## Python
 

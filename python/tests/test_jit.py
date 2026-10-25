@@ -37,31 +37,6 @@ def test_compile_lands_a_kernel_where_there_is_a_backend(
     assert scalar.uses_kernel is ddx.has_jit
 
 
-def test_adapt_compiles_nothing_until_the_batch_pays_for_it(
-    scalar: ddx.Equation, batch: Batch
-) -> None:
-    scalar.options = ddx.Options(
-        backend=ddx.Backend.ADAPT, points=batch.shape[1], warm_points=1 << 40
-    )
-    scalar.jacobian(batch)
-    assert scalar.uses_kernel is False
-
-
-def test_adapt_compiles_once_the_batch_pays_for_it(
-    scalar: ddx.Equation, batch: Batch
-) -> None:
-    scalar.options = ddx.Options(
-        backend=ddx.Backend.ADAPT, points=batch.shape[1], warm_points=1
-    )
-    swept_value, swept_jacobian = scalar.jacobian(batch)  # buys the rung
-    assert scalar.wait_for_kernel() is ddx.has_jit
-    assert scalar.uses_kernel is ddx.has_jit
-
-    value, jacobian = scalar.jacobian(batch)
-    assert np.array_equal(value, swept_value)
-    assert np.array_equal(jacobian, swept_jacobian)
-
-
 def test_the_kernel_and_the_sweep_agree(scalar: ddx.Equation, batch: Batch) -> None:
     """The kernel and the sweep agree bit for bit, not merely closely.
 

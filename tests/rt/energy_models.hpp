@@ -1,6 +1,7 @@
 #pragma once
 #include "rt/derivative.hpp"
 #include <cmath>
+#include <numeric>
 #include <vector>
 
 // UNIQUAC, Peng-Robinson and an MSE-shaped electrolyte model as runtime graphs:
@@ -154,6 +155,19 @@ inline RE bonded_chain(const std::vector<RE> &r) {
 // admits no interior double well for any c.
 inline RE regular_solution(const RE &x, double c, double k) {
   return c * x * (RE{1} - x) + k * (x * log(x) + (RE{1} - x) * log(RE{1} - x));
+}
+
+// An equimolar-ish composition summing to one.
+inline std::vector<double> composition(std::size_t n) {
+  std::vector<double> pt(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    pt[i] = (1.0 + 0.3 * static_cast<double>(i % 5)) / static_cast<double>(n);
+  }
+  const double total = std::accumulate(pt.begin(), pt.end(), 0.0);
+  for (double &v : pt) {
+    v /= total;
+  }
+  return pt;
 }
 
 } // namespace models

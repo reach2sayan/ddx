@@ -1,18 +1,8 @@
 #include "rt/kernels.hpp"
 
-#include <atomic>
-
-namespace ddx::rt {
-namespace {
-std::atomic<const TensorKernelTable *> current{&reference_table};
-} // namespace
-
-void use_tensor_kernels(const TensorKernelTable &table) noexcept {
-  current.store(&table, std::memory_order_release);
-}
-
-const TensorKernelTable &tensor_kernels() noexcept {
-  return *current.load(std::memory_order_acquire);
-}
-
-} // namespace ddx::rt
+template DDX_INSTANCE_API
+    std::atomic<const ddx::rt::TensorKernelTable<double> *> &
+    ddx::rt::detail::default_tensor_kernels<double>() noexcept;
+template DDX_INSTANCE_API
+    std::atomic<const ddx::rt::TensorKernelTable<float> *> &
+    ddx::rt::detail::default_tensor_kernels<float>() noexcept;

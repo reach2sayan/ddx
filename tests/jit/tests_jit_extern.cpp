@@ -133,7 +133,7 @@ TEST(JitExtern, AKernelOutlivesItsGraphAndKeepsItsObject) {
         b, std::array{(g(a, bb) * 2.0).id(b)});
     auto k = c->compile(graph);
     EXPECT_TRUE(k.has_value()) << (k ? "" : k.error().detail);
-    return k ? std::move(*k) : ddx::jit::Kernel{};
+    return k ? std::move(*k) : ddx::jit::Kernel<double>{};
   }();
   ASSERT_TRUE(kernel);
   EXPECT_FALSE(kernel.object().empty()) << "an extern kernel kept no object";

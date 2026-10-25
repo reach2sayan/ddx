@@ -83,7 +83,7 @@ def _set_options(self: Equation, options: Options) -> None:
 	self._options = options._native()
 
 def _compile(self: Equation, **kwargs: Any) -> Equation:  # noqa: ANN401
-	"""Compile this equation's graph, and answer once the kernel has landed.
+	"""Compile this equation's graph, and answer once the kernel is built.
 	Keywords are ``Options`` fields; ``backend`` defaults to ``COMPILE``.
 	Returns self, so
 	``eq.compile(points=n).jacobian(xs)`` reads in one line.

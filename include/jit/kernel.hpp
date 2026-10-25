@@ -6,6 +6,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <future>
 #include <memory>
@@ -17,6 +18,10 @@
 // The LLVM side: what compiles and what it hands back.  Names no LLVM type;
 // jit/options.hpp holds what a caller says, in every build.
 namespace ddx::jit {
+
+// The scalars a kernel is emitted over; any other sweeps.
+template <typename T>
+concept CKernelScalar = std::same_as<T, double> || std::same_as<T, float>;
 
 // `codegen` brackets the symbol lookup: LLJIT compiles lazily.
 struct CompileReport {
@@ -45,14 +50,18 @@ struct Externs {
   }
 };
 
-// A copy is one atomic increment; the last Kernel to go frees the code.
-class Kernel {
-public:
-  using function_type = void (*)(const double *const *, double *const *,
-                                 double *const *, double *const *, std::size_t,
-                                 const void *const *);
+// The bytes a compile produced, whatever the scalar.
+using KernelObject = std::shared_ptr<const std::vector<std::byte>>;
 
-  using object_type = std::shared_ptr<const std::vector<std::byte>>;
+// A copy is one atomic increment; the last Kernel to go frees the code.  Any
+// scalar names one, so a pipeline holds its slot whether or not it compiles;
+// only a CKernelScalar is ever filled.
+template <impl::Numeric T> class Kernel {
+public:
+  using function_type = void (*)(const T *const *, T *const *, T *const *,
+                                 T *const *, std::size_t, const void *const *);
+
+  using object_type = KernelObject;
   using symbol_type = std::shared_ptr<const std::string>;
 
   Kernel() = default;
@@ -64,8 +73,8 @@ public:
 
   // xs[j] is the column for symbol j, g[j] the partial in it, each n long; an
   // unrequested block is `{}`.  noexcept: codegen marks the kernel nounwind.
-  void operator()(std::span<const double *const> xs, std::span<double *const> f,
-                  std::span<double *const> g, std::span<double *const> h,
+  void operator()(std::span<const T *const> xs, std::span<T *const> f,
+                  std::span<T *const> g, std::span<T *const> h,
                   std::size_t n) const noexcept {
     // A mismatch past here is silent memory corruption.
     assert(xs.size() == shape_.arity && f.size() == shape_.values &&
@@ -111,43 +120,43 @@ public:
   DDX_JIT_API Compiler(Compiler &&) noexcept;
   DDX_JIT_API Compiler &operator=(Compiler &&) noexcept;
 
-  [[nodiscard]] DDX_JIT_API compile_result<Kernel>
-  compile(const rt::Graph<double> &g, const Options &opt = {},
+  // Instantiated in the library for each CKernelScalar.
+  template <CKernelScalar T>
+  [[nodiscard]] DDX_JIT_API compile_result<Kernel<T>>
+  compile(const rt::Graph<T> &g, const Options &opt = {},
           CompileReport *report = nullptr);
-
-  // The future's destructor does not join: dropping it abandons the result.
-  [[nodiscard]] DDX_JIT_API std::shared_future<compile_result<Kernel>>
-  compile_async(std::shared_ptr<const rt::Graph<double>> g, Options opt = {});
 
   // Links an object compiled earlier.  Nothing beyond the link is verified --
   // the cache key carries the host, options and graph digest for that -- and a
   // corrupt object is an error, not an abort.  The graph is what the object
   // was lowered from: its shape and its extern functions are read off it, never
   // claimed by the bytes.
-  [[nodiscard]] DDX_JIT_API compile_result<Kernel>
+  template <CKernelScalar T>
+  [[nodiscard]] DDX_JIT_API compile_result<Kernel<T>>
   adopt(std::span<const std::byte> object, std::string_view symbol,
-        const rt::Graph<double> &g);
+        const rt::Graph<T> &g);
 
 private:
   struct Impl;
   DDX_JIT_API explicit Compiler(std::shared_ptr<Impl> impl) noexcept;
 
   // Private, but Ir::str() calls it from a consumer's TU, so it is exported.
-  friend class Ir;
+  template <CKernelScalar> friend class Ir;
+  template <CKernelScalar T>
   [[nodiscard]] DDX_JIT_API compile_result<std::string>
-  render_ir(const rt::Graph<double> &g, const Options &opt) const;
+  render_ir(const rt::Graph<T> &g, const Options &opt) const;
 
   std::shared_ptr<Impl> impl_;
 };
 
 // Borrowing, so the pipeline runs only if something reads it; the deleted
 // overloads refuse temporaries.
-class Ir {
+template <CKernelScalar T> class Ir {
 public:
-  Ir(const Compiler &c, const rt::Graph<double> &g, Options opt = {}) noexcept
+  Ir(const Compiler &c, const rt::Graph<T> &g, Options opt = {}) noexcept
       : compiler_{c}, graph_{g}, options_{opt} {}
-  Ir(const Compiler &&, const rt::Graph<double> &, Options = {}) = delete;
-  Ir(const Compiler &, const rt::Graph<double> &&, Options = {}) = delete;
+  Ir(const Compiler &&, const rt::Graph<T> &, Options = {}) = delete;
+  Ir(const Compiler &, const rt::Graph<T> &&, Options = {}) = delete;
 
   [[nodiscard]] compile_result<std::string> str() const {
     return compiler_.render_ir(graph_, options_);
@@ -155,7 +164,7 @@ public:
 
 private:
   const Compiler &compiler_;
-  const rt::Graph<double> &graph_;
+  const rt::Graph<T> &graph_;
   Options options_;
 };
 

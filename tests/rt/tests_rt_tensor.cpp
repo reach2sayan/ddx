@@ -40,17 +40,8 @@ std::vector<RE> symbols(std::size_t n) {
   return x;
 }
 
-std::vector<double> composition(std::size_t n) {
-  std::vector<double> pt(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    pt[i] = (1.0 + 0.3 * static_cast<double>(i % 5)) / static_cast<double>(n);
-  }
-  const double total = std::accumulate(pt.begin(), pt.end(), 0.0);
-  for (double &v : pt) {
-    v /= total;
-  }
-  return pt;
-}
+using models::composition;
+
 std::vector<double> direction(std::size_t n) {
   std::vector<double> d(n);
   for (std::size_t i = 0; i < n; ++i) {
@@ -471,7 +462,7 @@ TEST(RtTensor, BatchesAndThreadsAreBitIdentical) {
 // A table of one's own: the reference kernels under another name answer the
 // same bits, and the equation says which table it runs on.
 namespace {
-struct Renamed : ddx::rt::reference::Kernels {
+struct Renamed : ddx::rt::reference::Kernels<> {
   static constexpr std::string_view name = "renamed";
 };
 static_assert(ddx::rt::TensorKernels<Renamed>);
@@ -491,6 +482,82 @@ TEST(RtTensor, TakesAKernelTable) {
             *own.gradient(std::span<const double>{at}));
   EXPECT_EQ(own.tensor_kernels().name, "renamed");
   EXPECT_EQ(plain.tensor_kernels().name, "reference");
+}
+
+// Tensor rows compute at the equation's own scalar, through a table of it.
+namespace {
+auto narrowed(std::span<const double> v) {
+  return v |
+         std::views::transform([](double d) { return static_cast<float>(d); }) |
+         std::ranges::to<std::vector>();
+}
+
+template <typename T> auto scalar_typed_tensor_model(std::size_t n) {
+  return ddx::rt::equation<T>([n] {
+    const auto x = ddx::rt::vec<T>("x", n);
+    std::vector<T> m(n * n);
+    for (std::size_t i = 0; i < m.size(); ++i) {
+      m[i] = static_cast<T>(models::pseudo(i % n, i / n, -1.0, 1.0));
+    }
+    const auto M = ddx::rt::mat_constant<T>(n, n, m);
+    const auto y = gemv(M, x);
+    return dot(x, y) + sum(log(x) * x) +
+           x[1] * sum(select(x - T(0.3), exp(x * T(0.5)), sqrt(x))) +
+           dot(gemv(M, x, true), y);
+  });
+}
+} // namespace
+
+TEST(RtTensor, AFloatEquationComputesItsTensorRows) {
+  constexpr std::size_t n = 6;
+  const auto wide = scalar_typed_tensor_model<double>(n);
+  const auto narrow = scalar_typed_tensor_model<float>(n);
+  const auto at = composition(n);
+  const auto at_f = narrowed(at);
+  const double v = *wide.evaluate(std::span<const double>{at});
+  const float vf = *narrow.evaluate(std::span<const float>{at_f});
+  expect_close(v, double{vf}, 1e-5, "value");
+  const auto g = *wide.gradient(std::span<const double>{at});
+  const auto gf = *narrow.gradient(std::span<const float>{at_f});
+  expect_close(g, std::vector<double>(gf.begin(), gf.end()), 1e-5, "gradient");
+  const auto h = *wide.dense_hessian(std::span<const double>{at});
+  const auto hf = *narrow.dense_hessian(std::span<const float>{at_f});
+  expect_close(h, std::vector<double>(hf.begin(), hf.end()), 1e-4,
+               "dense hessian");
+}
+
+// One default per scalar: a float table set for the process leaves double's
+// alone, and an equation's own table wins over either.
+namespace {
+struct RenamedF : ddx::rt::reference::Kernels<float> {
+  static constexpr std::string_view name = "renamed-f";
+};
+static_assert(ddx::rt::TensorKernels<RenamedF, float>);
+static_assert(!ddx::rt::TensorKernels<RenamedF>);
+constexpr auto renamed_f_table =
+    ddx::rt::tensor_kernel_table<RenamedF, float>();
+} // namespace
+
+TEST(RtTensor, EachScalarHasItsOwnDefaultTable) {
+  constexpr std::size_t n = 5;
+  const auto at = composition(n);
+  const auto at_f = narrowed(at);
+  const auto plain = scalar_typed_tensor_model<float>(n);
+  const auto want = *plain.gradient(std::span<const float>{at_f});
+
+  ddx::rt::use_tensor_kernels(renamed_f_table);
+  EXPECT_EQ(ddx::rt::tensor_kernels<float>().name, "renamed-f");
+  EXPECT_EQ(ddx::rt::tensor_kernels().name, "reference");
+  const auto defaulted = scalar_typed_tensor_model<float>(n);
+  EXPECT_EQ(defaulted.tensor_kernels().name, "renamed-f");
+  EXPECT_EQ(*defaulted.gradient(std::span<const float>{at_f}), want);
+  ddx::rt::use_tensor_kernels(ddx::rt::reference_table<float>);
+
+  auto own = scalar_typed_tensor_model<float>(n);
+  own.tensor_kernels(renamed_f_table);
+  EXPECT_EQ(own.tensor_kernels().name, "renamed-f");
+  EXPECT_EQ(ddx::rt::tensor_kernels<float>().name, "reference");
+  EXPECT_EQ(*own.gradient(std::span<const float>{at_f}), want);
 }
 
 // The point of the exercise: the graph is O(n) nodes and the sweep a few GEMVs

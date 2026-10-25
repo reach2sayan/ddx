@@ -20,10 +20,8 @@ class Options(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     backend: Backend = _DEFAULTS.backend
-    """``COMPILE`` starts the compile there and then; calls before it lands are
-    swept and switch over when it arrives.
-        ``ADAPT`` waits until a lane has been
-    asked for ``warm_points`` before compiling it at all."""
+    """``COMPILE`` compiles each lane on the first call that needs it, and that
+    call waits for the kernel."""
 
     points: int = Field(_DEFAULTS.points, ge=1)
     lanes: int | None = Field(_DEFAULTS.lanes, ge=1)
@@ -32,15 +30,6 @@ class Options(BaseModel):
 
     opt_level: OptLevel = _DEFAULTS.opt_level
     codegen_level: OptLevel = _DEFAULTS.codegen_level
-
-    warm_points: int = Field(_DEFAULTS.warm_points, ge=0)
-    """Under ``ADAPT``, the batch points a lane must be asked for before it is
-    compiled. 0 compiles on the first call."""
-
-    hot_points: int = Field(_DEFAULTS.hot_points, ge=0)
-    """Under ``ADAPT``, the further points the cheap kernel must run before the
-    top one is compiled. A Python lane has one rung, so this is read only by
-    equations compiled through the C++ facade."""
 
     slp_vectorize: bool = _DEFAULTS.slp_vectorize
     loop_vectorize: bool = _DEFAULTS.loop_vectorize

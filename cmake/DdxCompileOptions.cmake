@@ -41,6 +41,17 @@ else ()
     set(DDX_WARNINGS -Wall -Wextra -Wpedantic -Wfatal-errors)
 endif ()
 
+# Only when we are the top-level project: a consumer's launcher is its own call.
+# The sloppiness lets ccache hit on TUs that force-include the tests' PCH.
+option(DDX_CCACHE "Compile through ccache when it is found" ON)
+if (DDX_CCACHE AND PROJECT_IS_TOP_LEVEL AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
+    find_program(DDX_CCACHE_PROGRAM ccache)
+    if (DDX_CCACHE_PROGRAM)
+        set(CMAKE_CXX_COMPILER_LAUNCHER ${DDX_CCACHE_PROGRAM}
+            sloppiness=pch_defines,time_macros,include_file_mtime,include_file_ctime)
+    endif ()
+endif ()
+
 # Global: a sanitizer has to instrument everything, gtest included.
 set(DDX_SANITIZE "off" CACHE STRING "off | thread | address | undefined")
 set_property(CACHE DDX_SANITIZE PROPERTY STRINGS off thread address undefined)

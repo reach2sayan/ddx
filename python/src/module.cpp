@@ -459,7 +459,6 @@ PYBIND11_MODULE(_ddx, m) {
                                  "Whether an equation compiles its graph.")
       .value("INTERPRET", jit::Backend::Interpret)
       .value("COMPILE", jit::Backend::Compile)
-      .value("ADAPT", jit::Backend::Adapt)
       .finalize();
 
   pyb::native_enum<jit::VecLib>(
@@ -534,8 +533,6 @@ PYBIND11_MODULE(_ddx, m) {
             }
             o.codegen.lanes = *lanes;
           })
-      .def_readwrite("warm_points", &jit::Options::warm_points)
-      .def_readwrite("hot_points", &jit::Options::hot_points)
       .def_readwrite("time_passes", &jit::Options::time_passes)
       .def_readwrite("cache_dir", &jit::Options::cache_dir)
       .def(pyb::self == pyb::self);

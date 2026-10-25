@@ -280,19 +280,18 @@ kernel, and returns the equation, so a configure-and-use reads in one line:
 
 ```python
 f.compile(points=batch.shape[1]).jacobian(batch)
-f.uses_kernel                               # True, once it has landed
+f.uses_kernel                               # True
 f.options = ddx.Options(backend=ddx.Backend.INTERPRET)   # discards the kernel
 ```
 
-`compile()` blocks by construction — it is `wait_for_kernel()` with the options
-set first. Assigning `options` does not: calls interpret until the kernel lands
-and switch over when it does.
+`compile()` sets the options and builds the Jacobian kernel before it returns.
+Assigning `options` builds nothing; each lane compiles on its first call, and
+that call waits for it.
 
 | `Backend` | Calls |
 |---|---|
 | `INTERPRET` | walk the graph |
-| `COMPILE` | start the compile at once, interpret until it lands |
-| `ADAPT` | compile a lane once it has been asked for `warm_points` batch points |
+| `COMPILE` | run a kernel compiled on the lane's first call |
 
 `points` is the batch you intend to hand one call, stated because the kernel is
 built before any call exists to infer it from. It decides the lane width and
@@ -318,7 +317,7 @@ of magnitude quicker; an empty string disables it.
 | `residual(x)` | each implicit's residual `F` at one point |
 | `options` | property — read or assign an `Options` |
 | `compile(**fields)` | set `Options`, block for the kernel, return self |
-| `uses_kernel`, `wait_for_kernel(*, want)` | whether a call runs compiled code, and blocking for it — for the Jacobian lane unless `want` names another |
+| `uses_kernel`, `wait_for_kernel(*, want)` | whether a call runs compiled code, and building it now — for the Jacobian lane unless `want` names another |
 | `hessian_colours` | groups in the Hessian's compression; raises on a system |
 | `buffer(x, *, want)` | a `Call` bound to its buffers, for a loop |
 | `nodes(*, want)` | how many nodes a call for `want` evaluates |

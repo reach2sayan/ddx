@@ -162,8 +162,11 @@ void write_file(const std::filesystem::path &path,
 
 } // namespace
 
-std::uint64_t digest(const rt::Graph<double> &g) {
+template <CKernelScalar T> std::uint64_t digest(const rt::Graph<T> &g) {
   boost::hash2::fnv1a_64 h;
+  // The element type, which no node's bits can stand for: 1.0 in a float
+  // graph and in a double graph emit different kernels.
+  fold(h, std::uint8_t{sizeof(T)});
   const rt::Inputs &in = g.inputs();
   fold(h, in.by_kind);
   fold(h, in.directions);
@@ -186,6 +189,9 @@ std::uint64_t digest(const rt::Graph<double> &g) {
   fold(h, g.externs()); // arity and order size the call's answer
   return h.result();
 }
+
+template std::uint64_t digest(const rt::Graph<double> &);
+template std::uint64_t digest(const rt::Graph<float> &);
 
 // The width *emitted* in place of the one asked for: a derived `Lanes` means
 // the host's, so the raw request would give one graph two keys.

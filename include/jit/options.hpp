@@ -69,10 +69,9 @@ private:
   BOOST_DESCRIBE_CLASS(Lanes, (), (), (), (width_))
 };
 
-// Compile and Adapt are a ladder: a codegen-0 kernel answers first and one at
-// codegen_level replaces it, bit-identically; calls before the first rung lands
-// are swept.  Adapt asks for a rung once the batch has paid for it.
-enum class Backend : std::uint8_t { Interpret, Compile, Adapt };
+// Compile builds each kernel on the first call that needs it, and that call
+// waits for it.
+enum class Backend : std::uint8_t { Interpret, Compile };
 
 // What decides the machine code, and nothing else: the identity a stored
 // object is matched against and the object cache is keyed on, so a field here
@@ -80,7 +79,6 @@ enum class Backend : std::uint8_t { Interpret, Compile, Adapt };
 struct Codegen {
   Lanes lanes = Lanes::derived();
   OptLevel opt_level = default_opt_level;
-  // Under Backend::Compile the top rung, so O0 asks for a single one.
   // Selection and register allocation are ~95% of a compile.
   OptLevel codegen_level = OptLevel::O1;
   // Within one point; model-dependent, hence off.
@@ -109,10 +107,6 @@ struct Options {
   // before any call exists to read an `n` from.  Sets the lane width only.
   std::size_t points = 1;
   Codegen codegen{};
-  // Points, not points x nodes: a compile costs about what a node costs and a
-  // swept point saves about what a node saves, so the size cancels out.
-  std::size_t warm_points = 1uz << 16;
-  std::size_t hot_points = 1uz << 20;
   bool time_passes = false; // Per-pass timing to stderr
   // Object cache directory, empty for none; keyed by graph, options and host.
   std::string cache_dir{};

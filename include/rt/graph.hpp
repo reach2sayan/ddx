@@ -5,6 +5,7 @@
 #include "rt/dense.hpp"
 #include "rt/derivative.hpp"
 #include "rt/opcode.hpp"
+#include "util/export.hpp"
 #include "util/ranges.hpp"
 
 #include <boost/describe/class.hpp>
@@ -183,7 +184,7 @@ constexpr void scatter_blocks(const OutputRows &rows, std::span<const T> tape,
 
 // An arena frozen into per-node arrays, the form codegen walks: three operand
 // slots each, so position is the index, and lists for the n-ary nodes.
-template <impl::Numeric T = double> class Graph {
+template <impl::Numeric T = double> class DDX_TEMPLATE_API Graph {
 public:
   using value_type = T;
   struct NodeRecord {
@@ -504,3 +505,6 @@ private:
 template <impl::Numeric T> GraphBuilder(Arena<T> &) -> GraphBuilder<T>;
 
 } // namespace ddx::rt
+
+DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::Graph<double>)
+DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::Graph<float>)

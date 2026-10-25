@@ -1,8 +1,6 @@
 #include "codegen.hpp"
 
 #include "cache.hpp"
-#include "rt/derivative.hpp"
-#include "rt/expressions.hpp"
 #include "spelling.hpp"
 
 #include <boost/hash2/fnv1a.hpp>
@@ -32,7 +30,6 @@
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/TargetSelect.h>
-#include <llvm/Support/ThreadPool.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
 
@@ -44,7 +41,6 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
-#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -74,21 +70,45 @@ void init_native_target_once() {
                            (what + ": " + llvm::toString(std::move(e))).str()};
 }
 
-// A Call row of the opcode tables as the runtime symbol its spelling names,
-// through the functor the row carries; a row spelled any other way defines
+// A Call row of the opcode tables as the runtime symbol its spelling names at
+// T, through the functor the row carries; a row spelled any other way defines
 // nothing.  A template, so the other arity's lambda is never formed.
-template <rt::OpCode Op, typename Functor> void define_call(auto &def) {
+template <CKernelScalar T, rt::OpCode Op, typename Functor>
+void define_call(auto &def) {
   if constexpr (rt::spelling_of(Op).form == rt::Form::Call) {
     if constexpr (rt::arity_of(Op) == 1) {
       def(
-          rt::spelling_of(Op).name,
-          +[](double u) noexcept { return double{Functor{}(u)}; });
+          detail::libm_name<T>(rt::spelling_of(Op).name),
+          +[](T u) noexcept { return T{Functor{}(u)}; });
     } else {
       def(
-          rt::spelling_of(Op).name,
-          +[](double l, double r) noexcept { return double{Functor{}(l, r)}; });
+          detail::libm_name<T>(rt::spelling_of(Op).name),
+          +[](T l, T r) noexcept { return T{Functor{}(l, r)}; });
     }
   }
+}
+
+// Every name a T kernel calls out to: sin for double, sinf for float.
+template <CKernelScalar T> void define_scalar(auto &def) {
+#define DDX_JIT_RUNTIME(fn, Op, label, functor, ...)                           \
+  define_call<T, rt::OpCode::Op, functor>(def);
+  DDX_RT_UNARY_TABLE(DDX_JIT_RUNTIME)
+  DDX_RT_BINARY_TABLE(DDX_JIT_RUNTIME)
+#undef DDX_JIT_RUNTIME
+#define DDX_JIT_RUNTIME(fn, Op, label)                                         \
+  def(                                                                         \
+      detail::libm_name<T>(rt::spelling_of(rt::OpCode::Op).name),              \
+      +[](T u) noexcept { return std::fn(u); });
+  DDX_UNARY_MATH_TABLE(DDX_JIT_RUNTIME)
+#undef DDX_JIT_RUNTIME
+  def(
+      detail::libm_name<T>(detail::trampoline_symbol),
+      +[](const void *fn, const T *in, std::uint64_t arity, T *answer,
+          std::uint64_t components) noexcept {
+        (*static_cast<const rt::ExternFn<T> *>(fn))(
+            {in, static_cast<std::size_t>(arity)},
+            {answer, static_cast<std::size_t>(components)});
+      });
 }
 
 // What a kernel calls that is not an intrinsic: every Call row of the
@@ -101,32 +121,15 @@ template <rt::OpCode Op, typename Functor> void define_call(auto &def) {
                                          const llvm::DataLayout &dl) {
   llvm::orc::MangleAndInterner mangle(es, dl);
   llvm::orc::SymbolMap syms;
-  syms.reserve(rt::op_count + 1);
+  syms.reserve(2 * (rt::op_count + 1));
   // The unary + turns each lambda into a plain function pointer.
-  const auto def = [&](std::string_view name, auto *fn) {
-    syms[mangle(llvm::StringRef{name.data(), name.size()})] = {
-        llvm::orc::ExecutorAddr::fromPtr(fn),
-        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+  const auto def = [&](const std::string &name, auto *fn) {
+    syms[mangle(name)] = {llvm::orc::ExecutorAddr::fromPtr(fn),
+                          llvm::JITSymbolFlags::Exported |
+                              llvm::JITSymbolFlags::Callable};
   };
-#define DDX_JIT_RUNTIME(fn, Op, label, functor, ...)                           \
-  define_call<rt::OpCode::Op, functor>(def);
-  DDX_RT_UNARY_TABLE(DDX_JIT_RUNTIME)
-  DDX_RT_BINARY_TABLE(DDX_JIT_RUNTIME)
-#undef DDX_JIT_RUNTIME
-#define DDX_JIT_RUNTIME(fn, Op, label)                                         \
-  def(                                                                         \
-      rt::spelling_of(rt::OpCode::Op).name,                                    \
-      +[](double u) noexcept { return std::fn(u); });
-  DDX_UNARY_MATH_TABLE(DDX_JIT_RUNTIME)
-#undef DDX_JIT_RUNTIME
-  def(
-      detail::trampoline_symbol,
-      +[](const void *fn, const double *in, std::uint64_t arity, double *answer,
-          std::uint64_t components) noexcept {
-        (*static_cast<const rt::ExternFn<double> *>(fn))(
-            {in, static_cast<std::size_t>(arity)},
-            {answer, static_cast<std::size_t>(components)});
-      });
+  define_scalar<double>(def);
+  define_scalar<float>(def);
   return jd.define(llvm::orc::absoluteSymbols(std::move(syms)));
 }
 
@@ -150,15 +153,16 @@ llvm::TargetLibraryInfoImpl target_library_info(const llvm::Triple &triple,
   return tlii;
 }
 
-// The widest fixed width the vector library serves a transcendental at: LLVM
+// The widest fixed width the vector library serves a transcendental at T: LLVM
 // 20's libmvec table stops at four doubles, so an AVX-512 host's eight-wide
 // intrinsic has no library form and unrolls to scalar calls.
+template <CKernelScalar T>
 [[nodiscard]] unsigned library_lanes(const llvm::Triple &triple) {
   const auto tlii = target_library_info(
       triple, Options{.codegen = {.veclib = VecLib::Libmvec}}, true);
   llvm::ElementCount fixed;
   llvm::ElementCount scalable;
-  tlii.getWidestVF("sin", fixed, scalable);
+  tlii.getWidestVF(detail::libm_name<T>("sin"), fixed, scalable);
   return std::max(1u, static_cast<unsigned>(fixed.getFixedValue()));
 }
 
@@ -241,7 +245,7 @@ public:
   }
 
   // Forget them: holding on would keep every object ever compiled alive.
-  [[nodiscard]] Kernel::object_type take(llvm::StringRef id) {
+  [[nodiscard]] KernelObject take(llvm::StringRef id) {
     const std::lock_guard lock{mutex_};
     const auto it = kept_.find(id);
     if (it == kept_.end()) {
@@ -257,7 +261,7 @@ private:
   // The key is a module identifier and this is LLVM's container for one: a
   // single allocation per entry with the characters inside it, where a
   // node-based map pays for a std::string of its own as well.
-  llvm::StringMap<Kernel::object_type> kept_;
+  llvm::StringMap<KernelObject> kept_;
 };
 
 // Everything an object file must agree with, as one line.  The feature string
@@ -279,12 +283,13 @@ host_identity_of(const llvm::orc::JITTargetMachineBuilder &machine) {
 }
 
 // Asked of the target's cost model rather than a feature list, so
-// prefer-256-bit parts answer 4 as the backend would split them anyway.
-[[nodiscard]] unsigned host_lanes(llvm::orc::JITTargetMachineBuilder machine) {
+// prefer-256-bit parts answer 256 as the backend would split them anyway.
+[[nodiscard]] unsigned
+vector_bits(llvm::orc::JITTargetMachineBuilder machine) {
   auto tm = machine.createTargetMachine();
   if (!tm) {
     llvm::consumeError(tm.takeError());
-    return 1;
+    return 64;
   }
   llvm::LLVMContext ctx;
   llvm::Module probe("ddx.probe", ctx);
@@ -294,7 +299,7 @@ host_identity_of(const llvm::orc::JITTargetMachineBuilder &machine) {
   const llvm::TypeSize bits =
       (*tm)->getTargetTransformInfo(*fn).getRegisterBitWidth(
           llvm::TargetTransformInfo::RGK_FixedWidthVector);
-  return std::max(1u, static_cast<unsigned>(bits.getFixedValue() / 64));
+  return std::max(64u, static_cast<unsigned>(bits.getFixedValue()));
 }
 
 // One straight-line block the graph has already shared, so all the middle end
@@ -374,9 +379,9 @@ struct Host {
 };
 
 // One graph compiled once, filling the report it was handed as it goes.
-class CompileJob : private impl::pinned {
+template <CKernelScalar T> class CompileJob : private impl::pinned {
 public:
-  CompileJob(Host host, const rt::Graph<double> &g, const Options &opt,
+  CompileJob(Host host, const rt::Graph<T> &g, const Options &opt,
              std::string name, CompileReport &into)
       : host_(std::move(host)), g_(g), opt_(opt), name_(std::move(name)),
         rep_(into) {}
@@ -387,7 +392,7 @@ public:
     });
   }
 
-  [[nodiscard]] compile_result<Kernel> operator()() {
+  [[nodiscard]] compile_result<Kernel<T>> operator()() {
     return prepared().and_then([this](llvm::orc::ThreadSafeModule m) {
       return materialised(std::move(m));
     });
@@ -442,7 +447,7 @@ private:
 
   // The backend runs on materialisation, so the lookup is inside this phase or
   // its number is wrong.
-  [[nodiscard]] compile_result<Kernel>
+  [[nodiscard]] compile_result<Kernel<T>>
   materialised(llvm::orc::ThreadSafeModule m) {
     const boost::scope::scope_exit clock{
         [this, start = Clock::now()] { rep_.codegen = Clock::now() - start; }};
@@ -456,7 +461,7 @@ private:
                                       llvm::Twine{"looking up "} + name_,
                                       sym.takeError())};
     }
-    return Kernel{sym->toPtr<Kernel::function_type>(),
+    return Kernel<T>{sym->toPtr<typename Kernel<T>::function_type>(),
                   KernelShape::of(g_),
                   Externs::of(g_),
                   std::move(host_.code),
@@ -465,73 +470,18 @@ private:
   }
 
   Host host_;
-  const rt::Graph<double> &g_;
+  const rt::Graph<T> &g_;
   const Options &opt_;
   std::string name_;
   CompileReport &rep_;
 };
 
+} // namespace
+
 // --- objects kept between runs -----------------------------------------------
 //
 // Not compiling the same graph twice dominates every other optimisation here: a
 // compile costs seconds against a graph's microseconds.
-//
-// Where a background compile runs.  Not a member of Impl: a Kernel holds a
-// share of the Impl it came from, so the last share can be dropped on a worker,
-// and a pool joined from its own thread deadlocks.
-//
-// `warm_` is a member so the order is a class invariant.  LLVM registers atexit
-// entries lazily *while it compiles*, and anything registered after this object
-// is destroyed before it -- so the pool's join would run workers against freed
-// state.  Compiling inside a member that completes first puts LLVM's entries
-// strictly below the pool's.  Templated only to avoid naming the private Impl.
-template <typename I>
-  requires requires(const std::shared_ptr<I> &impl, const rt::Graph<double> &g,
-                    CompileReport &rep) {
-    { I::run(impl, g, Options{}, rep) } -> std::same_as<compile_result<Kernel>>;
-  }
-class CompilePool : private impl::pinned {
-public:
-  // Brought up once, and never torn down before the statics its workers touch.
-  [[nodiscard]] static CompilePool &shared(const std::shared_ptr<I> &impl) {
-    static CompilePool instance{impl};
-    return instance;
-  }
-
-  [[nodiscard]] llvm::DefaultThreadPool &threads() noexcept { return threads_; }
-
-private:
-  explicit CompilePool(const std::shared_ptr<I> &impl) : warm_(impl) {}
-
-  // Constructing one compiles something, which is what makes LLVM register;
-  // any live Impl will do.
-  struct Warm {
-    explicit Warm(const std::shared_ptr<I> &impl) {
-      rt::Arena<double> b;
-      const auto x = rt::var(b, "x");
-      const auto y = rt::var(b, "y");
-      // Off the same table the emitter emits from: what LLVM touches lazily
-      // follows the ops, so enumerate them.
-      auto e = x / (y + 1.0) - x * y;
-#define DDX_JIT_WARM(fn, Op, label, ...) e += fn(x);
-      DDX_UNARY_MATH_TABLE(DDX_JIT_WARM)
-#undef DDX_JIT_WARM
-      e += pow(x, y) + atan2(x, y) + hypot(x, y);
-      e += abs(x) + max(x, y) + min(x, y) + sign(x) + (-x);
-      // Jacobian too: reverse mode emits ops the value alone never reaches.
-      const auto g =
-          rt::GraphBuilder<double>{b}.value(e).build_jacobian().finish();
-      CompileReport discard;
-      (void)I::run(impl, g, Options{}, discard);
-    }
-  };
-
-  Warm warm_; // LLVM registers while this runs, so before we do
-  llvm::DefaultThreadPool threads_;
-};
-
-} // namespace
-
 struct Compiler::Impl {
   // Before `jit` and it must stay there: the compile layer holds a pointer to
   // this, and members are destroyed in reverse declaration order.
@@ -546,9 +496,10 @@ struct Compiler::Impl {
   // The only shared mutable state: LLJIT is synchronised, but two threads
   // naming a module alike would hand it a duplicate symbol.
   std::atomic<unsigned> counter{0};
-  bool libmvec = false;      // Whether the vector forms resolve here
-  unsigned lanes = 1;        // The host's vector width in doubles
-  unsigned veclib_lanes = 1; // The widest the vector library serves
+  bool libmvec = false; // Whether the vector forms resolve here
+  unsigned bits = 64;   // The host's vector register, in bits
+  // The widest the vector library serves: double's, then float's.
+  std::array<unsigned, 2> veclib_lanes{1, 1};
 
   [[nodiscard]] static compile_result<std::shared_ptr<Impl>> bring_up() {
     init_native_target_once();
@@ -562,8 +513,9 @@ struct Compiler::Impl {
     }
     impl->machine = *jtmb;
     impl->triple = jtmb->getTargetTriple().str();
-    impl->lanes = host_lanes(*jtmb);
-    impl->veclib_lanes = library_lanes(jtmb->getTargetTriple());
+    impl->bits = vector_bits(*jtmb);
+    impl->veclib_lanes = {library_lanes<double>(jtmb->getTargetTriple()),
+                          library_lanes<float>(jtmb->getTargetTriple())};
     impl->host = host_identity_of(*jtmb);
 
     // Not setNumCompileThreads: the backend runs on the thread that asked, and
@@ -621,9 +573,10 @@ struct Compiler::Impl {
   // One per adopted object: the symbol is baked into the bytes, so two objects
   // from one graph share a name and the main dylib would refuse the second.
   // The link order keeps libm and the vector-math generators reachable.
-  [[nodiscard]] static compile_result<Kernel>
+  template <CKernelScalar T>
+  [[nodiscard]] static compile_result<Kernel<T>>
   link(const std::shared_ptr<Impl> &self, std::span<const std::byte> object,
-       std::string_view symbol, const rt::Graph<double> &g) {
+       std::string_view symbol, const rt::Graph<T> &g) {
     auto &jit = *self->jit;
     auto jd =
         jit.createJITDylib("ddx_adopted_" + std::to_string(self->counter++));
@@ -660,7 +613,7 @@ struct Compiler::Impl {
                    sym.takeError())};
     }
     evict.set_active(false);
-    return Kernel{sym->toPtr<Kernel::function_type>(),
+    return Kernel<T>{sym->toPtr<typename Kernel<T>::function_type>(),
                   KernelShape::of(g),
                   Externs::of(g),
                   self,
@@ -672,19 +625,21 @@ struct Compiler::Impl {
   // that may have been moved from.
   // What a CompileJob is handed: the process-wide JIT, and a share of this,
   // so the code outlives any Compiler that goes away mid-compile.
+  template <CKernelScalar T>
   [[nodiscard]] static Host host_of(const std::shared_ptr<Impl> &self) {
     return Host{.jit = *self->jit,
                 .machine = *self->machine,
                 .triple = self->triple,
                 .libmvec = self->libmvec,
-                .lanes = self->lanes,
-                .veclib_lanes = self->veclib_lanes,
+                .lanes = self->bits / unsigned{8 * sizeof(T)},
+                .veclib_lanes = self->veclib_lanes[std::same_as<T, float>],
                 .objects = self->objects,
                 .code = self};
   }
 
-  [[nodiscard]] static compile_result<Kernel>
-  run(const std::shared_ptr<Impl> &self, const rt::Graph<double> &g,
+  template <CKernelScalar T>
+  [[nodiscard]] static compile_result<Kernel<T>>
+  run(const std::shared_ptr<Impl> &self, const rt::Graph<T> &g,
       const Options &opt, CompileReport &rep) {
     // No lowering computes a tensor row: the pipeline sweeps, through its
     // kernel table, and uses_kernel() says so.
@@ -694,7 +649,7 @@ struct Compiler::Impl {
           .detail =
               "tensor nodes run on the sweep; no kernel is built for them"}};
     }
-    Host host = host_of(self);
+    Host host = host_of<T>(self);
     const bool caching = !opt.cache_dir.empty();
     Codegen emitted = opt.codegen;
     emitted.lanes = *Lanes::exactly(host.lanes_for(opt));
@@ -719,7 +674,7 @@ struct Compiler::Impl {
       }
     }
 
-    CompileJob work{std::move(host), g, opt,
+    CompileJob<T> work{std::move(host), g, opt,
                     "ddx_kernel_" + std::to_string(self->counter++), rep};
     auto kernel = work();
     if (caching && kernel && !kernel->object().empty()) {
@@ -745,42 +700,27 @@ Compiler::~Compiler() = default;
 Compiler::Compiler(Compiler &&) noexcept = default;
 Compiler &Compiler::operator=(Compiler &&) noexcept = default;
 
-compile_result<Kernel> Compiler::compile(const rt::Graph<double> &g,
-                                         const Options &opt,
-                                         CompileReport *report) {
+template <CKernelScalar T>
+compile_result<Kernel<T>> Compiler::compile(const rt::Graph<T> &g,
+                                            const Options &opt,
+                                            CompileReport *report) {
   CompileReport discard;
   return Impl::run(impl_, g, opt, report != nullptr ? *report : discard);
 }
 
-// packaged_task, never std::async: only the latter's future joins in its
-// destructor, putting a compile on the critical path of whoever dropped it.
-std::shared_future<compile_result<Kernel>>
-Compiler::compile_async(std::shared_ptr<const rt::Graph<double>> g,
-                        Options opt) {
-  auto task = std::make_shared<std::packaged_task<compile_result<Kernel>()>>(
-      [self = impl_, graph = std::move(g), opt] {
-        CompileReport discard;
-        return Impl::run(self, *graph, opt, discard);
-      });
-  auto landing = task->get_future().share();
-  // The task holds the future as well as the promise, so a caller dropping its
-  // copy never tears the shared state down under a running compile.  The
-  // shared_ptr is because std::function must be copyable.
-  CompilePool<Impl>::shared(impl_).threads().async(
-      [task, landing] { std::invoke(*task); });
-  return landing;
-}
-
-compile_result<Kernel> Compiler::adopt(std::span<const std::byte> object,
-                                       std::string_view symbol,
-                                       const rt::Graph<double> &g) {
+template <CKernelScalar T>
+compile_result<Kernel<T>> Compiler::adopt(std::span<const std::byte> object,
+                                          std::string_view symbol,
+                                          const rt::Graph<T> &g) {
   return Impl::link(impl_, object, symbol, g);
 }
 
-compile_result<std::string> Compiler::render_ir(const rt::Graph<double> &g,
+template <CKernelScalar T>
+compile_result<std::string> Compiler::render_ir(const rt::Graph<T> &g,
                                                 const Options &opt) const {
   CompileReport discard;
-  CompileJob run{Impl::host_of(impl_), g, opt, "ddx_kernel_dump", discard};
+  CompileJob<T> run{Impl::host_of<T>(impl_), g, opt, "ddx_kernel_dump",
+                    discard};
   return run.prepared().transform([](llvm::orc::ThreadSafeModule m) {
     std::string out;
     llvm::raw_string_ostream os(out);
@@ -788,5 +728,16 @@ compile_result<std::string> Compiler::render_ir(const rt::Graph<double> &g,
     return out;
   });
 }
+
+#define DDX_JIT_INSTANCES(T)                                                   \
+  template compile_result<Kernel<T>> Compiler::compile(                        \
+      const rt::Graph<T> &, const Options &, CompileReport *);                 \
+  template compile_result<Kernel<T>> Compiler::adopt(                          \
+      std::span<const std::byte>, std::string_view, const rt::Graph<T> &);     \
+  template compile_result<std::string> Compiler::render_ir(                    \
+      const rt::Graph<T> &, const Options &) const;
+DDX_JIT_INSTANCES(double)
+DDX_JIT_INSTANCES(float)
+#undef DDX_JIT_INSTANCES
 
 } // namespace ddx::jit

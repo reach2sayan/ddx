@@ -2,9 +2,10 @@
 
 // What computes a tensor node: a backend is a type satisfying TensorKernels,
 // a TensorKernelTable is that type erased to function pointers, and the
-// interpreter holds one table.  The reference backend below is plain loops with
-// nothing behind it; a consumer with Eigen or a BLAS writes a backend over it
-// (tests/eigen and tests/cblas each hold one) and hands the table over once.
+// interpreter holds one table per scalar, the equation's own.  The reference
+// backend below is plain loops with nothing behind it; a consumer with Eigen or
+// a BLAS writes a backend over it (tests/eigen and tests/cblas each hold one)
+// and hands the table over once.
 //
 // Spans at the boundary, not a library's types; a matrix is column-major, and
 // every vector a kernel sees is contiguous.  Results may differ between
@@ -17,6 +18,7 @@
 #include "util/export.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <concepts>
 #include <cstddef>
@@ -34,40 +36,40 @@ namespace ddx::rt {
 // gemm(r, k, c, A, B, out) writes the r x c product of A (r x k) and B (k x c),
 // the one cubic kernel, which the dense Hessian sweep reaches only where its
 // shape algebra ran out.
-template <class B>
+template <class B, typename T = double>
 concept TensorKernels =
-    requires(std::span<const double> u, std::span<const double> v,
-             std::span<double> out, std::size_t r, std::size_t c, bool t,
-             double s, OpCode op) {
+    requires(std::span<const T> u, std::span<const T> v, std::span<T> out,
+             std::size_t r, std::size_t c, bool t, T s, OpCode op) {
       { B::name } -> std::convertible_to<std::string_view>;
       { B::gemv(r, c, u, v, out, t) } -> std::same_as<void>;
-      { B::dot(u, v) } -> std::convertible_to<double>;
+      { B::dot(u, v) } -> std::convertible_to<T>;
       { B::scale(s, v, out) } -> std::same_as<void>;
       { B::map(op, v, out) } -> std::same_as<void>;
       { B::zip(op, u, v, out) } -> std::same_as<void>;
-      { B::sum(v) } -> std::convertible_to<double>;
+      { B::sum(v) } -> std::convertible_to<T>;
       { B::gemm(r, c, r, u, v, out) } -> std::same_as<void>;
     };
 
 // A backend as the interpreter holds it: one record of function pointers, so
 // no backend type reaches an equation's type.
-struct TensorKernelTable {
-  using In = std::span<const double>;
-  using Out = std::span<double>;
+template <impl::Numeric T = double> struct TensorKernelTable {
+  using In = std::span<const T>;
+  using Out = std::span<T>;
   void (*gemv)(std::size_t, std::size_t, In, In, Out, bool) = nullptr;
-  double (*dot)(In, In) = nullptr;
-  void (*scale)(double, In, Out) = nullptr;
+  T (*dot)(In, In) = nullptr;
+  void (*scale)(T, In, Out) = nullptr;
   void (*map)(OpCode, In, Out) = nullptr;
   void (*zip)(OpCode, In, In, Out) = nullptr;
-  double (*sum)(In) = nullptr;
+  T (*sum)(In) = nullptr;
   void (*gemm)(std::size_t, std::size_t, std::size_t, In, In, Out) = nullptr;
   std::string_view name;
 };
 
 // The only way to make one: a backend that misses a member fails here, against
 // the concept, and not at the first call.
-template <TensorKernels B>
-[[nodiscard]] consteval TensorKernelTable tensor_kernel_table() noexcept {
+template <typename B, impl::Numeric T = double>
+  requires TensorKernels<B, T>
+[[nodiscard]] consteval TensorKernelTable<T> tensor_kernel_table() noexcept {
   return {.gemv = &B::gemv,
           .dot = &B::dot,
           .scale = &B::scale,
@@ -81,12 +83,12 @@ template <TensorKernels B>
 namespace reference {
 
 // Straight loops, each written so the compiler vectorises it; the one
-// backend ddx ships and tests against.  The dot and gemv inner loops take one
-// rounding per term, as the scalar sweep's contraction does.
-struct Kernels {
+// backend ddx ships and tests against, at any scalar.  The dot and gemv inner
+// loops take one rounding per term, as the scalar sweep's contraction does.
+template <impl::Numeric T = double> struct Kernels {
   static constexpr std::string_view name = "reference";
-  using In = TensorKernelTable::In;
-  using Out = TensorKernelTable::Out;
+  using In = typename TensorKernelTable<T>::In;
+  using Out = typename TensorKernelTable<T>::Out;
 
   static constexpr void gemv(std::size_t r, std::size_t c, In m, In v, Out out,
                              bool transposed) noexcept {
@@ -98,57 +100,60 @@ struct Kernels {
       return;
     }
     // out = sum_j v[j] column_j: one pass per column, contiguous both sides.
-    std::ranges::fill(out, 0.0);
+    std::ranges::fill(out, T{});
     for (std::size_t j = 0; j < c; ++j) {
-      const double x = v[j];
-      const double *DDX_RESTRICT col = m.data() + j * r;
-      double *DDX_RESTRICT y = out.data();
+      const T x = v[j];
+      const T *DDX_RESTRICT col = m.data() + j * r;
+      T *DDX_RESTRICT y = out.data();
       for (std::size_t i = 0; i < r; ++i) {
-        y[i] = std::fma(col[i], x, y[i]);
+        if constexpr (std::floating_point<T>) {
+          y[i] = std::fma(col[i], x, y[i]);
+        } else { // a field-like scalar: no fma, and no rounding to keep
+          y[i] = y[i] + col[i] * x;
+        }
       }
     }
   }
 
-  [[nodiscard]] static constexpr double dot(In u, In v) noexcept {
-    return std::transform_reduce(u.begin(), u.end(), v.begin(), 0.0,
-                                 std::plus<>{},
-                                 [](double a, double b) { return a * b; });
+  [[nodiscard]] static constexpr T dot(In u, In v) noexcept {
+    return std::transform_reduce(u.begin(), u.end(), v.begin(), T{},
+                                 std::plus<>{}, [](T a, T b) { return a * b; });
   }
 
-  static constexpr void scale(double s, In v, Out out) noexcept {
-    std::ranges::transform(v, out.begin(), [s](double x) { return s * x; });
+  static constexpr void scale(T s, In v, Out out) noexcept {
+    std::ranges::transform(v, out.begin(), [s](T x) { return s * x; });
   }
 
-  // The scalar table's row, picked once and then looped: apply<double> per
+  // The scalar table's row, picked once and then looped: apply<T> per
   // element would re-dispatch the opcode inside the loop.
   static constexpr void map(OpCode op, In v, Out out) noexcept {
-    detail::dispatch<double>(op, [&]<typename R>(R) {
+    detail::dispatch<T>(op, [&]<typename R>(R) {
       using Fn = typename R::functor;
       if constexpr (!std::is_void_v<Fn> && R::arity == 1) {
-        std::ranges::transform(v, out.begin(), [](double x) {
-          return detail::supported<Fn, double, R::ok>(x);
+        std::ranges::transform(v, out.begin(), [](T x) {
+          return detail::supported<Fn, T, R::ok>(x);
         });
       } else {
-        std::ranges::fill(out, 0.0);
+        std::ranges::fill(out, T{});
       }
     });
   }
 
   static constexpr void zip(OpCode op, In u, In v, Out out) noexcept {
-    detail::dispatch<double>(op, [&]<typename R>(R) {
+    detail::dispatch<T>(op, [&]<typename R>(R) {
       using Fn = typename R::functor;
       if constexpr (!std::is_void_v<Fn> && R::arity == 2) {
-        std::ranges::transform(u, v, out.begin(), [](double a, double b) {
-          return detail::supported<Fn, double, R::ok>(a, b);
+        std::ranges::transform(u, v, out.begin(), [](T a, T b) {
+          return detail::supported<Fn, T, R::ok>(a, b);
         });
       } else {
-        std::ranges::fill(out, 0.0);
+        std::ranges::fill(out, T{});
       }
     });
   }
 
-  [[nodiscard]] static constexpr double sum(In v) noexcept {
-    return std::reduce(v.begin(), v.end(), 0.0);
+  [[nodiscard]] static constexpr T sum(In v) noexcept {
+    return std::reduce(v.begin(), v.end(), T{});
   }
 
   // out = A B, one column of B at a time: a gemv per column.
@@ -159,17 +164,43 @@ struct Kernels {
     }
   }
 };
-static_assert(TensorKernels<Kernels>);
+static_assert(TensorKernels<Kernels<>>);
+static_assert(TensorKernels<Kernels<float>, float>);
 
 } // namespace reference
 
-inline constexpr TensorKernelTable reference_table =
-    tensor_kernel_table<reference::Kernels>();
+template <impl::Numeric T = double>
+inline constexpr TensorKernelTable<T> reference_table =
+    tensor_kernel_table<reference::Kernels<T>, T>();
 
-// The process default: what every equation's tensor nodes run on unless the
-// equation was handed a table of its own.  Set once, before any sweep -- a
+namespace detail {
+// One per scalar.  libddx holds double's and float's, so a program and the
+// library set and read the same one; any other scalar's is the reader's own.
+template <impl::Numeric T>
+DDX_TEMPLATE_API std::atomic<const TensorKernelTable<T> *> &
+default_tensor_kernels() noexcept {
+  static std::atomic<const TensorKernelTable<T> *> current{&reference_table<T>};
+  return current;
+}
+} // namespace detail
+
+// The process default at T: what every T equation's tensor nodes run on unless
+// the equation was handed a table of its own.  Set once, before any sweep -- a
 // race to set it is the caller's, as it is for a jit::Compiler.
-DDX_API void use_tensor_kernels(const TensorKernelTable &table) noexcept;
-[[nodiscard]] DDX_API const TensorKernelTable &tensor_kernels() noexcept;
+template <impl::Numeric T>
+void use_tensor_kernels(const TensorKernelTable<T> &table) noexcept {
+  detail::default_tensor_kernels<T>().store(&table, std::memory_order_release);
+}
+template <impl::Numeric T = double>
+[[nodiscard]] const TensorKernelTable<T> &tensor_kernels() noexcept {
+  return *detail::default_tensor_kernels<T>().load(std::memory_order_acquire);
+}
 
 } // namespace ddx::rt
+
+DDX_EXTERN_INSTANCE(
+    DDX_INSTANCE_API std::atomic<const ::ddx::rt::TensorKernelTable<double> *>
+        & ::ddx::rt::detail::default_tensor_kernels<double>() noexcept)
+DDX_EXTERN_INSTANCE(
+    DDX_INSTANCE_API std::atomic<const ::ddx::rt::TensorKernelTable<float> *>
+        & ::ddx::rt::detail::default_tensor_kernels<float>() noexcept)

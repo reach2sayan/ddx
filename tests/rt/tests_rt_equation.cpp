@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -779,8 +778,6 @@ TEST(RtEquation, InterpretDeclinesTheBackendAndAgreesWithIt) {
     double *const values[]{f.data()};
     double *const partials[]{dx.data(), dy.data()};
     eq.options({.backend = which});
-    // wait_for_kernel, not uses_kernel: no backend blocks, so whether a kernel
-    // exists yet is a race until something asks for it to have landed.
     const bool kernel = eq.wait_for_kernel();
     *eq.jacobian(columns, values, partials, n);
     return std::tuple{f, dx, dy, kernel};
@@ -831,8 +828,6 @@ TEST(RtEquation, PointsPicksTheKernelWidthAndTheAnswerIsTheSame) {
   stepping.options({.backend = ddx::rt::Backend::Compile, .points = 1});
   batched.options({.backend = ddx::rt::Backend::Compile, .points = n});
 
-  // Before the calls: a call made while a compile is in flight is answered by
-  // the sweep, and what is compared below is one kernel width against another.
   ASSERT_TRUE(stepping.wait_for_kernel());
   ASSERT_TRUE(batched.wait_for_kernel());
 
@@ -875,7 +870,7 @@ TEST(RtEquation, TheDefaultCompilesNothing) {
 
   ASSERT_TRUE(eq.jacobian(columns, values, partials, n).has_value());
   EXPECT_FALSE(eq.uses_kernel()) << "a default equation reached for a compiler";
-  EXPECT_FALSE(eq.wait_for_kernel()) << "and one was in flight";
+  EXPECT_FALSE(eq.wait_for_kernel()) << "and asking built one";
   for (std::size_t i = 0; i < n; ++i) {
     EXPECT_NEAR(f[i], 0.6 * std::log(0.6) + 1.4 * 1.4, 1e-12);
     EXPECT_NEAR(dx[i], std::log(0.6) + 1.0, 1e-12);
@@ -883,17 +878,15 @@ TEST(RtEquation, TheDefaultCompilesNothing) {
   }
 }
 
-// Choosing a backend starts the compile, with no call having been made.
-TEST(RtEquation, ChoosingABackendStartsTheBuild) {
+// Asking again for what is already built throws nothing away.
+TEST(RtEquation, IdenticalOptionsKeepTheKernel) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   auto eq = ddx::rt::equation(x * log(x) + exp(x));
 
   eq.options({.backend = ddx::rt::Backend::Compile});
-  EXPECT_TRUE(eq.wait_for_kernel()) << "options() launched nothing";
-  EXPECT_TRUE(eq.uses_kernel());
+  EXPECT_TRUE(eq.wait_for_kernel());
 
-  // Asking again for what is already built relaunches nothing.
   eq.options({.backend = ddx::rt::Backend::Compile});
   EXPECT_TRUE(eq.uses_kernel())
       << "an identical options() threw the kernel away";
@@ -1000,14 +993,15 @@ TEST(RtEquation, DifferentEquationTypesShareOneCompilerSafely) {
   }
 }
 
-// A compile in flight when the choice changes is abandoned: flipping to
-// Interpret leaves the sweep, and flipping back builds afresh.
-TEST(RtEquation, AbandoningACompileLeavesNothingBehind) {
+// Changing the choice discards the kernel: flipping to Interpret leaves the
+// sweep, and flipping back builds afresh.
+TEST(RtEquation, ChangingTheBackendDiscardsTheKernel) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   auto eq = ddx::rt::equation(x * log(x) + exp(x));
 
   eq.options({.backend = ddx::rt::Backend::Compile});
+  ASSERT_TRUE(eq.wait_for_kernel());
   eq.options({.backend = ddx::rt::Backend::Interpret});
 
   double cx = 0.7, f = 0, dx = 0;
@@ -1015,18 +1009,17 @@ TEST(RtEquation, AbandoningACompileLeavesNothingBehind) {
   double *const values[]{&f};
   double *const partials[]{&dx};
   ASSERT_TRUE(eq.jacobian(columns, values, partials, 1).has_value());
-  EXPECT_FALSE(eq.uses_kernel()) << "an abandoned compile came back";
+  EXPECT_FALSE(eq.uses_kernel()) << "a discarded kernel came back";
   EXPECT_NEAR(f, 0.7 * std::log(0.7) + std::exp(0.7), 1e-12);
 
   eq.options({.backend = ddx::rt::Backend::Compile});
   ASSERT_TRUE(eq.jacobian(columns, values, partials, 1).has_value());
-  EXPECT_TRUE(eq.wait_for_kernel()) << "asking again did not build";
+  EXPECT_TRUE(eq.uses_kernel()) << "asking again did not build";
   EXPECT_NEAR(f, 0.7 * std::log(0.7) + std::exp(0.7), 1e-12);
 }
 
-// Compile promises to build a kernel, not to stand still until there is one.
-// Waiting is a separate request.
-TEST(RtEquation, CompileDoesNotMakeACallWaitForItsKernel) {
+// The first call under Compile is answered by the kernel it built.
+TEST(RtEquation, TheFirstCallBuildsTheKernel) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   auto eq = ddx::rt::equation(x * log(x) + exp(x));
@@ -1036,13 +1029,8 @@ TEST(RtEquation, CompileDoesNotMakeACallWaitForItsKernel) {
   const double *const columns[]{&cx};
   double *const values[]{&f};
   double *const partials[]{&dx};
-  // Right whichever path answered it, which is the point.
   ASSERT_TRUE(eq.jacobian(columns, values, partials, 1).has_value());
-  EXPECT_NEAR(f, 0.7 * std::log(0.7) + std::exp(0.7), 1e-12);
-
-  EXPECT_TRUE(eq.wait_for_kernel()) << "Compile never built one";
-  ASSERT_TRUE(eq.jacobian(columns, values, partials, 1).has_value());
-  EXPECT_TRUE(eq.uses_kernel()) << "a landed kernel was not adopted";
+  EXPECT_TRUE(eq.uses_kernel()) << "the first call did not build one";
   EXPECT_NEAR(f, 0.7 * std::log(0.7) + std::exp(0.7), 1e-12);
 }
 
@@ -1096,114 +1084,10 @@ TEST(RtEquation, OptionsReachTheCompilerAndDoNotChangeTheAnswer) {
   }
 }
 
-// The compile is off the critical path: the sweep answers until the kernel
-// lands, and the answers either side of the switchover agree.
-TEST(RtEquation, TheCompileRunsBehindTheInterpreter) {
-  ddx::rt::Arena<> b;
-  const auto x = var(b, "x");
-  const auto y = var(b, "y");
-  auto eq = ddx::rt::equation(x * log(x) + y * exp(x * y) + sqrt(x + y));
-
-  constexpr std::size_t n = 16;
-  std::vector<double> cx(n), cy(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    cx[i] = 0.3 + 0.02 * static_cast<double>(i);
-    cy[i] = 0.7 - 0.01 * static_cast<double>(i);
-  }
-  const double *const columns[]{cx.data(), cy.data()};
-
-  std::vector<double> f0(n), dx0(n), dy0(n), f1(n), dx1(n), dy1(n), f2(n),
-      dx2(n), dy2(n);
-  const auto into = [&](std::vector<double> &f, std::vector<double> &dx,
-                        std::vector<double> &dy) {
-    double *const values[]{f.data()};
-    double *const partials[]{dx.data(), dy.data()};
-    ASSERT_TRUE(eq.jacobian(columns, values, partials, n).has_value());
-  };
-
-  // Whichever path is ready -- the point is that it answers.
-  eq.options({.backend = ddx::rt::Backend::Compile});
-  into(f0, dx0, dy0);
-
-  ASSERT_TRUE(eq.wait_for_kernel()) << "the compile never landed";
-  EXPECT_TRUE(eq.uses_kernel()) << "a landed kernel was not adopted";
-  into(f1, dx1, dy1);
-
-  // Still the kernel that landed above.
-  eq.options({.backend = ddx::rt::Backend::Compile});
-  ASSERT_TRUE(eq.wait_for_kernel());
-  into(f2, dx2, dy2);
-
-  for (std::size_t i = 0; i < n; ++i) {
-    // Bit-exact: one graph, one Options, so one kernel.
-    EXPECT_DOUBLE_EQ(f1[i], f2[i]) << "landed value at " << i;
-    EXPECT_DOUBLE_EQ(dx1[i], dx2[i]) << "landed d/dx at " << i;
-    EXPECT_DOUBLE_EQ(dy1[i], dy2[i]) << "landed d/dy at " << i;
-    // The first call may have been the sweep, which contracts differently.
-    EXPECT_NEAR(f0[i], f2[i], 1e-12) << "value before landing at " << i;
-    EXPECT_NEAR(dx0[i], dx2[i], 1e-12) << "d/dx before landing at " << i;
-    EXPECT_NEAR(dy0[i], dy2[i], 1e-12) << "d/dy before landing at " << i;
-  }
-}
-
-// Dropping an equation mid-compile abandons the result.  std::async's future
-// joins in its destructor, which would put the compile back on the critical
-// path of whatever let the equation go.
-TEST(RtEquation, DroppingAMidFlightCompileDoesNotBlock) {
-  // Wide enough that the compile is milliseconds: one that finishes first would
-  // pass without proving anything.
-  ddx::rt::Arena<> b;
-  std::vector<ddx::rt::Expression<double>> v;
-  for (std::size_t i = 0; i < 48; ++i) {
-    v.push_back(ddx::rt::var(b, "x" + std::to_string(i)));
-  }
-  auto f = v[0] * log(v[0]);
-  for (std::size_t i = 1; i < v.size(); ++i) {
-    f = f + v[i] * log(v[i]) + exp(v[i - 1] * v[i]);
-  }
-
-  // Both arms pin codegen 0, so the ladder is one rung and the two measurements
-  // are the same shape.  Under the default two, wait_for_kernel() returns at
-  // the *cheap* rung and `blocking` stops being a compile's worth of time,
-  // making the margin below a coin flip.  jit.exit_stress covers both rungs at
-  // once.
-  const ddx::jit::Options one_rung{
-      .backend = ddx::rt::Backend::Compile,
-      .codegen = {.codegen_level = ddx::rt::OptLevel::O0}};
-
-  // Calibrated against this machine: a fixed threshold above the compile would
-  // pass whether or not the future joined.
-  const auto blocking = [&] {
-    auto eq = ddx::rt::equation(f);
-    eq.options(one_rung);
-    const auto start = std::chrono::steady_clock::now();
-    EXPECT_TRUE(eq.wait_for_kernel());
-    return std::chrono::steady_clock::now() - start;
-  }();
-
-  const auto teardown = [&] {
-    auto eq = ddx::rt::equation(f);
-    eq.options(one_rung);
-    (void)eq.uses_kernel(); // launches the compile, adopts nothing yet
-
-    const auto start = std::chrono::steady_clock::now();
-    { const auto dropped = std::move(eq); }
-    return std::chrono::steady_clock::now() - start;
-  }();
-
-  const auto us = [](std::chrono::steady_clock::duration d) {
-    return std::chrono::duration_cast<std::chrono::microseconds>(d).count();
-  };
-  // A join would put the whole compile here.
-  EXPECT_LT(teardown * 4, blocking)
-      << "teardown " << us(teardown) << "us against a " << us(blocking)
-      << "us compile, so the future joined";
-}
-
 // Many threads on one Equation, mixing both lanes.  std::thread rather than
 // std::jthread: libc++ shipped jthread late and behind
-// _LIBCPP_ENABLE_EXPERIMENTAL.  Compiling deliberately -- that is the path that
-// abandons compiles mid-flight when an equation goes away.
+// _LIBCPP_ENABLE_EXPERIMENTAL.  Compiling deliberately -- the threads race to
+// build the one kernel.
 TEST(RtEquation, ConcurrentConstCallsAgreeWithOneThread) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -1446,8 +1330,8 @@ TEST(RtEquation, InterpretNeverCompilesBehindTheCaller) {
 namespace {
 
 // Enough of the emitter's op set that the codegen levels have somewhere to
-// disagree, and enough nodes that the top rung does not land first.
-auto ladder_model() {
+// disagree.
+auto level_model() {
   return ddx::rt::equation([] {
     std::vector<ddx::rt::Expression<double>> v;
     for (std::size_t i = 0; i < 24; ++i) {
@@ -1462,7 +1346,7 @@ auto ladder_model() {
 }
 
 // One gradient at a fixed point, as the bits.
-std::vector<double> ladder_gradient(const auto &eq, std::size_t n) {
+std::vector<double> level_gradient(const auto &eq, std::size_t n) {
   std::vector<double> at(n), value(1), partial(n);
   for (std::size_t i = 0; i < n; ++i) {
     at[i] = 0.35 + 0.01 * static_cast<double>(i);
@@ -1481,34 +1365,33 @@ std::vector<double> ladder_gradient(const auto &eq, std::size_t n) {
 
 } // namespace
 
-// Every rung answers the same bits, which is what makes the swap invisible.
-TEST(RtEquation, EveryRungOfTheLadderAgreesToTheBit) {
+// Every codegen level answers the same bits.
+TEST(RtEquation, EveryCodegenLevelAgreesToTheBit) {
   constexpr std::size_t n = 24;
 
-  auto swept = ladder_model();
+  auto swept = level_model();
   swept.options({.backend = ddx::rt::Backend::Interpret});
 
-  auto cheap = ladder_model();
+  auto cheap = level_model();
   cheap.options({.backend = ddx::rt::Backend::Compile,
                  .codegen = {.codegen_level = ddx::rt::OptLevel::O0}});
   ASSERT_TRUE(cheap.wait_for_kernel());
 
-  auto top = ladder_model();
+  auto top = level_model();
   top.options({.backend = ddx::rt::Backend::Compile,
                .codegen = {.codegen_level = ddx::rt::OptLevel::O1}});
   ASSERT_TRUE(top.wait_for_kernel());
 
-  // Rung against rung, still to the bit: both rungs compile the same graph, and
-  // a rung landing mid-loop must not move an answer.
-  const auto low = ladder_gradient(cheap, n);
-  EXPECT_EQ(ladder_gradient(top, n), low) << "the top rung moved a bit";
+  // Level against level, to the bit: both compile the same graph.
+  const auto low = level_gradient(cheap, n);
+  EXPECT_EQ(level_gradient(top, n), low) << "codegen 1 moved a bit";
 
   // Sweep against kernel, to a tolerance rather than to the bit.  The kernel is
   // compiled from a graph whose reduction spines are blocked and the sweep is
   // not -- see Compiled::compile_graph -- because a dependent chain is latency
   // the kernel cannot hide and the same rewrite costs the sweep tape locality.
   // Blocking reassociates, so the two disagree in the last places.
-  const auto expected = ladder_gradient(swept, n);
+  const auto expected = level_gradient(swept, n);
   ASSERT_EQ(low.size(), expected.size());
   for (const auto [got, want] : std::views::zip(low, expected)) {
     EXPECT_NEAR(got, want, 1e-12 * (1.0 + std::fabs(want)))
@@ -1516,205 +1399,44 @@ TEST(RtEquation, EveryRungOfTheLadderAgreesToTheBit) {
   }
 }
 
-// The ladder climbs and never falls back.  One shared pool orders nothing, so a
-// cheap compile can land second; the rule is the rank, not the arrival.
-TEST(RtEquation, TheLadderClimbsAndTheAnswersDoNotMove) {
-  constexpr std::size_t n = 24;
-
-  auto eq = ladder_model();
-  eq.options({.backend = ddx::rt::Backend::Compile,
-              .codegen = {.codegen_level = ddx::rt::OptLevel::O1}});
-
-  // wait_for_kernel() waits for the *first* rung, so the cheap one is in hand.
-  ASSERT_TRUE(eq.wait_for_kernel());
-  ASSERT_TRUE(eq.kernel_level().has_value());
-  EXPECT_EQ(*eq.kernel_level(), ddx::rt::OptLevel::O0)
-      << "wait_for_kernel() waited for the top rung, not the first";
-
-  const auto expected = ladder_gradient(eq, n);
-
-  // Bounded: a failure to climb must fail the test, not hang it.
-  using namespace std::chrono_literals;
-  const auto deadline = std::chrono::steady_clock::now() + 30s;
-  auto seen = ddx::rt::OptLevel::O0;
-  bool climbed = false;
-  while (std::chrono::steady_clock::now() < deadline) {
-    const auto level = eq.kernel_level();
-    ASSERT_TRUE(level.has_value()) << "the ladder gave the kernel back";
-    EXPECT_GE(*level, seen) << "a rung that landed late demoted a better one";
-    seen = *level;
-    EXPECT_EQ(ladder_gradient(eq, n), expected)
-        << "an answer moved at rung " << std::to_underlying(seen);
-    if (seen == ddx::rt::OptLevel::O1) {
-      climbed = true;
-      break;
-    }
-    std::this_thread::sleep_for(1ms);
+// The kernel answering is the one asked for.
+TEST(RtEquation, KernelLevelIsTheCodegenLevel) {
+  for (const auto level : {ddx::rt::OptLevel::O0, ddx::rt::OptLevel::O1}) {
+    auto eq = level_model();
+    eq.options({.backend = ddx::rt::Backend::Compile,
+                .codegen = {.codegen_level = level}});
+    ASSERT_TRUE(eq.wait_for_kernel());
+    EXPECT_EQ(eq.kernel_level(), level);
   }
-  EXPECT_TRUE(climbed) << "the top rung never replaced the cheap one";
 }
 
-// At codegen 0 there is nothing cheaper underneath, so the ladder is one rung.
-TEST(RtEquation, CodegenZeroIsASingleRung) {
-  auto eq = ladder_model();
-  eq.options({.backend = ddx::rt::Backend::Compile,
-              .codegen = {.codegen_level = ddx::rt::OptLevel::O0}});
-  ASSERT_TRUE(eq.wait_for_kernel());
-  ASSERT_TRUE(eq.kernel_level().has_value());
-  EXPECT_EQ(*eq.kernel_level(), ddx::rt::OptLevel::O0);
-}
+// With a warm cache the kernel links instead of compiling, to the same bits.
+TEST(RtEquation, AWarmCacheServesTheKernel) {
+  const Scratch dir{"rt_level_cache"};
 
-// With a warm cache both rungs link instead of compiling.  Each rung keys
-// separately, being different machine code, so a warm run gets the good kernel
-// rather than the cheap one.
-TEST(RtEquation, AWarmCacheServesBothRungs) {
-  const Scratch dir{"rt_ladder_cache"};
-
-  const auto climb = [&dir] {
-    auto eq = ladder_model();
+  const auto build = [&dir] {
+    auto eq = level_model();
     eq.options({.backend = ddx::rt::Backend::Compile,
                 .codegen = {.codegen_level = ddx::rt::OptLevel::O1},
                 .cache_dir = dir.string()});
     EXPECT_TRUE(eq.wait_for_kernel());
-    using namespace std::chrono_literals;
-    const auto deadline = std::chrono::steady_clock::now() + 30s;
-    while (eq.kernel_level() != ddx::rt::OptLevel::O1 &&
-           std::chrono::steady_clock::now() < deadline) {
-      std::this_thread::sleep_for(1ms);
-    }
-    return ladder_gradient(eq, 24);
+    return level_gradient(eq, 24);
   };
 
-  const auto cold = climb();
+  const auto cold = build();
   ASSERT_TRUE(std::filesystem::exists(dir)) << "the cache wrote nothing";
   const auto entries = static_cast<std::size_t>(
       std::distance(std::filesystem::directory_iterator{dir},
                     std::filesystem::directory_iterator{}));
-  EXPECT_EQ(entries, 2u) << "both rungs should key separately";
+  EXPECT_EQ(entries, 1u) << "one kernel, one entry";
 
-  EXPECT_EQ(climb(), cold) << "a cached rung moved a bit";
+  EXPECT_EQ(build(), cold) << "a cached kernel moved a bit";
 }
 
-// The sweep is not a rung: with no backend there is no level to report.
-TEST(RtEquation, InterpretHasNoRung) {
-  auto eq = ladder_model();
+// The sweep has no level to report.
+TEST(RtEquation, InterpretHasNoKernelLevel) {
+  auto eq = level_model();
   eq.options({.backend = ddx::rt::Backend::Interpret});
   EXPECT_FALSE(eq.kernel_level().has_value());
-}
-
-// --- Backend::Adapt ----------------------------------------------------------
-//
-// The same ladder, climbed on the counter rather than on sight of the backend.
-// Every threshold here is stated, because a test that waited for the shipping
-// default would be waiting on 65536 points.
-
-// A lane nobody uses costs nothing: the whole point of counting is not paying
-// for a compile that will never be amortised.
-TEST(RtEquation, AdaptCompilesNothingUntilTheBatchPaysForIt) {
-  auto eq = ladder_model();
-  eq.options({.backend = ddx::rt::Backend::Adapt,
-              .codegen = {.codegen_level = ddx::rt::OptLevel::O1},
-              .warm_points = 1000});
-
-  for (int i = 0; i < 3; ++i) {
-    (void)ladder_gradient(eq, 24); // one point apiece
-  }
-  EXPECT_FALSE(eq.uses_kernel()) << "a cold lane compiled anyway";
-  EXPECT_FALSE(eq.kernel_level().has_value());
-
-  // And it says so, which is what separates counting from a refused compile.
-  const auto warm = eq.warming();
-  ASSERT_TRUE(warm.has_value());
-  EXPECT_EQ(warm->points, 3u);
-  EXPECT_EQ(warm->threshold, 1000u);
-}
-
-// Under Adapt, waiting is for a rung already bought.  Overriding the counter
-// here would make every measurement of the policy a lie.
-TEST(RtEquation, AdaptDoesNotLetAWaitBuyARung) {
-  auto eq = ladder_model();
-  eq.options({.backend = ddx::rt::Backend::Adapt, .warm_points = 1000});
-  EXPECT_FALSE(eq.wait_for_kernel());
-  EXPECT_FALSE(eq.uses_kernel());
-  ASSERT_TRUE(eq.warming().has_value());
-  EXPECT_EQ(eq.warming()->points, 0u) << "an observer charged the lane";
-}
-
-// Cheap rung first, then the top one, each on its own threshold -- and the
-// answers do not move across either, as on the eager ladder.
-TEST(RtEquation, AdaptBuysTheCheapRungThenTheTop) {
-  constexpr std::size_t n = 24;
-
-  auto swept = ladder_model();
-  swept.options({.backend = ddx::rt::Backend::Interpret});
-  const auto expected = ladder_gradient(swept, n);
-
-  auto eq = ladder_model();
-  eq.options({.backend = ddx::rt::Backend::Adapt,
-              .codegen = {.codegen_level = ddx::rt::OptLevel::O1},
-              .warm_points = 1,
-              .hot_points = 1});
-
-  // One point buys the cheap rung and nothing more.
-  EXPECT_EQ(ladder_gradient(eq, n), expected);
-  ASSERT_TRUE(eq.wait_for_kernel()) << "the first point bought no rung";
-  ASSERT_TRUE(eq.kernel_level().has_value());
-  EXPECT_EQ(*eq.kernel_level(), ddx::rt::OptLevel::O0)
-      << "the top rung was bought too early";
-
-  // The next buys the top one.  Bounded: a failure to climb must fail the test
-  // rather than hang it.
-  using namespace std::chrono_literals;
-  const auto deadline = std::chrono::steady_clock::now() + 30s;
-  bool climbed = false;
-  while (std::chrono::steady_clock::now() < deadline) {
-    EXPECT_EQ(ladder_gradient(eq, n), expected)
-        << "an answer moved as it climbed";
-    if (eq.kernel_level() == ddx::rt::OptLevel::O1) {
-      climbed = true;
-      break;
-    }
-    std::this_thread::sleep_for(1ms);
-  }
-  EXPECT_TRUE(climbed) << "the top rung was never bought";
-
-  // Nothing left to buy, so nothing left to count.
-  EXPECT_FALSE(eq.warming().has_value());
-}
-
-// At codegen 0 there is nothing cheaper underneath, so one threshold buys the
-// only rung there is and the counter is done.
-TEST(RtEquation, AdaptAtCodegenZeroBuysOneRung) {
-  auto eq = ladder_model();
-  eq.options({.backend = ddx::rt::Backend::Adapt,
-              .codegen = {.codegen_level = ddx::rt::OptLevel::O0},
-              .warm_points = 1});
-  (void)ladder_gradient(eq, 24);
-  ASSERT_TRUE(eq.wait_for_kernel());
-  ASSERT_TRUE(eq.kernel_level().has_value());
-  EXPECT_EQ(*eq.kernel_level(), ddx::rt::OptLevel::O0);
-  EXPECT_FALSE(eq.warming().has_value())
-      << "still counting toward a second rung";
-}
-
-// A threshold of nothing is the eager ladder, which is what makes the policy
-// testable at all.
-TEST(RtEquation, AdaptWithNoThresholdBuysOnTheFirstCall) {
-  auto eq = ladder_model();
-  eq.options({.backend = ddx::rt::Backend::Adapt,
-              .codegen = {.codegen_level = ddx::rt::OptLevel::O1},
-              .warm_points = 0,
-              .hot_points = 0});
-  (void)ladder_gradient(eq, 24);
-  EXPECT_TRUE(eq.wait_for_kernel());
-}
-
-// Under Interpret the counter is never touched, however hot the lane gets.
-TEST(RtEquation, InterpretIsNotWarming) {
-  auto eq = ladder_model();
-  eq.options({.backend = ddx::rt::Backend::Interpret});
-  (void)ladder_gradient(eq, 24);
-  EXPECT_FALSE(eq.warming().has_value());
-  EXPECT_FALSE(eq.uses_kernel());
 }
 #endif

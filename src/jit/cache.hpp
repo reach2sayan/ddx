@@ -1,6 +1,6 @@
 #pragma once
 
-#include "jit/options.hpp"
+#include "jit/kernel.hpp"
 #include "rt/graph.hpp"
 
 #include <cstddef>
@@ -25,7 +25,8 @@ struct Entry {
 // Keyed on what codegen reads of a lane: the layout, every scheduled node's
 // property and operands, and the outputs.  Ids are construction-ordered, so
 // this is a within-one-binary key.
-[[nodiscard]] std::uint64_t digest(const rt::Graph<double> &g);
+template <CKernelScalar T>
+[[nodiscard]] std::uint64_t digest(const rt::Graph<T> &g);
 
 [[nodiscard]] std::uint64_t
 cache_key(std::uint64_t graph, std::string_view host, const Codegen &emitted);

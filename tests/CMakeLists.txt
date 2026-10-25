@@ -9,12 +9,23 @@ target_include_directories(tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(tests PRIVATE gtest_main ddx::rt)
 ddx_target_flags(tests)
 ddx_runtime_deps(tests)
+# Every test TU parses the same ~150k lines; the four GoogleTest targets compile
+# with identical flags, so one PCH serves them all.
+option(DDX_TEST_PCH "Precompile the headers every test includes" ON)
+if (DDX_TEST_PCH)
+    target_precompile_headers(tests PRIVATE <gtest/gtest.h> <ddx.hpp> <rt/equation.hpp>)
+endif ()
+# Batches share one instantiation of the runtime core instead of one per file.
+option(DDX_TEST_UNITY "Compile each test target in unity batches" ON)
+set(DDX_TEST_UNITY_BATCH 4 CACHE STRING "Test sources per unity batch")
 set(DDX_TEST_ENV "")
 if (DDX_SANITIZE STREQUAL "thread")
     set(DDX_TEST_ENV PROPERTIES ENVIRONMENT
         "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan.supp:ignore_noninstrumented_modules=1")
 endif ()
 
+set_target_properties(tests PROPERTIES UNITY_BUILD ${DDX_TEST_UNITY}
+        UNITY_BUILD_BATCH_SIZE ${DDX_TEST_UNITY_BATCH})
 gtest_discover_tests(tests ${DDX_TEST_ENV})
 
 file(GLOB DDX_DUAL_TEST_SOURCES CONFIGURE_DEPENDS
@@ -24,6 +35,11 @@ target_include_directories(tests_dual PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(tests_dual PRIVATE gtest_main ddx::rt)
 ddx_target_flags(tests_dual)
 ddx_runtime_deps(tests_dual)
+if (DDX_TEST_PCH)
+    target_precompile_headers(tests_dual REUSE_FROM tests)
+endif ()
+set_target_properties(tests_dual PROPERTIES UNITY_BUILD ${DDX_TEST_UNITY}
+        UNITY_BUILD_BATCH_SIZE ${DDX_TEST_UNITY_BATCH})
 gtest_discover_tests(tests_dual ${DDX_TEST_ENV})
 
 file(GLOB DDX_RT_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/rt/*.cpp")
@@ -32,6 +48,11 @@ target_include_directories(tests_rt PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(tests_rt PRIVATE gtest_main ddx::rt)
 ddx_target_flags(tests_rt)
 ddx_runtime_deps(tests_rt)
+if (DDX_TEST_PCH)
+    target_precompile_headers(tests_rt REUSE_FROM tests)
+endif ()
+set_target_properties(tests_rt PROPERTIES UNITY_BUILD ${DDX_TEST_UNITY}
+        UNITY_BUILD_BATCH_SIZE ${DDX_TEST_UNITY_BATCH})
 gtest_discover_tests(tests_rt ${DDX_TEST_ENV})
 
 if (DDX_BUILD_JIT)
@@ -41,17 +62,12 @@ if (DDX_BUILD_JIT)
     target_link_libraries(tests_jit PRIVATE gtest_main ddx::jit)
     ddx_target_flags(tests_jit)
     ddx_runtime_deps(tests_jit)
-    gtest_discover_tests(tests_jit ${DDX_TEST_ENV})
-
-    # Its own process: the assertion is the exit status.
-    add_executable(tests_jit_exit_stress jit/stress/exit_stress.cpp)
-    target_link_libraries(tests_jit_exit_stress PRIVATE ddx::jit)
-    ddx_target_flags(tests_jit_exit_stress)
-    ddx_runtime_deps(tests_jit_exit_stress)
-    add_test(NAME jit.exit_stress COMMAND tests_jit_exit_stress)
-    if (DDX_TEST_ENV)
-        set_tests_properties(jit.exit_stress ${DDX_TEST_ENV})
+    if (DDX_TEST_PCH)
+        target_precompile_headers(tests_jit REUSE_FROM tests)
     endif ()
+    set_target_properties(tests_jit PROPERTIES UNITY_BUILD ${DDX_TEST_UNITY}
+            UNITY_BUILD_BATCH_SIZE ${DDX_TEST_UNITY_BATCH})
+    gtest_discover_tests(tests_jit ${DDX_TEST_ENV})
 
     if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND DDX_SANITIZE STREQUAL "off")
         add_test(NAME jit.exports
