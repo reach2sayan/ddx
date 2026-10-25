@@ -71,6 +71,8 @@ if (TARGET BLAS::BLAS AND DDX_CBLAS_INCLUDE_DIR)
     add_executable(tests_cblas cblas/tests_cblas.cpp)
     target_include_directories(tests_cblas SYSTEM PRIVATE "${DDX_CBLAS_INCLUDE_DIR}")
     target_link_libraries(tests_cblas PRIVATE gtest_main ddx::rt BLAS::BLAS)
+    # Accelerate deprecates its classic CBLAS header in favour of this one.
+    target_compile_definitions(tests_cblas PRIVATE $<$<PLATFORM_ID:Darwin>:ACCELERATE_NEW_LAPACK>)
     ddx_target_flags(tests_cblas)
     ddx_runtime_deps(tests_cblas)
     gtest_discover_tests(tests_cblas ${DDX_TEST_ENV})
