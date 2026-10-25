@@ -262,6 +262,7 @@ eq.uses_kernel();              // true
 |---|---|
 | `Interpret` | default; LLVM is never loaded |
 | `Compile` | compile each lane on its first call |
+| `Adapt` | `Compile`; an error under Clang, deprecated elsewhere |
 
 | `jit::Options` field | Default | Is |
 |---|---|---|

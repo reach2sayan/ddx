@@ -524,6 +524,10 @@ build/
 /build_test/*
 *.md
 !python/README.md
+/doc/*
+!/doc/design/
+/doc/design/*
+!/doc/design/*.md
 
 # The comparison harness is an internal check, kept out of the index along with
 # its build trees.
