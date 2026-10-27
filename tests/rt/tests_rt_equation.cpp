@@ -1,7 +1,6 @@
 #include "ddx.hpp"
 #include "rt/bridge.hpp"
 #include "rt/equation.hpp"
-#include "scratch.hpp"
 #include "util/ranges.hpp"
 
 #include <gtest/gtest.h>
@@ -11,7 +10,6 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
-#include <filesystem>
 #include <format>
 #include <iterator>
 #include <map>
@@ -1408,29 +1406,6 @@ TEST(RtEquation, KernelLevelIsTheCodegenLevel) {
     ASSERT_TRUE(eq.wait_for_kernel());
     EXPECT_EQ(eq.kernel_level(), level);
   }
-}
-
-// With a warm cache the kernel links instead of compiling, to the same bits.
-TEST(RtEquation, AWarmCacheServesTheKernel) {
-  const Scratch dir{"rt_level_cache"};
-
-  const auto build = [&dir] {
-    auto eq = level_model();
-    eq.options({.backend = ddx::rt::Backend::Compile,
-                .codegen = {.codegen_level = ddx::rt::OptLevel::O1},
-                .cache_dir = dir.string()});
-    EXPECT_TRUE(eq.wait_for_kernel());
-    return level_gradient(eq, 24);
-  };
-
-  const auto cold = build();
-  ASSERT_TRUE(std::filesystem::exists(dir)) << "the cache wrote nothing";
-  const auto entries = static_cast<std::size_t>(
-      std::distance(std::filesystem::directory_iterator{dir},
-                    std::filesystem::directory_iterator{}));
-  EXPECT_EQ(entries, 1u) << "one kernel, one entry";
-
-  EXPECT_EQ(build(), cold) << "a cached kernel moved a bit";
 }
 
 // The sweep has no level to report.

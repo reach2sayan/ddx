@@ -50,9 +50,6 @@ struct Externs {
   }
 };
 
-// The bytes a compile produced, whatever the scalar.
-using KernelObject = std::shared_ptr<const std::vector<std::byte>>;
-
 // A copy is one atomic increment; the last Kernel to go frees the code.  Any
 // scalar names one, so a pipeline holds its slot whether or not it compiles;
 // only a CKernelScalar is ever filled.
@@ -61,15 +58,11 @@ public:
   using function_type = void (*)(const T *const *, T *const *, T *const *,
                                  T *const *, std::size_t, const void *const *);
 
-  using object_type = KernelObject;
-  using symbol_type = std::shared_ptr<const std::string>;
-
   Kernel() = default;
   Kernel(function_type fn, KernelShape shape, Externs externs,
-         std::shared_ptr<void> code, symbol_type symbol = {},
-         object_type object = {}) noexcept
+         std::shared_ptr<void> code) noexcept
       : fn_{fn}, code_{std::move(code)}, externs_{std::move(externs)},
-        symbol_{std::move(symbol)}, object_{std::move(object)}, shape_{shape} {}
+        shape_{shape} {}
 
   // xs[j] is the column for symbol j, g[j] the partial in it, each n long; an
   // unrequested block is `{}`.  noexcept: codegen marks the kernel nounwind.
@@ -87,23 +80,19 @@ public:
   }
   [[nodiscard]] const KernelShape &shape() const noexcept { return shape_; }
 
-  // The bytes the compile produced, which the object cache stores.
-  [[nodiscard]] std::span<const std::byte> object() const noexcept {
-    return object_ ? std::span<const std::byte>{*object_}
-                   : std::span<const std::byte>{};
+  [[deprecated("no object is kept")]] [[nodiscard]] std::span<const std::byte>
+  object() const noexcept {
+    return {};
   }
-
-  // Chosen by the compile: whoever stores the object stores this beside it.
-  [[nodiscard]] std::string_view symbol() const noexcept {
-    return symbol_ ? std::string_view{*symbol_} : std::string_view{};
+  [[deprecated("no object is kept")]] [[nodiscard]] std::string_view
+  symbol() const noexcept {
+    return {};
   }
 
 private:
   function_type fn_ = nullptr;
   std::shared_ptr<void> code_; // Held, never read
   Externs externs_;
-  symbol_type symbol_;
-  object_type object_;
   KernelShape shape_{};
 };
 
@@ -112,8 +101,8 @@ class Compiler : private impl::noncopyable {
 public:
   [[nodiscard]] static DDX_JIT_API compile_result<Compiler> create();
 
-  // `x86_64-pc-linux-gnu/znver3/+avx2,+fma/llvm-20.1`: a string, not a folded
-  // key, because this answers *why* a stored kernel was passed over.
+  // What this host compiles for, as one line:
+  // `x86_64-pc-linux-gnu/znver3/feat-<hash>/llvm-20.1`.
   [[nodiscard]] DDX_JIT_API std::string_view host_identity() const noexcept;
 
   DDX_JIT_API ~Compiler();
@@ -126,13 +115,10 @@ public:
   compile(const rt::Graph<T> &g, const Options &opt = {},
           CompileReport *report = nullptr);
 
-  // Links an object compiled earlier.  Nothing beyond the link is verified --
-  // the cache key carries the host, options and graph digest for that -- and a
-  // corrupt object is an error, not an abort.  The graph is what the object
-  // was lowered from: its shape and its extern functions are read off it, never
-  // claimed by the bytes.
+  // Always errc::jit_object: no object is kept to link.
   template <CKernelScalar T>
-  [[nodiscard]] DDX_JIT_API compile_result<Kernel<T>>
+  [[deprecated("no object is kept")]] [[nodiscard]] DDX_JIT_API
+  compile_result<Kernel<T>>
   adopt(std::span<const std::byte> object, std::string_view symbol,
         const rt::Graph<T> &g);
 

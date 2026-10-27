@@ -540,7 +540,10 @@ PYBIND11_MODULE(_ddx, m) {
             o.codegen.lanes = *lanes;
           })
       .def_readwrite("time_passes", &jit::Options::time_passes)
-      .def_readwrite("cache_dir", &jit::Options::cache_dir)
+      // Deprecated: nothing is cached, so nothing is stored.
+      .def_property(
+          "cache_dir", [](const jit::Options &) { return std::string{}; },
+          [](jit::Options &, const std::string &) {})
       .def(pyb::self == pyb::self);
   codegen("opt_level", &jit::Codegen::opt_level);
   codegen("codegen_level", &jit::Codegen::codegen_level);

@@ -279,7 +279,7 @@ eq.uses_kernel();              // true
 | `codegen.slp_vectorize`, `codegen.loop_vectorize` | `false` | extra vectorisation |
 | `codegen.veclib` | `None` | `Libmvec` for vector transcendentals |
 | `codegen.contract` | `DDX_FP_FLAGS` | fuse multiply-add |
-| `cache_dir` | empty | reuse compiled objects across runs |
+| `cache_dir` | empty | deprecated, ignored |
 | `time_passes` | `false` | per-pass timing to stderr |
 
 `kernel_level()` says which `codegen_level` the answering kernel was built at.
