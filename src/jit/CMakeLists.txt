@@ -1,9 +1,9 @@
 # The only LLVM-aware code.  An archive under MSVC, which WINDOWS_EXPORT_ALL_SYMBOLS
 # does not scan; objects elsewhere, since --exclude-libs would hide its exports.
 if (MSVC)
-    add_library(ddx_jit_objs STATIC cache.cpp codegen.cpp compiler.cpp)
+    add_library(ddx_jit_objs STATIC codegen.cpp compiler.cpp)
 else ()
-    add_library(ddx_jit_objs OBJECT cache.cpp codegen.cpp compiler.cpp)
+    add_library(ddx_jit_objs OBJECT codegen.cpp compiler.cpp)
 endif ()
 
 set_target_properties(ddx_jit_objs PROPERTIES
@@ -17,7 +17,7 @@ target_include_directories(ddx_jit_objs SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
 target_link_libraries(ddx_jit_objs PRIVATE ddx Boost::headers ${DDX_LLVM_LIBS})
 ddx_target_flags(ddx_jit_objs)
 
-# RTTI as LLVM has it: compiler.cpp derives from IRCompiler and ObjectCache.
+# RTTI as LLVM has it: compiler.cpp derives from IRCompiler.
 if (NOT LLVM_ENABLE_RTTI)
     target_compile_options(ddx_jit_objs PRIVATE
             $<IF:$<CXX_COMPILER_ID:MSVC>,/GR-,-fno-rtti>)

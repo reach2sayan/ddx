@@ -1,6 +1,5 @@
 #include "codegen.hpp"
 
-#include "cache.hpp"
 #include "spelling.hpp"
 
 #include <boost/hash2/fnv1a.hpp>
@@ -14,7 +13,6 @@
 #include <llvm/Analysis/TargetLibraryInfo.h>
 #include <llvm/Analysis/TargetTransformInfo.h>
 #include <llvm/CodeGen/ReplaceWithVeclib.h>
-#include <llvm/ExecutionEngine/ObjectCache.h>
 #include <llvm/ExecutionEngine/Orc/CompileUtils.h>
 #include <llvm/ExecutionEngine/Orc/Core.h>
 #include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
@@ -39,7 +37,6 @@
 #include <cmath>
 #include <concepts>
 #include <cstring>
-#include <filesystem>
 #include <format>
 #include <memory>
 #include <mutex>
@@ -202,79 +199,31 @@ llvm::CodeGenOptLevel codegen_level_of(const llvm::Module &m) {
 // unsynchronised.
 class LevelledCompiler final : public llvm::orc::IRCompileLayer::IRCompiler {
 public:
-  LevelledCompiler(llvm::orc::JITTargetMachineBuilder machine,
-                   llvm::ObjectCache *objects)
+  explicit LevelledCompiler(llvm::orc::JITTargetMachineBuilder machine)
       : IRCompiler(llvm::orc::irManglingOptionsFromTargetOptions(
             machine.getOptions())),
-        machine_(std::move(machine)), objects_(objects) {}
+        machine_(std::move(machine)) {}
 
   llvm::Expected<std::unique_ptr<llvm::MemoryBuffer>>
   operator()(llvm::Module &m) override {
     auto machine = machine_;
     machine.setCodeGenOptLevel(codegen_level_of(m));
     auto tm = machine.createTargetMachine();
-    return (!tm) ? tm.takeError()
-                 : llvm::orc::SimpleCompiler{**tm, objects_}(m);
+    return (!tm) ? tm.takeError() : llvm::orc::SimpleCompiler{**tm}(m);
   }
 
 private:
   llvm::orc::JITTargetMachineBuilder machine_;
-  llvm::ObjectCache *objects_;
 };
 
-// The backend's output caught on its way past: notifyObjectCompiled() hands
-// over the buffer the linker is about to get, so nothing is re-serialised.
-// Keyed by module identifier, all the callback is given.  A hand-off, not a
-// cache: an entry is taken out once, by the compile that put it in.
-class Objects final : public llvm::ObjectCache {
-public:
-  void notifyObjectCompiled(const llvm::Module *m,
-                            llvm::MemoryBufferRef obj) override {
-    const auto bytes =
-        std::as_bytes(std::span{obj.getBuffer().data(), obj.getBufferSize()});
-    auto kept = std::make_shared<const std::vector<std::byte>>(bytes.begin(),
-                                                               bytes.end());
-    const std::lock_guard lock{mutex_};
-    kept_[m->getModuleIdentifier()] = std::move(kept);
-  }
-
-  // The disk half is consulted before the compile layer is reached at all, and
-  // nothing means "compile it".
-  std::unique_ptr<llvm::MemoryBuffer> getObject(const llvm::Module *) override {
-    return nullptr;
-  }
-
-  // Forget them: holding on would keep every object ever compiled alive.
-  [[nodiscard]] KernelObject take(llvm::StringRef id) {
-    const std::lock_guard lock{mutex_};
-    const auto it = kept_.find(id);
-    if (it == kept_.end()) {
-      return {};
-    }
-    auto out = std::move(it->second);
-    kept_.erase(it);
-    return out;
-  }
-
-private:
-  std::mutex mutex_;
-  // The key is a module identifier and this is LLVM's container for one: a
-  // single allocation per entry with the characters inside it, where a
-  // node-based map pays for a std::string of its own as well.
-  llvm::StringMap<KernelObject> kept_;
-};
-
-// Everything an object file must agree with, as one line.  The feature string
-// is folded, not spelled: detectHost() answers with 1.5 KB of
-// `+avx2,-avx512f,...` and a reader can only act on *that* they differ.
+// The host as one line.  The feature string is folded, not spelled:
+// detectHost() answers with 1.5 KB of `+avx2,-avx512f,...`.
 [[nodiscard]] std::string
 host_identity_of(const llvm::orc::JITTargetMachineBuilder &machine) {
   const std::string features = machine.getFeatures().getString();
   boost::hash2::fnv1a_64 h;
   h.update(features.data(), features.size());
   const llvm::StringRef cpu = machine.getCPU();
-  // The kernel's calling convention rides along, so an object from a build
-  // that passed different arguments is a miss and not a crash.
   return std::format("{}/{}/feat-{:016x}/llvm-" LLVM_VERSION_STRING "/abi-2",
                      machine.getTargetTriple().str(),
                      cpu.empty() ? std::string_view{"generic"}
@@ -370,7 +319,6 @@ struct Host {
   bool libmvec;
   unsigned lanes;        // What a derived Options::lanes means here
   unsigned veclib_lanes; // and under a vector library
-  Objects &objects;
   std::shared_ptr<void> code;
 
   [[nodiscard]] unsigned lanes_for(const Options &opt) const {
@@ -410,8 +358,7 @@ private:
       return std::unexpected{compile_error{
           errc::jit_verify, "the emitted module failed verification"}};
     }
-    // The object cache keys on the module and LLVM prints this in diagnostics;
-    // the kernel's name is already unique per compile.
+    // LLVM prints this in diagnostics; the kernel's name is unique per compile.
     m->setModuleIdentifier(name_);
     m->addModuleFlag(llvm::Module::Error, kCodegenFlag,
                      std::to_underlying(opt_.codegen.codegen_level));
@@ -464,9 +411,7 @@ private:
     return Kernel<T>{sym->toPtr<typename Kernel<T>::function_type>(),
                   KernelShape::of(g_),
                   Externs::of(g_),
-                  std::move(host_.code),
-                  std::make_shared<const std::string>(name_),
-                  host_.objects.take(name_)};
+                  std::move(host_.code)};
   }
 
   Host host_;
@@ -478,14 +423,7 @@ private:
 
 } // namespace
 
-// --- objects kept between runs -----------------------------------------------
-//
-// Not compiling the same graph twice dominates every other optimisation here: a
-// compile costs seconds against a graph's microseconds.
 struct Compiler::Impl {
-  // Before `jit` and it must stay there: the compile layer holds a pointer to
-  // this, and members are destroyed in reverse declaration order.
-  Objects objects;
   std::unique_ptr<llvm::orc::LLJIT> jit;
   // Copied before the builder goes to LLJIT: every compile stamps its own.
   std::optional<llvm::orc::JITTargetMachineBuilder> machine;
@@ -521,10 +459,10 @@ struct Compiler::Impl {
     // Not setNumCompileThreads: the backend runs on the thread that asked, and
     // no idle pool is spawned.
     auto compiler_factory =
-        [objects = &impl->objects](llvm::orc::JITTargetMachineBuilder machine)
+        [](llvm::orc::JITTargetMachineBuilder machine)
         -> llvm::Expected<
             std::unique_ptr<llvm::orc::IRCompileLayer::IRCompiler>> {
-      return std::make_unique<LevelledCompiler>(std::move(machine), objects);
+      return std::make_unique<LevelledCompiler>(std::move(machine));
     };
     if (auto jit = llvm::orc::LLJITBuilder()
                        .setJITTargetMachineBuilder(std::move(*jtmb))
@@ -570,57 +508,6 @@ struct Compiler::Impl {
     return impl;
   }
 
-  // One per adopted object: the symbol is baked into the bytes, so two objects
-  // from one graph share a name and the main dylib would refuse the second.
-  // The link order keeps libm and the vector-math generators reachable.
-  template <CKernelScalar T>
-  [[nodiscard]] static compile_result<Kernel<T>>
-  link(const std::shared_ptr<Impl> &self, std::span<const std::byte> object,
-       std::string_view symbol, const rt::Graph<T> &g) {
-    auto &jit = *self->jit;
-    auto jd =
-        jit.createJITDylib("ddx_adopted_" + std::to_string(self->counter++));
-    if (!jd) {
-      return std::unexpected{
-          as_error(errc::jit_module, "creating a dylib", jd.takeError())};
-    }
-    jd->addToLinkOrder(jit.getMainJITDylib());
-    // A failed link is a miss to run(), which compiles instead: nothing of it
-    // may stay in the process-wide session.
-    boost::scope::scope_exit evict{[&] {
-      llvm::consumeError(jit.getExecutionSession().removeJITDylib(*jd));
-    }};
-
-    // Copied: the linker keeps the buffer as long as the code lives.  Kept as
-    // well, so an adopted kernel saves again like any other.
-    auto kept = std::make_shared<const std::vector<std::byte>>(object.begin(),
-                                                               object.end());
-    if (auto e = jit.addObjectFile(
-            *jd, llvm::MemoryBuffer::getMemBufferCopy(llvm::StringRef{
-                     reinterpret_cast<const char *>(object.data()),
-                     object.size()}))) {
-      return std::unexpected{
-          as_error(errc::jit_object, "adding the object", std::move(e))};
-    }
-
-    // Where a malformed object is found: addObjectFile only queues it, and the
-    // link runs on the lookup.
-    auto sym = jit.lookup(*jd, symbol);
-    if (!sym) {
-      return std::unexpected{
-          as_error(errc::jit_lookup,
-                   llvm::Twine{"looking up "} + llvm::StringRef{symbol},
-                   sym.takeError())};
-    }
-    evict.set_active(false);
-    return Kernel<T>{sym->toPtr<typename Kernel<T>::function_type>(),
-                  KernelShape::of(g),
-                  Externs::of(g),
-                  self,
-                  std::make_shared<const std::string>(symbol),
-                  std::move(kept)};
-  }
-
   // On Impl, so a queued compile needs only a share of this and not a Compiler
   // that may have been moved from.
   // What a CompileJob is handed: the process-wide JIT, and a share of this,
@@ -633,7 +520,6 @@ struct Compiler::Impl {
                 .libmvec = self->libmvec,
                 .lanes = self->bits / unsigned{8 * sizeof(T)},
                 .veclib_lanes = self->veclib_lanes[std::same_as<T, float>],
-                .objects = self->objects,
                 .code = self};
   }
 
@@ -649,39 +535,9 @@ struct Compiler::Impl {
           .detail =
               "tensor nodes run on the sweep; no kernel is built for them"}};
     }
-    Host host = host_of<T>(self);
-    const bool caching = !opt.cache_dir.empty();
-    Codegen emitted = opt.codegen;
-    emitted.lanes = *Lanes::exactly(host.lanes_for(opt));
-    // The library applied, not the one asked for: Auto, or Libmvec where it
-    // did not load, is two kernels under one request.
-    emitted.veclib = want_veclib(llvm::Triple{host.triple}, opt, host.libmvec)
-                         ? VecLib::Libmvec
-                         : VecLib::None;
-    const std::uint64_t key =
-        caching ? detail::cache_key(detail::digest(g), self->host, emitted) : 0;
-    if (caching) {
-      if (const auto entry = detail::read_entry(opt.cache_dir, key)) {
-        // The shape comes from the live graph, never the file: a forged entry
-        // supplies code and a symbol, never a column count.
-        if (auto adopted = link(self, entry->code, entry->symbol, g); adopted) {
-          // The phases are zero because they did not happen.
-          rep.nodes = g.live_count();
-          return adopted;
-        }
-        // A miss like any other, left on disk: another process may be
-        // mid-write, and a stale entry costs one failed link.
-      }
-    }
-
-    CompileJob<T> work{std::move(host), g, opt,
-                    "ddx_kernel_" + std::to_string(self->counter++), rep};
-    auto kernel = work();
-    if (caching && kernel && !kernel->object().empty()) {
-      detail::write_entry(opt.cache_dir, key, kernel->symbol(),
-                          kernel->object());
-    }
-    return kernel;
+    return CompileJob<T>{host_of<T>(self), g, opt,
+                         "ddx_kernel_" + std::to_string(self->counter++),
+                         rep}();
   }
 };
 
@@ -709,10 +565,11 @@ compile_result<Kernel<T>> Compiler::compile(const rt::Graph<T> &g,
 }
 
 template <CKernelScalar T>
-compile_result<Kernel<T>> Compiler::adopt(std::span<const std::byte> object,
-                                          std::string_view symbol,
-                                          const rt::Graph<T> &g) {
-  return Impl::link(impl_, object, symbol, g);
+compile_result<Kernel<T>> Compiler::adopt(std::span<const std::byte>,
+                                          std::string_view,
+                                          const rt::Graph<T> &) {
+  return std::unexpected{
+      compile_error{errc::jit_object, "objects are not kept"}};
 }
 
 template <CKernelScalar T>

@@ -297,9 +297,8 @@ that call waits for it.
 `points` is the batch you intend to hand one call, stated because the kernel is
 built before any call exists to infer it from. It decides the lane width and
 nothing else: a call carrying some other number is answered correctly, just not
-by the kernel that number would have built. `cache_dir` keeps compiled objects
-between runs, so a second run links instead of compiling — roughly three orders
-of magnitude quicker; an empty string disables it.
+by the kernel that number would have built. `cache_dir` is deprecated and
+ignored: setting it warns.
 
 ## Reference
 

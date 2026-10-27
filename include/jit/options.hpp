@@ -5,11 +5,13 @@
 
 #include <boost/describe.hpp>
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <optional>
 #include <string>
+#include <string_view>
 
 // What a caller says about compiling, and nothing that compiles: header types
 // in every build, so an Equation has one shape whether or not a backend was
@@ -81,9 +83,7 @@ enum class Backend : std::uint8_t {
 #endif
 };
 
-// What decides the machine code, and nothing else: the identity a stored
-// object is matched against and the object cache is keyed on, so a field here
-// is a field of both by construction.
+// What decides the machine code, and nothing else.
 struct Codegen {
   Lanes lanes = Lanes::derived();
   OptLevel opt_level = default_opt_level;
@@ -116,8 +116,17 @@ struct Options {
   std::size_t points = 1;
   Codegen codegen{};
   bool time_passes = false; // Per-pass timing to stderr
-  // Object cache directory, empty for none; keyed by graph, options and host.
-  std::string cache_dir{};
+  // Nothing is cached.  The deprecation is on the conversion, not the member:
+  // a deprecated member warns wherever a struct holding Options is copied.
+  struct Ignored {
+    Ignored() = default;
+    template <typename S>
+      requires std::constructible_from<std::string_view, const S &>
+    [[deprecated("ignored: no object cache")]] Ignored(const S &) noexcept {}
+    [[nodiscard]] static constexpr bool empty() noexcept { return true; }
+    friend bool operator==(const Ignored &, const Ignored &) = default;
+  };
+  Ignored cache_dir{};
 
   friend bool operator==(const Options &, const Options &) = default;
 };
