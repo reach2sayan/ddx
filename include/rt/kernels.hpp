@@ -62,6 +62,8 @@ template <impl::Numeric T = double> struct TensorKernelTable {
   void (*zip)(OpCode, In, In, Out) = nullptr;
   T (*sum)(In) = nullptr;
   void (*gemm)(std::size_t, std::size_t, std::size_t, In, In, Out) = nullptr;
+  // Optional: M v and M^T v of a square M in one pass.  Null is two gemvs.
+  void (*gemv_pair)(std::size_t, In, In, Out, Out) = nullptr;
   std::string_view name;
 };
 
@@ -70,14 +72,18 @@ template <impl::Numeric T = double> struct TensorKernelTable {
 template <typename B, impl::Numeric T = double>
   requires TensorKernels<B, T>
 [[nodiscard]] consteval TensorKernelTable<T> tensor_kernel_table() noexcept {
-  return {.gemv = &B::gemv,
-          .dot = &B::dot,
-          .scale = &B::scale,
-          .map = &B::map,
-          .zip = &B::zip,
-          .sum = &B::sum,
-          .gemm = &B::gemm,
-          .name = B::name};
+  TensorKernelTable<T> t{.gemv = &B::gemv,
+                         .dot = &B::dot,
+                         .scale = &B::scale,
+                         .map = &B::map,
+                         .zip = &B::zip,
+                         .sum = &B::sum,
+                         .gemm = &B::gemm,
+                         .name = B::name};
+  if constexpr (requires { B::gemv_pair; }) {
+    t.gemv_pair = &B::gemv_pair;
+  }
+  return t;
 }
 
 namespace reference {
@@ -102,8 +108,9 @@ template <impl::Numeric T = double> struct Kernels {
     }
   }
 
-  [[nodiscard]] static constexpr T fold(std::array<T, kLanes> &acc) noexcept {
-    for (std::size_t w = kLanes / 2; w > 0; w /= 2) {
+  template <std::size_t N>
+  [[nodiscard]] static constexpr T fold(std::array<T, N> &acc) noexcept {
+    for (std::size_t w = N / 2; w > 0; w /= 2) {
       for (std::size_t l = 0; l < w; ++l) {
         acc[l] = acc[l] + acc[l + w];
       }
@@ -142,6 +149,54 @@ template <impl::Numeric T = double> struct Kernels {
       for (std::size_t i = 0; i < r; ++i) {
         y[i] = madd(col[i], x, y[i]);
       }
+    }
+  }
+
+  // M v into `plain` and M^T v into `transposed`, M n x n: one pass over M,
+  // four columns a pass, each column's dot in eight lanes.
+  static constexpr void gemv_pair(std::size_t n, In m, In v, Out plain,
+                                  Out transposed) noexcept {
+    constexpr std::size_t L = 8;
+    std::ranges::fill(plain, T{});
+    T *DDX_RESTRICT y = plain.data();
+    const T *DDX_RESTRICT x = v.data();
+    const std::size_t whole = n / L * L;
+    const auto columns = [&]<std::size_t C>(std::integral_constant<std::size_t, C>,
+                                            std::size_t j0) {
+      std::array<const T *, C> col{};
+      std::array<T, C> xj{};
+      for (std::size_t d = 0; d < C; ++d) {
+        col[d] = m.data() + (j0 + d) * n;
+        xj[d] = x[j0 + d];
+      }
+      std::array<std::array<T, L>, C> acc{};
+      for (std::size_t i = 0; i < whole; i += L) {
+        for (std::size_t l = 0; l < L; ++l) {
+          T yi = y[i + l];
+          for (std::size_t d = 0; d < C; ++d) {
+            const T mi = col[d][i + l];
+            yi = madd(mi, xj[d], yi);
+            acc[d][l] = madd(mi, x[i + l], acc[d][l]);
+          }
+          y[i + l] = yi;
+        }
+      }
+      for (std::size_t i = whole; i < n; ++i) {
+        for (std::size_t d = 0; d < C; ++d) {
+          y[i] = madd(col[d][i], xj[d], y[i]);
+          acc[d][i - whole] = madd(col[d][i], x[i], acc[d][i - whole]);
+        }
+      }
+      for (std::size_t d = 0; d < C; ++d) {
+        transposed[j0 + d] = fold(acc[d]);
+      }
+    };
+    std::size_t j = 0;
+    for (; j + 4 <= n; j += 4) {
+      columns(std::integral_constant<std::size_t, 4>{}, j);
+    }
+    for (; j < n; ++j) {
+      columns(std::integral_constant<std::size_t, 1>{}, j);
     }
   }
 

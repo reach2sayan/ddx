@@ -331,10 +331,9 @@ public:
     return fused_.empty() ? no_node : fused_[v];
   }
   // By id, the other product of a pair -- one matrix times one vector, both
-  // ways round -- which the schedule runs next to it, else no_node.
-  [[nodiscard]] NodeId paired_with(NodeId v) const {
-    return paired_.empty() ? no_node : paired_[v];
-  }
+  // ways round -- which the schedule runs next to it, else no_node.  Empty
+  // for a graph with no tensor.
+  [[nodiscard]] std::span<const NodeId> pairs() const { return paired_; }
 
   // How many input columns `xs` carries: the symbol count is not the width.
   [[nodiscard]] std::size_t arity() const { return inputs_.total(); }

@@ -1413,7 +1413,8 @@ private:
       return detail::TapeView<T>{.scalar_rows = graph.rows(),
                                  .tensor_rows = rows.rows,
                                  .vtape = vtape.data(),
-                                 .kernels = &kernels};
+                                 .kernels = &kernels,
+                                 .pairs = graph.pairs()};
     };
     // The graph's width, not the arena's symbol count: `xs` carries one column
     // per input, and a pipeline may hold leaves that are not symbols.

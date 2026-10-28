@@ -702,7 +702,7 @@ private:
       return;
     case rt::OpCode::MatVec: {
       // A pair is one nest, at whichever of the two comes first.
-      const rt::NodeId mate = g_.paired_with(v);
+      const rt::NodeId mate = g_.pairs()[v];
       if (done_[v]) {
         return;
       }

@@ -120,6 +120,9 @@ template <typename U> struct TapeView {
   std::span<const TensorRow> tensor_rows{};
   U *vtape = nullptr;
   const TensorKernelTable<U> *kernels = nullptr;
+  // By id, a product's pair (Graph::pairs), which its step forms too; empty
+  // is every product on its own.
+  std::span<const NodeId> pairs{};
 
   [[nodiscard]] constexpr std::uint32_t row(NodeId v) const noexcept {
     return scalar_rows.empty() ? v : scalar_rows[v];
@@ -283,8 +286,29 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
       }
       case OpCode::MatVec: {
         const Shape m = shape_of(b, n.in[0]);
-        kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), to,
-                get<Orientation>(n) == Orientation::transposed);
+        const bool transposed = get<Orientation>(n) == Orientation::transposed;
+        const NodeId mate = t.pairs.empty() ? no_node : t.pairs[v];
+        if (mate == no_node) {
+          kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), to,
+                  transposed);
+          break;
+        }
+        if (mate < v) {
+          break; // formed by its pair, the step before
+        }
+        // The pair's first, so both: one pass over the matrix where the table
+        // has one.
+        const auto [other_at, other_w] = row(mate);
+        const std::span<U> other{other_at + k * other_w, other_w};
+        if (kt.gemv_pair != nullptr) {
+          kt.gemv_pair(m.rows, in(n.in[0], k), in(n.in[1], k),
+                       transposed ? other : to, transposed ? to : other);
+        } else {
+          kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), to,
+                  transposed);
+          kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), other,
+                  !transposed);
+        }
         break;
       }
       case OpCode::MatMul: {

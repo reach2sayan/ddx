@@ -1672,6 +1672,6 @@ TEST(RtTensorGraph, AQuadraticFormsTwoProductsAreAPair) {
                         ddx::impl::to<std::vector<std::size_t>>();
   ASSERT_EQ(products.size(), 2u);
   EXPECT_EQ(products[1], products[0] + 1);
-  EXPECT_EQ(g.paired_with(steps[products[0]].node), steps[products[1]].node);
-  EXPECT_EQ(g.paired_with(steps[products[1]].node), steps[products[0]].node);
+  EXPECT_EQ(g.pairs()[steps[products[0]].node], steps[products[1]].node);
+  EXPECT_EQ(g.pairs()[steps[products[1]].node], steps[products[0]].node);
 }
