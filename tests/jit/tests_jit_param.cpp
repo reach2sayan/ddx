@@ -65,7 +65,7 @@ TEST(JitParam, AnEquationWithAParamCompilesAndAgreesWithTheSweep) {
   const auto swept = build();
   auto compiled = build();
   compiled.options({.backend = ddx::jit::Backend::Compile, .points = 1});
-  ASSERT_TRUE(compiled.wait_for_kernel());
+  ASSERT_TRUE(compiled.uses_kernel());
   ASSERT_TRUE(compiled.uses_kernel());
 
   for (const double k : {0.5, 2.0}) {

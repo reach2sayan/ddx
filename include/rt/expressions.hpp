@@ -49,6 +49,14 @@ struct Rooting {
   [[nodiscard]] static constexpr bool scalar(const Expression<T> &e) noexcept {
     return e.size() == 0 && !e.is_matrix();
   }
+  // The arena of the first expression that names one; a literal names none.
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr Arena<T> *
+  first_arena(std::span<const Expression<T>> es) noexcept {
+    const auto named = std::ranges::find_if(
+        es, [](const auto &e) { return e.arena() != nullptr; });
+    return named == es.end() ? nullptr : named->arena();
+  }
 };
 } // namespace detail
 

@@ -82,6 +82,15 @@ inline constexpr bool has_deriv_from_value_v =
 
 } // namespace ddx::impl::detail
 
+// The two-argument functions every front end spells, as rt's binary rows:
+// (factory, enumerator, label, value functor, ops/adjoints.hpp descriptor).
+#define DDX_BINARY_MATH_TABLE(X)                                               \
+  X(pow, Pow, "pow", impl::detail::pow_impl, PowOpFn)                          \
+  X(atan2, Atan2, "atan2", impl::detail::atan2_impl, Atan2OpFn)                \
+  X(hypot, Hypot, "hypot", impl::detail::hypot_impl, HypotOpFn)                \
+  X(max, Max, "max", impl::detail::max_impl, MaxOpFn)                          \
+  X(min, Min, "min", impl::detail::min_impl, MinOpFn)
+
 // `abs` is absent: its derivative is a sign, not a function of the primal.
 #define DDX_UNARY_MATH_TABLE(X)                                                \
   X(sin, SineOp, "sin")                                                        \

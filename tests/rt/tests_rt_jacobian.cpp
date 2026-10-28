@@ -616,7 +616,7 @@ TEST(RtJacobian, SelectSurvivesEveryWalkerThatRebuildsANode) {
 
 #ifdef DDX_HAS_JIT
   eq.options({.backend = ddx::jit::Backend::Compile, .points = 1});
-  ASSERT_TRUE(eq.wait_for_kernel());
+  ASSERT_TRUE(eq.uses_kernel());
   const auto compiled = *eq.jacobian(std::span<const double>{at});
   EXPECT_EQ(swept, compiled) << "the kernel and the sweep disagree on a select";
 #endif
@@ -664,8 +664,8 @@ TEST(RtJacobian, ComparisonsAgreeWithTheKernelAtNaN) {
     const std::array<double, 3> at{nan, 1.0, 2.0}; // c, f, t
     const double interpreted = *raw.evaluate(std::span<const double>{at});
     raw.options({.backend = ddx::jit::Backend::Compile, .points = 1});
-    ASSERT_TRUE(raw.wait_for_kernel());
-    // Through jacobian(), not evaluate(): wait_for_kernel() waits on the
+    ASSERT_TRUE(raw.uses_kernel());
+    // Through jacobian(), not evaluate(): uses_kernel() builds the
     // Jacobian lane, and the values lane would still be interpreting.
     double value = 0.0;
     std::vector<double> cells(*raw.jacobian_columns());
@@ -685,7 +685,7 @@ TEST(RtJacobian, ComparisonsAgreeWithTheKernelAtNaN) {
   }
 
   model.options({.backend = ddx::jit::Backend::Compile, .points = 1});
-  ASSERT_TRUE(model.wait_for_kernel());
+  ASSERT_TRUE(model.uses_kernel());
   for (const auto [i, at] : std::views::enumerate(points)) {
     const double compiled = *model.evaluate(std::span<const double>{at});
     const double interpreted = swept[static_cast<std::size_t>(i)];

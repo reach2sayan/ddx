@@ -5,12 +5,7 @@
 #include "rt/interpret.hpp"
 #include "rt/pipeline.hpp"
 
-#include <boost/hash2/fnv1a.hpp>
-#include <boost/hash2/hash_append.hpp>
 #include <boost/mp11/algorithm.hpp>
-#include <boost/scope/scope_exit.hpp>
-
-#include <llvm/Config/llvm-config.h>
 
 #include <llvm/ADT/StringMap.h>
 
@@ -22,8 +17,6 @@
 #include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/Mangling.h>
-#include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
-#include <llvm/IR/Constants.h>
 #include <llvm/IR/DiagnosticInfo.h>
 #include <llvm/IR/DiagnosticPrinter.h>
 #include <llvm/IR/Function.h>
@@ -40,17 +33,12 @@
 #include <array>
 #include <atomic>
 #include <bit>
-#include <chrono>
 #include <cmath>
 #include <concepts>
-#include <cstring>
-#include <format>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -103,10 +91,7 @@ template <CKernelScalar T>
 void tensor_step(const rt::detail::TensorCall<T> &c, rt::NodeId v,
                  std::size_t lanes, T *tape, T *vtape) {
   const rt::Graph<T> &g = *c.graph;
-  const rt::detail::TapeView<T> t{.scalar_rows = g.rows(),
-                                  .tensor_rows = g.tensors().rows,
-                                  .vtape = vtape,
-                                  .kernels = c.kernels};
+  const auto t = rt::detail::TapeView<T>::of(g, vtape, c.kernels);
   boost::mp11::mp_with_index<tensor_widths>(
       static_cast<std::size_t>(std::countr_zero(lanes)), [&](auto i) {
         constexpr std::size_t W = std::size_t{1} << decltype(i)::value;
@@ -232,74 +217,6 @@ template <CKernelScalar T>
   return std::max(1u, static_cast<unsigned>(fixed.getFixedValue()));
 }
 
-// A derived width is the host's, or under a vector library the widest it
-// serves, so it never asks for a call that is not there.  A stated width is
-// taken as stated.
-[[nodiscard]] unsigned emitted_lanes(const Options &opt,
-                                     const std::string &triple,
-                                     const bool have_libmvec,
-                                     const unsigned host, const unsigned lib) {
-  return opt.codegen.lanes.stated().value_or(
-      want_veclib(llvm::Triple{triple}, opt, have_libmvec) ? std::min(host, lib)
-                                                           : host);
-}
-
-// On the module rather than the JIT, so one JIT serves compiles at different
-// levels.
-constexpr const char *kCodegenFlag = "ddx.codegen";
-
-[[nodiscard]] std::optional<std::uint64_t> flag_of(const llvm::Module &m,
-                                                   const char *key) {
-  const auto *const flag =
-      llvm::mdconst::extract_or_null<llvm::ConstantInt>(m.getModuleFlag(key));
-  return flag != nullptr ? std::optional{flag->getZExtValue()} : std::nullopt;
-}
-
-// The flag is written from std::to_underlying(OptLevel), which is LLVM's own
-// 0..3 scale.
-llvm::CodeGenOptLevel codegen_level_of(const llvm::Module &m) {
-  return llvm::CodeGenOpt::getLevel(
-             static_cast<int>(flag_of(m, kCodegenFlag).value_or(2)))
-      .value_or(llvm::CodeGenOptLevel::Default);
-}
-
-// One TargetMachine per module, which is what makes two compiles at once safe:
-// the default SimpleCompiler shares one whose subtarget cache is
-// unsynchronised.
-class LevelledCompiler final : public llvm::orc::IRCompileLayer::IRCompiler {
-public:
-  explicit LevelledCompiler(llvm::orc::JITTargetMachineBuilder machine)
-      : IRCompiler(llvm::orc::irManglingOptionsFromTargetOptions(
-            machine.getOptions())),
-        machine_(std::move(machine)) {}
-
-  llvm::Expected<std::unique_ptr<llvm::MemoryBuffer>>
-  operator()(llvm::Module &m) override {
-    auto machine = machine_;
-    machine.setCodeGenOptLevel(codegen_level_of(m));
-    auto tm = machine.createTargetMachine();
-    return (!tm) ? tm.takeError() : llvm::orc::SimpleCompiler{**tm}(m);
-  }
-
-private:
-  llvm::orc::JITTargetMachineBuilder machine_;
-};
-
-// The host as one line.  The feature string is folded, not spelled:
-// detectHost() answers with 1.5 KB of `+avx2,-avx512f,...`.
-[[nodiscard]] std::string
-host_identity_of(const llvm::orc::JITTargetMachineBuilder &machine) {
-  const std::string features = machine.getFeatures().getString();
-  boost::hash2::fnv1a_64 h;
-  h.update(features.data(), features.size());
-  const llvm::StringRef cpu = machine.getCPU();
-  return std::format("{}/{}/feat-{:016x}/llvm-" LLVM_VERSION_STRING "/abi-2",
-                     machine.getTargetTriple().str(),
-                     cpu.empty() ? std::string_view{"generic"}
-                                 : std::string_view{cpu.data(), cpu.size()},
-                     h.result());
-}
-
 // Asked of the target's cost model rather than a feature list, so
 // prefer-256-bit parts answer 256 as the backend would split them anyway.
 [[nodiscard]] unsigned
@@ -323,10 +240,9 @@ vector_bits(llvm::orc::JITTargetMachineBuilder machine) {
 // One straight-line block the graph has already shared, so all the middle end
 // can do is fold.  A vector library rewrites the lane intrinsics to its own
 // entry points here; with none the backend unrolls them into scalar libm calls.
-[[nodiscard]] llvm::Error optimize(llvm::Module &m, llvm::TargetMachine &tm,
-                                   const Options &opt,
-                                   const bool have_libmvec) {
-  const llvm::Triple triple(m.getTargetTriple());
+void optimize(llvm::Module &m, llvm::TargetMachine &tm, const Options &opt,
+              const bool have_libmvec) {
+  const llvm::Triple &triple = tm.getTargetTriple();
   llvm::TargetLibraryInfoImpl tlii =
       target_library_info(triple, opt, have_libmvec);
 
@@ -373,154 +289,33 @@ vector_bits(llvm::orc::JITTargetMachineBuilder machine) {
     mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
   }
   mpm.run(m, mam);
-  return llvm::Error::success();
 }
 
-using Clock = std::chrono::steady_clock;
-
-// `code` is what a Kernel holds a share of, so it outlives every Compiler that
-// named it.  The machine is a *recipe*: TargetMachine caches subtargets in an
-// unsynchronised map, so two compiles must not share one.
-struct Host {
-  llvm::orc::LLJIT &jit;
-  llvm::orc::JITTargetMachineBuilder machine;
-  std::string triple;
-  bool libmvec;
-  unsigned lanes;        // What a derived Options::lanes means here
-  unsigned veclib_lanes; // and under a vector library
-  std::shared_ptr<void> code;
-
-  [[nodiscard]] unsigned lanes_for(const Options &opt) const {
-    return emitted_lanes(opt, triple, libmvec, lanes, veclib_lanes);
-  }
-};
-
-// One graph compiled once, filling the report it was handed as it goes.
-template <CKernelScalar T> class CompileJob : private impl::pinned {
-public:
-  CompileJob(Host host, const rt::Graph<T> &g, const Options &opt,
-             std::string name, CompileReport &into)
-      : host_(std::move(host)), g_(g), opt_(opt), name_(std::move(name)),
-        rep_(into) {}
-
-  [[nodiscard]] compile_result<llvm::orc::ThreadSafeModule> prepared() {
-    return emitted().and_then([this](llvm::orc::ThreadSafeModule m) {
-      return optimized(std::move(m));
-    });
-  }
-
-  [[nodiscard]] compile_result<Kernel<T>> operator()() {
-    return prepared().and_then([this](llvm::orc::ThreadSafeModule m) {
-      return materialised(std::move(m));
-    });
-  }
-
-private:
-  [[nodiscard]] compile_result<llvm::orc::ThreadSafeModule> emitted() {
-    const boost::scope::scope_exit clock{
-        [this, start = Clock::now()] { rep_.emit = Clock::now() - start; }};
-    auto ctx = std::make_unique<llvm::LLVMContext>();
-    // A tensor loop is marked for the vectoriser, which says so on stderr
-    // when it declines one; that is the loop running scalar, not an error.
-    ctx->setDiagnosticHandlerCallBack(
-        [](const llvm::DiagnosticInfo *d, void *) {
-          if (d->getKind() == llvm::DK_OptimizationFailure) {
-            return;
-          }
-          llvm::DiagnosticPrinterRawOStream out(llvm::errs());
-          llvm::errs() << llvm::LLVMContext::getDiagnosticMessagePrefix(
-                              d->getSeverity())
-                       << ": ";
-          d->print(out);
-          llvm::errs() << '\n';
-        });
-    auto m = detail::emit_module(*ctx, g_, name_, lanes(),
-                                 host_.jit.getDataLayout(), host_.triple);
-    if (!m) {
-      // The emitter has already written the verifier's own diagnosis.
-      return std::unexpected{compile_error{
-          errc::jit_verify, "the emitted module failed verification"}};
+// A tensor loop is marked for the vectoriser, which says so on stderr when it
+// declines one; that is the loop running scalar, not an error.
+void quiet_vectoriser(llvm::LLVMContext &ctx) {
+  ctx.setDiagnosticHandlerCallBack([](const llvm::DiagnosticInfo *d, void *) {
+    if (d->getKind() == llvm::DK_OptimizationFailure) {
+      return;
     }
-    // LLVM prints this in diagnostics; the kernel's name is unique per compile.
-    m->setModuleIdentifier(name_);
-    m->addModuleFlag(llvm::Module::Error, kCodegenFlag,
-                     std::to_underlying(opt_.codegen.codegen_level));
-    rep_.nodes = g_.live_count();
-    rep_.instructions = m->getInstructionCount();
-    return llvm::orc::ThreadSafeModule{
-        std::move(m), llvm::orc::ThreadSafeContext{std::move(ctx)}};
-  }
-
-  [[nodiscard]] compile_result<llvm::orc::ThreadSafeModule>
-  optimized(llvm::orc::ThreadSafeModule m) {
-    const boost::scope::scope_exit clock{
-        [&, start = Clock::now()] { rep_.optimize = Clock::now() - start; }};
-    // One machine per compile -- see Host.
-    auto tm = host_.machine.createTargetMachine();
-    if (!tm) {
-      return std::unexpected{as_error(
-          errc::jit_target, "creating a target machine", tm.takeError())};
-    }
-    std::optional<compile_error> refused;
-    m.withModuleDo([&](llvm::Module &mod) {
-      if (auto e = optimize(mod, **tm, opt_, host_.libmvec)) {
-        refused = as_error(errc::jit_module, "building the pass pipeline",
-                           std::move(e));
-      }
-    });
-
-    if (refused) {
-      return std::unexpected{*refused};
-    }
-    return m;
-  }
-
-  // The backend runs on materialisation, so the lookup is inside this phase or
-  // its number is wrong.
-  [[nodiscard]] compile_result<Kernel<T>>
-  materialised(llvm::orc::ThreadSafeModule m) {
-    const boost::scope::scope_exit clock{
-        [this, start = Clock::now()] { rep_.codegen = Clock::now() - start; }};
-    if (auto e = host_.jit.addIRModule(std::move(m))) {
-      return std::unexpected{
-          as_error(errc::jit_module, "adding the module", std::move(e))};
-    }
-    auto sym = host_.jit.lookup(name_);
-    if (!sym) {
-      return std::unexpected{as_error(errc::jit_lookup,
-                                      llvm::Twine{"looking up "} + name_,
-                                      sym.takeError())};
-    }
-    return Kernel<T>{sym->toPtr<typename Kernel<T>::function_type>(),
-                     KernelShape::of(g_, lanes()), Externs::of(g_),
-                     std::move(host_.code)};
-  }
-
-  // Every width gives the same bits, so a tensor graph rounds down to one its
-  // step is instantiated at.
-  [[nodiscard]] unsigned lanes() const {
-    const unsigned w = host_.lanes_for(opt_);
-    return g_.has_tensors() ? std::bit_floor(std::min(w, widest_tensor_lanes))
-                            : w;
-  }
-
-  Host host_;
-  const rt::Graph<T> &g_;
-  const Options &opt_;
-  std::string name_;
-  CompileReport &rep_;
-};
+    llvm::DiagnosticPrinterRawOStream out(llvm::errs());
+    llvm::errs() << llvm::LLVMContext::getDiagnosticMessagePrefix(
+                        d->getSeverity())
+                 << ": ";
+    d->print(out);
+    llvm::errs() << '\n';
+  });
+}
 
 } // namespace
 
+// `self` is what a Kernel holds a share of, so the code outlives every
+// Compiler that named it.
 struct Compiler::Impl {
   std::unique_ptr<llvm::orc::LLJIT> jit;
-  // Copied before the builder goes to LLJIT: every compile stamps its own.
+  // A recipe, not a machine: TargetMachine caches subtargets in an
+  // unsynchronised map, so every compile stamps its own.
   std::optional<llvm::orc::JITTargetMachineBuilder> machine;
-  std::string triple;
-  // Folded once at bring-up: the builder it comes from goes to LLJIT and no
-  // longer answers for the host.
-  std::string host;
   // The only shared mutable state: LLJIT is synchronised, but two threads
   // naming a module alike would hand it a duplicate symbol.
   std::atomic<unsigned> counter{0};
@@ -540,23 +335,14 @@ struct Compiler::Impl {
           as_error(errc::jit_target, "detecting the host", jtmb.takeError())};
     }
     impl->machine = *jtmb;
-    impl->triple = jtmb->getTargetTriple().str();
     impl->bits = vector_bits(*jtmb);
     impl->veclib_lanes = {library_lanes<double>(jtmb->getTargetTriple()),
                           library_lanes<float>(jtmb->getTargetTriple())};
-    impl->host = host_identity_of(*jtmb);
 
     // Not setNumCompileThreads: the backend runs on the thread that asked, and
     // no idle pool is spawned.
-    auto compiler_factory =
-        [](llvm::orc::JITTargetMachineBuilder machine)
-        -> llvm::Expected<
-            std::unique_ptr<llvm::orc::IRCompileLayer::IRCompiler>> {
-      return std::make_unique<LevelledCompiler>(std::move(machine));
-    };
     if (auto jit = llvm::orc::LLJITBuilder()
                        .setJITTargetMachineBuilder(std::move(*jtmb))
-                       .setCompileFunctionCreator(std::move(compiler_factory))
                        .create();
         !jit) {
       return std::unexpected{
@@ -598,82 +384,126 @@ struct Compiler::Impl {
     return impl;
   }
 
-  // On Impl, so a queued compile needs only a share of this and not a Compiler
-  // that may have been moved from.
-  // What a CompileJob is handed: the process-wide JIT, and a share of this,
-  // so the code outlives any Compiler that goes away mid-compile.
+  // A derived width is the host's, or under a vector library the widest it
+  // serves, so it never asks for a call that is not there; a stated width is
+  // taken as stated.  Every width gives the same bits, so a tensor graph
+  // rounds down to one its step is instantiated at.
   template <CKernelScalar T>
-  [[nodiscard]] static Host host_of(const std::shared_ptr<Impl> &self) {
-    return Host{.jit = *self->jit,
-                .machine = *self->machine,
-                .triple = self->triple,
-                .libmvec = self->libmvec,
-                .lanes = self->bits / unsigned{8 * sizeof(T)},
-                .veclib_lanes = self->veclib_lanes[std::same_as<T, float>],
-                .code = self};
+  [[nodiscard]] unsigned lanes(const Options &opt, const bool tensors) const {
+    const unsigned host = bits / unsigned{8 * sizeof(T)};
+    const unsigned w = opt.codegen.lanes.stated().value_or(
+        want_veclib(machine->getTargetTriple(), opt, libmvec)
+            ? std::min(host, veclib_lanes[std::same_as<T, float>])
+            : host);
+    return tensors ? std::bit_floor(std::min(w, widest_tensor_lanes)) : w;
+  }
+
+  // Emitted and optimised for a machine at the options' codegen level.
+  template <CKernelScalar T>
+  [[nodiscard]] compile_result<std::unique_ptr<llvm::Module>>
+  module(llvm::LLVMContext &ctx, llvm::TargetMachine &tm, const rt::Graph<T> &g,
+         const Options &opt, const std::string &name) const {
+    quiet_vectoriser(ctx);
+    auto m = detail::emit_module(ctx, g, name, lanes<T>(opt, g.has_tensors()),
+                                 jit->getDataLayout(),
+                                 tm.getTargetTriple().str());
+    if (!m) {
+      // The emitter has already written the verifier's own diagnosis.
+      return std::unexpected{compile_error{
+          errc::jit_verify, "the emitted module failed verification"}};
+    }
+    optimize(*m, tm, opt, libmvec);
+    return m;
+  }
+
+  [[nodiscard]] compile_result<std::unique_ptr<llvm::TargetMachine>>
+  target(const Options &opt) const {
+    auto recipe = *machine;
+    // OptLevel is LLVM's own 0..3 scale.
+    recipe.setCodeGenOptLevel(
+        llvm::CodeGenOpt::getLevel(std::to_underlying(opt.codegen.codegen_level))
+            .value_or(llvm::CodeGenOptLevel::Default));
+    auto tm = recipe.createTargetMachine();
+    if (!tm) {
+      return std::unexpected{as_error(
+          errc::jit_target, "creating a target machine", tm.takeError())};
+    }
+    return std::move(*tm);
   }
 
   template <CKernelScalar T>
   [[nodiscard]] static compile_result<Kernel<T>>
-  run(const std::shared_ptr<Impl> &self, const rt::Graph<T> &g,
-      const Options &opt, CompileReport &rep) {
-    return CompileJob<T>{host_of<T>(self), g, opt,
-                         "ddx_kernel_" + std::to_string(self->counter++),
-                         rep}();
+  compile(const std::shared_ptr<Impl> &self, const rt::Graph<T> &g,
+          const Options &opt) {
+    const std::string name = "ddx_kernel_" + std::to_string(self->counter++);
+    llvm::LLVMContext ctx;
+    return self->target(opt)
+        .and_then([&](std::unique_ptr<llvm::TargetMachine> tm) {
+          return self->module(ctx, *tm, g, opt, name)
+              .and_then([&](std::unique_ptr<llvm::Module> m)
+                            -> compile_result<std::unique_ptr<llvm::MemoryBuffer>> {
+                auto object = llvm::orc::SimpleCompiler{*tm}(*m);
+                if (!object) {
+                  return std::unexpected{as_error(errc::jit_module, "compiling",
+                                                  object.takeError())};
+                }
+                return std::move(*object);
+              });
+        })
+        .and_then([&](std::unique_ptr<llvm::MemoryBuffer> object)
+                      -> compile_result<Kernel<T>> {
+          if (auto e = self->jit->addObjectFile(std::move(object))) {
+            return std::unexpected{
+                as_error(errc::jit_module, "adding the object", std::move(e))};
+          }
+          auto sym = self->jit->lookup(name);
+          if (!sym) {
+            return std::unexpected{as_error(errc::jit_lookup,
+                                            llvm::Twine{"looking up "} + name,
+                                            sym.takeError())};
+          }
+          return Kernel<T>{
+              sym->toPtr<typename Kernel<T>::function_type>(),
+              KernelShape::of(g, self->lanes<T>(opt, g.has_tensors())),
+              externs_of(g), self};
+        });
   }
 };
 
 Compiler::Compiler(std::shared_ptr<Impl> impl) noexcept
     : impl_{std::move(impl)} {}
 
-std::string_view Compiler::host_identity() const noexcept {
-  return impl_->host;
-}
-
 compile_result<Compiler> Compiler::create() {
   return Impl::bring_up().transform(
       [](std::shared_ptr<Impl> impl) { return Compiler{std::move(impl)}; });
 }
-Compiler::~Compiler() = default;
-Compiler::Compiler(Compiler &&) noexcept = default;
-Compiler &Compiler::operator=(Compiler &&) noexcept = default;
 
 template <CKernelScalar T>
 compile_result<Kernel<T>> Compiler::compile(const rt::Graph<T> &g,
-                                            const Options &opt,
-                                            CompileReport *report) {
-  CompileReport discard;
-  return Impl::run(impl_, g, opt, report != nullptr ? *report : discard);
+                                            const Options &opt) {
+  return Impl::compile(impl_, g, opt);
 }
 
 template <CKernelScalar T>
-compile_result<Kernel<T>> Compiler::adopt(std::span<const std::byte>,
-                                          std::string_view,
-                                          const rt::Graph<T> &) {
-  return std::unexpected{
-      compile_error{errc::jit_object, "objects are not kept"}};
-}
-
-template <CKernelScalar T>
-compile_result<std::string> Compiler::render_ir(const rt::Graph<T> &g,
-                                                const Options &opt) const {
-  CompileReport discard;
-  CompileJob<T> run{Impl::host_of<T>(impl_), g, opt, "ddx_kernel_dump",
-                    discard};
-  return run.prepared().transform([](llvm::orc::ThreadSafeModule m) {
-    std::string out;
-    llvm::raw_string_ostream os(out);
-    m.withModuleDo([&](llvm::Module &mod) { mod.print(os, nullptr); });
-    return out;
-  });
+compile_result<std::string> Compiler::ir(const rt::Graph<T> &g,
+                                         const Options &opt) const {
+  llvm::LLVMContext ctx;
+  return impl_->target(opt).and_then(
+      [&](std::unique_ptr<llvm::TargetMachine> tm) {
+        return impl_->module(ctx, *tm, g, opt, "ddx_kernel_dump")
+            .transform([](std::unique_ptr<llvm::Module> m) {
+              std::string out;
+              llvm::raw_string_ostream os(out);
+              m->print(os, nullptr);
+              return out;
+            });
+      });
 }
 
 #define DDX_JIT_INSTANCES(T)                                                   \
   template DDX_INSTANCE_API compile_result<Kernel<T>> Compiler::compile(       \
-      const rt::Graph<T> &, const Options &, CompileReport *);                 \
-  template DDX_INSTANCE_API compile_result<Kernel<T>> Compiler::adopt(         \
-      std::span<const std::byte>, std::string_view, const rt::Graph<T> &);     \
-  template DDX_INSTANCE_API compile_result<std::string> Compiler::render_ir(   \
+      const rt::Graph<T> &, const Options &);                                  \
+  template DDX_INSTANCE_API compile_result<std::string> Compiler::ir(           \
       const rt::Graph<T> &, const Options &) const;
 DDX_JIT_INSTANCES(double)
 DDX_JIT_INSTANCES(float)

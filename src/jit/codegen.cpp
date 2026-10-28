@@ -55,37 +55,43 @@ llvm::Intrinsic::ID intrinsic_for(rt::OpCode op) {
   return table[std::to_underlying(op)];
 }
 
+// A function the kernel calls out to, which neither unwinds nor loops;
+// `effects`, where known, is what lets the optimiser move the call.
+llvm::Function *declare(llvm::Module &m, llvm::StringRef name,
+                        llvm::FunctionType *type,
+                        std::optional<llvm::MemoryEffects> effects = {}) {
+  auto *fn = llvm::cast<llvm::Function>(
+      m.getOrInsertFunction(name, type).getCallee());
+  if (effects) {
+    fn->setMemoryEffects(*effects);
+  }
+  fn->setDoesNotThrow();
+  fn->setWillReturn();
+  return fn;
+}
+
 // The IR spelling of -fno-math-errno: without it a call is assumed to write
 // errno, which blocks hoisting across it.
 llvm::Function *libm_decl(llvm::Module &m, std::string_view name,
                           llvm::Type *scalar, unsigned args) {
   llvm::SmallVector<llvm::Type *, 2> params(args, scalar);
-  llvm::FunctionCallee c = m.getOrInsertFunction(
-      name, llvm::FunctionType::get(scalar, params, false));
-  auto *fn = llvm::cast<llvm::Function>(c.getCallee());
-  fn->setMemoryEffects(llvm::MemoryEffects::none());
-  fn->setDoesNotThrow();
-  fn->setWillReturn();
+  auto *fn = declare(m, name, llvm::FunctionType::get(scalar, params, false),
+                     llvm::MemoryEffects::none());
   fn->setDoesNotFreeMemory();
   return fn;
 }
 
 // A way out of a kernel into the runtime, defined beside libm: the extern
-// trampoline, whose function comes off the kernel's extern table, and the
+// trampoline, handed the function's address as a constant, and the
 // tensor step and store.
 template <CKernelScalar T>
 llvm::Function *runtime_decl(llvm::Module &m, std::string_view symbol,
                              llvm::ArrayRef<llvm::Value *> args) {
   const auto types = llvm::to_vector(
       llvm::map_range(args, [](llvm::Value *a) { return a->getType(); }));
-  llvm::FunctionCallee c = m.getOrInsertFunction(
-      libm_name<T>(symbol),
-      llvm::FunctionType::get(llvm::Type::getVoidTy(m.getContext()), types,
-                              false));
-  auto *fn = llvm::cast<llvm::Function>(c.getCallee());
-  fn->setDoesNotThrow();
-  fn->setWillReturn();
-  return fn;
+  return declare(m, libm_name<T>(symbol),
+                 llvm::FunctionType::get(llvm::Type::getVoidTy(m.getContext()),
+                                         types, false));
 }
 
 // W points per iteration, as a T at W == 1 and <W x T> otherwise.  Every
@@ -109,8 +115,8 @@ struct TensorTapes {
 template <CKernelScalar T> class Emitter {
 public:
   Emitter(llvm::Module &m, llvm::IRBuilder<> &b, LaneType lanes,
-          llvm::Value *externs, TensorTapes tensors)
-      : m_{m}, b_{b}, lanes_{lanes}, externs_{externs}, tensors_{tensors} {}
+          TensorTapes tensors)
+      : m_{m}, b_{b}, lanes_{lanes}, tensors_{tensors} {}
 
   // A splat where the lane type is a vector.
   [[nodiscard]] llvm::Value *constant(double v) const {
@@ -201,7 +207,7 @@ public:
   // libm call does; inactive lanes call it too, at the 1.0 a masked load
   // reads, and their answers are never stored.  Every component is read back
   // from the one call, so a value and its partials cost one call per lane.
-  Answers extern_call(const rt::ExternRecord &e, std::uint32_t index,
+  Answers extern_call(const rt::ExternEntry<T> &e,
                       std::span<llvm::Value *const> args) const {
     llvm::Function *const kernel = b_.GetInsertBlock()->getParent();
     llvm::IRBuilder<> entry(&kernel->getEntryBlock(),
@@ -213,10 +219,9 @@ public:
         scalar, llvm::ConstantInt::get(i64, e.arity), "extern.in");
     llvm::Value *const answer = entry.CreateAlloca(
         scalar, llvm::ConstantInt::get(i64, components), "extern.out");
-    llvm::Value *const fn = b_.CreateLoad(
-        b_.getPtrTy(),
-        b_.CreateConstInBoundsGEP1_64(b_.getPtrTy(), externs_, index),
-        "extern.fn");
+    llvm::Value *const fn = llvm::ConstantExpr::getIntToPtr(
+        llvm::ConstantInt::get(i64, reinterpret_cast<std::uintptr_t>(e.fn.get())),
+        b_.getPtrTy());
 
     Answers out(components * lanes_.width);
     per_lane(args, [&](unsigned lane, llvm::ArrayRef<llvm::Value *> scalars) {
@@ -243,15 +248,12 @@ public:
 
   // Both arms are already computed, so this is one blend: no branch and no
   // lane divergence.
-  llvm::Value *ternary(rt::OpCode op, llvm::Value *c, llvm::Value *t,
-                       llvm::Value *f) const {
+  llvm::Value *ternary(llvm::Value *c, llvm::Value *t, llvm::Value *f) const {
     // UNE, not ONE: C's `!=` is unordered, so a NaN condition is true, which
     // is what select_impl computes.  The ordered form sends the kernel down the
     // other arm than the sweep, and only a raw value as a condition reaches it
     // -- a comparison's output is never NaN.
-    return op == rt::OpCode::Select
-               ? b_.CreateSelect(b_.CreateFCmpUNE(c, constant(0.0)), t, f)
-               : llvm::PoisonValue::get(lanes_.ty);
+    return b_.CreateSelect(b_.CreateFCmpUNE(c, constant(0.0)), t, f);
   }
 
   // Lane k of tape row r at tape + r*W + k, as the interpreter lays it out.
@@ -352,7 +354,6 @@ private:
   llvm::Module &m_;
   llvm::IRBuilder<> &b_;
   LaneType lanes_;
-  llvm::Value *externs_;
   TensorTapes tensors_;
   struct Callee {
     llvm::Function *fn = nullptr;
@@ -375,15 +376,11 @@ public:
         tables_(g.size(), nullptr), stepped_(g.size(), false),
         done_(g.size(), false) {
     // In the entry block, once per call.
-    auto *const decl = llvm::cast<llvm::Function>(
-        m.getOrInsertFunction(
-             libm_name<T>(tensor_table_symbol),
-             llvm::FunctionType::get(b.getPtrTy(), {b.getPtrTy(), b.getInt64Ty()},
-                                     false))
-            .getCallee());
-    decl->setOnlyReadsMemory();
-    decl->setDoesNotThrow();
-    decl->setWillReturn();
+    auto *const decl =
+        declare(m, libm_name<T>(tensor_table_symbol),
+                llvm::FunctionType::get(
+                    b.getPtrTy(), {b.getPtrTy(), b.getInt64Ty()}, false),
+                llvm::MemoryEffects::readOnly());
     for (const rt::NodeId v : g.schedule() | std::views::transform(&rt::Step::node)) {
       if (g.op_of(v) == rt::OpCode::VecConst ||
           g.op_of(v) == rt::OpCode::MatConst) {
@@ -571,8 +568,7 @@ private:
     case rt::OpCode::ColScale:
       return b_.CreateFMul(at(b, j), at(a, i, j));
     case rt::OpCode::VSelect:
-      return elem_.ternary(rt::OpCode::Select,
-                           rt::detail::is_tensor(g_[a]) ? at(a, i, j)
+      return elem_.ternary(rt::detail::is_tensor(g_[a]) ? at(a, i, j)
                                                         : scalar(a),
                            at(b, i, j), at(c, i, j));
     case rt::OpCode::Diag:
@@ -691,13 +687,12 @@ private:
       return;
     }
     case rt::OpCode::Sum:
-      scalar_out(v, each(g_.shape(a), {zero}, [&](auto i, auto j, const auto &acc) {
-                      return Carried{b_.CreateFAdd(acc[0], at(a, i, j))};
-                    })[0]);
-      return;
     case rt::OpCode::Dot:
       scalar_out(v, each(g_.shape(a), {zero}, [&](auto i, auto j, const auto &acc) {
-                      return Carried{fmuladd(at(a, i, j), at(b, i, j), acc[0])};
+                      return Carried{p.op == rt::OpCode::Sum
+                                         ? b_.CreateFAdd(acc[0], at(a, i, j))
+                                         : fmuladd(at(a, i, j), at(b, i, j),
+                                                   acc[0])};
                     })[0]);
       return;
     case rt::OpCode::MatVec: {
@@ -753,17 +748,16 @@ llvm::Function *declare_kernel(llvm::Module &m, llvm::StringRef name,
   llvm::LLVMContext &ctx = m.getContext();
   llvm::Type *const i64 = llvm::Type::getInt64Ty(ctx);
   llvm::PointerType *const ptr = llvm::PointerType::getUnqual(ctx);
-  // xs, f, g, h, n, externs, tensors, tapes -- four column arrays, the batch
-  // length, the table of functions the program supplied, and what the tensor
-  // steps read.
+  // xs, f, g, h, n, tensors, tapes -- four column arrays, the batch length,
+  // and what the tensor steps read.
   auto *const fty =
       llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
-                              {ptr, ptr, ptr, ptr, i64, ptr, ptr, ptr}, false);
+                              {ptr, ptr, ptr, ptr, i64, ptr, ptr}, false);
   auto *const fn =
       llvm::Function::Create(fty, llvm::Function::ExternalLinkage, name, m);
 
-  static constexpr std::array names{"xs", "f",       "g",       "h",
-                                    "n",  "externs", "tensors", "tapes"};
+  static constexpr std::array names{"xs", "f",       "g",    "h",
+                                    "n",  "tensors", "tapes"};
   for (const auto [i, arg_name] : names | std::views::enumerate) {
     fn->getArg(static_cast<unsigned>(i))->setName(arg_name);
   }
@@ -775,13 +769,10 @@ llvm::Function *declare_kernel(llvm::Module &m, llvm::StringRef name,
   // not asked for arrives as an empty span, whose data() may be null, so it
   // gets neither nonnull nor a size.
   const auto &layout = g.layout();
-  const std::array counts{g.arity(),      layout.values,  layout.jacobian,
-                          layout.hessian, std::size_t{0}, g.externs().size()};
+  const std::array counts{g.arity(), layout.values, layout.jacobian,
+                          layout.hessian};
   for (const auto [i, count] : counts | std::views::enumerate) {
     const auto arg = static_cast<unsigned>(i);
-    if (arg == 4) {
-      continue; // n: a value, below
-    }
     fn->addParamAttr(arg, llvm::Attribute::NoAlias);
     fn->addParamAttr(arg, llvm::Attribute::NoCapture);
     fn->addParamAttr(arg, llvm::Attribute::ReadOnly);
@@ -894,7 +885,7 @@ emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops,
             rt::arguments(g, v) |
             std::views::transform([&value](rt::NodeId a) { return value[a]; }) |
             impl::to<std::vector<llvm::Value *>>();
-        answers->second = emit.extern_call(g.externs()[fn], fn, args);
+        answers->second = emit.extern_call(g.externs()[fn], args);
       }
       value[v] = emit.component(answers->second, component);
       break;
@@ -903,7 +894,7 @@ emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops,
       value[v] = emit.unary(p.op, value[operands[0]]);
       break;
     case rt::Kind::Ternary:
-      value[v] = emit.ternary(p.op, value[operands[0]], value[operands[1]],
+      value[v] = emit.ternary(value[operands[0]], value[operands[1]],
                               value[operands[2]]);
       break;
     case rt::Kind::Binary:
@@ -999,16 +990,16 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g,
   const HoistedColumns cols = hoist_columns(b, *fn, g);
   // The scalar tape, tape_rows() rows `width` wide, then the tensor tape.
   const TensorTapes tensors =
-      g.has_tensors() ? TensorTapes{.call = fn->getArg(6),
-                                    .tape = fn->getArg(7),
+      g.has_tensors() ? TensorTapes{.call = fn->getArg(5),
+                                    .tape = fn->getArg(6),
                                     .vtape = b.CreateConstInBoundsGEP1_64(
-                                        scalar, fn->getArg(7),
+                                        scalar, fn->getArg(6),
                                         g.tape_rows() * width, "vtape")}
                       : TensorTapes{};
 
   // An element of a tensor loop is one T, whatever the kernel's width.
   const Emitter<T> elem(*m, b, LaneType{.width = 1, .scalar = scalar, .ty = scalar},
-                        fn->getArg(5), tensors);
+                        tensors);
   std::optional<TensorLoops<T>> loops;
   if (g.has_tensors()) {
     loops.emplace(*m, b, g, elem, lanes, tensors);
@@ -1040,7 +1031,7 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g,
                                    b.getInt64(width), nullptr, "live");
   }
 
-  const Emitter<T> emit(*m, b, lanes, fn->getArg(5), tensors);
+  const Emitter<T> emit(*m, b, lanes, tensors);
   const std::vector<llvm::Value *> value =
       emit_nodes(emit, loops ? &*loops : nullptr, g, cols, index, mask);
   if (g.has_tensors()) {

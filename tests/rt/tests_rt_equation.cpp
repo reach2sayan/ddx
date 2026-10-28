@@ -734,7 +734,7 @@ TEST(RtEquation, ShortSpinesSurviveTheSwitchoverToTheBit) {
     const auto at = point(terms);
     const double swept = *eq.evaluate(std::span<const double>{at});
     eq.options({.backend = ddx::jit::Backend::Compile, .points = 1});
-    ASSERT_TRUE(eq.wait_for_kernel());
+    ASSERT_TRUE(eq.uses_kernel());
     const double compiled = *eq.evaluate(std::span<const double>{at});
     EXPECT_EQ(ulps(swept, compiled), 0)
         << terms << " terms is below the rewrite threshold";
@@ -750,7 +750,7 @@ TEST(RtEquation, ShortSpinesSurviveTheSwitchoverToTheBit) {
     const auto at = point(terms);
     const double swept = *eq.evaluate(std::span<const double>{at});
     eq.options({.backend = ddx::jit::Backend::Compile, .points = 1});
-    ASSERT_TRUE(eq.wait_for_kernel());
+    ASSERT_TRUE(eq.uses_kernel());
     const double compiled = *eq.evaluate(std::span<const double>{at});
     EXPECT_LE(ulps(swept, compiled), bound) << terms << " terms drifted";
     EXPECT_NEAR(swept, compiled, 1e-12 * std::abs(swept));
@@ -776,7 +776,7 @@ TEST(RtEquation, InterpretDeclinesTheBackendAndAgreesWithIt) {
     double *const values[]{f.data()};
     double *const partials[]{dx.data(), dy.data()};
     eq.options({.backend = which});
-    const bool kernel = eq.wait_for_kernel();
+    const bool kernel = eq.uses_kernel();
     *eq.jacobian(columns, values, partials, n);
     return std::tuple{f, dx, dy, kernel};
   };
@@ -826,8 +826,8 @@ TEST(RtEquation, PointsPicksTheKernelWidthAndTheAnswerIsTheSame) {
   stepping.options({.backend = ddx::rt::Backend::Compile, .points = 1});
   batched.options({.backend = ddx::rt::Backend::Compile, .points = n});
 
-  ASSERT_TRUE(stepping.wait_for_kernel());
-  ASSERT_TRUE(batched.wait_for_kernel());
+  ASSERT_TRUE(stepping.uses_kernel());
+  ASSERT_TRUE(batched.uses_kernel());
 
   std::vector<double> f1(n), dx1(n), dy1(n), f2(n), dx2(n), dy2(n);
   for (std::size_t i = 0; i < n; ++i) {
@@ -868,7 +868,7 @@ TEST(RtEquation, TheDefaultCompilesNothing) {
 
   ASSERT_TRUE(eq.jacobian(columns, values, partials, n).has_value());
   EXPECT_FALSE(eq.uses_kernel()) << "a default equation reached for a compiler";
-  EXPECT_FALSE(eq.wait_for_kernel()) << "and asking built one";
+  EXPECT_FALSE(eq.uses_kernel()) << "and asking built one";
   for (std::size_t i = 0; i < n; ++i) {
     EXPECT_NEAR(f[i], 0.6 * std::log(0.6) + 1.4 * 1.4, 1e-12);
     EXPECT_NEAR(dx[i], std::log(0.6) + 1.0, 1e-12);
@@ -883,7 +883,7 @@ TEST(RtEquation, IdenticalOptionsKeepTheKernel) {
   auto eq = ddx::rt::equation(x * log(x) + exp(x));
 
   eq.options({.backend = ddx::rt::Backend::Compile});
-  EXPECT_TRUE(eq.wait_for_kernel());
+  EXPECT_TRUE(eq.uses_kernel());
 
   eq.options({.backend = ddx::rt::Backend::Compile});
   EXPECT_TRUE(eq.uses_kernel())
@@ -951,7 +951,7 @@ TEST(RtEquation, DifferentEquationTypesShareOneCompilerSafely) {
     auto eq = scalar_model();
     eq.options({.backend = ddx::rt::Backend::Compile, .points = n});
     // Every arm has to be the kernel's rather than whichever path won a race.
-    EXPECT_TRUE(eq.wait_for_kernel());
+    EXPECT_TRUE(eq.uses_kernel());
     std::vector<double> f(n), d(n);
     const double *const columns[]{cx.data()};
     double *const values[]{f.data()};
@@ -963,7 +963,7 @@ TEST(RtEquation, DifferentEquationTypesShareOneCompilerSafely) {
   const auto one_system = [&] {
     auto eq = system_model();
     eq.options({.backend = ddx::rt::Backend::Compile, .points = n});
-    EXPECT_TRUE(eq.wait_for_kernel());
+    EXPECT_TRUE(eq.uses_kernel());
     std::vector<double> f0(n), f1(n), f2(n), d0(n), d1(n), d2(n);
     const double *const columns[]{cx.data()};
     double *const values[]{f0.data(), f1.data(), f2.data()};
@@ -999,7 +999,7 @@ TEST(RtEquation, ChangingTheBackendDiscardsTheKernel) {
   auto eq = ddx::rt::equation(x * log(x) + exp(x));
 
   eq.options({.backend = ddx::rt::Backend::Compile});
-  ASSERT_TRUE(eq.wait_for_kernel());
+  ASSERT_TRUE(eq.uses_kernel());
   eq.options({.backend = ddx::rt::Backend::Interpret});
 
   double cx = 0.7, f = 0, dx = 0;
@@ -1054,7 +1054,7 @@ TEST(RtEquation, OptionsReachTheCompilerAndDoNotChangeTheAnswer) {
     double *const partials[]{dx.data(), dy.data()};
     eq.options(opt);
     // Compared bit for bit below, so both have to be kernels.
-    const bool kernel = eq.wait_for_kernel();
+    const bool kernel = eq.uses_kernel();
     *eq.jacobian(columns, values, partials, n);
     return std::tuple{f, dx, dy, kernel};
   };
@@ -1312,7 +1312,7 @@ TEST(RtEquation, EvaluatingUnderInterpretCompilesNothing) {
   EXPECT_NEAR(*eq.evaluate(std::span<const double>{at}),
               0.6 * std::log(0.6) + 1.4 * 1.4, 1e-12);
   EXPECT_FALSE(eq.uses_kernel());
-  EXPECT_FALSE(eq.wait_for_kernel());
+  EXPECT_FALSE(eq.uses_kernel());
 }
 
 // Interpret must not launch anything, however long one waits.
@@ -1321,7 +1321,7 @@ TEST(RtEquation, InterpretNeverCompilesBehindTheCaller) {
   const auto x = var(b, "x");
   auto eq = ddx::rt::equation(x * log(x));
   eq.options({.backend = ddx::rt::Backend::Interpret});
-  EXPECT_FALSE(eq.wait_for_kernel());
+  EXPECT_FALSE(eq.uses_kernel());
   EXPECT_FALSE(eq.uses_kernel());
 }
 
@@ -1373,12 +1373,12 @@ TEST(RtEquation, EveryCodegenLevelAgreesToTheBit) {
   auto cheap = level_model();
   cheap.options({.backend = ddx::rt::Backend::Compile,
                  .codegen = {.codegen_level = ddx::rt::OptLevel::O0}});
-  ASSERT_TRUE(cheap.wait_for_kernel());
+  ASSERT_TRUE(cheap.uses_kernel());
 
   auto top = level_model();
   top.options({.backend = ddx::rt::Backend::Compile,
                .codegen = {.codegen_level = ddx::rt::OptLevel::O1}});
-  ASSERT_TRUE(top.wait_for_kernel());
+  ASSERT_TRUE(top.uses_kernel());
 
   // Level against level, to the bit: both compile the same graph.
   const auto low = level_gradient(cheap, n);
@@ -1397,21 +1397,4 @@ TEST(RtEquation, EveryCodegenLevelAgreesToTheBit) {
   }
 }
 
-// The kernel answering is the one asked for.
-TEST(RtEquation, KernelLevelIsTheCodegenLevel) {
-  for (const auto level : {ddx::rt::OptLevel::O0, ddx::rt::OptLevel::O1}) {
-    auto eq = level_model();
-    eq.options({.backend = ddx::rt::Backend::Compile,
-                .codegen = {.codegen_level = level}});
-    ASSERT_TRUE(eq.wait_for_kernel());
-    EXPECT_EQ(eq.kernel_level(), level);
-  }
-}
-
-// The sweep has no level to report.
-TEST(RtEquation, InterpretHasNoKernelLevel) {
-  auto eq = level_model();
-  eq.options({.backend = ddx::rt::Backend::Interpret});
-  EXPECT_FALSE(eq.kernel_level().has_value());
-}
 #endif

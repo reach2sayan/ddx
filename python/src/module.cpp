@@ -14,6 +14,9 @@
 
 #include "jit/kernel.hpp"
 
+#include <boost/describe/enumerators.hpp>
+#include <boost/mp11/algorithm.hpp>
+
 #include <pybind11/native_enum.h>
 #include <pybind11/numpy.h>
 #include <pybind11/operators.h>
@@ -461,42 +464,34 @@ PYBIND11_MODULE(_ddx, m) {
       },
       pyb::arg("u"), pyb::arg("w"));
 
-  pyb::native_enum<jit::Backend>(m, "Backend", "enum.IntEnum",
-                                 "Whether an equation compiles its graph.")
-      .value("INTERPRET", jit::Backend::Interpret)
-      .value("COMPILE", jit::Backend::Compile)
-      .finalize();
-
-  pyb::native_enum<jit::VecLib>(
-      m, "VecLib", "enum.IntEnum",
-      "Which vector math library a compiled kernel may call.")
-      .value("NONE", jit::VecLib::None)
-      .value("AUTO", jit::VecLib::Auto)
-      .value("LIBMVEC", jit::VecLib::Libmvec)
-      .finalize();
-
-  pyb::native_enum<jit::OptLevel>(m, "OptLevel", "enum.IntEnum",
-                                  "LLVM's -O0 to -O3, for the IR pipeline and "
-                                  "for codegen.")
-      .value("O0", jit::OptLevel::O0)
-      .value("O1", jit::OptLevel::O1)
-      .value("O2", jit::OptLevel::O2)
-      .value("O3", jit::OptLevel::O3)
-      .finalize();
-
-  pyb::native_enum<PyEquation::Want> wants{m, "Want", "enum.IntEnum",
-                                           "Which blocks a bound call fills."};
   // JacobianJvp as JACOBIAN_JVP: an underscore before every inner capital.
-  for (const rt::Want w : rt::want_values) {
-    std::string name;
-    for (const auto [i, c] : rt::name_of(w) | std::views::enumerate) {
+  const auto upper = [](std::string_view name) {
+    std::string out;
+    for (const auto [i, c] : name | std::views::enumerate) {
       if (i > 0 && std::isupper(static_cast<unsigned char>(c))) {
-        name.push_back('_');
+        out.push_back('_');
       }
-      name.push_back(
+      out.push_back(
           static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
     }
-    wants.value(name.c_str(), w);
+    return out;
+  };
+  const auto described = [&]<typename E>(const char *name, const char *doc) {
+    pyb::native_enum<E> e{m, name, "enum.IntEnum", doc};
+    boost::mp11::mp_for_each<boost::describe::describe_enumerators<E>>(
+        [&](auto d) { e.value(upper(d.name).c_str(), d.value); });
+    e.finalize();
+  };
+  described.operator()<jit::Backend>("Backend",
+                                     "Whether an equation compiles its graph.");
+  described.operator()<jit::VecLib>(
+      "VecLib", "Which vector math library a compiled kernel may call.");
+  described.operator()<jit::OptLevel>(
+      "OptLevel", "LLVM's -O0 to -O3, for the IR pipeline and for codegen.");
+  pyb::native_enum<PyEquation::Want> wants{m, "Want", "enum.IntEnum",
+                                           "Which blocks a bound call fills."};
+  for (const rt::Want w : rt::want_values) {
+    wants.value(upper(rt::name_of(w)).c_str(), w);
   }
   wants.finalize();
 
@@ -540,10 +535,6 @@ PYBIND11_MODULE(_ddx, m) {
             o.codegen.lanes = *lanes;
           })
       .def_readwrite("time_passes", &jit::Options::time_passes)
-      // Deprecated: nothing is cached, so nothing is stored.
-      .def_property(
-          "cache_dir", [](const jit::Options &) { return std::string{}; },
-          [](jit::Options &, const std::string &) {})
       .def(pyb::self == pyb::self);
   codegen("opt_level", &jit::Codegen::opt_level);
   codegen("codegen_level", &jit::Codegen::codegen_level);
@@ -598,7 +589,9 @@ PYBIND11_MODULE(_ddx, m) {
       .def_property_readonly("inputs", &PyEquation::inputs_list)
       .def_property_readonly("arity", &PyEquation::width)
       .def_property_readonly("outputs", &PyEquation::height)
-      .def_property_readonly("uses_kernel", &PyEquation::uses_kernel)
+      .def_property_readonly(
+          "uses_kernel",
+          [](const PyEquation &self) { return self.uses_kernel(); })
       // Colours, not n: the Hessian is stored compressed and scattered on
       // read, so this is what the compiled kernel actually computes per point.
       .def_property_readonly("hessian_colours",
@@ -609,7 +602,7 @@ PYBIND11_MODULE(_ddx, m) {
                                }
                                return *colours;
                              })
-      .def("wait_for_kernel", &PyEquation::wait_for_kernel, pyb::kw_only(),
+      .def("wait_for_kernel", &PyEquation::uses_kernel, pyb::kw_only(),
            pyb::arg("want") = PyEquation::Want::Jacobian)
       .def_property(
           "_options", [](const PyEquation &self) { return self.options(); },

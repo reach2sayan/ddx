@@ -127,6 +127,16 @@ template <typename U> struct TapeView {
   [[nodiscard]] constexpr std::uint32_t row(NodeId v) const noexcept {
     return scalar_rows.empty() ? v : scalar_rows[v];
   }
+
+  // A frozen graph's view, over a tensor tape of the caller's.
+  [[nodiscard]] static constexpr TapeView
+  of(const auto &graph, U *vtape, const TensorKernelTable<U> *kernels) {
+    return {.scalar_rows = graph.rows(),
+            .tensor_rows = graph.tensors().rows,
+            .vtape = vtape,
+            .kernels = kernels,
+            .pairs = graph.pairs()};
+  }
 };
 
 // An extern node, W lanes of it: the function is called once per lane and
@@ -204,28 +214,6 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         std::ranges::transform(arguments(b, v), to.begin(),
                                [&](NodeId s) { return at(s, k); });
         break;
-      case OpCode::Gather:
-        out[k] = in(n.in[0], k)[get<Element>(n).value];
-        break;
-      case OpCode::Map:
-        kt.map(get<OpCode>(n), in(n.in[0], k), to);
-        break;
-      case OpCode::Zip:
-        kt.zip(get<OpCode>(n), in(n.in[0], k), in(n.in[1], k), to);
-        break;
-      case OpCode::Scale:
-        kt.scale(at(n.in[0], k), in(n.in[1], k), to);
-        break;
-      case OpCode::Sum:
-        out[k] = kt.sum(in(n.in[0], k));
-        break;
-      case OpCode::Dot:
-        out[k] = kt.dot(in(n.in[0], k), in(n.in[1], k));
-        break;
-      case OpCode::AddAt:
-        std::ranges::copy(in(n.in[0], k), to.begin());
-        to[get<Element>(n).value] += at(n.in[1], k);
-        break;
       // The matrix rows.  Shapes come off the arena, as the widths do; a
       // matrix is column-major.
       case OpCode::MatRow: { // a table transposed, or a computed matrix
@@ -250,73 +238,6 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         }
         break;
       }
-      case OpCode::Diag: {
-        const auto d = in(n.in[0], k);
-        std::ranges::fill(to, U{});
-        for (std::size_t i = 0; i < d.size(); ++i) {
-          to[i + i * d.size()] = d[i];
-        }
-        break;
-      }
-      case OpCode::Outer: {
-        const auto u = in(n.in[0], k);
-        const auto g = in(n.in[1], k);
-        for (std::size_t j = 0; j < g.size(); ++j) {
-          kt.scale(g[j], u, to.subspan(j * u.size(), u.size()));
-        }
-        break;
-      }
-      case OpCode::RowScale: { // diag(a) M: every column scaled by a
-        const auto d = in(n.in[0], k);
-        const auto m = in(n.in[1], k);
-        for (std::size_t j = 0; j < m.size() / d.size(); ++j) {
-          kt.zip(OpCode::Mul, d, m.subspan(j * d.size(), d.size()),
-                 to.subspan(j * d.size(), d.size()));
-        }
-        break;
-      }
-      case OpCode::ColScale: { // M diag(b): column j scaled by b[j]
-        const auto m = in(n.in[0], k);
-        const auto d = in(n.in[1], k);
-        const std::size_t rows = m.size() / d.size();
-        for (std::size_t j = 0; j < d.size(); ++j) {
-          kt.scale(d[j], m.subspan(j * rows, rows), to.subspan(j * rows, rows));
-        }
-        break;
-      }
-      case OpCode::MatVec: {
-        const Shape m = shape_of(b, n.in[0]);
-        const bool transposed = get<Orientation>(n) == Orientation::transposed;
-        const NodeId mate = t.pairs.empty() ? no_node : t.pairs[v];
-        if (mate == no_node) {
-          kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), to,
-                  transposed);
-          break;
-        }
-        if (mate < v) {
-          break; // formed by its pair, the step before
-        }
-        // The pair's first, so both: one pass over the matrix where the table
-        // has one.
-        const auto [other_at, other_w] = row(mate);
-        const std::span<U> other{other_at + k * other_w, other_w};
-        if (kt.gemv_pair != nullptr) {
-          kt.gemv_pair(m.rows, in(n.in[0], k), in(n.in[1], k),
-                       transposed ? other : to, transposed ? to : other);
-        } else {
-          kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), to,
-                  transposed);
-          kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), other,
-                  !transposed);
-        }
-        break;
-      }
-      case OpCode::MatMul: {
-        const Shape l = shape_of(b, n.in[0]);
-        kt.gemm(l.rows, l.cols, shape_of(b, n.in[1]).cols, in(n.in[0], k),
-                in(n.in[1], k), to);
-        break;
-      }
       case OpCode::StackRows: { // item i is row i: (i, j) at i + j rows
         const auto items = arguments(b, v);
         for (const auto [i, item] : items | std::views::enumerate) {
@@ -324,14 +245,6 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
           for (std::size_t j = 0; j < r.size(); ++j) {
             to[static_cast<std::size_t>(i) + j * items.size()] = r[j];
           }
-        }
-        break;
-      }
-      case OpCode::RowOf: {
-        const auto from = in(n.in[0], k);
-        const std::size_t rows = shape_of(b, n.in[0]).rows;
-        for (std::size_t j = 0; j < to.size(); ++j) {
-          to[j] = from[get<Element>(n).value + j * rows];
         }
         break;
       }
@@ -351,8 +264,35 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
       }
       case OpCode::MatConst: // a table its MatRow reads in place
         break;
+      case OpCode::MatVec:
+        if (const NodeId mate = t.pairs.empty() ? no_node : t.pairs[v];
+            mate != no_node) {
+          if (mate > v) { // the pair's first, so both: one pass over the matrix
+            const auto [other_at, other_w] = row(mate);
+            const std::span<U> other{other_at + k * other_w, other_w};
+            const bool transposed =
+                get<Orientation>(n) == Orientation::transposed;
+            if (kt.gemv_pair != nullptr) {
+              kt.gemv_pair(shape_of(b, n.in[0]).rows, in(n.in[0], k),
+                           in(n.in[1], k), transposed ? other : to,
+                           transposed ? to : other);
+            } else {
+              const Shape m = shape_of(b, n.in[0]);
+              kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), to,
+                      transposed);
+              kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), other,
+                      !transposed);
+            }
+          }
+          break;
+        }
+        [[fallthrough]];
       default:
-        std::unreachable();
+        if (!tensor_row(
+                b, v, [&](int i) { return in(n.in[i], k); },
+                [&](int i) { return at(n.in[i], k); }, to, out[k], kt)) {
+          std::unreachable();
+        }
       }
     }
   }

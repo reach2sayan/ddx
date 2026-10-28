@@ -364,6 +364,97 @@ struct Shape {
     }
   }
 }
+// A tensor node's arithmetic over its operands' elements, through a kernel
+// table: a row into `to`, a reduction into `reduced`.  What the sweep runs per
+// lane and a fold runs once; `in(i)` and `scalar(i)` read operand i.  False
+// for a node that is not arithmetic -- a copy, a list, a table, a select.
+template <impl::Numeric U>
+constexpr bool tensor_row(const auto &s, NodeId v, auto in, auto scalar,
+                          std::span<U> to, U &reduced, const auto &kt) {
+  const auto &n = s[v];
+  switch (n.op) {
+  case OpCode::Map:
+    kt.map(detail::get<OpCode>(n), in(0), to);
+    break;
+  case OpCode::Zip:
+    kt.zip(detail::get<OpCode>(n), in(0), in(1), to);
+    break;
+  case OpCode::Scale:
+    kt.scale(scalar(0), in(1), to);
+    break;
+  case OpCode::Sum:
+    reduced = kt.sum(in(0));
+    break;
+  case OpCode::Dot:
+    reduced = kt.dot(in(0), in(1));
+    break;
+  case OpCode::Gather:
+    reduced = in(0)[detail::get<Element>(n).value];
+    break;
+  case OpCode::AddAt:
+    std::ranges::copy(in(0), to.begin());
+    to[detail::get<Element>(n).value] =
+        to[detail::get<Element>(n).value] + scalar(1);
+    break;
+  // The matrix rows; a matrix is column-major.
+  case OpCode::Diag: {
+    const auto d = in(0);
+    std::ranges::fill(to, U{});
+    for (std::size_t i = 0; i < d.size(); ++i) {
+      to[i + i * d.size()] = d[i];
+    }
+    break;
+  }
+  case OpCode::Outer: {
+    const auto u = in(0);
+    const auto g = in(1);
+    for (std::size_t j = 0; j < g.size(); ++j) {
+      kt.scale(g[j], u, to.subspan(j * u.size(), u.size()));
+    }
+    break;
+  }
+  case OpCode::RowScale: { // diag(a) M: every column scaled by a
+    const auto d = in(0);
+    const auto m = in(1);
+    for (std::size_t j = 0; j < m.size() / d.size(); ++j) {
+      kt.zip(OpCode::Mul, d, m.subspan(j * d.size(), d.size()),
+             to.subspan(j * d.size(), d.size()));
+    }
+    break;
+  }
+  case OpCode::ColScale: { // M diag(b): column j scaled by b[j]
+    const auto m = in(0);
+    const auto d = in(1);
+    const std::size_t rows = m.size() / d.size();
+    for (std::size_t j = 0; j < d.size(); ++j) {
+      kt.scale(d[j], m.subspan(j * rows, rows), to.subspan(j * rows, rows));
+    }
+    break;
+  }
+  case OpCode::MatVec: {
+    const Shape m = shape_of(s, n.in[0]);
+    kt.gemv(m.rows, m.cols, in(0), in(1), to,
+            detail::get<Orientation>(n) == Orientation::transposed);
+    break;
+  }
+  case OpCode::MatMul: {
+    const Shape l = shape_of(s, n.in[0]);
+    kt.gemm(l.rows, l.cols, shape_of(s, n.in[1]).cols, in(0), in(1), to);
+    break;
+  }
+  case OpCode::RowOf: {
+    const auto from = in(0);
+    const std::size_t rows = shape_of(s, n.in[0]).rows;
+    for (std::size_t j = 0; j < to.size(); ++j) {
+      to[j] = from[detail::get<Element>(n).value + j * rows];
+    }
+    break;
+  }
+  default:
+    return false;
+  }
+  return true;
+}
 // A MatRow over a mat_constant table, either way round: a constant.
 [[nodiscard]] constexpr bool is_table(const auto &s, NodeId v) {
   return s.op_of(v) == OpCode::MatRow &&
@@ -1015,70 +1106,16 @@ private:
         c != no_node) {
       return std::nullopt;
     }
-    switch (n.op) {
-    case OpCode::Map:
-      K::map(detail::get<OpCode>(n), *u, out);
-      return table();
-    case OpCode::Zip:
-      K::zip(detail::get<OpCode>(n), *u, *w, out);
-      return table();
-    case OpCode::Scale:
-      K::scale(*su, *w, out);
-      return table();
-    case OpCode::Sum:
-      return constant(K::sum(*u));
-    case OpCode::Dot:
-      return constant(K::dot(*u, *w));
-    case OpCode::Gather:
-      return constant((*u)[detail::get<Element>(n).value]);
-    case OpCode::MatVec: {
-      const Shape m = shape_of(*this, a);
-      K::gemv(m.rows, m.cols, *u, *w, out,
-              detail::get<Orientation>(n) == Orientation::transposed);
-      return table();
-    }
-    case OpCode::MatMul: {
-      const Shape l = shape_of(*this, a);
-      K::gemm(l.rows, l.cols, shape_of(*this, b).cols, *u, *w, out);
-      return table();
-    }
-    case OpCode::Outer:
-      for (std::size_t j = 0; j < w->size(); ++j) {
-        K::scale((*w)[j], *u, std::span<T>{out}.subspan(j * u->size(), u->size()));
-      }
-      return table();
-    case OpCode::RowScale:
-      for (std::size_t j = 0; j < s.cols; ++j) {
-        K::zip(OpCode::Mul, *u, std::span<const T>{*w}.subspan(j * s.rows, s.rows),
-               std::span<T>{out}.subspan(j * s.rows, s.rows));
-      }
-      return table();
-    case OpCode::ColScale:
-      for (std::size_t j = 0; j < s.cols; ++j) {
-        K::scale((*w)[j], std::span<const T>{*u}.subspan(j * s.rows, s.rows),
-                 std::span<T>{out}.subspan(j * s.rows, s.rows));
-      }
-      return table();
-    case OpCode::Diag:
-      for (std::size_t i = 0; i < u->size(); ++i) {
-        out[i + i * u->size()] = (*u)[i];
-      }
-      return table();
-    case OpCode::AddAt:
-      std::ranges::copy(*u, out.begin());
-      out[detail::get<Element>(n).value] =
-          out[detail::get<Element>(n).value] + *sw;
-      return table();
-    case OpCode::RowOf: {
-      const std::size_t rows = shape_of(*this, a).rows;
-      for (std::size_t j = 0; j < out.size(); ++j) {
-        out[j] = (*u)[detail::get<Element>(n).value + j * rows];
-      }
-      return table();
-    }
-    default:
+    T reduced{};
+    const bool computed = tensor_row(
+        *this, v,
+        [&](int i) { return std::span<const T>{i == 0 ? *u : *w}; },
+        [&](int i) { return i == 0 ? *su : *sw; }, std::span<T>{out}, reduced,
+        K{});
+    if (!computed) {
       return std::nullopt;
     }
+    return detail::is_scalar(n) ? constant(reduced) : table();
   }
 
   // A Count-carrying node -- a Pack, a StackRows or a fold -- over `items`.

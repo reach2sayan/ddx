@@ -220,7 +220,6 @@ class Want(enum.IntEnum):
 class _Options:
     __hash__: typing.ClassVar[None] = None
     backend: Backend
-    cache_dir: str
     contract: bool
     loop_vectorize: bool
     slp_vectorize: bool
@@ -269,13 +268,12 @@ class errc(enum.IntEnum):
     tensor_kernel: typing.ClassVar[errc]  # value = <errc.tensor_kernel: 17>
     jit_target: typing.ClassVar[errc]  # value = <errc.jit_target: 18>
     jit_module: typing.ClassVar[errc]  # value = <errc.jit_module: 19>
-    jit_object: typing.ClassVar[errc]  # value = <errc.jit_object: 20>
-    jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 21>
-    jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 22>
-    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 23>
-    unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 24>
-    wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 25>
-    unclosed_implicit: typing.ClassVar[errc]  # value = <errc.unclosed_implicit: 26>
+    jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 20>
+    jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 21>
+    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 22>
+    unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 23>
+    wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 24>
+    unclosed_implicit: typing.ClassVar[errc]  # value = <errc.unclosed_implicit: 25>
     @classmethod
     def __new__(cls, value):
         ...

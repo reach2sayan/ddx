@@ -200,20 +200,26 @@ template <impl::Numeric T = double> struct Kernels {
     }
   }
 
-  [[nodiscard]] static constexpr T dot(In u, In v) noexcept {
+  // kLanes accumulators over n elements, folded: `step(acc, i)` takes
+  // element i into one.
+  [[nodiscard]] static constexpr T reduce(std::size_t n, auto step) noexcept {
     std::array<T, kLanes> acc{};
-    const T *a = u.data();
-    const T *b = v.data();
-    const std::size_t whole = u.size() / kLanes * kLanes;
+    const std::size_t whole = n / kLanes * kLanes;
     for (std::size_t i = 0; i < whole; i += kLanes) {
       for (std::size_t l = 0; l < kLanes; ++l) {
-        acc[l] = madd(a[i + l], b[i + l], acc[l]);
+        acc[l] = step(acc[l], i + l);
       }
     }
-    for (std::size_t i = whole; i < u.size(); ++i) {
-      acc[i - whole] = madd(a[i], b[i], acc[i - whole]);
+    for (std::size_t i = whole; i < n; ++i) {
+      acc[i - whole] = step(acc[i - whole], i);
     }
     return fold(acc);
+  }
+
+  [[nodiscard]] static constexpr T dot(In u, In v) noexcept {
+    return reduce(u.size(), [a = u.data(), b = v.data()](T acc, std::size_t i) {
+      return madd(a[i], b[i], acc);
+    });
   }
 
   static constexpr void scale(T s, In v, Out out) noexcept {
@@ -249,18 +255,9 @@ template <impl::Numeric T = double> struct Kernels {
   }
 
   [[nodiscard]] static constexpr T sum(In v) noexcept {
-    std::array<T, kLanes> acc{};
-    const T *a = v.data();
-    const std::size_t whole = v.size() / kLanes * kLanes;
-    for (std::size_t i = 0; i < whole; i += kLanes) {
-      for (std::size_t l = 0; l < kLanes; ++l) {
-        acc[l] = acc[l] + a[i + l];
-      }
-    }
-    for (std::size_t i = whole; i < v.size(); ++i) {
-      acc[i - whole] = acc[i - whole] + a[i];
-    }
-    return fold(acc);
+    return reduce(v.size(), [a = v.data()](T acc, std::size_t i) {
+      return acc + a[i];
+    });
   }
 
   // out = A B, one column of B at a time: a gemv per column.

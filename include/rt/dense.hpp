@@ -443,11 +443,8 @@ private:
       for (const auto &[left, term] : steps) {
         const E l = expr(left);
         const E t = expr(term);
-        const E pl =
-            r == no_node ? E{0} : contribution_to<0>(step, E{1}, l, t);
-        const E pr = row(term) == no_node
-                         ? E{0}
-                         : contribution_to<1>(step, E{1}, l, t);
+        const auto [pl, pr] = contributions(step, E{1}, l, t, r != no_node,
+                                            row(term) != no_node, E{0});
         r = add(scaled(pl, r), scaled(pr, row(term)));
       }
       return r;
@@ -470,12 +467,9 @@ private:
       // node's operands by id.
       const E l = expr(node.in[0]);
       const E r = expr(node.in[1]);
-      const E pl = row(node.in[0]) == no_node
-                       ? E{0}
-                       : contribution_to<0>(node.op, E{1}, l, r);
-      const E pr = row(node.in[1]) == no_node
-                       ? E{0}
-                       : contribution_to<1>(node.op, E{1}, l, r);
+      const auto [pl, pr] =
+          contributions(node.op, E{1}, l, r, row(node.in[0]) != no_node,
+                        row(node.in[1]) != no_node, E{0});
       return add(scaled(pl, row(node.in[0])), scaled(pr, row(node.in[1])));
     }
     case Kind::Ternary: { // picked, so the row not taken is never scaled by 0
@@ -534,12 +528,10 @@ private:
     case OpCode::Zip: {
       const E u = expr(node.in[0]);
       const E w = expr(node.in[1]);
-      const E pu = mat_[node.in[0]].empty()
-                       ? E{0}
-                       : contribution_to<0>(get<OpCode>(node), E{1}, u, w);
-      const E pw = mat_[node.in[1]].empty()
-                       ? E{0}
-                       : contribution_to<1>(get<OpCode>(node), E{1}, u, w);
+      const auto [pu, pw] =
+          contributions(get<OpCode>(node), E{1}, u, w,
+                        !mat_[node.in[0]].empty(), !mat_[node.in[1]].empty(),
+                        E{0});
       out = scale(pu, mat_[node.in[0]]);
       impl::append(out, scale(pw, mat_[node.in[1]]));
       break;

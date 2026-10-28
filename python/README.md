@@ -271,7 +271,7 @@ is the spelling.
 | `bad_syntax` | a string the grammar does not accept |
 | `unknown_function` | a string calls a function that does not exist |
 | `wrong_argument_count` | a string calls one with the wrong arity |
-| `jit_target`, `jit_module`, `jit_object`, `jit_verify`, `jit_lookup` | the compiler could not produce or link a kernel |
+| `jit_target`, `jit_module`, `jit_verify`, `jit_lookup` | the compiler could not produce or link a kernel |
 
 ## Compiling
 
@@ -297,8 +297,7 @@ that call waits for it.
 `points` is the batch you intend to hand one call, stated because the kernel is
 built before any call exists to infer it from. It decides the lane width and
 nothing else: a call carrying some other number is answered correctly, just not
-by the kernel that number would have built. `cache_dir` is deprecated and
-ignored: setting it warns.
+by the kernel that number would have built.
 
 ## Reference
 

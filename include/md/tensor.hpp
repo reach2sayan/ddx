@@ -84,28 +84,28 @@ public:
     return Ext{}.extent(r);
   }
 
-  // Const-ness rides on the qualifier, so one body serves every category.
-#define DDX_MD_TENSOR_ACCESSORS(Q, SELF)                                       \
-  [[nodiscard]] constexpr auto *data() Q noexcept {                            \
-    return SELF.data_.data();                                                  \
-  }                                                                            \
-                                                                               \
-  template <std::integral... I>                                                \
-    requires(sizeof...(I) == Ext::rank())                                      \
-  [[nodiscard]] constexpr auto &operator[](I... idx) Q noexcept {              \
-    return SELF.data_[static_cast<std::size_t>(                                \
-        kMapping(static_cast<index_type>(idx)...))];                           \
-  }                                                                            \
-                                                                               \
-  [[nodiscard]] constexpr decltype(auto) at_index(                             \
-      const std::array<index_type, Ext::rank()> &idx) Q noexcept {             \
-    return index_apply<Ext::rank()>(                                           \
-        [&]<std::size_t... K>() -> decltype(auto) {                            \
-          return SELF.data_[static_cast<std::size_t>(kMapping(idx[K]...))];    \
-        });                                                                    \
+  // Const-ness rides on `self`, so one body serves every category.
+  [[nodiscard]] constexpr auto *data(this auto &&self) noexcept {
+    return DDX_FWD(self).data_.data();
   }
-  DDX_VALUE_CATEGORIES(DDX_MD_TENSOR_ACCESSORS)
-#undef DDX_MD_TENSOR_ACCESSORS
+
+  template <std::integral... I>
+    requires(sizeof...(I) == Ext::rank())
+  [[nodiscard]] constexpr auto &operator[](this auto &&self,
+                                           I... idx) noexcept {
+    return DDX_FWD(self).data_[static_cast<std::size_t>(
+        kMapping(static_cast<index_type>(idx)...))];
+  }
+
+  [[nodiscard]] constexpr decltype(auto)
+  at_index(this auto &&self,
+           const std::array<index_type, Ext::rank()> &idx) noexcept {
+    return index_apply<Ext::rank()>(
+        [&]<std::size_t... K>() -> decltype(auto) {
+          return DDX_FWD(self).data_[static_cast<std::size_t>(
+              kMapping(idx[K]...))];
+        });
+  }
 
   [[nodiscard]] friend constexpr bool operator==(const md_tensor &a,
                                                  const md_tensor &b) noexcept {

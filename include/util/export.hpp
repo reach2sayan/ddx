@@ -1,15 +1,13 @@
 #pragma once
 
-#if defined(_MSC_VER)
-#if defined(DDX_BUILDING)
-#define DDX_API __declspec(dllexport)
+#include <boost/config.hpp>
+
+// Default visibility outside MSVC either way: a consumer's TU must see the
+// instances as exported, not hidden.
+#if defined(_MSC_VER) && !defined(DDX_BUILDING)
+#define DDX_API BOOST_SYMBOL_IMPORT
 #else
-#define DDX_API __declspec(dllimport)
-#endif
-#elif defined(__GNUC__) || defined(__clang__)
-#define DDX_API __attribute__((visibility("default")))
-#else
-#define DDX_API
+#define DDX_API BOOST_SYMBOL_EXPORT
 #endif
 
 #define DDX_JIT_API DDX_API

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import warnings
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from . import _ddx
 from ._ddx import Backend, OptLevel, VecLib
@@ -38,17 +37,6 @@ class Options(BaseModel):
     contract: bool = _DEFAULTS.contract
 
     time_passes: bool = _DEFAULTS.time_passes
-
-    cache_dir: str = ""
-    """Deprecated and ignored: no compiled object is kept between runs."""
-
-    @field_validator("cache_dir")
-    @classmethod
-    def _cache_dir_is_ignored(cls, value: str) -> str:
-        if value:
-            warnings.warn("Options.cache_dir is ignored: no compiled object is "
-                          "kept between runs", DeprecationWarning, stacklevel=2)
-        return value
 
     def _native(self) -> _ddx._Options:
         native = _ddx._Options()

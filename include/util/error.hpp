@@ -37,7 +37,6 @@ namespace ddx {
   /* The JIT. */                                                                              \
   X(jit_target, "the JIT could not bring up a target for this host")                          \
   X(jit_module, "the JIT could not take the emitted module")                                  \
-  X(jit_object, "the JIT could not link an object compiled earlier")                          \
   X(jit_verify, "the emitted module failed verification")                                     \
   X(jit_lookup, "the compiled kernel has no such symbol")                                     \
                                                                                               \

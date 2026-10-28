@@ -249,7 +249,7 @@ template <typename T> void expect_kernel_is_the_sweep(auto &&model) {
     for (const Want want : every_want) {
       const std::string what =
           std::string{ddx::rt::name_of(want)} + ", lanes " + spelled(lanes);
-      ASSERT_TRUE(eq.wait_for_kernel(want)) << what;
+      ASSERT_TRUE(eq.uses_kernel(want)) << what;
       for (const std::size_t n : {13uz, 1uz}) {
         expect_close(batch<T>(swept, want, n), batch<T>(eq, want, n),
                     what + ", n " + std::to_string(n));
@@ -288,9 +288,7 @@ TEST(JitTensor, CompilesAndAnswersTheSweep) {
   const auto swept = model();
   auto eq = model();
   eq.options({.backend = ddx::jit::Backend::Compile});
-  EXPECT_TRUE(eq.wait_for_kernel());
   EXPECT_TRUE(eq.uses_kernel());
-  EXPECT_TRUE(eq.kernel_level().has_value());
   for (const std::size_t p : std::views::iota(0uz, 37uz)) {
     const auto at = std::views::iota(0uz, n) |
                     std::views::transform([p](std::size_t i) {
@@ -338,7 +336,7 @@ TEST(JitTensor, BatchesAndThreadsAreBitIdentical) {
   auto eq = msevec<double>(7);
   eq.options(compiled(ddx::jit::Lanes::derived()));
   ASSERT_TRUE(eq.prepare({Want::Jacobian, Want::Hvp}).has_value());
-  ASSERT_TRUE(eq.wait_for_kernel(Want::Hvp));
+  ASSERT_TRUE(eq.uses_kernel(Want::Hvp));
   const auto call = [&] {
     return std::pair{batch<double>(eq, Want::Jacobian, 29),
                      batch<double>(eq, Want::Hvp, 29)};

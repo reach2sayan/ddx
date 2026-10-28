@@ -210,30 +210,15 @@ template <bool IsMax> struct extremum_impl {
     if (a == b) {
       if constexpr (CArithmetic<R>) {
         if (a == R{}) {
-          if constexpr (IsMax) {
-            return R{a + b};
-          } else {
-            return R{-((-a) + (-b))};
-          }
+          return IsMax ? R{a + b} : R{-((-a) + (-b))};
         }
         return R{a};
       } else {
         return R{midpoint_impl{}(R{a}, R{b})};
       }
     }
-    if (a < b) {
-      if constexpr (IsMax) {
-        return R{b};
-      } else {
-        return R{a};
-      }
-    }
-    if (b < a) {
-      if constexpr (IsMax) {
-        return R{a};
-      } else {
-        return R{b};
-      }
+    if (a < b || b < a) {
+      return (a < b) == IsMax ? R{b} : R{a};
     }
     return R{(a - b) * R{}};
   }

@@ -75,6 +75,18 @@ template <std::size_t I, impl::Numeric T>
   }
 }
 
+// Both operands' rules, `absent` for an operand that does not move; the left
+// built first, always: `make` orders a commutative node's operands by id, so
+// the order nodes are built in is part of the answer.
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::pair<H<T>, H<T>>
+contributions(OpCode op, const H<T> &adj, const H<T> &l, const H<T> &r,
+              bool left, bool right, const H<T> &absent) {
+  H<T> cl = left ? contribution_to<0>(op, adj, l, r) : absent;
+  H<T> cr = right ? contribution_to<1>(op, adj, l, r) : absent;
+  return {std::move(cl), std::move(cr)};
+}
+
 // The same rule seeded with a unit adjoint: Arena::make fires the x*1 rule
 // before a node exists, so this is the partial and not a multiply by one.
 template <impl::Numeric T>
@@ -365,14 +377,11 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
       break;
     }
     case Kind::Binary: {
-      // Both rules before either sum: `make` orders a commutative node's
-      // operands by id, so the order nodes are built in is part of the answer.
+      // Both rules before either sum.
       const Expression<T> l = expr(node.in[0]);
       const Expression<T> r = expr(node.in[1]);
-      const Expression<T> cl =
-          moves(node.in[0]) ? detail::contribution_to<0>(op, a, l, r) : zero;
-      const Expression<T> cr =
-          moves(node.in[1]) ? detail::contribution_to<1>(op, a, l, r) : zero;
+      const auto [cl, cr] = detail::contributions(
+          op, a, l, r, moves(node.in[0]), moves(node.in[1]), zero);
       add_to(node.in[0], g, [&] { return cl; });
       add_to(node.in[1], g, [&] { return cr; });
       break;
@@ -609,10 +618,8 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       const Expression<T> l{b, node.in[0]};
       const Expression<T> r{b, node.in[1]};
       const Expression<T> one{1};
-      const Expression<T> pl =
-          moves[node.in[0]] ? detail::contribution_to<0>(op, one, l, r) : one;
-      const Expression<T> pr =
-          moves[node.in[1]] ? detail::contribution_to<1>(op, one, l, r) : one;
+      const auto [pl, pr] = detail::contributions(
+          op, one, l, r, moves[node.in[0]], moves[node.in[1]], one);
       d[v] = moved(
           v, node.in[0], [&] { return pl * dv(node.in[0]); }, node.in[1],
           [&] { return pr * dv(node.in[1]); });

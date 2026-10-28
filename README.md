@@ -259,16 +259,14 @@ Nothing compiles unless asked. Under `Compile`, the first call to each lane
 
 ```cpp
 eq.options({.backend = rt::Backend::Compile, .points = 4096});
-eq.wait_for_kernel();          // optional: build the Jacobian kernel now
+eq.uses_kernel();              // optional: build the Jacobian kernel now; true
 eq.jacobian(xs, f, g, n);      // compiled
-eq.uses_kernel();              // true
 ```
 
 | `Backend` | Is |
 |---|---|
 | `Interpret` | default; LLVM is never loaded |
 | `Compile` | compile each lane on its first call |
-| `Adapt` | `Compile`; an error under Clang, deprecated elsewhere |
 
 | `jit::Options` field | Default | Is |
 |---|---|---|
@@ -279,10 +277,7 @@ eq.uses_kernel();              // true
 | `codegen.slp_vectorize`, `codegen.loop_vectorize` | `false` | extra vectorisation |
 | `codegen.veclib` | `None` | `Libmvec` for vector transcendentals |
 | `codegen.contract` | `DDX_FP_FLAGS` | fuse multiply-add |
-| `cache_dir` | empty | deprecated, ignored |
 | `time_passes` | `false` | per-pass timing to stderr |
-
-`kernel_level()` says which `codegen_level` the answering kernel was built at.
 
 A model with vectors compiles too. Each vector operation is a loop in the
 kernel, vectorised by LLVM, and an elementwise operation read once is computed

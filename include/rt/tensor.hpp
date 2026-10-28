@@ -36,12 +36,8 @@ namespace detail {
 // equation() callback's.
 template <impl::Numeric T>
 [[nodiscard]] Arena<T> *arena_of(std::span<const Expression<T>> scalars) {
-  for (const auto &s : scalars) {
-    if (Arena<T> *const b = Rooting::arena(s)) {
-      return b;
-    }
-  }
-  return current_arena<T>;
+  Arena<T> *const b = Rooting::first_arena(scalars);
+  return b != nullptr ? b : current_arena<T>;
 }
 
 // The refusal the factories share, and a factory over the equation()

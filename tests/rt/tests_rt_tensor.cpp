@@ -902,7 +902,7 @@ TEST(RtTensorDense, RefusesASystem) {
       sys.dense_hessian(std::span<const double>{composition(3)}).error().code,
       ddx::errc::not_single_output);
   EXPECT_FALSE(sys.dense_hessian_cost().has_value());
-  EXPECT_FALSE(sys.wait_for_kernel(ddx::rt::Want::DenseHessian));
+  EXPECT_FALSE(sys.uses_kernel(ddx::rt::Want::DenseHessian));
 }
 
 TEST(RtTensorDense, CostAtManySpecies) {
@@ -1341,7 +1341,7 @@ TEST(RtMatrix, DenseHessianRefusesACompositionDependentMatrix) {
   EXPECT_EQ(got.dense_hessian(std::span<const double>{at}).error().code,
             ddx::errc::tensor_shape);
   EXPECT_FALSE(got.dense_hessian_cost().has_value()) << "no block, no cost";
-  EXPECT_FALSE(got.wait_for_kernel(ddx::rt::Want::DenseHessian));
+  EXPECT_FALSE(got.uses_kernel(ddx::rt::Want::DenseHessian));
   expect_same_derivatives(want, got, at, 1e-11);
 }
 
@@ -1530,10 +1530,10 @@ TEST(RtTensor, ReleasedTapesGrowBackToTheSameBits) {
   };
   const auto before = sweep();
   const auto &kept = ddx::rt::detail::thread_tapes<double>();
-  ASSERT_GT(kept.lane_vtape.capacity(), 0u);
+  ASSERT_GT(kept.block.vtape.capacity(), 0u);
   ddx::rt::release_tapes();
-  EXPECT_EQ(kept.lane_tape.capacity(), 0u);
-  EXPECT_EQ(kept.lane_vtape.capacity(), 0u);
+  EXPECT_EQ(kept.block.tape.capacity(), 0u);
+  EXPECT_EQ(kept.block.vtape.capacity(), 0u);
   EXPECT_EQ(sweep(), before);
 }
 

@@ -2,7 +2,7 @@
 
 #include "symbolic/entry.hpp"
 #include "symbolic/traits.hpp"
-#include "util/config.hpp" // DDX_KEYED_ACCESSORS
+#include "util/config.hpp" // DDX_FWD
 #include "util/error.hpp"
 #include "util/fixed_string.hpp"
 
@@ -26,9 +26,9 @@ template <Numeric Scalar, CSymbolList SymList> struct ValueMap {
 
   std::array<Scalar, arity> slots{};
 
-private:
+  // get<"x">() and the subscript spelling m["x"_s] = v.
   template <FixedString S>
-  [[nodiscard]] static constexpr decltype(auto) slot(auto &&self) noexcept {
+  [[nodiscard]] constexpr decltype(auto) get(this auto &&self) noexcept {
     constexpr auto idx = symbol_index<S, SymList>();
     static_assert(idx < arity, "ValueMap: symbol not present in map");
     if constexpr (std::is_lvalue_reference_v<decltype(self)>) {
@@ -37,12 +37,13 @@ private:
       return Scalar{self.slots[idx]};
     }
   }
-
-public:
-  // get<"x">() and the subscript spelling m["x"_s] = v.
-  DDX_KEYED_ACCESSORS(FixedString S, CFixedString auto S, S, symbol_type<S>)
+  template <CFixedString auto S>
+  [[nodiscard]] constexpr decltype(auto) operator[](this auto &&self,
+                                                    symbol_type<S>) noexcept {
+    return DDX_FWD(self).template get<S>();
+  }
   template <FixedString S> constexpr void set(const Scalar &v) noexcept {
-    slot<S>(*this) = v;
+    get<S>() = v;
   }
 };
 
@@ -143,16 +144,17 @@ template <CExpression Expr, CValueMap Map> struct Bound {
     map.template set<S>(v);
   }
 
-private:
   // Forwarded, so the map hands out a reference or a copy on the same rule the
   // Bound was reached by.
   template <FixedString S>
-  [[nodiscard]] static constexpr decltype(auto) slot(auto &&self) noexcept {
+  [[nodiscard]] constexpr decltype(auto) get(this auto &&self) noexcept {
     return DDX_FWD(self).map.template get<S>();
   }
-
-public:
-  DDX_KEYED_ACCESSORS(FixedString S, CFixedString auto S, S, symbol_type<S>)
+  template <CFixedString auto S>
+  [[nodiscard]] constexpr decltype(auto) operator[](this auto &&self,
+                                                    symbol_type<S>) noexcept {
+    return DDX_FWD(self).template get<S>();
+  }
 };
 
 template <CExpression Expr, CValueMap Map> Bound(Expr, Map) -> Bound<Expr, Map>;
