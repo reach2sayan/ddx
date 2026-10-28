@@ -173,7 +173,7 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
   [[nodiscard]] static constexpr TaylorDual
   implicit_recurrence(const TaylorDual &u, S w0, const TaylorDual &g) noexcept {
     const S invg0 = S{1} / g.c[0];
-    return series(w0, [&](const auto &w, std::size_t k) {
+    return series(w0, [&](const std::array<S, N + 1> &w, std::size_t k) {
       return (static_cast<S>(k) * u.c[k] - dconv(g.c, w, k, 1)) * inv_k[k] *
              invg0;
     });
@@ -192,9 +192,10 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
   // exp: w[0]=exp(u[0]),  k*w[k] = Σ_{j=1}^{k} j*u[j]*w[k-j]
   [[nodiscard]] friend constexpr TaylorDual exp(const TaylorDual &u) noexcept {
     using std::exp;
-    return series(exp(u.c[0]), [&](const auto &w, std::size_t k) {
-      return dconv(w, u.c, k) * inv_k[k];
-    });
+    return series(exp(u.c[0]),
+                  [&](const std::array<S, N + 1> &w, std::size_t k) {
+                    return dconv(w, u.c, k) * inv_k[k];
+                  });
   }
 
   // log: w[0]=log(u[0]),  w[k] = (u[k] - (1/k)Σ_{j=1}^{k-1} j*w[j]*u[k-j]) /
@@ -202,9 +203,10 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
   [[nodiscard]] friend constexpr TaylorDual log(const TaylorDual &u) noexcept {
     using std::log;
     const S invu0 = S{1} / u.c[0];
-    return series(log(u.c[0]), [&](const auto &w, std::size_t k) {
-      return (u.c[k] - dconv(u.c, w, k, 1) * inv_k[k]) * invu0;
-    });
+    return series(log(u.c[0]),
+                  [&](const std::array<S, N + 1> &w, std::size_t k) {
+                    return (u.c[k] - dconv(u.c, w, k, 1) * inv_k[k]) * invu0;
+                  });
   }
 
   // The coupled sine/cosine recurrence; circular and hyperbolic differ in one
@@ -257,7 +259,7 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
     using std::sqrt;
     const S w0 = sqrt(u.c[0]);
     const auto inv2w0 = S{1} / (S{2} * w0);
-    return series(w0, [&](const auto &w, std::size_t k) {
+    return series(w0, [&](const std::array<S, N + 1> &w, std::size_t k) {
       return (u.c[k] - conv(w, w, k, 1, k)) * inv2w0;
     });
   }
@@ -329,7 +331,7 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
   [[nodiscard]] static constexpr TaylorDual powser(const TaylorDual &u, S p,
                                                    S w0) noexcept {
     const S invu0 = S{1} / u.c[0];
-    return series(w0, [&](const auto &w, std::size_t n) {
+    return series(w0, [&](const std::array<S, N + 1> &w, std::size_t n) {
       return (p * dconv(w, u.c, n) - dconv(u.c, w, n, 1)) * inv_k[n] * invu0;
     });
   }
@@ -422,9 +424,10 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
     using std::erf;
     constexpr S cc = static_cast<S>(S{2} * std::numbers::inv_sqrtpi);
     const TaylorDual g = exp(-(u * u)); // exp(-u²)
-    return series(erf(u.c[0]), [&](const auto &, std::size_t k) {
-      return cc * dconv(g.c, u.c, k) * inv_k[k];
-    });
+    return series(erf(u.c[0]),
+                  [&](const std::array<S, N + 1> &, std::size_t k) {
+                    return cc * dconv(g.c, u.c, k) * inv_k[k];
+                  });
   }
 
   // (x² + y²)·w' = x·y' − y·x', so the recurrence never divides by x.  The
@@ -458,7 +461,7 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
     using std::hypot;
     const S h0 = hypot(x.c[0], y.c[0]);
     const S invh = S{1} / h0;
-    return series(h0, [&](const auto &w, std::size_t k) {
+    return series(h0, [&](const std::array<S, N + 1> &w, std::size_t k) {
       return (dconv(x.c, x.c, k) + dconv(y.c, y.c, k) - dconv(w, w, k, 1)) *
              inv_k[k] * invh;
     });
