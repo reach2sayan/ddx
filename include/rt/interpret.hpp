@@ -289,8 +289,9 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         [[fallthrough]];
       default:
         if (!tensor_row(
-                b, v, [&](int i) { return in(n.in[i], k); },
-                [&](int i) { return at(n.in[i], k); }, to, out[k], kt)) {
+                b, v, [&](std::size_t i) { return in(n.in[i], k); },
+                [&](std::size_t i) { return at(n.in[i], k); }, to, out[k],
+                kt)) {
           std::unreachable();
         }
       }

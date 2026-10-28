@@ -380,10 +380,12 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
       // Both rules before either sum.
       const Expression<T> l = expr(node.in[0]);
       const Expression<T> r = expr(node.in[1]);
-      const auto [cl, cr] = detail::contributions(
+      // A pair, not a structured binding: clang will not constant-evaluate a
+      // binding captured by reference.
+      const auto c = detail::contributions(
           op, a, l, r, moves(node.in[0]), moves(node.in[1]), zero);
-      add_to(node.in[0], g, [&] { return cl; });
-      add_to(node.in[1], g, [&] { return cr; });
+      add_to(node.in[0], g, [&] { return c.first; });
+      add_to(node.in[1], g, [&] { return c.second; });
       break;
     }
     case Kind::Tensor: {
@@ -618,11 +620,11 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       const Expression<T> l{b, node.in[0]};
       const Expression<T> r{b, node.in[1]};
       const Expression<T> one{1};
-      const auto [pl, pr] = detail::contributions(
+      const auto p = detail::contributions(
           op, one, l, r, moves[node.in[0]], moves[node.in[1]], one);
       d[v] = moved(
-          v, node.in[0], [&] { return pl * dv(node.in[0]); }, node.in[1],
-          [&] { return pr * dv(node.in[1]); });
+          v, node.in[0], [&] { return p.first * dv(node.in[0]); }, node.in[1],
+          [&] { return p.second * dv(node.in[1]); });
       break;
     }
     case Kind::Tensor: {
