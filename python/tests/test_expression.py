@@ -57,7 +57,7 @@ def test_every_exported_unary_is_covered() -> None:
                  "release_tapes", "var"}
     # Vectors and matrices: factories and reductions, not scalar operations.
     vectors = {"dot", "gemv", "mat_constant", "outer", "pack", "sum",
-               "transpose", "vec", "vec_constant"}
+               "transpose", "vec", "vec_constant", "vec_param"}
     assert functions - binary - ternary - not_an_op - vectors == set(UNARY)
 
 

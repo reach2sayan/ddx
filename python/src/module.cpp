@@ -19,7 +19,6 @@
 
 #include <pybind11/native_enum.h>
 #include <pybind11/numpy.h>
-#include <pybind11/operators.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -409,23 +408,38 @@ PYBIND11_MODULE(_ddx, m) {
         return PyExpression::pack(scalars, ddx::py::current_arena);
       },
       pyb::arg("scalars"));
+  // Read in place where already column-major, else copied once; a list
+  // converts the same way.
+  using Columns = pyb::array_t<double, pyb::array::f_style | pyb::array::forcecast>;
+  const auto data_of = [](const Columns &a) {
+    return std::span<const double>{a.data(), static_cast<std::size_t>(a.size())};
+  };
   m.def(
       "vec_constant",
-      [in_arena](const std::vector<double> &data) {
-        return in_arena([&](auto &b) {
-          return rt::vec_constant(b, std::span<const double>{data});
-        });
+      [in_arena, data_of](const Columns &data) {
+        return in_arena([&](auto &b) { return rt::vec_constant(b, data_of(data)); });
       },
       pyb::arg("data"));
   m.def(
       "mat_constant",
-      [in_arena](std::size_t rows, std::size_t cols,
-                 const std::vector<double> &data) {
-        return in_arena([&](auto &b) {
-          return rt::mat_constant(b, rows, cols, std::span<const double>{data});
-        });
+      [in_arena, data_of](std::size_t rows, std::size_t cols, const Columns &data) {
+        return in_arena(
+            [&](auto &b) { return rt::mat_constant(b, rows, cols, data_of(data)); });
       },
       pyb::arg("rows"), pyb::arg("cols"), pyb::arg("data"));
+  m.def(
+      "mat_constant",
+      [in_arena, data_of](const Columns &m) {
+        if (m.ndim() != 2) {
+          ddx::py::fail_with(errc::tensor_shape);
+        }
+        return in_arena([&](auto &b) {
+          return rt::mat_constant(b, static_cast<std::size_t>(m.shape(0)),
+                                  static_cast<std::size_t>(m.shape(1)),
+                                  data_of(m));
+        });
+      },
+      pyb::arg("matrix"), "A constant matrix from a 2-D array.");
   m.def(
       "sum",
       [](const PyExpression &v) {

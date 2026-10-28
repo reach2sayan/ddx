@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <functional>
 #include <optional>
 #include <ranges>
 #include <span>

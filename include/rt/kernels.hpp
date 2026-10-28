@@ -23,11 +23,9 @@
 #include <cmath>
 #include <concepts>
 #include <cstddef>
-#include <functional>
 #include <ranges>
 #include <span>
 #include <string_view>
-#include <utility>
 
 namespace ddx::rt {
 

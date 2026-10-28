@@ -33,14 +33,12 @@
 #include <array>
 #include <atomic>
 #include <bit>
-#include <cmath>
 #include <concepts>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <utility>
-#include <vector>
 
 namespace ddx::jit {
 namespace {

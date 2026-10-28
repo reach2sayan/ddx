@@ -68,39 +68,23 @@ struct WantInfo {
   BlockShape jacobian;
   BlockShape hessian;
 };
-inline constexpr auto want_table = [] {
-  std::array<WantInfo, 0
-#define DDX_RT_WANT(...) +1
-             DDX_RT_WANT_TABLE(DDX_RT_WANT)
-#undef DDX_RT_WANT
-             >
-      t{};
-  std::size_t i = 0;
+inline constexpr std::array want_table{
 #define DDX_RT_WANT(Name, single, second, rebalance, direction, values, jac,   \
                     hes)                                                       \
-  t[i++] = {#Name,                                                             \
-            single,                                                            \
-            second,                                                            \
-            rebalance,                                                         \
-            Direction::direction,                                              \
-            values,                                                            \
-            BlockShape::jac,                                                   \
-            BlockShape::hes};
-  DDX_RT_WANT_TABLE(DDX_RT_WANT)
+  WantInfo{#Name,  single, second,          rebalance, Direction::direction, \
+           values, BlockShape::jac, BlockShape::hes},
+    DDX_RT_WANT_TABLE(DDX_RT_WANT)
 #undef DDX_RT_WANT
-  return t;
-}();
+};
 inline constexpr std::size_t want_count = want_table.size();
 
 // The Wants in table order, so a pipeline zipped against them needs no cast
 // back from an index.
-inline constexpr auto want_values = [] {
-  std::array<Want, want_count> out{};
-  for (const std::size_t i : std::views::iota(0uz, want_count)) {
-    out[i] = static_cast<Want>(i);
-  }
-  return out;
-}();
+inline constexpr std::array want_values{
+#define DDX_RT_WANT(Name, ...) Want::Name,
+    DDX_RT_WANT_TABLE(DDX_RT_WANT)
+#undef DDX_RT_WANT
+};
 
 [[nodiscard]] constexpr const WantInfo &want_info(Want w) noexcept {
   return want_table[std::to_underlying(w)];

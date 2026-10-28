@@ -21,7 +21,6 @@
 namespace ddx::impl::md {
 
 using DDX_MDSPAN_NS::dextents;
-using DDX_MDSPAN_NS::dynamic_extent;
 using DDX_MDSPAN_NS::extents;
 using DDX_MDSPAN_NS::mdspan;
 using DDX_MDSPAN_NS::layout_right;

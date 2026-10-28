@@ -3,6 +3,8 @@ ddx's runtime expression graph and LLVM JIT
 """
 from __future__ import annotations
 import enum
+import numpy
+import numpy.typing
 import typing
 __all__: list[str] = ['Backend', 'Call', 'Equation', 'Error', 'Expression',
                       'VecLib', 'Want', 'abs', 'acos', 'acosh', 'add', 'asin',
@@ -368,8 +370,12 @@ def gemv(matrix: Expression, v: Expression, transposed: bool = False) -> Express
     """M v, or M^T v when transposed: a mat_constant table or a computed matrix."""
 def gradient(f: Expression) -> list[Expression]:
     """df/dx for every symbol, in declaration order."""
-def mat_constant(rows: typing.SupportsInt | typing.SupportsIndex, cols: typing.SupportsInt | typing.SupportsIndex, data: typing.Sequence[typing.SupportsFloat]) -> Expression:
+@typing.overload
+def mat_constant(rows: typing.SupportsInt | typing.SupportsIndex, cols: typing.SupportsInt | typing.SupportsIndex, data: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> Expression:
     """A constant rows x cols matrix from column-major data."""
+@typing.overload
+def mat_constant(matrix: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> Expression:
+    """A constant matrix from a 2-D array."""
 def outer(u: Expression, w: Expression) -> Expression:
     """u w^T, the matrix of every product of an element of u with one of w."""
 def pack(scalars: typing.Sequence[Expression]) -> Expression:
@@ -384,7 +390,7 @@ def vec(name: str, n: typing.SupportsInt | typing.SupportsIndex) -> Expression:
     """n symbols named name[0] .. name[n-1], packed."""
 def vec_param(name: str, n: typing.SupportsInt | typing.SupportsIndex) -> Expression:
     """n params named name[0] .. name[n-1], packed."""
-def vec_constant(data: typing.Sequence[typing.SupportsFloat]) -> Expression:
+def vec_constant(data: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> Expression:
     ...
 __version__: str = ...
 has_jit: bool = True

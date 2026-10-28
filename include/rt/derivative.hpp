@@ -788,11 +788,7 @@ template <impl::Numeric T>
 [[nodiscard]] Expression<T> derivative(const Expression<T> &f,
                                        std::string_view symbol) {
   const auto in = detail::differentiable(f).and_then(
-      [&](Arena<T> *b) -> result<std::uint32_t> {
-        const auto i = b->lookup(symbol);
-        return i && i->op == OpCode::Var ? result<std::uint32_t>{i->index}
-                                         : fail(errc::unknown_symbol);
-      });
+      [&](const Arena<T> *b) { return b->symbol(symbol); });
   return in ? gradient(f)[*in] : detail::Router::poison<T>(in.error().code);
 }
 

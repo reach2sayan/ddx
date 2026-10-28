@@ -6,7 +6,6 @@
 #include <format>
 #include <ostream>
 #include <string_view>
-#include <utility>
 
 namespace ddx {
 

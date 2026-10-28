@@ -7,7 +7,6 @@
 
 #include <boost/container/small_vector.hpp>
 
-#include <array>
 #include <cassert>
 #include <cmath> // std::fma
 #include <concepts>

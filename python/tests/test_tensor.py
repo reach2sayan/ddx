@@ -181,3 +181,27 @@ def test_released_tapes_grow_back_to_the_same_numbers() -> None:
     before = eq.gradient(POINT)
     ddx.release_tapes()
     np.testing.assert_array_equal(eq.gradient(POINT), before)
+
+
+def test_a_param_vector_is_the_constant_it_carries() -> None:
+    """vec_param's elements arrive with the point; nothing differentiates them."""
+    c = [0.3, -0.2, 0.7]
+    baked = ddx.equation(lambda: ddx.dot(ddx.vec_constant(c), ddx.log(ddx.vec("x", 3))))
+    brought = ddx.equation(lambda: ddx.dot(ddx.vec_param("c", 3), ddx.log(ddx.vec("x", 3))))
+    x = [0.2, 0.5, 0.3]
+    assert list(brought.params) == ["c[0]", "c[1]", "c[2]"]
+    assert np.array_equal(brought.jacobian(x + c)[1], baked.jacobian(x)[1])
+    named = {f"x[{i}]": v for i, v in enumerate(x)} | {f"c[{i}]": v for i, v in enumerate(c)}
+    assert brought.evaluate(named) == baked.evaluate(x)
+
+
+def test_a_matrix_constant_takes_a_two_dimensional_array() -> None:
+    """Any order, any float dtype: the shape is the array's, the data column-major."""
+    m = np.arange(6.0).reshape(2, 3)
+    x = [0.5, -1.0, 2.0]
+    flat = ddx.equation(lambda: ddx.sum(ddx.mat_constant(2, 3, m.ravel(order="F")) @ ddx.vec("x", 3)))
+    for given in (m, np.asfortranarray(m), m.astype(np.float32), m.tolist()):
+        whole = ddx.equation(lambda given=given: ddx.sum(ddx.mat_constant(given) @ ddx.vec("x", 3)))
+        assert whole.evaluate(x) == flat.evaluate(x)
+    with pytest.raises(ddx.Error):
+        ddx.equation(lambda: ddx.sum(ddx.mat_constant(np.ones(3)) @ ddx.vec("x", 3)))

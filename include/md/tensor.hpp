@@ -51,14 +51,12 @@ template <Numeric S, md::CStaticExtents Ext,
           md::CLayoutFor<Ext> Layout = md::layout_right>
 class md_tensor {
 public:
-  using element_type = S;
   using value_type = S;
   using extents_type = Ext;
   using layout_type = Layout;
   using mapping_type = typename Layout::template mapping<Ext>;
   using index_type = typename Ext::index_type;
   using reference = S &;
-  using const_reference = const S &;
 
   static constexpr std::size_t rank() noexcept { return Ext::rank(); }
 
@@ -123,20 +121,5 @@ using nd_tensor_t = md_tensor<S, uniform_extents_t<N, Order>, Layout>;
 template <Numeric S, std::size_t Lead, std::size_t N, std::size_t Order,
           typename Layout = layout_leading_simplex<1>>
 using nd_stack_t = md_tensor<S, stacked_extents_t<Lead, N, Order>, Layout>;
-
-// Index-based, not a pointer walk into data(): under a packed mapping a row is
-// not contiguous.  The sweeps fill a plain array first, since a rank-1 mdspan
-// is not a range.
-template <Numeric S, md::CStaticExtents Ext, md::CLayoutFor<Ext> Layout,
-          std::ranges::input_range R>
-  requires(Ext::rank() == 2)
-constexpr void assign_row(md_tensor<S, Ext, Layout> &t,
-                          typename Ext::index_type i, R &&src) noexcept {
-  for (auto &&[k, v] : std::views::zip(
-           std::views::iota(typename Ext::index_type{0}, Ext{}.extent(1)),
-           src)) {
-    t[i, k] = v;
-  }
-}
 
 } // namespace ddx::impl

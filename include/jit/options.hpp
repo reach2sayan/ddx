@@ -5,13 +5,11 @@
 
 #include <boost/describe.hpp>
 
-#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <optional>
 #include <string>
-#include <string_view>
 
 // What a caller says about compiling, and nothing that compiles: header types
 // in every build, so an Equation has one shape whether or not a backend was

@@ -3,7 +3,6 @@
 // Shared pieces of every std::formatter in the library.
 
 #include <algorithm>
-#include <cstddef>
 #include <format>
 #include <ostream>
 #include <ranges>

@@ -34,7 +34,6 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -75,6 +74,7 @@ template <typename C> class DDX_TEMPLATE_API Restricted;
 // its cells are laid out by.
 template <typename D, impl::Numeric T> class DDX_TEMPLATE_API JacobianSurface {
   using Want = rt::Want;
+  using Blocks = PerBlock<std::vector<T>>;
 
 public:
   // Dense row-major m x n; at m == 1 the leading axis goes and this is n long.
@@ -82,11 +82,7 @@ public:
   // here and this spelling never meets the compression.
   [[nodiscard]] constexpr result<std::vector<T>>
   jacobian(const rt::detail::CPointArg<T> auto &...args) const {
-    return self()
-        .template at<Want::Jacobian>({}, args...)
-        .transform([this](const auto &b) {
-          return dense(self().jacobian_sparsity(), b.jacobian);
-        });
+    return dense_at<Want::Jacobian, &Blocks::jacobian>({}, args...);
   }
 
   // The Jacobian alone, from a graph with no value block: whatever only the
@@ -94,11 +90,7 @@ public:
   // than its function is most of the graph.
   [[nodiscard]] constexpr result<std::vector<T>>
   gradient(const rt::detail::CPointArg<T> auto &...args) const {
-    return self()
-        .template at<Want::Gradient>({}, args...)
-        .transform([this](const auto &b) {
-          return dense(self().jacobian_sparsity(), b.jacobian);
-        });
+    return dense_at<Want::Gradient, &Blocks::jacobian>({}, args...);
   }
 
   // dJ/dv, dense row-major m x n: the derivative of every Jacobian cell along
@@ -106,11 +98,7 @@ public:
   [[nodiscard]] result<std::vector<T>>
   jacobian_jvp(std::span<const T> direction,
                const rt::detail::CPointArg<T> auto &...args) const {
-    return self()
-        .template at<Want::JacobianJvp>(direction, args...)
-        .transform([this](const auto &b) {
-          return dense(self().jacobian_sparsity(), b.hessian);
-        });
+    return dense_at<Want::JacobianJvp, &Blocks::hessian>(direction, args...);
   }
   // Along one symbol's basis vector: d/dx_j of the whole Jacobian.
   [[nodiscard]] result<std::vector<T>>
@@ -203,6 +191,14 @@ protected:
 private:
   [[nodiscard]] constexpr const D &self() const {
     return static_cast<const D &>(*this);
+  }
+  // One block of W's answer, the zeros put back.
+  template <Want W, auto Block>
+  [[nodiscard]] constexpr result<std::vector<T>>
+  dense_at(std::span<const T> along, const auto &...args) const {
+    return self().template at<W>(along, args...).transform([this](const auto &b) {
+      return dense(self().jacobian_sparsity(), b.*Block);
+    });
   }
 };
 
@@ -355,9 +351,7 @@ public:
   [[nodiscard]] result<std::vector<T>>
   hvp(std::span<const T> direction,
       const rt::detail::CPointArg<T> auto &...args) const {
-    return at<Want::Hvp>(direction, args...).transform([](auto b) {
-      return std::move(b.hessian);
-    });
+    return block_at<Want::Hvp, &Blocks::hessian>(direction, args...);
   }
 
   // The j-th Hessian column, named and not indexed: the symbol list exists
@@ -373,18 +367,14 @@ public:
   [[nodiscard]] result<std::vector<T>>
   vjp(std::span<const T> weights,
       const rt::detail::CPointArg<T> auto &...args) const {
-    return at<Want::Vjp>(weights, args...).transform([](auto b) {
-      return std::move(b.jacobian);
-    });
+    return block_at<Want::Vjp, &Blocks::jacobian>(weights, args...);
   }
 
   // J v, m long: the mirror of vjp().
   [[nodiscard]] result<std::vector<T>>
   jvp(std::span<const T> direction,
       const rt::detail::CPointArg<T> auto &...args) const {
-    return at<Want::Jvp>(direction, args...).transform([](auto b) {
-      return std::move(b.jacobian);
-    });
+    return block_at<Want::Jvp, &Blocks::jacobian>(direction, args...);
   }
 
   // A view with only the named symbols' Jacobian columns, in symbol order: the
@@ -463,9 +453,7 @@ public:
   // times over a dense term.  One output only.
   [[nodiscard]] result<std::vector<T>>
   dense_hessian(const rt::detail::CPointArg<T> auto &...args) const {
-    return at<Want::DenseHessian>({}, args...).transform([](auto b) {
-      return std::move(b.hessian);
-    });
+    return block_at<Want::DenseHessian, &Blocks::hessian>({}, args...);
   }
   // How many terms the sweep kept quadratic, and how many fell back to a dense
   // product: a model's structure defeated the algebra where the second is not
@@ -485,12 +473,7 @@ public:
   // Whether to compile at all, and how; discards anything already compiled.
   // The one non-const member: a call overlapping it is the caller's race.
   auto &options(this auto &self, const jit::Options &opt) {
-    if (opt == self.options_) {
-      return self;
-    }
-    self.options_ = opt;
-    self.pipelines_ = std::make_unique<Pipelines>();
-    return self;
+    return replaced(self, self.options_, opt);
   }
   [[nodiscard]] const jit::Options &options() const noexcept {
     return options_;
@@ -500,12 +483,7 @@ public:
   // (rt::use_tensor_kernels) unless this equation is handed a table of its own.
   // A table decides the last bits, so the pipelines go with the old one.
   auto &tensor_kernels(this auto &self, const TensorKernelTable<T> &table) {
-    if (&table == self.kernels_) {
-      return self;
-    }
-    self.kernels_ = &table;
-    self.pipelines_ = std::make_unique<Pipelines>();
-    return self;
+    return replaced(self, self.kernels_, &table);
   }
   [[nodiscard]] constexpr const TensorKernelTable<T> &
   tensor_kernels() const noexcept {
@@ -894,17 +872,14 @@ protected:
   // As unless_poisoned, and nullopt too for a system: the answer is about one
   // output's Hessian.
   [[nodiscard]] auto unless_system(auto &&value) const {
-    using V = std::remove_cvref_t<std::invoke_result_t<decltype(value)>>;
-    return poisoned() || is_system() ? std::optional<V>{}
-                                     : std::optional<V>{value()};
+    return is_system() ? decltype(unless_poisoned(value)){}
+                       : unless_poisoned(value);
   }
 
   // m long, always a vector: what System answers and Equation narrows.
   [[nodiscard]] constexpr result<std::vector<T>>
   values(const rt::detail::CPointArg<T> auto &...args) const {
-    return at<Want::Value>({}, args...).transform([](auto b) {
-      return std::move(b.values);
-    });
+    return block_at<Want::Value, &Blocks::values>({}, args...);
   }
 
 private:
@@ -946,13 +921,8 @@ private:
     });
   }
 
-  // The symbol named `name`, by slot: a parameter or an implicit is an input,
-  // not a symbol.
   [[nodiscard]] result<std::uint32_t> symbol(std::string_view name) const {
-    const auto input = arena_->lookup(name);
-    return input && input->op == OpCode::Var
-               ? result<std::uint32_t>{input->index}
-               : fail(errc::unknown_symbol);
+    return arena_->symbol(name);
   }
   [[nodiscard]] constexpr const Sparsity &jacobian_sparsity() const {
     return jacobian_.pattern;
@@ -1005,6 +975,22 @@ protected:
   }
 
 private:
+  using Blocks = PerBlock<std::vector<T>>;
+  // One block of W's answer.
+  template <Want W, auto Block>
+  [[nodiscard]] constexpr result<std::vector<T>>
+  block_at(std::span<const T> along, const auto &...args) const {
+    return at<W>(along, args...).transform(
+        [](auto b) { return std::move(b.*Block); });
+  }
+  // `member` set to `value`, and whatever was compiled for the old one gone.
+  static auto &replaced(auto &self, auto &member, const auto &value) {
+    if (!(member == value)) {
+      member = value;
+      self.pipelines_ = std::make_unique<Pipelines>();
+    }
+    return self;
+  }
   [[nodiscard]] auto reading() const {
     return std::shared_lock{sweeps_->arena_mutex};
   }

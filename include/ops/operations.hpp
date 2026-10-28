@@ -5,7 +5,6 @@
 #include "ops/numeric.hpp"
 #include "ops/unary_math.hpp"
 #include "util/fixed_string.hpp"
-#include <array>
 #include <cmath>
 #include <concepts>
 #include <cstdint>
@@ -35,7 +34,6 @@ template <Numeric T, typename func, CFixedString auto symbol, Notation note,
           int prec>
 struct OpDescriptor {
   using value_type = T;
-  using func_type = func;
   static constexpr std::string_view label = symbol.view();
   static constexpr Notation notation = note;
   static constexpr int precedence = prec;

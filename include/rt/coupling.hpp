@@ -12,7 +12,6 @@
 #include <boost/stl_interfaces/iterator_interface.hpp>
 
 #include <algorithm>
-#include <concepts>
 #include <cstddef>
 #include <iterator>
 #include <optional>

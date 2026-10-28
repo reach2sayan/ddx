@@ -473,7 +473,6 @@ DDX_ALWAYS_INLINE constexpr bool tensor_row(const auto &s, NodeId v, auto in,
 template <impl::Numeric T> class DDX_TEMPLATE_API Arena {
 public:
   using value_type = T;
-  using node_type = Node<T>;
 
   [[nodiscard]] constexpr NodeId constant(const T &v) {
     return intern({.op = OpCode::Const, .value = v});
@@ -647,6 +646,14 @@ public:
     const auto at = std::ranges::lower_bound(by_name_, name, {}, name_of());
     return at != by_name_.end() && name_of()(*at) == name ? std::optional{*at}
                                                           : std::nullopt;
+  }
+  // The slot of the symbol named `name`: a param or an implicit is an input,
+  // not a symbol.
+  [[nodiscard]] constexpr result<std::uint32_t>
+  symbol(std::string_view name) const {
+    const auto in = lookup(name);
+    return in && in->op == OpCode::Var ? result<std::uint32_t>{in->index}
+                                       : fail(errc::unknown_symbol);
   }
 
   // A Const of `v`, or a VecConst of nothing but `v`: what a cancelled term
