@@ -49,7 +49,7 @@ public:
   // A factory or reduction raises where it refused -- a shape, a missing
   // arena -- rather than carrying the poison on to equation().
   [[nodiscard]] static PyExpression checked(const Base &e, SharedArena arena) {
-    if (const auto why = rt::detail::Rooting::why(e)) {
+    if (const auto why = rt::detail::Router::why(e)) {
       fail_with(*why);
     }
     return {e, std::move(arena)};

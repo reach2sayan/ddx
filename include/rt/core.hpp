@@ -469,21 +469,17 @@ public:
   }
   // How many terms the sweep kept quadratic, and how many fell back to a dense
   // product: a model's structure defeated the algebra where the second is not
-  // zero -- still right, not O(n^2).  Nothing for a system, or for a block the
-  // sweep refused, which dense_hessian() answers with tensor_shape.
+  // zero -- still right, not O(n^2).  Refused as dense_hessian() would be:
+  // tensor_shape for a block the sweep refused, not_single_output for a system.
   struct DenseCost {
     std::size_t n2_terms = 0;
     std::size_t n3_terms = 0;
   };
-  [[nodiscard]] std::optional<DenseCost> dense_hessian_cost() const {
-    if (poisoned() || is_system()) {
-      return std::nullopt;
-    }
-    const DenseHessian &d = dense_sweep();
-    return d.block == no_node
-               ? std::nullopt
-               : std::optional{
-                     DenseCost{.n2_terms = d.n2_terms, .n3_terms = d.n3_terms}};
+  [[nodiscard]] result<DenseCost> dense_hessian_cost() const {
+    return ready(Want::DenseHessian).transform([this] {
+      const DenseHessian &d = dense_sweep();
+      return DenseCost{.n2_terms = d.n2_terms, .n3_terms = d.n3_terms};
+    });
   }
 
   // Whether to compile at all, and how; discards anything already compiled.
@@ -737,11 +733,11 @@ protected:
   [[nodiscard]] static constexpr std::optional<error>
   why_not(std::span<const Expression<T>> outputs) noexcept {
     for (const Expression<T> &e : outputs) {
-      if (const auto why = Rooting::why(e)) {
+      if (const auto why = Router::why(e)) {
         return error{*why};
       }
     }
-    if (Rooting::first_arena(outputs) == nullptr) {
+    if (Router::first_arena(outputs) == nullptr) {
       return error{errc::no_graph};
     }
     return std::nullopt;
@@ -754,7 +750,7 @@ protected:
   rooted(std::span<const Expression<T>> outputs,
          std::unique_ptr<Arena<T>> owned) {
     auto arena = owned ? std::move(owned)
-                       : std::make_unique<Arena<T>>(*Rooting::first_arena(outputs));
+                       : std::make_unique<Arena<T>>(*Router::first_arena(outputs));
     auto roots = outputs | std::views::transform([&arena](const auto &e) {
                    return e.id(*arena);
                  }) |
@@ -1329,9 +1325,9 @@ private:
     interpret(*c.graph, *c.kernels, xs, out, n);
   }
 
-  // The block sweep, within ~1.4x of a kernel and not a sad path.  A short
-  // batch sweeps one point at a time rather than padding out to block_lanes,
-  // which on a batch of one is the whole cost.
+  // The block sweep: within ~1.4x of a kernel on a large graph at a batch of
+  // block_lanes or more, several times off it on a small one.  A short batch
+  // sweeps one point at a time rather than padding out to block_lanes.
   void interpret(const Graph<T> &graph, const TensorKernelTable<T> &kernels,
                  std::span<const T *const> xs, const Columns<T> &out,
                  std::size_t n) const {

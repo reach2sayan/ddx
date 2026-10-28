@@ -754,6 +754,48 @@ template <impl::DiffMode Mode = impl::DiffMode::Reverse, impl::Numeric T>
   }
 }
 
+namespace detail {
+// The arena f is differentiated in, or why it cannot be.
+template <impl::Numeric T>
+[[nodiscard]] result<Arena<T> *> differentiable(const Expression<T> &f) {
+  Arena<T> *const b = arena_of<T>({&f, 1});
+  const auto why = b == nullptr       ? std::optional{errc::outside_equation}
+                   : Router::scalar(f) ? Router::why(f)
+                                        : errc::tensor_shape;
+  return why ? fail(*why) : result<Arena<T> *>{b};
+}
+} // namespace detail
+
+// df/dx for every symbol, in symbols() order, as nodes to build on: sound in
+// an arena still being built, the sweep's nodes landing above f's.  Each one
+// poisoned, as f is, where f cannot be differentiated.
+template <impl::Numeric T>
+[[nodiscard]] std::vector<Expression<T>> gradient(const Expression<T> &f) {
+  const auto b = detail::differentiable(f);
+  if (!b) {
+    const Arena<T> *const at = detail::arena_of<T>({&f, 1});
+    return std::vector(at ? at->symbols().size() : 1uz,
+                       detail::Router::poison<T>(b.error().code));
+  }
+  return derive_jacobian(**b, f.id(**b)).partial |
+         std::views::transform([&b](NodeId p) {
+           return p == no_node ? Expression<T>{T{0}} : Expression<T>{**b, p};
+         }) |
+         impl::to<std::vector<Expression<T>>>();
+}
+// One symbol's, by name: unknown_symbol for anything but a var.
+template <impl::Numeric T>
+[[nodiscard]] Expression<T> derivative(const Expression<T> &f,
+                                       std::string_view symbol) {
+  const auto in = detail::differentiable(f).and_then(
+      [&](Arena<T> *b) -> result<std::uint32_t> {
+        const auto i = b->lookup(symbol);
+        return i && i->op == OpCode::Var ? result<std::uint32_t>{i->index}
+                                         : fail(errc::unknown_symbol);
+      });
+  return in ? gradient(f)[*in] : detail::Router::poison<T>(in.error().code);
+}
+
 // One sweep per colour.  Sweeping from the sum of a colour's partials gives,
 // for row i, the sum over j in the colour of d2f/dxi dxj -- of which the
 // colouring guarantees at most one is not structurally zero.

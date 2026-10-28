@@ -36,7 +36,7 @@ from ._ddx import (Backend, Call, Expression, OptLevel, Restricted, VecLib, Want
                    pow,  # noqa: A004
                    implicit, param, select, sign, sin, sinh, sqrt, tan, tanh,
                    var,
-                   dot, gemv, mat_constant, outer, pack, release_tapes,
+                   derivative, dot, gemv, gradient, mat_constant, outer, pack, release_tapes,
                    sum,  # noqa: A004
                    Transposed, transpose, vec, vec_constant, )
 from ._options import Options
@@ -104,5 +104,5 @@ __all__ = ["Backend", "Call", "Equation", "Error", "Expression", "OptLevel", "Re
            "min", "mul", "neg", "param", "pow", "select", "sign", "sin", "sinh", "sqrt",
            "implicit",
            "tan", "tanh", "var",
-           "dot", "gemv", "mat_constant", "outer", "pack", "release_tapes",
+           "derivative", "dot", "gemv", "gradient", "mat_constant", "outer", "pack", "release_tapes",
            "sum", "Transposed", "transpose", "vec", "vec_constant",]

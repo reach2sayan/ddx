@@ -29,7 +29,7 @@ namespace detail {
 // Befriended below: an equation is the one thing that takes an expression's
 // arena over, and the only reader of the poison an absent arena leaves; the
 // tensor factories in rt/tensor.hpp are the other way to a poisoned handle.
-struct Rooting {
+struct Router {
   template <impl::Numeric T>
   [[nodiscard]] static constexpr Arena<T> *
   arena(const Expression<T> &e) noexcept {
@@ -358,7 +358,7 @@ public:
 private:
   // What an Equation needs of an expression: which arena it names, and --
   // through poison() -- that it names none.
-  friend struct detail::Rooting;
+  friend struct detail::Router;
   template <impl::Numeric U> friend class ExternFunction;
   template <impl::Numeric U>
   friend Expression<U> named(OpCode, std::string_view) noexcept;
@@ -420,9 +420,9 @@ template <impl::Numeric T, std::invocable<const Expression<T> &> F>
 [[nodiscard]] constexpr Expression<T>
 implicit(Arena<T> &b, std::string_view name, F &&residual) {
   const Expression<T> z = named(b, OpCode::Implicit, name);
-  if (!detail::Rooting::why(z)) {
+  if (!detail::Router::why(z)) {
     const Expression<T> f = std::invoke(DDX_FWD(residual), z);
-    const auto why = detail::Rooting::why(f);
+    const auto why = detail::Router::why(f);
     b.close(z.id(b), why ? no_node : f.id(b), why);
   }
   return z;
@@ -457,7 +457,7 @@ public:
       if (a.why_) {
         return Expression<T>::poison(*a.why_);
       }
-      if (!detail::Rooting::scalar(a)) {
+      if (!detail::Router::scalar(a)) {
         return Expression<T>::poison(errc::tensor_shape);
       }
     }

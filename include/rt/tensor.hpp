@@ -36,7 +36,7 @@ namespace detail {
 // equation() callback's.
 template <impl::Numeric T>
 [[nodiscard]] Arena<T> *arena_of(std::span<const Expression<T>> scalars) {
-  Arena<T> *const b = Rooting::first_arena(scalars);
+  Arena<T> *const b = Router::first_arena(scalars);
   return b != nullptr ? b : current_arena<T>;
 }
 
@@ -44,7 +44,7 @@ template <impl::Numeric T>
 // callback's arena, refused outside one.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> refused(errc why) noexcept {
-  return Rooting::poison<T>(why);
+  return Router::poison<T>(why);
 }
 template <impl::Numeric T>
 [[nodiscard]] Expression<T> in_arena(auto &&make) {
@@ -54,7 +54,7 @@ template <impl::Numeric T>
 // The first operand's poison, if one is poisoned.
 [[nodiscard]] constexpr std::optional<errc> poisoned(const auto &...es) {
   std::optional<errc> why;
-  ((why = why ? why : Rooting::why(es)), ...);
+  ((why = why ? why : Router::why(es)), ...);
   return why;
 }
 // A table's rows and columns, which shape_of() leaves to the table itself.
@@ -88,10 +88,10 @@ pack(Arena<T> &b, std::span<const Expression<T>> scalars) {
     return detail::refused<T>(errc::tensor_shape);
   }
   for (const auto &s : scalars) {
-    if (const auto why = detail::Rooting::why(s)) {
+    if (const auto why = detail::Router::why(s)) {
       return detail::refused<T>(*why);
     }
-    if (!detail::Rooting::scalar(s)) {
+    if (!detail::Router::scalar(s)) {
       return detail::refused<T>(errc::tensor_shape);
     }
   }
@@ -175,7 +175,7 @@ template <impl::Numeric T>
   if (const auto why = detail::not_a_vector(v)) {
     return detail::refused<T>(*why);
   }
-  Arena<T> &b = *detail::Rooting::arena(v);
+  Arena<T> &b = *detail::Router::arena(v);
   return {b, b.make(OpCode::Sum, v.id())};
 }
 template <impl::Numeric T>
@@ -185,9 +185,9 @@ template <impl::Numeric T>
     return detail::refused<T>(*why);
   }
   // Either side may be a literal, which takes the other's width.
-  Arena<T> *const b = detail::Rooting::arena(u)
-                            ? detail::Rooting::arena(u)
-                            : detail::Rooting::arena(v);
+  Arena<T> *const b = detail::Router::arena(u)
+                            ? detail::Router::arena(u)
+                            : detail::Router::arena(v);
   const Shape shape = u.size() ? u.shape() : v.shape();
   if (b == nullptr || shape.size() == 0 ||
       (u.size() != 0 && v.size() != 0 && u.shape() != v.shape()) ||
@@ -205,8 +205,8 @@ gemv(const Expression<T> &m, const Expression<T> &v, bool transposed = false) {
   if (const auto why = detail::poisoned(m, v)) {
     return detail::refused<T>(*why);
   }
-  Arena<T> *const b = detail::Rooting::arena(m);
-  if (b == nullptr || v.size() == 0 || detail::Rooting::arena(v) != b) {
+  Arena<T> *const b = detail::Router::arena(m);
+  if (b == nullptr || v.size() == 0 || detail::Router::arena(v) != b) {
     return detail::refused<T>(errc::tensor_shape);
   }
   const Shape shape = detail::matrix_shape(*b, m);
@@ -247,11 +247,11 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> operator%(const Expression<T> &l,
                                                 const Expression<T> &r) {
   const auto is_matrix = [](const Expression<T> &e) {
-    Arena<T> *const b = detail::Rooting::arena(e);
-    return b != nullptr && !detail::Rooting::why(e) &&
+    Arena<T> *const b = detail::Router::arena(e);
+    return b != nullptr && !detail::Router::why(e) &&
            detail::matrix_shape(*b, e).cols > 1;
   };
-  if (is_matrix(r) && !detail::Rooting::why(l)) {
+  if (is_matrix(r) && !detail::Router::why(l)) {
     return detail::refused<T>(errc::tensor_shape);
   }
   return is_matrix(l) ? gemv(l, r) : dot(l, r);
@@ -264,8 +264,8 @@ template <impl::Numeric T>
   if (const auto why = detail::not_a_vector(u, w)) {
     return detail::refused<T>(*why);
   }
-  Arena<T> *const b = detail::Rooting::arena(u);
-  if (detail::Rooting::arena(w) != b || u.shape().cols != 1 ||
+  Arena<T> *const b = detail::Router::arena(u);
+  if (detail::Router::arena(w) != b || u.shape().cols != 1 ||
       w.shape().cols != 1) {
     return detail::refused<T>(errc::tensor_shape);
   }
@@ -281,13 +281,13 @@ add_at(const Expression<T> &v, const Expression<T> &s, std::size_t i) {
   if (const auto why = detail::not_a_vector(v)) {
     return detail::refused<T>(*why);
   }
-  if (const auto why = detail::Rooting::why(s)) {
+  if (const auto why = detail::Router::why(s)) {
     return detail::refused<T>(*why);
   }
-  if (i >= v.size() || !detail::Rooting::scalar(s)) {
+  if (i >= v.size() || !detail::Router::scalar(s)) {
     return detail::refused<T>(errc::tensor_shape);
   }
-  Arena<T> &b = *detail::Rooting::arena(v);
+  Arena<T> &b = *detail::Router::arena(v);
   return {b, b.make(opcode<OpCode::AddAt>,
                     Element{static_cast<std::uint32_t>(i)}, v.id(), s.id(b))};
 }

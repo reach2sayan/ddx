@@ -13,7 +13,7 @@ __all__: list[str] = ['Backend', 'Call', 'Equation', 'Error', 'Expression',
                       'max', 'min', 'mul', 'neg', 'pow', 'select', 'sign',
                       'sin', 'sinh', 'sqrt', 'tan', 'tanh', 'var',
                       'implicit', 'param', 'Restricted',
-                      'dot', 'gemv',
+                      'derivative', 'dot', 'gemv', 'gradient',
                       'mat_constant', 'outer', 'pack', 'release_tapes', 'sum', 'Transposed', 'transpose', 'vec', 'vec_constant']
 class Backend(enum.IntEnum):
     """
@@ -360,10 +360,14 @@ def param(name: str) -> Expression:
     ...
 def var(name: str) -> Expression:
     ...
+def derivative(f: Expression, symbol: str) -> Expression:
+    ...
 def dot(u: Expression, v: Expression) -> Expression:
     ...
 def gemv(matrix: Expression, v: Expression, transposed: bool = False) -> Expression:
     """M v, or M^T v when transposed: a mat_constant table or a computed matrix."""
+def gradient(f: Expression) -> list[Expression]:
+    """df/dx for every symbol, in declaration order."""
 def mat_constant(rows: typing.SupportsInt | typing.SupportsIndex, cols: typing.SupportsInt | typing.SupportsIndex, data: typing.Sequence[typing.SupportsFloat]) -> Expression:
     """A constant rows x cols matrix from column-major data."""
 def outer(u: Expression, w: Expression) -> Expression:

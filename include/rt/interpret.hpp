@@ -377,9 +377,12 @@ lanes_apply(const Arena<T> &b, NodeId i, const Node<T> &n,
     using Fn = typename R::functor;
     if constexpr (std::is_void_v<Fn>) {
       return true;
-    } else if (std::same_as<Fn, impl::detail::select_impl> && is_tensor(n)) {
-      return true; // a Select over tensor rows: the tensor arm's
     } else {
+      if constexpr (std::same_as<Fn, impl::detail::select_impl>) {
+        if (is_tensor(n)) {
+          return true; // a Select over tensor rows: the tensor arm's
+        }
+      }
       // The arities the tables spell.  A `std::unreachable()` in a trailing
       // `else` would leave the `return false` below it unreachable on the
       // instance that took it, which MSVC reports as C4702; the assert says

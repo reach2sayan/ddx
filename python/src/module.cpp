@@ -464,6 +464,29 @@ PYBIND11_MODULE(_ddx, m) {
       },
       pyb::arg("u"), pyb::arg("w"));
 
+  // Derivatives as expressions to build on, in the model running now.
+  const auto rooted = [](const PyExpression &f) {
+    const auto arena = f.arena() ? f.arena() : ddx::py::arena_now();
+    return std::pair{PyExpression::Base{*arena, f.base().id(*arena)}, arena};
+  };
+  m.def(
+      "gradient",
+      [rooted](const PyExpression &f) {
+        const auto [e, arena] = rooted(f);
+        return rt::gradient(e) | std::views::transform([&](const auto &d) {
+                 return PyExpression::checked(d, arena);
+               }) |
+               impl::to<std::vector<PyExpression>>();
+      },
+      pyb::arg("f"), "df/dx for every symbol, in declaration order.");
+  m.def(
+      "derivative",
+      [rooted](const PyExpression &f, std::string_view symbol) {
+        const auto [e, arena] = rooted(f);
+        return PyExpression::checked(rt::derivative(e, symbol), arena);
+      },
+      pyb::arg("f"), pyb::arg("symbol"));
+
   // JacobianJvp as JACOBIAN_JVP: an underscore before every inner capital.
   const auto upper = [](std::string_view name) {
     std::string out;

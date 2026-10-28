@@ -901,7 +901,8 @@ TEST(RtTensorDense, RefusesASystem) {
   EXPECT_EQ(
       sys.dense_hessian(std::span<const double>{composition(3)}).error().code,
       ddx::errc::not_single_output);
-  EXPECT_FALSE(sys.dense_hessian_cost().has_value());
+  EXPECT_EQ(sys.dense_hessian_cost().error().code,
+            ddx::errc::not_single_output);
   EXPECT_FALSE(sys.uses_kernel(ddx::rt::Want::DenseHessian));
 }
 
@@ -1340,7 +1341,7 @@ TEST(RtMatrix, DenseHessianRefusesACompositionDependentMatrix) {
   const auto at = composition(n);
   EXPECT_EQ(got.dense_hessian(std::span<const double>{at}).error().code,
             ddx::errc::tensor_shape);
-  EXPECT_FALSE(got.dense_hessian_cost().has_value()) << "no block, no cost";
+  EXPECT_EQ(got.dense_hessian_cost().error().code, ddx::errc::tensor_shape);
   EXPECT_FALSE(got.uses_kernel(ddx::rt::Want::DenseHessian));
   expect_same_derivatives(want, got, at, 1e-11);
 }

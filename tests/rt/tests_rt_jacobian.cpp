@@ -797,3 +797,49 @@ TEST(RtJacobian, PowAtAZeroBaseIsGuardedOnTheGraph) {
   EXPECT_DOUBLE_EQ(ddx::rt::evaluate(b, cubic.partial[0], std::array{2.0}),
                    12.0);
 }
+
+// A partial taken during construction is a node to build on: Proton's frozen-
+// argument shape, d h/d Tr at the reference with the pressure moving with T.
+TEST(RtJacobian, DerivativeBuildsOnTheGraph) {
+  using RE = ddx::rt::Expression<>;
+  const auto eq = ddx::rt::equation([] {
+    const RE T = ddx::rt::var("T"), Tr = ddx::rt::var("Tr"),
+             P = ddx::rt::var("P");
+    const RE ps = exp(1.0 - 2.0 / T);
+    const RE h = Tr * Tr * log(ps) + sin(Tr) * ps;
+    EXPECT_EQ(ddx::rt::gradient(h).size(), 3u);
+    return T * T * ddx::rt::derivative(h, "Tr") +
+           P * (1.0 + ddx::rt::derivative(h, "P"));
+  });
+  const double T = 1.3, Tr = 0.7, P = 2.0;
+  const double ps = std::exp(1.0 - 2.0 / T), D = 2 * Tr * std::log(ps) +
+                                                 std::cos(Tr) * ps;
+  expect_close(*eq.evaluate(T, Tr, P), T * T * D + P);
+  const auto J = *eq.jacobian(T, Tr, P);
+  expect_close(J[0], 2 * T * D + 4 * Tr + 2 * std::cos(Tr) * ps);
+  expect_close(J[1], T * T * (2 * std::log(ps) - std::sin(Tr) * ps));
+  expect_close(J[2], 1.0);
+  EXPECT_EQ(eq.jacobian_pattern()->get().nonzeros(), 3u);
+}
+
+TEST(RtJacobian, DerivativeRefusals) {
+  using RE = ddx::rt::Expression<>;
+  const auto refused = [](auto make) {
+    return ddx::rt::equation([&] { return make(); }).evaluate(1.0).error().code;
+  };
+  EXPECT_EQ(refused([] {
+              return ddx::rt::derivative(ddx::rt::var("x") * 2.0, "y");
+            }),
+            ddx::errc::unknown_symbol);
+  EXPECT_EQ(refused([] {
+              const RE x = ddx::rt::var("x");
+              return x + ddx::rt::derivative(x * ddx::rt::param("p"), "p");
+            }),
+            ddx::errc::unknown_symbol);
+  EXPECT_EQ(refused([] {
+              const auto v = ddx::rt::vec("v", 2);
+              return sum(v) + ddx::rt::derivative(v, "v[0]");
+            }),
+            ddx::errc::tensor_shape);
+  EXPECT_TRUE(ddx::rt::derivative(RE{2.0}, "x").poisoned());
+}
