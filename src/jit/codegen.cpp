@@ -21,6 +21,7 @@
 #include <concepts>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <string_view>
@@ -360,6 +361,331 @@ private:
   mutable std::array<Callee, rt::op_count> callees_{};
 };
 
+// Tensor nodes as loops: one nest per row the kernel keeps, over its columns
+// and then its contiguous rows, the inner loop marked for the loop vectoriser
+// -- which, forced, may also reorder a reduction's adds.  A node the graph
+// fused into its reader is its element expression inside the reader's loop.
+// MatMul and StackRows stay the interpreter's step.  Lane k of a W-lane kernel
+// is one pass of a loop over k.
+template <CKernelScalar T> class TensorLoops {
+public:
+  TensorLoops(llvm::Module &m, llvm::IRBuilder<> &b, const rt::Graph<T> &g,
+              const Emitter<T> &elem, LaneType lanes, TensorTapes tapes)
+      : m_{m}, b_{b}, g_{g}, elem_{elem}, lanes_{lanes}, tapes_{tapes},
+        tables_(g.size(), nullptr) {
+    // In the entry block, once per call.
+    auto *const decl = llvm::cast<llvm::Function>(
+        m.getOrInsertFunction(
+             libm_name<T>(tensor_table_symbol),
+             llvm::FunctionType::get(b.getPtrTy(), {b.getPtrTy(), b.getInt64Ty()},
+                                     false))
+            .getCallee());
+    decl->setOnlyReadsMemory();
+    decl->setDoesNotThrow();
+    decl->setWillReturn();
+    for (const rt::NodeId v : g.schedule() | std::views::transform(&rt::Step::node)) {
+      if (g.op_of(v) == rt::OpCode::VecConst ||
+          g.op_of(v) == rt::OpCode::MatConst) {
+        tables_[v] = b.CreateCall(
+            decl, {tapes.call,
+                   b.getInt64(rt::detail::get<rt::TensorRef>(g[v]).value)},
+            "table");
+      }
+    }
+  }
+
+  // Whether node v is a loop here rather than the interpreter's step.
+  [[nodiscard]] bool handles(rt::NodeId v) const {
+    return g_.op_of(v) != rt::OpCode::MatMul &&
+           g_.op_of(v) != rt::OpCode::StackRows;
+  }
+
+  // Node v at every lane; a scalar it yields is left in its tape row.
+  void emit(rt::NodeId v, std::span<llvm::Value *const> value) {
+    value_ = value;
+    if (lanes_.width == 1) {
+      k_ = i64(0);
+      lane(v);
+      return;
+    }
+    loop(lanes_.width, {}, false, [&](llvm::Value *k, auto) {
+      k_ = k;
+      lane(v);
+      return Carried{};
+    });
+  }
+
+private:
+  using Carried = llvm::SmallVector<llvm::Value *, 2>;
+
+  [[nodiscard]] llvm::Value *i64(std::uint64_t c) const {
+    return b_.getInt64(c);
+  }
+  [[nodiscard]] rt::NodeId operand(rt::NodeId v, std::size_t slot) const {
+    return g_.operands(v)[slot];
+  }
+  [[nodiscard]] std::uint64_t rows(rt::NodeId u) const {
+    return g_.shape(u).rows;
+  }
+
+  // for (iv = 0; iv < n; ++iv) with `init` carried through `body`, which
+  // answers the next values; the finals come back.  n is a constant, the
+  // shapes being the graph's.
+  Carried loop(std::uint64_t n, llvm::ArrayRef<llvm::Value *> init,
+               bool vectorise, auto &&body) {
+    if (n == 0) {
+      return {init.begin(), init.end()};
+    }
+    llvm::LLVMContext &ctx = m_.getContext();
+    llvm::BasicBlock *const pre = b_.GetInsertBlock();
+    llvm::Function *const fn = pre->getParent();
+    auto *const head = llvm::BasicBlock::Create(ctx, "t.loop", fn);
+    auto *const done = llvm::BasicBlock::Create(ctx, "t.done", fn);
+    b_.CreateBr(head);
+    b_.SetInsertPoint(head);
+    llvm::PHINode *const iv = b_.CreatePHI(b_.getInt64Ty(), 2, "t.i");
+    iv->addIncoming(i64(0), pre);
+    llvm::SmallVector<llvm::PHINode *, 2> phis;
+    Carried carried;
+    for (llvm::Value *const v : init) {
+      phis.push_back(b_.CreatePHI(v->getType(), 2));
+      phis.back()->addIncoming(v, pre);
+      carried.push_back(phis.back());
+    }
+    const Carried next = body(static_cast<llvm::Value *>(iv), carried);
+    llvm::Value *const inc = b_.CreateAdd(iv, i64(1), "", true, true);
+    llvm::BasicBlock *const latch = b_.GetInsertBlock();
+    iv->addIncoming(inc, latch);
+    for (const auto [phi, v] : std::views::zip(phis, next)) {
+      phi->addIncoming(v, latch);
+    }
+    llvm::BranchInst *const br =
+        b_.CreateCondBr(b_.CreateICmpULT(inc, i64(n)), head, done);
+    if (vectorise) {
+      llvm::Metadata *const enable[] = {
+          llvm::MDString::get(ctx, "llvm.loop.vectorize.enable"),
+          llvm::ConstantAsMetadata::get(b_.getTrue())};
+      llvm::Metadata *const ops[] = {nullptr, llvm::MDNode::get(ctx, enable)};
+      llvm::MDNode *const id = llvm::MDNode::getDistinct(ctx, ops);
+      id->replaceOperandWith(0, id);
+      br->setMetadata(llvm::LLVMContext::MD_loop, id);
+    }
+    b_.SetInsertPoint(done);
+    return next;
+  }
+  // Every (i, j) of an r x c shape, i innermost.
+  Carried each(rt::Shape s, llvm::ArrayRef<llvm::Value *> init, auto &&body) {
+    return loop(s.cols, init, false, [&](llvm::Value *j, const Carried &outer) {
+      return loop(s.rows, outer, true, [&](llvm::Value *i, const Carried &c) {
+        return body(i, j, c);
+      });
+    });
+  }
+
+  [[nodiscard]] llvm::Value *add(llvm::Value *a, llvm::Value *b) const {
+    return b_.CreateAdd(a, b);
+  }
+  [[nodiscard]] llvm::Value *flat(llvm::Value *i, llvm::Value *j,
+                                  std::uint64_t r) const {
+    return add(i, b_.CreateMul(j, i64(r)));
+  }
+  [[nodiscard]] llvm::Value *element(llvm::Value *base,
+                                     llvm::Value *at) const {
+    return b_.CreateInBoundsGEP(lanes_.scalar, base, at);
+  }
+  [[nodiscard]] llvm::Value *read(llvm::Value *base, llvm::Value *at) const {
+    return b_.CreateLoad(lanes_.scalar, element(base, at));
+  }
+  // Lane k of u's row.
+  [[nodiscard]] llvm::Value *row(rt::NodeId u) const {
+    const rt::TensorRow &r = g_.tensors().rows[u];
+    return element(tapes_.vtape,
+                   add(i64(std::uint64_t{r.at} * lanes_.width),
+                       b_.CreateMul(k_, i64(r.width))));
+  }
+  // Lane k of a scalar node, which is SSA: its tape row may be another
+  // node's by the time a fused reader runs.
+  [[nodiscard]] llvm::Value *scalar(rt::NodeId u) const {
+    return lanes_.width == 1 ? value_[u]
+                             : b_.CreateExtractElement(value_[u], k_);
+  }
+  void scalar_out(rt::NodeId v, llvm::Value *x) const {
+    b_.CreateStore(x, element(tapes_.tape,
+                              add(i64(std::uint64_t{g_.rows()[v]} *
+                                      lanes_.width),
+                                  k_)));
+  }
+
+  // Element (i, j) of u: off a table, off u's row, or computed here.
+  llvm::Value *at(rt::NodeId u, llvm::Value *i, llvm::Value *j) {
+    switch (g_.op_of(u)) {
+    case rt::OpCode::VecConst:
+      return read(tables_[u], i);
+    case rt::OpCode::MatRow:
+      if (const rt::NodeId a = operand(u, 0);
+          g_.op_of(a) == rt::OpCode::MatConst) {
+        const bool plain = rt::detail::get<rt::Orientation>(g_[u]) ==
+                           rt::Orientation::plain;
+        return read(tables_[a], plain ? flat(i, j, rows(a)) : flat(j, i, rows(a)));
+      }
+      break;
+    default:
+      break;
+    }
+    if (g_.fused_into(u) != rt::no_node) {
+      return expr(u, i, j);
+    }
+    return read(row(u), flat(i, j, rows(u)));
+  }
+  llvm::Value *at(rt::NodeId u, llvm::Value *i) { return at(u, i, i64(0)); }
+
+  // What an elementwise node is at (i, j), in the operand order the
+  // interpreter multiplies in.
+  llvm::Value *expr(rt::NodeId v, llvm::Value *i, llvm::Value *j) {
+    const auto [a, b, c] = g_.operands(v);
+    switch (g_.op_of(v)) {
+    case rt::OpCode::Map:
+      return elem_.unary(rt::detail::get<rt::OpCode>(g_[v]), at(a, i, j));
+    case rt::OpCode::Zip:
+      return elem_.binary(rt::detail::get<rt::OpCode>(g_[v]), at(a, i, j),
+                          at(b, i, j));
+    case rt::OpCode::Scale:
+      return b_.CreateFMul(scalar(a), at(b, i, j));
+    case rt::OpCode::Outer:
+      return b_.CreateFMul(at(b, j), at(a, i));
+    case rt::OpCode::RowScale:
+      return b_.CreateFMul(at(a, i), at(b, i, j));
+    case rt::OpCode::ColScale:
+      return b_.CreateFMul(at(b, j), at(a, i, j));
+    case rt::OpCode::VSelect:
+      return elem_.ternary(rt::OpCode::Select,
+                           rt::detail::is_tensor(g_[a]) ? at(a, i, j)
+                                                        : scalar(a),
+                           at(b, i, j), at(c, i, j));
+    case rt::OpCode::Diag:
+      return b_.CreateSelect(b_.CreateICmpEQ(i, j), at(a, i),
+                             elem_.constant(0.0));
+    case rt::OpCode::MatRow: // a transpose, of a table or a computed matrix
+      return g_.op_of(a) == rt::OpCode::MatConst ? at(v, i, j) : at(a, j, i);
+    default:
+      std::unreachable();
+    }
+  }
+
+  llvm::Value *fmuladd(llvm::Value *x, llvm::Value *y, llvm::Value *z) const {
+    return b_.CreateIntrinsic(llvm::Intrinsic::fmuladd, {lanes_.scalar},
+                              {x, y, z});
+  }
+
+  void lane(rt::NodeId v) {
+    const auto [a, b, c] = g_.operands(v);
+    const auto &p = g_[v];
+    const rt::Shape s = g_.shape(v);
+    llvm::Value *const zero = elem_.constant(0.0);
+    switch (p.op) {
+    case rt::OpCode::MatConst:
+      return;
+    case rt::OpCode::MatRow:
+      if (g_.op_of(a) == rt::OpCode::MatConst &&
+          rt::detail::get<rt::Orientation>(p) == rt::Orientation::plain) {
+        return; // the table, read in place
+      }
+      break;
+    case rt::OpCode::VecConst:
+      b_.CreateMemCpy(row(v), llvm::Align(alignof(T)), tables_[v],
+                      llvm::Align(alignof(T)), s.size() * sizeof(T));
+      return;
+    case rt::OpCode::Pack:
+      for (const auto [e, arg] : rt::arguments(g_, v) | std::views::enumerate) {
+        b_.CreateStore(scalar(arg), element(row(v), i64(static_cast<std::uint64_t>(e))));
+      }
+      return;
+    case rt::OpCode::Gather:
+      scalar_out(v, at(a, i64(rt::detail::get<rt::Element>(p).value)));
+      return;
+    case rt::OpCode::AddAt: {
+      llvm::Value *const out = row(v);
+      loop(s.size(), {}, true, [&](llvm::Value *i, auto) {
+        b_.CreateStore(at(a, i), element(out, i));
+        return Carried{};
+      });
+      llvm::Value *const to =
+          element(out, i64(rt::detail::get<rt::Element>(p).value));
+      b_.CreateStore(b_.CreateFAdd(b_.CreateLoad(lanes_.scalar, to), scalar(b)),
+                     to);
+      return;
+    }
+    case rt::OpCode::Sum:
+      scalar_out(v, each(g_.shape(a), {zero}, [&](auto i, auto j, const auto &acc) {
+                      return Carried{b_.CreateFAdd(acc[0], at(a, i, j))};
+                    })[0]);
+      return;
+    case rt::OpCode::Dot:
+      scalar_out(v, each(g_.shape(a), {zero}, [&](auto i, auto j, const auto &acc) {
+                      return Carried{fmuladd(at(a, i, j), at(b, i, j), acc[0])};
+                    })[0]);
+      return;
+    case rt::OpCode::MatVec: {
+      const rt::Shape m = g_.shape(a);
+      llvm::Value *const out = row(v);
+      if (rt::detail::get<rt::Orientation>(p) == rt::Orientation::transposed) {
+        // out[j] = column_j . b
+        loop(m.cols, {}, false, [&](llvm::Value *j, auto) {
+          const Carried dot =
+              loop(m.rows, {zero}, true, [&](llvm::Value *i, const auto &acc) {
+                return Carried{fmuladd(at(a, i, j), at(b, i), acc[0])};
+              });
+          b_.CreateStore(dot[0], element(out, j));
+          return Carried{};
+        });
+        return;
+      }
+      // out += b[j] column_j, a column a pass
+      b_.CreateMemSet(out, b_.getInt8(0), m.rows * sizeof(T),
+                      llvm::Align(alignof(T)));
+      loop(m.cols, {}, false, [&](llvm::Value *j, auto) {
+        llvm::Value *const x = at(b, j);
+        loop(m.rows, {}, true, [&](llvm::Value *i, auto) {
+          llvm::Value *const to = element(out, i);
+          b_.CreateStore(
+              fmuladd(at(a, i, j), x, b_.CreateLoad(lanes_.scalar, to)), to);
+          return Carried{};
+        });
+        return Carried{};
+      });
+      return;
+    }
+    case rt::OpCode::RowOf: {
+      llvm::Value *const out = row(v);
+      llvm::Value *const r = i64(rt::detail::get<rt::Element>(p).value);
+      loop(s.rows, {}, true, [&](llvm::Value *j, auto) {
+        b_.CreateStore(at(a, r, j), element(out, j));
+        return Carried{};
+      });
+      return;
+    }
+    default:
+      break;
+    }
+    // Everything elementwise, as a row of its own.
+    llvm::Value *const out = row(v);
+    each(s, {}, [&](llvm::Value *i, llvm::Value *j, auto) {
+      b_.CreateStore(expr(v, i, j), element(out, flat(i, j, s.rows)));
+      return Carried{};
+    });
+  }
+
+  llvm::Module &m_;
+  llvm::IRBuilder<> &b_;
+  const rt::Graph<T> &g_;
+  const Emitter<T> &elem_;
+  LaneType lanes_;
+  TensorTapes tapes_;
+  std::vector<llvm::Value *> tables_; // by id: a table's elements
+  std::span<llvm::Value *const> value_;
+  llvm::Value *k_ = nullptr;
+};
+
 template <CKernelScalar T>
 llvm::Function *declare_kernel(llvm::Module &m, llvm::StringRef name,
                                const rt::Graph<T> &g) {
@@ -448,12 +774,13 @@ HoistedColumns hoist_columns(llvm::IRBuilder<> &b, llvm::Function &fn,
 
 // Ids are topological, so one pass needs no worklist.  Under contraction the
 // adds carry their product and the multiplies they swallowed are never reached.
-// A tensor node is the interpreter's step, over the scalars it reads stored to
-// the tape; a scalar it yields is read back.
+// A tensor node is a loop nest, or the interpreter's step over the scalars it
+// reads stored to the tape; a scalar either yields is read back.
 template <CKernelScalar T>
 [[nodiscard]] std::vector<llvm::Value *>
-emit_nodes(const Emitter<T> &emit, const rt::Graph<T> &g,
-           const HoistedColumns &cols, llvm::Value *index, llvm::Value *mask) {
+emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops,
+           const rt::Graph<T> &g, const HoistedColumns &cols,
+           llvm::Value *index, llvm::Value *mask) {
   std::vector<llvm::Value *> value(g.size(), nullptr);
   std::map<std::pair<std::uint32_t, rt::NodeId>, typename Emitter<T>::Answers>
       called;
@@ -522,6 +849,16 @@ emit_nodes(const Emitter<T> &emit, const rt::Graph<T> &g,
       value[v] = emit.binary(p.op, value[operands[0]], value[operands[1]]);
       break;
     case rt::Kind::Tensor:
+      if (g.fused_into(v) != rt::no_node) {
+        break; // formed inside its reader
+      }
+      if (loops->handles(v)) {
+        loops->emit(v, value);
+        if (rt::detail::is_scalar(p)) {
+          value[v] = emit.from_tape(g.rows()[v], mask);
+        }
+        break;
+      }
       rt::detail::for_each_operand(g, v, [&](rt::NodeId u) {
         if (!rt::detail::on_tensors(g[u])) {
           emit.to_tape(value[u], g.rows()[u], mask);
@@ -608,6 +945,14 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g,
                                         g.tape_rows() * width, "vtape")}
                       : TensorTapes{};
 
+  // An element of a tensor loop is one T, whatever the kernel's width.
+  const Emitter<T> elem(*m, b, LaneType{.width = 1, .scalar = scalar, .ty = scalar},
+                        fn->getArg(5), tensors);
+  std::optional<TensorLoops<T>> loops;
+  if (g.has_tensors()) {
+    loops.emplace(*m, b, g, elem, lanes, tensors);
+  }
+
   // n == 0 is a degenerate call, and saying so is what keeps the loop out of
   // the cold half of the layout.
   llvm::MDBuilder md(ctx);
@@ -636,7 +981,7 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g,
 
   const Emitter<T> emit(*m, b, lanes, fn->getArg(5), tensors);
   const std::vector<llvm::Value *> value =
-      emit_nodes(emit, g, cols, index, mask);
+      emit_nodes(emit, loops ? &*loops : nullptr, g, cols, index, mask);
   if (g.has_tensors()) {
     emit_tensor_stores(emit, g, value, *fn, index, live, mask);
   } else {
@@ -648,7 +993,7 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g,
   llvm::Value *const next =
       b.CreateAdd(index, llvm::ConstantInt::get(i64, width), "i.next",
                   /*HasNUW=*/true, /*HasNSW=*/true);
-  index->addIncoming(next, loop);
+  index->addIncoming(next, b.GetInsertBlock());
   b.CreateCondBr(b.CreateICmpUGE(next, count), exit, loop);
 
   b.SetInsertPoint(exit);

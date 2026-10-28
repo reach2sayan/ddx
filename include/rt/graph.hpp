@@ -252,7 +252,21 @@ public:
     auto packed = detail::pack_rows(b, g.schedule_, g.outputs_);
     g.rows_ = std::move(packed.by_id);
     g.tape_rows_ = packed.rows;
-    g.tensors_ = detail::tensor_layout(b, g.schedule_, g.outputs_);
+    g.fused_ = detail::fused_into(g, g.schedule_, g.outputs_);
+    g.tensors_ =
+        detail::tensor_layout(b, g.schedule_, g.outputs_, g.fused_);
+    if (g.has_tensors_) {
+      g.shapes_.resize(b.size());
+      for (const Step &step : g.schedule_) {
+        const NodeId v = step.node;
+        if (b.op_of(v) == OpCode::MatConst) {
+          const auto &m = b.tensors()[detail::get<TensorRef>(b[v]).value];
+          g.shapes_[v] = {.rows = m.rows, .cols = m.cols};
+        } else if (detail::is_tensor(b[v])) {
+          g.shapes_[v] = shape_of(b, v);
+        }
+      }
+    }
     g.output_rows_ = g.outputs_ | std::views::transform([&g, &b](NodeId o) {
                        if (!detail::is_tensor(b[o])) {
                          return TensorRow{.at = g.rows_[o]};
@@ -303,6 +317,15 @@ public:
   // Where each tensor-valued node's rows sit in that tape.
   [[nodiscard]] const TensorLayout &tensors() const noexcept {
     return tensors_;
+  }
+  // By id, a tensor node's rows x cols, and a table's; what a kernel's loops
+  // run over.
+  [[nodiscard]] Shape shape(NodeId v) const { return shapes_[v]; }
+  // By id, the step a kernel computes a node inside, or no_node where the
+  // node is a row of its own.  The tensor layout keeps such a node's operands
+  // live until that step.
+  [[nodiscard]] NodeId fused_into(NodeId v) const {
+    return fused_.empty() ? no_node : fused_[v];
   }
 
   // How many input columns `xs` carries: the symbol count is not the width.
@@ -410,6 +433,8 @@ private:
   std::vector<NodeId> lists_;
   bool has_tensors_ = false;
   TensorLayout tensors_;
+  std::vector<Shape> shapes_;
+  std::vector<NodeId> fused_;
   std::vector<std::uint32_t> rows_;
   std::size_t tape_rows_ = 0;
   std::vector<bool> live_;

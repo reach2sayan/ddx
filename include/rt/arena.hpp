@@ -1073,12 +1073,84 @@ reads_of(const auto &s, const Step &step) {
   return out;
 }
 
+// Which step each tensor node is computed inside, else no_node.  A kernel
+// forms an elementwise node read once, by a step that reads each element of
+// it once, inside that step's loop rather than as a row of its own; the sweep
+// forms every row regardless.  A step reads the elements of the operands at
+// these slots once each; any other slot -- a gemv's vector, an outer's two --
+// it reads over and over.
+[[nodiscard]] constexpr bool reads_once(OpCode op, std::size_t slot) noexcept {
+  switch (op) {
+  case OpCode::Map:
+  case OpCode::Sum:
+  case OpCode::MatVec:
+  case OpCode::ColScale:
+  case OpCode::Diag:
+  case OpCode::MatRow:
+  case OpCode::Gather:
+  case OpCode::RowOf:
+  case OpCode::AddAt:
+    return slot == 0;
+  case OpCode::Scale:
+  case OpCode::RowScale:
+    return slot == 1;
+  case OpCode::Zip:
+  case OpCode::Dot:
+  case OpCode::VSelect:
+    return true;
+  default:
+    return false;
+  }
+}
+[[nodiscard]] constexpr std::vector<NodeId>
+fused_into(const auto &s, std::span<const Step> schedule,
+           std::span<const NodeId> outputs) {
+  std::vector<NodeId> into(s.size(), no_node);
+  std::vector<std::uint32_t> uses(s.size(), 0);
+  for (const Step &step : schedule) {
+    for_each_operand(s, step.node, [&](NodeId u) { ++uses[u]; });
+  }
+  for (const NodeId o : outputs) {
+    uses[o] += 2;
+  }
+  const auto elementwise = [&s](NodeId u) {
+    switch (s.op_of(u)) {
+    case OpCode::Map:
+    case OpCode::Zip:
+    case OpCode::Scale:
+    case OpCode::Outer:
+    case OpCode::RowScale:
+    case OpCode::ColScale:
+    case OpCode::VSelect:
+    case OpCode::Diag:
+      return is_tensor(s[u]);
+    case OpCode::MatRow:
+      return get<Orientation>(s[u]) == Orientation::transposed;
+    default:
+      return false;
+    }
+  };
+  for (const Step &step : schedule) {
+    if (has_list(s.op_of(step.node))) {
+      continue;
+    }
+    for (const auto [slot, u] : s.operands(step.node) | std::views::enumerate) {
+      if (u != no_node && uses[u] == 1 && elementwise(u) &&
+          reads_once(s.op_of(step.node), static_cast<std::size_t>(slot))) {
+        into[u] = step.node;
+      }
+    }
+  }
+  return into;
+}
+
 // The last schedule position at which each node is read -- its own, if
 // nothing reads it -- and past the end for an output.  Indexed by id over the
-// source.
+// source.  A node computed inside its reader reads its operands there.
 [[nodiscard]] constexpr std::vector<std::uint32_t>
 last_uses(const auto &s, std::span<const Step> schedule,
-          std::span<const NodeId> outputs) {
+          std::span<const NodeId> outputs,
+          std::span<const NodeId> fused = {}) {
   std::vector<std::uint32_t> last(s.size(), 0);
   // Ascending, and a node is formed before anything reads it, so the last
   // write is the last use.
@@ -1086,6 +1158,14 @@ last_uses(const auto &s, std::span<const Step> schedule,
     last[step.node] = static_cast<std::uint32_t>(p);
     for (const NodeId u : reads_of(s, step)) {
       last[u] = static_cast<std::uint32_t>(p);
+    }
+  }
+  // Descending, so a chain of them reaches the step that forms it.
+  for (const Step &step : schedule | std::views::reverse) {
+    if (!fused.empty() && fused[step.node] != no_node) {
+      for_each_operand(s, step.node, [&](NodeId u) {
+        last[u] = std::max(last[u], last[step.node]);
+      });
     }
   }
   for (const NodeId o : outputs) {
@@ -1163,14 +1243,15 @@ struct TensorLayout {
 namespace detail {
 [[nodiscard]] constexpr TensorLayout
 tensor_layout(const auto &s, std::span<const Step> schedule,
-              std::span<const NodeId> outputs = {}) {
+              std::span<const NodeId> outputs = {},
+              std::span<const NodeId> fused = {}) {
   TensorLayout out;
   if (std::ranges::none_of(schedule, [&s](const Step &step) {
         return is_tensor(s[step.node]);
       })) {
     return out;
   }
-  const auto last = last_uses(s, schedule, outputs);
+  const auto last = last_uses(s, schedule, outputs, fused);
   out.rows.resize(s.size());
   std::vector<TensorRow> free; // (at, width) runs no live row holds
   for (const auto [p, step] : schedule | std::views::enumerate) {
@@ -1194,6 +1275,14 @@ tensor_layout(const auto &s, std::span<const Step> schedule,
     // once per node however often this step reads it.
     auto reads = reads_of(s, step);
     reads.push_back(step.node);
+    // What a node computed here reads, read here too.
+    for (std::size_t r = 0; !fused.empty() && r < reads.size(); ++r) {
+      if (fused[reads[r]] == step.node ||
+          (fused[reads[r]] != no_node &&
+           std::ranges::contains(reads, fused[reads[r]]))) {
+        for_each_operand(s, reads[r], [&](NodeId u) { reads.push_back(u); });
+      }
+    }
     std::ranges::sort(reads);
     reads.erase(std::ranges::unique(reads).begin(), reads.end());
     for (const NodeId u : reads) {

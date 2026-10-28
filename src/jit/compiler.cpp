@@ -168,6 +168,11 @@ template <CKernelScalar T> void define_scalar(auto &def) {
                      static_cast<std::size_t>(live),
                      static_cast<std::size_t>(lanes), tape, vtape);
       });
+  def(
+      detail::libm_name<T>(detail::tensor_table_symbol),
+      +[](const rt::detail::TensorCall<T> *c, std::uint64_t ref) noexcept {
+        return c->arena->tensors()[static_cast<std::size_t>(ref)].data.data();
+      });
 }
 
 // What a kernel calls that is not an intrinsic: every Call row of the

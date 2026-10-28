@@ -25,6 +25,8 @@ inline constexpr std::string_view trampoline_symbol = "ddx_call_extern";
 // output block: ddx_tensor_store(call, f, g, h, i, live, lanes, tape, vtape).
 inline constexpr std::string_view tensor_step_symbol = "ddx_tensor_step";
 inline constexpr std::string_view tensor_store_symbol = "ddx_tensor_store";
+// A table's elements, read in place: ddx_tensor_table(call, ref).
+inline constexpr std::string_view tensor_table_symbol = "ddx_tensor_table";
 
 // One graph as a single counted loop over n points, `lanes` points per
 // iteration: the body is emitted over <lanes x T>, or over T when lanes is 1.
