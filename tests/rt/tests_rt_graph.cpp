@@ -54,7 +54,7 @@ TEST(RtGraph, RootsAloneLeaveTheValueOut) {
                         .build_jacobian()
                         .finish();
   const auto alone = ddx::rt::GraphBuilder{b}
-                         .roots_from(std::span<const NodeId>{&root, 1})
+                         .values_from(std::span<const NodeId>{&root, 1}, false)
                          .build_jacobian()
                          .finish();
   EXPECT_EQ(alone.output_blocks().values.size(), 0u);

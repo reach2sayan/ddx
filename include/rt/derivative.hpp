@@ -640,50 +640,25 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       case OpCode::Gather:
         d[v] = dv(node.in[0])[detail::get<Element>(node).value].id(b);
         break;
-      case OpCode::Scale:
-        d[v] = moved(
-            v, node.in[0], [&] { return dv(node.in[0]) * expr(node.in[1]); },
-            node.in[1], [&] { return expr(node.in[0]) * dv(node.in[1]); });
-        break;
       case OpCode::Sum:
         d[v] = sum(dv(node.in[0])).id(b);
-        break;
-      case OpCode::Dot:
-        d[v] = moved(
-            v, node.in[0],
-            [&] { return dot(dv(node.in[0]), expr(node.in[1])); }, node.in[1],
-            [&] { return dot(expr(node.in[0]), dv(node.in[1])); });
         break;
       case OpCode::AddAt:
         d[v] = b.make(opcode<OpCode::AddAt>, detail::get<Element>(node),
                       at(node.in[0]), at(node.in[1]));
         break;
+      case OpCode::Scale: // the bilinear ops: the node with one operand's
+      case OpCode::Dot:   // tangent in that operand's slot
       case OpCode::MatVec:
-        d[v] = moved(
-            v, node.in[0],
-            [&] {
-              return expr(b.make(opcode<OpCode::MatVec>,
-                                 detail::get<Orientation>(node), at(node.in[0]),
-                                 node.in[1]));
-            },
-            node.in[1],
-            [&] {
-              return expr(b.make(opcode<OpCode::MatVec>,
-                                 detail::get<Orientation>(node), node.in[0],
-                                 at(node.in[1])));
-            });
+      case OpCode::Outer: {
+        const auto with = [&](std::size_t slot) {
+          return [&, slot] {
+            return expr(b.replaced(v, slot, at(node.in[slot])));
+          };
+        };
+        d[v] = moved(v, node.in[0], with(0), node.in[1], with(1));
         break;
-      case OpCode::Outer:
-        d[v] = moved(
-            v, node.in[0],
-            [&] {
-              return expr(b.make(OpCode::Outer, at(node.in[0]), node.in[1]));
-            },
-            node.in[1],
-            [&] {
-              return expr(b.make(OpCode::Outer, node.in[0], at(node.in[1])));
-            });
-        break;
+      }
       default: // the dense sweep's own rows, built under no root
         std::unreachable();
       }
@@ -872,28 +847,13 @@ template <impl::Numeric T>
 // w'J, the same re-rooting one order down: sweeping from s = Sum_i w_i f_i
 // gives ds/dx_j = (w'J)_j.  One sweep and n columns, where jacobian() is m
 // sweeps and pattern.nonzeros() columns; the seed slots here are counted in
-// functions, not symbols.
-struct VectorJacobian {
-  std::vector<NodeId> value;   // m
-  std::vector<NodeId> product; // n -- w'J
-  BOOST_DESCRIBE_CLASS(VectorJacobian, (), (value, product), (), ())
-};
-
+// functions, not symbols.  n nodes, w'J.
 template <impl::Numeric T>
-[[nodiscard]] constexpr VectorJacobian
+[[nodiscard]] constexpr std::vector<NodeId>
 derive_vjp(Arena<T> &b, std::span<const NodeId> roots) {
   const auto along = detail::seeded_sum(b, roots);
-  return {.value = {roots.begin(), roots.end()},
-          .product = build_reverse_jacobian(b, along.id(b)).partial};
+  return build_reverse_jacobian(b, along.id(b)).partial;
 }
-
-// J v, the one product that is a forward sweep: one pass, m outputs, whatever
-// n is.
-struct Tangent {
-  std::vector<NodeId> value;   // m
-  std::vector<NodeId> product; // m -- J v
-  BOOST_DESCRIBE_CLASS(Tangent, (), (value, product), (), ())
-};
 
 namespace detail {
 // One seed per symbol: the direction a forward sweep carries.
@@ -906,21 +866,13 @@ template <impl::Numeric T>
 }
 } // namespace detail
 
-template <impl::Numeric T>
-[[nodiscard]] constexpr Tangent derive_jvp(Arena<T> &b,
-                                           std::span<const NodeId> roots) {
-  return {.value = {roots.begin(), roots.end()},
-          .product = tangent_sweep(b, roots, detail::seeds_along(b))};
-}
-
-// The Jacobian's derivative along v, dJ/dv: its own cells carried forward
-// along the seeds in one pass over their cone.  One node per Jacobian cell, so
-// the block has the Jacobian's layout and reads with its Sparsity -- for m
-// functions, every d2 f_i / dx_j dv in a single forward sweep.
+// J v, the one product that is a forward sweep: one pass, a node per root,
+// whatever n is.  Rooted at the Jacobian's cells it is dJ/dv, every
+// d2 f_i / dx_j dv in a single sweep, with the Jacobian's layout.
 template <impl::Numeric T>
 [[nodiscard]] constexpr std::vector<NodeId>
-derive_jacobian_tangent(Arena<T> &b, const Jacobian &j) {
-  return tangent_sweep(b, j.partial, detail::seeds_along(b));
+derive_jvp(Arena<T> &b, std::span<const NodeId> roots) {
+  return tangent_sweep(b, roots, detail::seeds_along(b));
 }
 
 } // namespace ddx::rt

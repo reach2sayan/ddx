@@ -334,17 +334,22 @@ struct Compiler::Impl {
       return std::unexpected{
           as_error(errc::jit_target, "detecting the host", jtmb.takeError())};
     }
-    impl->machine = *jtmb;
     impl->bits = vector_bits(*jtmb);
     impl->veclib_lanes = {library_lanes<double>(jtmb->getTargetTriple()),
                           library_lanes<float>(jtmb->getTargetTriple())};
 
     // Not setNumCompileThreads: the backend runs on the thread that asked, and
-    // no idle pool is spawned.
-    if (auto jit = llvm::orc::LLJITBuilder()
-                       .setJITTargetMachineBuilder(std::move(*jtmb))
-                       .create();
-        !jit) {
+    // no idle pool is spawned.  The recipe is copied once the builder has set
+    // what its linker needs -- JITLink's small code model and PIC; the JIT
+    // default is the large model, a 64-bit load per constant.
+    llvm::orc::LLJITBuilder builder;
+    builder.setJITTargetMachineBuilder(std::move(*jtmb));
+    if (auto e = builder.prepareForConstruction()) {
+      return std::unexpected{
+          as_error(errc::jit_target, "preparing the JIT", std::move(e))};
+    }
+    impl->machine = *builder.JTMB;
+    if (auto jit = builder.create(); !jit) {
       return std::unexpected{
           as_error(errc::jit_target, "creating the JIT", jit.takeError())};
     } else {
@@ -398,31 +403,38 @@ struct Compiler::Impl {
     return tensors ? std::bit_floor(std::min(w, widest_tensor_lanes)) : w;
   }
 
-  // Emitted and optimised for a machine at the options' codegen level.
+  // Emitted and optimised.
   template <CKernelScalar T>
   [[nodiscard]] compile_result<std::unique_ptr<llvm::Module>>
-  module(llvm::LLVMContext &ctx, llvm::TargetMachine &tm, const rt::Graph<T> &g,
-         const Options &opt, const std::string &name) const {
-    quiet_vectoriser(ctx);
-    auto m = detail::emit_module(ctx, g, name, lanes<T>(opt, g.has_tensors()),
-                                 jit->getDataLayout(),
-                                 tm.getTargetTriple().str());
-    if (!m) {
-      // The emitter has already written the verifier's own diagnosis.
-      return std::unexpected{compile_error{
-          errc::jit_verify, "the emitted module failed verification"}};
-    }
-    optimize(*m, tm, opt, libmvec);
-    return m;
+  module(llvm::LLVMContext &ctx, const rt::Graph<T> &g, const Options &opt,
+         const std::string &name) const {
+    return target().and_then([&](std::unique_ptr<llvm::TargetMachine> tm)
+                                 -> compile_result<std::unique_ptr<llvm::Module>> {
+      quiet_vectoriser(ctx);
+      auto m = detail::emit_module(ctx, g, name, lanes<T>(opt, g.has_tensors()),
+                                   jit->getDataLayout(),
+                                   tm->getTargetTriple().str());
+      if (!m) {
+        // The emitter has already written the verifier's own diagnosis.
+        return std::unexpected{compile_error{
+            errc::jit_verify, "the emitted module failed verification"}};
+      }
+      optimize(*m, *tm, opt, libmvec);
+      return m;
+    });
   }
 
+  // At the codegen level for the backend, and at the default for the IR
+  // pipeline, whose cost model reads the machine's level.
   [[nodiscard]] compile_result<std::unique_ptr<llvm::TargetMachine>>
-  target(const Options &opt) const {
+  target(const std::optional<OptLevel> codegen = {}) const {
     auto recipe = *machine;
-    // OptLevel is LLVM's own 0..3 scale.
-    recipe.setCodeGenOptLevel(
-        llvm::CodeGenOpt::getLevel(std::to_underlying(opt.codegen.codegen_level))
-            .value_or(llvm::CodeGenOptLevel::Default));
+    if (codegen) {
+      // OptLevel is LLVM's own 0..3 scale.
+      recipe.setCodeGenOptLevel(
+          llvm::CodeGenOpt::getLevel(std::to_underlying(*codegen))
+              .value_or(llvm::CodeGenOptLevel::Default));
+    }
     auto tm = recipe.createTargetMachine();
     if (!tm) {
       return std::unexpected{as_error(
@@ -437,10 +449,10 @@ struct Compiler::Impl {
           const Options &opt) {
     const std::string name = "ddx_kernel_" + std::to_string(self->counter++);
     llvm::LLVMContext ctx;
-    return self->target(opt)
-        .and_then([&](std::unique_ptr<llvm::TargetMachine> tm) {
-          return self->module(ctx, *tm, g, opt, name)
-              .and_then([&](std::unique_ptr<llvm::Module> m)
+    return self->module(ctx, g, opt, name)
+        .and_then([&](std::unique_ptr<llvm::Module> m) {
+          return self->target(opt.codegen.codegen_level)
+              .and_then([&](std::unique_ptr<llvm::TargetMachine> tm)
                             -> compile_result<std::unique_ptr<llvm::MemoryBuffer>> {
                 auto object = llvm::orc::SimpleCompiler{*tm}(*m);
                 if (!object) {
@@ -488,15 +500,12 @@ template <CKernelScalar T>
 compile_result<std::string> Compiler::ir(const rt::Graph<T> &g,
                                          const Options &opt) const {
   llvm::LLVMContext ctx;
-  return impl_->target(opt).and_then(
-      [&](std::unique_ptr<llvm::TargetMachine> tm) {
-        return impl_->module(ctx, *tm, g, opt, "ddx_kernel_dump")
-            .transform([](std::unique_ptr<llvm::Module> m) {
-              std::string out;
-              llvm::raw_string_ostream os(out);
-              m->print(os, nullptr);
-              return out;
-            });
+  return impl_->module(ctx, g, opt, "ddx_kernel_dump")
+      .transform([](std::unique_ptr<llvm::Module> m) {
+        std::string out;
+        llvm::raw_string_ostream os(out);
+        m->print(os, nullptr);
+        return out;
       });
 }
 

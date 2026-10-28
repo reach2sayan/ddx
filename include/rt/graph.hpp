@@ -512,45 +512,37 @@ public:
 
   // A system: m functions over the same symbols.
   constexpr GraphBuilder &values(std::initializer_list<Expression<T>> roots) {
-    roots_ =
-        roots |
-        std::views::transform([&](const auto &e) { return e.id(*arena_); }) |
-        impl::to<std::vector<NodeId>>();
-    blocks_.values = roots_;
-    return *this;
+    return values_from(roots | std::views::transform([&](const auto &e) {
+                         return e.id(*arena_);
+                       }) |
+                       impl::to<std::vector<NodeId>>());
   }
 
-  // Nodes a caller already has: Equation builds its derivative in the
-  // constructor and freezes only on a batch call.
-  constexpr GraphBuilder &values_from(std::span<const NodeId> roots) {
+  // Nodes a caller already has.  Not `output`: the functions to differentiate
+  // only, so the graph carries no value block and whatever only the value
+  // needs is not live.
+  constexpr GraphBuilder &values_from(std::span<const NodeId> roots,
+                                      bool output = true) {
     roots_.assign(roots.begin(), roots.end());
-    blocks_.values = roots_;
+    blocks_.values = output ? roots_ : std::vector<NodeId>{};
     return *this;
   }
 
-  // The functions to differentiate, and not outputs: the graph then carries
-  // no value block, and whatever only the value needs is not live.
-  constexpr GraphBuilder &roots_from(std::span<const NodeId> roots) {
-    roots_.assign(roots.begin(), roots.end());
-    blocks_.values.clear();
-    return *this;
-  }
-
-  // The whole sweep rather than its nodes: the pattern is what makes the block
-  // readable, so the two must not travel separately.
-  constexpr GraphBuilder &jacobian_from(const Jacobian &j) {
-    jacobian_pattern_ = j.pattern;
-    return block(&OutputBlocks::jacobian, j.partial);
-  }
-
-  // Every partial, in symbol order.  One reverse sweep per function.
+  // Every partial, in symbol order, with the pattern that makes the block
+  // readable.  One reverse sweep per function.
   constexpr GraphBuilder &build_jacobian() {
-    return jacobian_from(rt::derive_jacobian(*arena_, roots_));
+    const Jacobian j = rt::derive_jacobian(*arena_, roots_);
+    jacobian_pattern_ = j.pattern;
+    blocks_.jacobian = j.partial;
+    return *this;
   }
 
   // Compressed by colour, not n x n: a handful of columns when banded.
   GraphBuilder &build_hessian() {
-    return hessian_from(rt::derive_hessian(*arena_, roots_.front()));
+    const Hessian h = rt::derive_hessian(*arena_, roots_.front());
+    colouring_ = h.colouring;
+    blocks_.hessian = h.compressed;
+    return *this;
   }
 
   [[nodiscard]] Graph<T> finish(bool contract = true) const {
@@ -559,16 +551,6 @@ public:
   }
 
 private:
-  constexpr GraphBuilder &block(std::vector<NodeId> OutputBlocks::*which,
-                                std::span<const NodeId> ids) {
-    (blocks_.*which).assign(ids.begin(), ids.end());
-    return *this;
-  }
-  constexpr GraphBuilder &hessian_from(const Hessian &h) {
-    colouring_ = h.colouring;
-    return block(&OutputBlocks::hessian, h.compressed);
-  }
-
   Arena<T> *arena_;
   std::vector<NodeId> roots_;
   OutputBlocks blocks_;

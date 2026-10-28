@@ -102,7 +102,7 @@ struct Cell {
 // rather than propagated: a partial the sweep folded to the zero constant *is*
 // structurally zero, so this is exact where `coupling_pattern` is conservative.
 //
-// The block is its rows: `for (const Row &r : pattern)`, and `cells(values)`
+// The block is its rows: `for (const Row &r : pattern.rows())`, and `cells(values)`
 // zips those rows against a value block.  Nothing outside reads `rowptr`.
 struct Sparsity {
   std::vector<std::size_t> rowptr; // rows() + 1, or empty for no rows
@@ -119,35 +119,14 @@ struct Sparsity {
     [[nodiscard]] constexpr auto end() const noexcept { return cols.end(); }
   };
 
-  // Every positional operator is `rowptr`'s, forwarded through
-  // `base_reference`; the dereference is the only one that is ours.  `v2` for
-  // the reason given on SetBits below.
-  class Iterator : public boost::stl_interfaces::v2::proxy_iterator_interface<
-                       Iterator, std::random_access_iterator_tag, Row> {
-  public:
-    constexpr Iterator() noexcept = default;
-    [[nodiscard]] constexpr Row operator*() const;
-
-  private:
-    friend struct Sparsity;
-    friend struct boost::stl_interfaces::access;
-    using Base = std::vector<std::size_t>::const_iterator;
-    constexpr Iterator(const Sparsity &s, Base at) noexcept
-        : owner_{&s}, at_{at} {}
-    [[nodiscard]] constexpr Base &base_reference() noexcept { return at_; }
-    [[nodiscard]] constexpr const Base &base_reference() const noexcept {
-      return at_;
-    }
-    const Sparsity *owner_ = nullptr;
-    Base at_{};
-  };
-
-  [[nodiscard]] constexpr Iterator begin() const noexcept {
-    return {*this, rowptr.begin()};
-  }
-  // One short of the end: a row needs rowptr[i + 1] as well as rowptr[i].
-  [[nodiscard]] constexpr Iterator end() const noexcept {
-    return {*this, rowptr.end() - static_cast<std::ptrdiff_t>(!rowptr.empty())};
+  [[nodiscard]] constexpr auto rows() const {
+    return std::views::iota(0uz, size()) |
+           std::views::transform([this](std::size_t i) {
+             return Row{.cols = std::span{col}.subspan(
+                            rowptr[i], rowptr[i + 1] - rowptr[i]),
+                        .offset = rowptr[i],
+                        .index = i};
+           });
   }
   [[nodiscard]] constexpr std::size_t size() const noexcept {
     return rowptr.empty() ? 0 : rowptr.size() - 1;
@@ -167,7 +146,7 @@ struct Sparsity {
                            .slot = std::get<0>(at)};
              });
     };
-    return *this | std::views::transform(stored) | std::views::join;
+    return rows() | std::views::transform(stored) | std::views::join;
   }
   // The same walk against a block laid out the way `col` is: (row, column,
   // value), which is what a caller scattering one back to a dense matrix wants.
@@ -188,7 +167,7 @@ struct Sparsity {
   // rows above do not answer.
   [[nodiscard]] constexpr std::optional<std::size_t>
   at(std::size_t i, std::size_t j) const noexcept {
-    const auto present = begin()[static_cast<std::ptrdiff_t>(i)];
+    const auto present = rows()[i];
     const auto found =
         std::ranges::lower_bound(present, static_cast<std::uint32_t>(j));
     return found != present.end() && *found == j
@@ -199,14 +178,6 @@ struct Sparsity {
 
   BOOST_DESCRIBE_CLASS(Sparsity, (), (rowptr, col, columns), (), ())
 };
-
-constexpr Sparsity::Row Sparsity::Iterator::operator*() const {
-  const std::size_t first = *at_;
-  return {.cols = std::span{owner_->col}.subspan(first, *(at_ + 1) - first),
-          .offset = first,
-          .index = static_cast<std::size_t>(at_ - owner_->rowptr.begin())};
-}
-static_assert(std::random_access_iterator<Sparsity::Iterator>);
 
 // Two columns share a colour only when no row couples them, so one sweep can
 // seed all of a colour's columns and the results still separate.

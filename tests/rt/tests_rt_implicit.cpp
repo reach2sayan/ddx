@@ -175,7 +175,7 @@ TEST(RtImplicit, ABatchCarriesAColumnOfRoots) {
     }
     const auto J = *eq.jacobian(at);
     for (const auto [cell, j] :
-         std::views::enumerate((*eq.jacobian_pattern()->get().begin()).cols)) {
+         std::views::enumerate(eq.jacobian_pattern()->get().rows()[0].cols)) {
       EXPECT_EQ(g[static_cast<std::size_t>(cell)][i], J[j]) << "point " << i;
     }
   }

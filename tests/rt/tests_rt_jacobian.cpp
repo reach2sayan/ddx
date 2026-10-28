@@ -400,7 +400,7 @@ TEST(RtJacobian, AFoldedPartialIsAStructuralHole) {
   // Row 0 keeps c alone, row 1 keeps d alone, row 2 is a constant.
   EXPECT_EQ(pattern.nonzeros(), 2u);
   const auto widths =
-      pattern |
+      pattern.rows() |
       std::views::transform([](const auto &row) { return row.size(); }) |
       ddx::impl::to<std::vector<std::size_t>>();
   EXPECT_EQ(widths, (std::vector<std::size_t>{1, 1, 0}));

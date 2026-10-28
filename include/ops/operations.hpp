@@ -217,8 +217,11 @@ template <bool IsMax> struct extremum_impl {
         return R{midpoint_impl{}(R{a}, R{b})};
       }
     }
-    if (a < b || b < a) {
-      return (a < b) == IsMax ? R{b} : R{a};
+    if (a < b) {
+      return IsMax ? R{b} : R{a};
+    }
+    if (b < a) {
+      return IsMax ? R{a} : R{b};
     }
     return R{(a - b) * R{}};
   }

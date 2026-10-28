@@ -332,14 +332,14 @@ public:
     std::vector<T> at(arena_->inputs().named(), T{});
     result<void> ok{};
     if constexpr ((impl::CEntry<Args> && ...) && sizeof...(Args) > 0) {
-      std::vector<bool> seen(at.size(), false);
-      ((ok = ok.and_then([&] { return assign_named(at, seen, args); })), ...);
-      ok = ok.and_then([&] { return whole(seen); });
+      ok = assign_named(
+          at, std::array{std::pair{std::remove_cvref_t<Args>::symbol.view(),
+                                   static_cast<T>(args.value)}...});
     } else if constexpr (sizeof...(Args) == 1 &&
                          (rt::detail::CNamedRange<Args, T> && ...)) {
       // Before the plain range: a map is an input_range too, and its elements
       // are pairs rather than the numbers assign_range would read.
-      ok = assign_named_range(at, args...);
+      ok = assign_named(at, args...);
     } else if constexpr (sizeof...(Args) == 1 &&
                          (std::ranges::input_range<Args> && ...)) {
       ok = assign_range(at, args...);
@@ -941,11 +941,11 @@ private:
       case Want::Hvp:
         return derive_hvp(*arena_, roots_.front()).product;
       case Want::Vjp:
-        return derive_vjp(*arena_, roots_).product;
+        return derive_vjp(*arena_, roots_);
       case Want::Jvp:
-        return derive_jvp(*arena_, roots_).product;
+        return derive_jvp(*arena_, roots_);
       default:
-        return derive_jacobian_tangent(*arena_, jacobian_);
+        return derive_jvp(*arena_, jacobian_.partial);
       }
     });
   }
@@ -1101,47 +1101,25 @@ private:
     return at_in<W>(pipelines_.get(), every_cell(), along, args...);
   }
 
-  // Naming a point is not the same as giving one: a symbol no argument reaches
-  // would otherwise be read as zero, which is a value and not a refusal.
+  // Name by name.  Naming a point is not the same as giving one: a symbol no
+  // entry reaches would otherwise be read as zero, which is a value and not a
+  // refusal.
   [[nodiscard]] constexpr result<void>
-  whole(const std::vector<bool> &seen) const {
+  assign_named(std::vector<T> &at,
+               const rt::detail::CNamedRange<T> auto &entries) const {
+    std::vector<bool> seen(at.size(), false);
+    for (const auto &[name, value] : entries) {
+      const auto input = arena_->lookup(std::string_view{name});
+      if (!input) {
+        return fail(errc::unknown_symbol);
+      }
+      const auto column =
+          input_column(arena_->inputs(), input->op, input->index);
+      at[column] = static_cast<T>(value);
+      seen[column] = true;
+    }
     return std::ranges::contains(seen, false) ? fail(errc::short_point)
                                               : result<void>{};
-  }
-
-  [[nodiscard]] constexpr result<void> assign_one(std::vector<T> &at,
-                                                  std::vector<bool> &seen,
-                                                  std::string_view name,
-                                                  const auto &value) const {
-    const auto input = arena_->lookup(name);
-    if (!input) {
-      return fail(errc::unknown_symbol);
-    }
-    const auto column = input_column(arena_->inputs(), input->op, input->index);
-    at[column] = static_cast<T>(value);
-    seen[column] = true;
-    return {};
-  }
-
-  template <impl::CEntry V>
-  [[nodiscard]] constexpr result<void>
-  assign_named(std::vector<T> &at, std::vector<bool> &seen, const V &nv) const {
-    return assign_one(at, seen, std::remove_cvref_t<V>::symbol.view(),
-                      nv.value);
-  }
-
-  [[nodiscard]] constexpr result<void>
-  assign_named_range(std::vector<T> &at,
-                     const rt::detail::CNamedRange<T> auto &vm) const {
-    std::vector<bool> seen(at.size(), false);
-    for (const auto &entry : vm) {
-      if (const auto ok =
-              assign_one(at, seen, std::string_view{entry.first}, entry.second);
-          !ok) {
-        return ok;
-      }
-    }
-    return whole(seen);
   }
 
   [[nodiscard]] constexpr result<void>
@@ -1440,7 +1418,7 @@ public:
                  .partial = {},
                  .pattern = {.rowptr = {0}, .col = {}, .columns = next},
                  .zero = full.zero};
-    for (const Sparsity::Row &row : full.pattern) {
+    for (const Sparsity::Row &row : full.pattern.rows()) {
       for (const auto [i, j] : row.cols | std::views::enumerate) {
         if (chosen[j]) {
           const std::size_t k = row.offset + static_cast<std::size_t>(i);
@@ -1459,6 +1437,11 @@ public:
   [[nodiscard]] const Sparsity &jacobian_pattern() const {
     return jacobian_.pattern;
   }
+  [[nodiscard]] result<void> dispatch(Want want, std::span<const T *const> xs,
+                                      const Columns<T> &out,
+                                      std::size_t n) const {
+    return core_->dispatch_in(*pipelines_, cells(), want, xs, out, n);
+  }
 
 private:
   [[nodiscard]] typename C::Cells cells() const {
@@ -1476,11 +1459,6 @@ private:
   }
   [[nodiscard]] const Sparsity &jacobian_sparsity() const {
     return jacobian_.pattern;
-  }
-  [[nodiscard]] result<void> dispatch(Want want, std::span<const T *const> xs,
-                                      const Columns<T> &out,
-                                      std::size_t n) const {
-    return core_->dispatch_in(*pipelines_, cells(), want, xs, out, n);
   }
 
   const C *core_;

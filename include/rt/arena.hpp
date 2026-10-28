@@ -369,7 +369,8 @@ struct Shape {
 // lane and a fold runs once; `in(i)` and `scalar(i)` read operand i.  False
 // for a node that is not arithmetic -- a copy, a list, a table, a select.
 template <impl::Numeric U>
-constexpr bool tensor_row(const auto &s, NodeId v, auto in, auto scalar,
+DDX_ALWAYS_INLINE constexpr bool tensor_row(const auto &s, NodeId v, auto in,
+                                            auto scalar,
                           std::span<U> to, U &reduced, const auto &kt) {
   const auto &n = s[v];
   switch (n.op) {
@@ -566,6 +567,14 @@ public:
         return u == no_node ? no_node : remap(u);
       });
     }
+    return formed(n);
+  }
+  // The same node with operand `slot` replaced: rebuild() maps by value, which
+  // would replace both operands of a Dot(x, x).
+  [[nodiscard]] constexpr NodeId replaced(NodeId v, std::size_t slot,
+                                          NodeId u) {
+    Node<T> n = model_[v];
+    n.in[slot] = u;
     return formed(n);
   }
 
