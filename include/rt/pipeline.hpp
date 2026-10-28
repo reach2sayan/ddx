@@ -25,6 +25,14 @@ struct Guarded {
   mutable std::shared_mutex mutex;
 };
 
+// What a kernel's tensor steps compute with: the sweep's own arena, the graph
+// the kernel was lowered from, and the table.  Read under the arena's lock.
+template <impl::Numeric T> struct TensorCall {
+  const Arena<T> *arena = nullptr;
+  const Graph<T> *graph = nullptr;
+  const TensorKernelTable<T> *kernels = nullptr;
+};
+
 // Published, never written.
 template <impl::Numeric T> struct Compiled {
   // Shared, so a reader holds the graph for the whole call.

@@ -284,6 +284,10 @@ eq.uses_kernel();              // true
 
 `kernel_level()` says which `codegen_level` the answering kernel was built at.
 
+A model with vectors compiles too: its scalars run in the kernel, and each
+vector operation is the interpreter's own step through the equation's kernel
+table, so a compiled answer is the interpreted one to the bit.
+
 ## Python
 
 ```sh

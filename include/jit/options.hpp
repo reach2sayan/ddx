@@ -18,6 +18,9 @@
 // compiled in.  jit/kernel.hpp holds the LLVM side.
 namespace ddx::rt {
 template <impl::Numeric T> class Graph;
+namespace detail {
+template <impl::Numeric T> struct TensorCall;
+} // namespace detail
 } // namespace ddx::rt
 
 namespace ddx::jit {
@@ -153,14 +156,21 @@ struct KernelShape {
   std::size_t values = 0;
   std::size_t jacobian = 0;
   std::size_t hessian = 0;
+  // Elements of T in the interpreter's two tapes, `lanes` wide, which a
+  // kernel's tensor steps sweep through.  Zero for a scalar graph.
+  std::size_t tapes = 0;
 
   template <impl::Numeric T>
-  [[nodiscard]] static KernelShape of(const rt::Graph<T> &g) {
+  [[nodiscard]] static KernelShape of(const rt::Graph<T> &g,
+                                      std::size_t lanes = 1) {
     const auto &layout = g.layout();
-    return KernelShape{.arity = g.arity(),
-                       .values = layout.values,
-                       .jacobian = layout.jacobian,
-                       .hessian = layout.hessian};
+    return KernelShape{
+        .arity = g.arity(),
+        .values = layout.values,
+        .jacobian = layout.jacobian,
+        .hessian = layout.hessian,
+        .tapes =
+            g.has_tensors() ? (g.tape_rows() + g.tensors().extent) * lanes : 0};
   }
   [[nodiscard]] constexpr std::size_t outputs() const noexcept {
     return values + jacobian + hessian;

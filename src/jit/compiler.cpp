@@ -2,8 +2,12 @@
 
 #include "spelling.hpp"
 
+#include "rt/interpret.hpp"
+#include "rt/pipeline.hpp"
+
 #include <boost/hash2/fnv1a.hpp>
 #include <boost/hash2/hash_append.hpp>
+#include <boost/mp11/algorithm.hpp>
 #include <boost/scope/scope_exit.hpp>
 
 #include <llvm/Config/llvm-config.h>
@@ -33,6 +37,7 @@
 
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <concepts>
@@ -85,6 +90,47 @@ void define_call(auto &def) {
   }
 }
 
+// A kernel over tensor rows is emitted at a power of two up to this, the
+// widths the interpreter's tensor step is instantiated at.
+constexpr std::size_t tensor_widths = 5;
+constexpr unsigned widest_tensor_lanes = 1u << (tensor_widths - 1);
+
+// The interpreter's step for node v, over the kernel's tapes: the TapeView
+// Core::interpret builds, at the kernel's width.
+template <CKernelScalar T>
+void tensor_step(const rt::detail::TensorCall<T> &c, rt::NodeId v,
+                 std::size_t lanes, T *tape, T *vtape) {
+  const rt::Graph<T> &g = *c.graph;
+  const rt::detail::TapeView<T> t{.scalar_rows = g.rows(),
+                                  .tensor_rows = g.tensors().rows,
+                                  .vtape = vtape,
+                                  .kernels = c.kernels};
+  boost::mp11::mp_with_index<tensor_widths>(
+      static_cast<std::size_t>(std::countr_zero(lanes)), [&](auto i) {
+        constexpr std::size_t W = std::size_t{1} << decltype(i)::value;
+        const auto lane =
+            rt::detail::lanes_of<W>(std::span<T>{tape, g.tape_rows() * W});
+        rt::detail::lanes_tensor<W>(*c.arena, v, (*c.arena)[v],
+                                    lane(g.rows()[v]), lane, t);
+      });
+}
+
+// The sweep's scatter of every output block, `live` of the kernel's lanes.
+template <CKernelScalar T>
+void tensor_store(const rt::detail::TensorCall<T> &c, T *const *f, T *const *g,
+                  T *const *h, std::size_t i, std::size_t live,
+                  std::size_t lanes, const T *tape, const T *vtape) {
+  const rt::Graph<T> &graph = *c.graph;
+  const rt::Layout &layout = graph.layout();
+  rt::scatter_blocks(graph.output_rows(),
+                     std::span<const T>{tape, graph.tape_rows() * lanes},
+                     std::span<const T>{vtape, graph.tensors().extent * lanes},
+                     rt::Columns<T>{.values = {f, layout.values},
+                                    .jacobian = {g, layout.jacobian},
+                                    .hessian = {h, layout.hessian}},
+                     i, lanes, live);
+}
+
 // Every name a T kernel calls out to: sin for double, sinf for float.
 template <CKernelScalar T> void define_scalar(auto &def) {
 #define DDX_JIT_RUNTIME(fn, Op, label, functor, ...)                           \
@@ -106,6 +152,22 @@ template <CKernelScalar T> void define_scalar(auto &def) {
             {in, static_cast<std::size_t>(arity)},
             {answer, static_cast<std::size_t>(components)});
       });
+  def(
+      detail::libm_name<T>(detail::tensor_step_symbol),
+      +[](const rt::detail::TensorCall<T> *c, std::uint64_t node,
+          std::uint64_t lanes, T *tape, T *vtape) noexcept {
+        tensor_step(*c, static_cast<rt::NodeId>(node),
+                    static_cast<std::size_t>(lanes), tape, vtape);
+      });
+  def(
+      detail::libm_name<T>(detail::tensor_store_symbol),
+      +[](const rt::detail::TensorCall<T> *c, T *const *f, T *const *g,
+          T *const *h, std::uint64_t i, std::uint64_t live, std::uint64_t lanes,
+          const T *tape, const T *vtape) noexcept {
+        tensor_store(*c, f, g, h, static_cast<std::size_t>(i),
+                     static_cast<std::size_t>(live),
+                     static_cast<std::size_t>(lanes), tape, vtape);
+      });
 }
 
 // What a kernel calls that is not an intrinsic: every Call row of the
@@ -118,7 +180,7 @@ template <CKernelScalar T> void define_scalar(auto &def) {
                                          const llvm::DataLayout &dl) {
   llvm::orc::MangleAndInterner mangle(es, dl);
   llvm::orc::SymbolMap syms;
-  syms.reserve(2 * (rt::op_count + 1));
+  syms.reserve(2 * (rt::op_count + 3));
   // The unary + turns each lambda into a plain function pointer.
   const auto def = [&](const std::string &name, auto *fn) {
     syms[mangle(name)] = {llvm::orc::ExecutorAddr::fromPtr(fn),
@@ -351,7 +413,7 @@ private:
     const boost::scope::scope_exit clock{
         [this, start = Clock::now()] { rep_.emit = Clock::now() - start; }};
     auto ctx = std::make_unique<llvm::LLVMContext>();
-    auto m = detail::emit_module(*ctx, g_, name_, host_.lanes_for(opt_),
+    auto m = detail::emit_module(*ctx, g_, name_, lanes(),
                                  host_.jit.getDataLayout(), host_.triple);
     if (!m) {
       // The emitter has already written the verifier's own diagnosis.
@@ -409,9 +471,16 @@ private:
                                       sym.takeError())};
     }
     return Kernel<T>{sym->toPtr<typename Kernel<T>::function_type>(),
-                  KernelShape::of(g_),
-                  Externs::of(g_),
-                  std::move(host_.code)};
+                     KernelShape::of(g_, lanes()), Externs::of(g_),
+                     std::move(host_.code)};
+  }
+
+  // Every width gives the same bits, so a tensor graph rounds down to one its
+  // step is instantiated at.
+  [[nodiscard]] unsigned lanes() const {
+    const unsigned w = host_.lanes_for(opt_);
+    return g_.has_tensors() ? std::bit_floor(std::min(w, widest_tensor_lanes))
+                            : w;
   }
 
   Host host_;
@@ -527,14 +596,6 @@ struct Compiler::Impl {
   [[nodiscard]] static compile_result<Kernel<T>>
   run(const std::shared_ptr<Impl> &self, const rt::Graph<T> &g,
       const Options &opt, CompileReport &rep) {
-    // No lowering computes a tensor row: the pipeline sweeps, through its
-    // kernel table, and uses_kernel() says so.
-    if (g.has_tensors()) {
-      return std::unexpected{compile_error{
-          .code = errc::tensor_kernel,
-          .detail =
-              "tensor nodes run on the sweep; no kernel is built for them"}};
-    }
     return CompileJob<T>{host_of<T>(self), g, opt,
                          "ddx_kernel_" + std::to_string(self->counter++),
                          rep}();

@@ -56,7 +56,15 @@ struct Externs {
 template <impl::Numeric T> class Kernel {
 public:
   using function_type = void (*)(const T *const *, T *const *, T *const *,
-                                 T *const *, std::size_t, const void *const *);
+                                 T *const *, std::size_t, const void *const *,
+                                 const rt::detail::TensorCall<T> *, T *);
+
+  // What a kernel's tensor steps read besides the columns: the sweep's arena,
+  // graph and table, and shape().tapes elements to sweep through.
+  struct Tensors {
+    const rt::detail::TensorCall<T> *call = nullptr;
+    std::span<T> tapes{};
+  };
 
   Kernel() = default;
   Kernel(function_type fn, KernelShape shape, Externs externs,
@@ -67,12 +75,15 @@ public:
   // xs[j] is the column for symbol j, g[j] the partial in it, each n long; an
   // unrequested block is `{}`.  noexcept: codegen marks the kernel nounwind.
   void operator()(std::span<const T *const> xs, std::span<T *const> f,
-                  std::span<T *const> g, std::span<T *const> h,
-                  std::size_t n) const noexcept {
+                  std::span<T *const> g, std::span<T *const> h, std::size_t n,
+                  Tensors t = {}) const noexcept {
     // A mismatch past here is silent memory corruption.
     assert(xs.size() == shape_.arity && f.size() == shape_.values &&
-           g.size() == shape_.jacobian && h.size() == shape_.hessian);
-    fn_(xs.data(), f.data(), g.data(), h.data(), n, externs_.table.data());
+           g.size() == shape_.jacobian && h.size() == shape_.hessian &&
+           t.tapes.size() >= shape_.tapes &&
+           (shape_.tapes == 0 || t.call != nullptr));
+    fn_(xs.data(), f.data(), g.data(), h.data(), n, externs_.table.data(),
+        t.call, t.tapes.data());
   }
 
   [[nodiscard]] explicit operator bool() const noexcept {

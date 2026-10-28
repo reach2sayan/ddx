@@ -297,8 +297,8 @@ public:
   }
   // Every has_list node's ids, shared with the arena: what arguments() reads.
   [[nodiscard]] std::span<const NodeId> lists() const { return lists_; }
-  // Whether a live node is a tensor op: what a kernel, which computes scalars
-  // only, refuses, and what makes the sweep carry a second tape.
+  // Whether a live node is a tensor op: what makes the sweep carry a second
+  // tape, and a kernel call the interpreter's step for that node.
   [[nodiscard]] bool has_tensors() const noexcept { return has_tensors_; }
   // Where each tensor-valued node's rows sit in that tape.
   [[nodiscard]] const TensorLayout &tensors() const noexcept {

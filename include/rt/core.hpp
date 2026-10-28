@@ -252,6 +252,7 @@ template <impl::Numeric T> struct ThreadTapes {
   std::vector<T> values, value_vtape; // a system's hessian() at a point
   std::vector<T> at, tape, vtape;     // a batch, one point at a time
   std::vector<T> lanes, lane_tape, lane_vtape; // a batch, block_lanes at once
+  std::vector<T> kernel_tapes;                 // a kernel's tensor steps
   // A point call's output addresses: a dense block is n^2 of them, and a fresh
   // array that size is a page fault per page on every call.
   std::vector<T *> addresses;
@@ -1328,7 +1329,7 @@ private:
   [[nodiscard]] bool rebalances([[maybe_unused]] Want want) const {
 #ifdef DDX_HAS_JIT
     if constexpr (jit::CKernelScalar<T>) {
-      // No kernel is lowered over tensor rows, so no rebalanced copy either.
+      // A tensor step is the sweep's own, so its graph is never rebalanced.
       // The roots' cone, not the arena: a dense Hessian swept earlier leaves
       // tensor nodes no scalar root reads.  Read under the lock, as a sweep on
       // another thread may be appending.
@@ -1383,7 +1384,13 @@ private:
     [[maybe_unused]] const auto held = sweeping();
     if constexpr (jit::CKernelScalar<T>) {
       if (c.kernel) {
-        c.kernel(xs, out.values, out.jacobian, out.hessian, n);
+        const detail::TensorCall<T> call{.arena = arena_.get(),
+                                         .graph = c.compile_graph.get(),
+                                         .kernels = c.kernels};
+        std::vector<T> &tapes = thread_tapes<T>().kernel_tapes;
+        tapes.resize(c.kernel.shape().tapes);
+        c.kernel(xs, out.values, out.jacobian, out.hessian, n,
+                 {.call = &call, .tapes = tapes});
         return;
       }
     }

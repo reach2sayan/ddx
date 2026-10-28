@@ -69,18 +69,18 @@ llvm::Function *libm_decl(llvm::Module &m, std::string_view name,
   return fn;
 }
 
-// The one way out of a kernel into a function the program supplied, defined
-// by the runtime beside libm: `ddx_call_extern(fn, in, arity, answer,
-// components)`.  The function itself comes off the kernel's extern table, so
-// the object holds no address.
-template <CKernelScalar T> llvm::Function *trampoline_decl(llvm::Module &m) {
-  llvm::LLVMContext &ctx = m.getContext();
-  llvm::PointerType *const ptr = llvm::PointerType::getUnqual(ctx);
-  llvm::Type *const i64 = llvm::Type::getInt64Ty(ctx);
+// A way out of a kernel into the runtime, defined beside libm: the extern
+// trampoline, whose function comes off the kernel's extern table, and the
+// tensor step and store.
+template <CKernelScalar T>
+llvm::Function *runtime_decl(llvm::Module &m, std::string_view symbol,
+                             llvm::ArrayRef<llvm::Value *> args) {
+  const auto types = llvm::to_vector(
+      llvm::map_range(args, [](llvm::Value *a) { return a->getType(); }));
   llvm::FunctionCallee c = m.getOrInsertFunction(
-      libm_name<T>(trampoline_symbol),
-      llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
-                              {ptr, ptr, i64, ptr, i64}, false));
+      libm_name<T>(symbol),
+      llvm::FunctionType::get(llvm::Type::getVoidTy(m.getContext()), types,
+                              false));
   auto *fn = llvm::cast<llvm::Function>(c.getCallee());
   fn->setDoesNotThrow();
   fn->setWillReturn();
@@ -97,11 +97,19 @@ struct LaneType {
   [[nodiscard]] constexpr bool vector() const noexcept { return width > 1; }
 };
 
+// The kernel's arguments a tensor step is handed: the TensorCall, and the
+// interpreter's two tapes.  Null in a scalar graph.
+struct TensorTapes {
+  llvm::Value *call = nullptr;
+  llvm::Value *tape = nullptr;
+  llvm::Value *vtape = nullptr;
+};
+
 template <CKernelScalar T> class Emitter {
 public:
   Emitter(llvm::Module &m, llvm::IRBuilder<> &b, LaneType lanes,
-          llvm::Value *externs)
-      : m_{m}, b_{b}, lanes_{lanes}, externs_{externs} {}
+          llvm::Value *externs, TensorTapes tensors)
+      : m_{m}, b_{b}, lanes_{lanes}, externs_{externs}, tensors_{tensors} {}
 
   // A splat where the lane type is a vector.
   [[nodiscard]] llvm::Value *constant(double v) const {
@@ -208,7 +216,6 @@ public:
         b_.getPtrTy(),
         b_.CreateConstInBoundsGEP1_64(b_.getPtrTy(), externs_, index),
         "extern.fn");
-    llvm::Function *const trampoline = trampoline_decl<T>(m_);
 
     Answers out(components * lanes_.width);
     per_lane(args, [&](unsigned lane, llvm::ArrayRef<llvm::Value *> scalars) {
@@ -216,9 +223,9 @@ public:
         b_.CreateStore(a, b_.CreateConstInBoundsGEP1_64(
                               scalar, in, static_cast<std::uint64_t>(j)));
       }
-      b_.CreateCall(trampoline,
-                    {fn, in, llvm::ConstantInt::get(i64, e.arity), answer,
-                     llvm::ConstantInt::get(i64, components)});
+      runtime_call(trampoline_symbol,
+                   {fn, in, llvm::ConstantInt::get(i64, e.arity), answer,
+                    llvm::ConstantInt::get(i64, components)});
       for (const std::size_t c : std::views::iota(0uz, components)) {
         out[c * lanes_.width + lane] =
             b_.CreateLoad(scalar,
@@ -246,7 +253,38 @@ public:
                : llvm::PoisonValue::get(lanes_.ty);
   }
 
+  // Lane k of tape row r at tape + r*W + k, as the interpreter lays it out.
+  void to_tape(llvm::Value *v, std::uint32_t row, llvm::Value *mask) const {
+    store(v, tensors_.tape, lanes_at(row), mask);
+  }
+  [[nodiscard]] llvm::Value *from_tape(std::uint32_t row,
+                                       llvm::Value *mask) const {
+    return load(tensors_.tape, lanes_at(row), mask, "tensor.out");
+  }
+
+  void tensor_step(rt::NodeId v) const {
+    runtime_call(tensor_step_symbol,
+                 {tensors_.call, b_.getInt64(v), b_.getInt64(lanes_.width),
+                  tensors_.tape, tensors_.vtape});
+  }
+  void tensor_store(llvm::Function &kernel, llvm::Value *index,
+                    llvm::Value *live) const {
+    runtime_call(tensor_store_symbol,
+                 {tensors_.call, kernel.getArg(1), kernel.getArg(2),
+                  kernel.getArg(3), index, live, b_.getInt64(lanes_.width),
+                  tensors_.tape, tensors_.vtape});
+  }
+
 private:
+  void runtime_call(std::string_view symbol,
+                    llvm::ArrayRef<llvm::Value *> args) const {
+    b_.CreateCall(runtime_decl<T>(m_, symbol, args), args);
+  }
+
+  [[nodiscard]] llvm::Value *lanes_at(std::uint32_t row) const {
+    return b_.getInt64(std::uint64_t{row} * lanes_.width);
+  }
+
   // An intrinsic is declared on the lane type and left to the backend to
   // unroll; a libm function has only a scalar entry point, so it is unrolled
   // here.  Declared once per opcode: getOrInsertDeclaration re-mangles the name
@@ -314,6 +352,7 @@ private:
   llvm::IRBuilder<> &b_;
   LaneType lanes_;
   llvm::Value *externs_;
+  TensorTapes tensors_;
   struct Callee {
     llvm::Function *fn = nullptr;
     bool scalarise = false;
@@ -327,14 +366,17 @@ llvm::Function *declare_kernel(llvm::Module &m, llvm::StringRef name,
   llvm::LLVMContext &ctx = m.getContext();
   llvm::Type *const i64 = llvm::Type::getInt64Ty(ctx);
   llvm::PointerType *const ptr = llvm::PointerType::getUnqual(ctx);
-  // xs, f, g, h, n, externs -- four column arrays, the batch length, and the
-  // table of functions the program supplied.
-  auto *const fty = llvm::FunctionType::get(
-      llvm::Type::getVoidTy(ctx), {ptr, ptr, ptr, ptr, i64, ptr}, false);
+  // xs, f, g, h, n, externs, tensors, tapes -- four column arrays, the batch
+  // length, the table of functions the program supplied, and what the tensor
+  // steps read.
+  auto *const fty =
+      llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+                              {ptr, ptr, ptr, ptr, i64, ptr, ptr, ptr}, false);
   auto *const fn =
       llvm::Function::Create(fty, llvm::Function::ExternalLinkage, name, m);
 
-  static constexpr std::array names{"xs", "f", "g", "h", "n", "externs"};
+  static constexpr std::array names{"xs", "f",       "g",       "h",
+                                    "n",  "externs", "tensors", "tapes"};
   for (const auto [i, arg_name] : names | std::views::enumerate) {
     fn->getArg(static_cast<unsigned>(i))->setName(arg_name);
   }
@@ -406,6 +448,8 @@ HoistedColumns hoist_columns(llvm::IRBuilder<> &b, llvm::Function &fn,
 
 // Ids are topological, so one pass needs no worklist.  Under contraction the
 // adds carry their product and the multiplies they swallowed are never reached.
+// A tensor node is the interpreter's step, over the scalars it reads stored to
+// the tape; a scalar it yields is read back.
 template <CKernelScalar T>
 [[nodiscard]] std::vector<llvm::Value *>
 emit_nodes(const Emitter<T> &emit, const rt::Graph<T> &g,
@@ -421,7 +465,7 @@ emit_nodes(const Emitter<T> &emit, const rt::Graph<T> &g,
       continue;
     }
     const auto operands = g.operands(v);
-    switch (rt::kind_of(p.op)) {
+    switch (rt::detail::on_tensors(p) ? rt::Kind::Tensor : rt::kind_of(p.op)) {
     case rt::Kind::Const:
       value[v] = emit.constant(p.value);
       break;
@@ -478,7 +522,16 @@ emit_nodes(const Emitter<T> &emit, const rt::Graph<T> &g,
       value[v] = emit.binary(p.op, value[operands[0]], value[operands[1]]);
       break;
     case rt::Kind::Tensor:
-      std::unreachable(); // Compiler::compile refuses a graph with tensor rows
+      rt::detail::for_each_operand(g, v, [&](rt::NodeId u) {
+        if (!rt::detail::on_tensors(g[u])) {
+          emit.to_tape(value[u], g.rows()[u], mask);
+        }
+      });
+      emit.tensor_step(v);
+      if (rt::detail::is_scalar(p)) {
+        value[v] = emit.from_tape(g.rows()[v], mask);
+      }
+      break;
     }
   }
   return value;
@@ -497,6 +550,21 @@ void emit_stores(const Emitter<T> &emit, const rt::Graph<T> &g,
       emit.store(value[o], column, index, mask);
     }
   }
+}
+
+// With tensor rows the outputs leave through the sweep's own scatter: each
+// scalar into its tape row, then one call for every block.
+template <CKernelScalar T>
+void emit_tensor_stores(const Emitter<T> &emit, const rt::Graph<T> &g,
+                        std::span<llvm::Value *const> value,
+                        llvm::Function &kernel, llvm::Value *index,
+                        llvm::Value *live, llvm::Value *mask) {
+  for (const rt::NodeId o : g.outputs()) {
+    if (!rt::detail::on_tensors(g[o])) {
+      emit.to_tape(value[o], g.rows()[o], mask);
+    }
+  }
+  emit.tensor_store(kernel, index, live);
 }
 
 } // namespace
@@ -531,6 +599,14 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g,
   // separately.
   llvm::IRBuilder<> b(entry);
   const HoistedColumns cols = hoist_columns(b, *fn, g);
+  // The scalar tape, tape_rows() rows `width` wide, then the tensor tape.
+  const TensorTapes tensors =
+      g.has_tensors() ? TensorTapes{.call = fn->getArg(6),
+                                    .tape = fn->getArg(7),
+                                    .vtape = b.CreateConstInBoundsGEP1_64(
+                                        scalar, fn->getArg(7),
+                                        g.tape_rows() * width, "vtape")}
+                      : TensorTapes{};
 
   // n == 0 is a degenerate call, and saying so is what keeps the loop out of
   // the cold half of the layout.
@@ -546,6 +622,7 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g,
   // non-negative, and it is one instruction where the saturating
   // llvm.get.active.lane.mask is a dozen on AVX2.
   llvm::Value *mask = nullptr;
+  llvm::Value *live = b.getInt64(1); // lanes this iteration fills
   if (lanes.vector()) {
     // nuw: i < n on every entry to the body, so the difference never wraps.
     llvm::Value *const remaining =
@@ -553,12 +630,18 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g,
     llvm::Value *const step =
         b.CreateStepVector(llvm::FixedVectorType::get(i64, width));
     mask = b.CreateICmpSLT(step, b.CreateVectorSplat(width, remaining), "mask");
+    live = b.CreateBinaryIntrinsic(llvm::Intrinsic::umin, remaining,
+                                   b.getInt64(width), nullptr, "live");
   }
 
-  const Emitter<T> emit(*m, b, lanes, fn->getArg(5));
+  const Emitter<T> emit(*m, b, lanes, fn->getArg(5), tensors);
   const std::vector<llvm::Value *> value =
       emit_nodes(emit, g, cols, index, mask);
-  emit_stores(emit, g, cols, value, index, mask);
+  if (g.has_tensors()) {
+    emit_tensor_stores(emit, g, value, *fn, index, live, mask);
+  } else {
+    emit_stores(emit, g, cols, value, index, mask);
+  }
 
   // nuw/nsw: n counts points the caller has allocated, so n + W is nowhere
   // near either bound.  It is what lets SCEV name an exact trip count.

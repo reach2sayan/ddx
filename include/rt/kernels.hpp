@@ -23,7 +23,6 @@
 #include <concepts>
 #include <cstddef>
 #include <functional>
-#include <numeric>
 #include <ranges>
 #include <span>
 #include <string_view>
@@ -115,9 +114,31 @@ template <impl::Numeric T = double> struct Kernels {
     }
   }
 
+  // The order libstdc++'s transform_reduce takes, and the fmas GCC forms in
+  // it at -O2, spelled out so neither the library nor -ffp-contract decides:
+  // blocks of four as two products each finished by an fma, then a fused tail.
   [[nodiscard]] static constexpr T dot(In u, In v) noexcept {
-    return std::transform_reduce(u.begin(), u.end(), v.begin(), T{},
-                                 std::plus<>{}, [](T a, T b) { return a * b; });
+    const auto fma = [](T a, T b, T c) -> T {
+      if constexpr (std::floating_point<T>) {
+        return std::fma(a, b, c);
+      } else {
+        return a * b + c;
+      }
+    };
+    const std::size_t whole = u.size() / 4 * 4;
+    const T blocks = std::ranges::fold_left(
+        std::views::zip(u.first(whole) | std::views::chunk(4),
+                        v.first(whole) | std::views::chunk(4)),
+        T{}, [&fma](T acc, const auto &block) {
+          const auto &[a, b] = block;
+          return acc +
+                 (fma(a[1], b[1], a[0] * b[0]) + fma(a[3], b[3], a[2] * b[2]));
+        });
+    return std::ranges::fold_left(
+        std::views::zip(u.subspan(whole), v.subspan(whole)), blocks,
+        [&fma](T acc, const auto &ab) {
+          return fma(std::get<0>(ab), std::get<1>(ab), acc);
+        });
   }
 
   static constexpr void scale(T s, In v, Out out) noexcept {
@@ -152,8 +173,14 @@ template <impl::Numeric T = double> struct Kernels {
     });
   }
 
+  // std::reduce's order: blocks of four summed as pairs, then a left fold.
   [[nodiscard]] static constexpr T sum(In v) noexcept {
-    return std::reduce(v.begin(), v.end(), T{});
+    const std::size_t whole = v.size() / 4 * 4;
+    const T blocks = std::ranges::fold_left(
+        v.first(whole) | std::views::chunk(4), T{}, [](T acc, const auto &b) {
+          return acc + ((b[0] + b[1]) + (b[2] + b[3]));
+        });
+    return std::ranges::fold_left(v.subspan(whole), blocks, std::plus<>{});
   }
 
   // out = A B, one column of B at a time: a gemv per column.
