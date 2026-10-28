@@ -10,7 +10,7 @@
 #include "symbolic/format.hpp"
 #include "symbolic/simplify.hpp"
 #include "symbolic/symbol.hpp"
-#include "util/config.hpp" // DDX_KEYED_ACCESSORS
+#include "util/config.hpp" // DDX_FWD
 #include "util/scope_guard.hpp"
 
 #include <algorithm>
@@ -217,8 +217,12 @@ private:
     return detail::make_jac_rows(expressions, symbols{});
   }
 
+public:
+  // Slot 0 is the expression itself; slot k>0 is d/d(k-1 th symbol), in
+  // canonical symbol order, as get<N>() and as the subscript [idx<N>].
   template <std::size_t N>
-  [[nodiscard]] static constexpr decltype(auto) slot(auto &&self) noexcept {
+    requires(output_dim == 1 && N <= input_dim)
+  [[nodiscard]] constexpr decltype(auto) get(this auto &&self) noexcept {
     if constexpr (N == 0) {
       return std::get<0>(DDX_FWD(self).expressions);
     } else {
@@ -229,7 +233,6 @@ private:
     }
   }
 
-public:
   // explicit, or `Equation<E> eq = expr;` is ambiguous with
   // EquationConvertible's conversion operator.
   constexpr explicit Equation(TFirst first, TRest... rest) noexcept
@@ -262,10 +265,12 @@ public:
         args...);
   }
 
-  // Slot 0 is the expression itself; slot k>0 is d/d(k-1 th symbol), in
-  // canonical symbol order.  Both spellings; see DDX_KEYED_ACCESSORS.
-  DDX_KEYED_ACCESSORS(std::size_t N, std::size_t N, N, idx_t<N>,
-                      requires(output_dim == 1 && N <= input_dim))
+  template <std::size_t N>
+    requires(output_dim == 1 && N <= input_dim)
+  [[nodiscard]] constexpr decltype(auto) operator[](this auto &&self,
+                                                    idx_t<N>) noexcept {
+    return DDX_FWD(self).template get<N>();
+  }
 
   // Symbolic lowers the stored partial trees beside the function and sweeps
   // them; Reverse builds the adjoint sweep on the graph and never forms a

@@ -21,11 +21,7 @@
 #include <boost/container/small_vector.hpp>
 
 #include <algorithm>
-#include <array>
-#include <chrono>
-#include <cstdint>
 #include <format>
-#include <future>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -161,11 +157,6 @@ private:
   friend class PyCall;
   friend class PyRestricted;
 
-  using BlockMember = std::size_t rt::Layout::*;
-  [[nodiscard]] static std::size_t count(const Compiled &c, BlockMember which) {
-    return c.graph->layout().*which;
-  }
-
   // --- running -------------------------------------------------------------
 
   void run(Want want, const Point &at, const rt::Columns<double> &out) const {
@@ -243,20 +234,32 @@ private:
   template <Want W>
   [[nodiscard]] pyb::tuple run(const pyb::handle &x,
                                const pyb::handle *v = nullptr) {
+    const auto l = pipeline(W);
+    return run_on<W>(
+        [this](auto &&...a) { return dispatch(DDX_FWD(a)...); },
+        l->graph->layout(), derivative().pattern, &l->graph->colouring(), x, v);
+  }
+  // The same over any dispatch -- a restrict() view's -- with its block sizes,
+  // the pattern its cells scatter by and the Hessian pipeline's colouring.
+  template <Want W>
+  [[nodiscard]] pyb::tuple run_on(auto &&dispatcher, const rt::Layout &sizes,
+                                  const rt::Sparsity &pattern,
+                                  const rt::Colouring *colouring,
+                                  const pyb::handle &x,
+                                  const pyb::handle *v = nullptr) const {
     constexpr rt::WantInfo w = rt::want_info(W);
     const Point at{x, inputs_};
-    const auto l = pipeline(W);
     Cell cell;
-    auto f = w.values ? values_block(*l, at) : std::nullopt;
-    Out g = out_for(w.jacobian, count(*l, &rt::Layout::jacobian), at);
-    Out h = out_for(w.hessian, count(*l, &rt::Layout::hessian), at);
+    auto f = w.values ? values_block(sizes.values, at) : std::nullopt;
+    Out g = out_for(w.jacobian, sizes.jacobian, at);
+    Out h = out_for(w.hessian, sizes.hessian, at);
     const rt::Columns<double> columns{
         .values = w.values ? (f ? f->rows() : cell.rows())
                            : std::span<double *const>{},
         .jacobian = g.rows(),
         .hessian = h.rows()};
     if constexpr (w.direction == rt::Direction::None) {
-      unwrap(dispatch(W, at.columns(), columns, at.size()));
+      unwrap(dispatcher(W, at.columns(), columns, at.size()));
     } else {
       // Built in place: Point is pinned, and its positional constructor is
       // ours alone -- optional::emplace would construct it from outside.
@@ -271,18 +274,17 @@ private:
         fail_with(errc::wrong_direction);
       }
       const auto xs = widen(at.columns(), dir.columns());
-      unwrap(dispatch(W, as_columns(xs), columns, at.size()));
+      unwrap(dispatcher(W, as_columns(xs), columns, at.size()));
     }
     pyb::list parts;
     if (w.values) {
       parts.append(value_of(f, cell));
     }
     if (w.jacobian != rt::BlockShape::None) {
-      parts.append(finish(w.jacobian, g, at, derivative().pattern, nullptr));
+      parts.append(finish(w.jacobian, g, at, pattern, nullptr));
     }
     if (w.hessian != rt::BlockShape::None) {
-      parts.append(finish(w.hessian, h, at, derivative().pattern,
-                          &l->graph->colouring()));
+      parts.append(finish(w.hessian, h, at, pattern, colouring));
     }
     return pyb::tuple(parts);
   }
@@ -362,13 +364,12 @@ private:
 
   // A float at one point, an array across a batch: only the first can skip the
   // allocation, and every derivative call serves both.
-  [[nodiscard]] std::optional<Block> values_block(const Compiled &c,
+  [[nodiscard]] std::optional<Block> values_block(std::size_t columns,
                                                   const Point &at) const {
-    return scalar(at)
-               ? std::nullopt
-               : std::optional<Block>{std::in_place,
-                                      shape_of({ssize(height())}, at),
-                                      count(c, &rt::Layout::values), at.size()};
+    return scalar(at) ? std::nullopt
+                      : std::optional<Block>{std::in_place,
+                                             shape_of({ssize(height())}, at),
+                                             columns, at.size()};
   }
 
   [[nodiscard]] static pyb::object value_of(std::optional<Block> &f,
@@ -399,48 +400,28 @@ public:
     return view_.jacobian_columns();
   }
 
-  // (value, J): J is outputs x the kept symbols, scattered through the view's
-  // own pattern -- it keeps a subset of the columns.
+  // (value, J) and (value, J, dJ/dv), J outputs x the kept symbols, scattered
+  // through the view's own pattern -- it keeps a subset of the columns.  `v`
+  // is over every symbol.
   [[nodiscard]] pyb::tuple jacobian(const pyb::handle &x) const {
-    const Point at{x, eq_->inputs_};
-    PyEquation::Cell cell;
-    auto f = values(at);
-    auto g = eq_->out_for(rt::BlockShape::Cells, view_.jacobian_columns(), at);
-    unwrap(view_.jacobian(at.columns(), f ? f->rows() : cell.rows(), g.rows(),
-                          at.size()));
-    return pyb::make_tuple(PyEquation::value_of(f, cell), kept(g, at));
+    return run<Want::Jacobian>(x);
   }
-
-  // (value, J, dJ/dv) over the kept columns; `v` is over every symbol.
   [[nodiscard]] pyb::tuple jacobian_jvp(const pyb::handle &v,
                                         const pyb::handle &x) const {
-    const Point at{x, eq_->inputs_};
-    const Point dir{v, eq_->symbols_};
-    if (dir.size() != at.size()) {
-      fail_with(errc::wrong_direction);
-    }
-    PyEquation::Cell cell;
-    auto f = values(at);
-    auto g = eq_->out_for(rt::BlockShape::Cells, view_.jacobian_columns(), at);
-    auto dg = eq_->out_for(rt::BlockShape::Cells, view_.jacobian_columns(), at);
-    unwrap(view_.jacobian_jvp(at.columns(), dir.columns(),
-                              f ? f->rows() : cell.rows(), g.rows(), dg.rows(),
-                              at.size()));
-    return pyb::make_tuple(PyEquation::value_of(f, cell), kept(g, at),
-                           kept(dg, at));
+    return run<Want::JacobianJvp>(x, &v);
   }
 
 private:
-  [[nodiscard]] pyb::object kept(PyEquation::Out &o, const Point &at) const {
-    return eq_->finish(rt::BlockShape::Cells, o, at, view_.jacobian_pattern(),
-                       nullptr);
-  }
-  [[nodiscard]] std::optional<Block> values(const Point &at) const {
-    return eq_->scalar(at)
-               ? std::nullopt
-               : std::optional<Block>{std::in_place,
-                                      eq_->shape_of({ssize(eq_->height())}, at),
-                                      eq_->height(), at.size()};
+  template <Want W>
+  [[nodiscard]] pyb::tuple run(const pyb::handle &x,
+                               const pyb::handle *v = nullptr) const {
+    const std::size_t kept = view_.jacobian_columns();
+    return eq_->run_on<W>(
+        [this](auto &&...a) { return view_.dispatch(DDX_FWD(a)...); },
+        {.values = eq_->height(),
+         .jacobian = kept,
+         .hessian = rt::want_info(W).hessian == rt::BlockShape::None ? 0 : kept},
+        view_.jacobian_pattern(), nullptr, x, v);
   }
 
   const PyEquation *eq_; // outlived by the equation: keep_alive on the factory

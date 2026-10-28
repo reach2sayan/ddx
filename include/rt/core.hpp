@@ -34,7 +34,6 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -64,14 +63,6 @@ template <typename R, typename Ptr>
 concept CColumns = std::ranges::contiguous_range<R> &&
                    std::convertible_to<std::ranges::range_value_t<R>, Ptr>;
 
-#ifdef DDX_HAS_JIT
-// One LLJIT for the process -- a static in a class template would be per
-// specialisation -- reached only from a compiling backend, so an interpret-only
-// program never brings LLVM up.  Defined in libddx, so a program and the
-// library share it.
-[[nodiscard]] DDX_API jit::Compiler *shared_compiler();
-#endif
-
 // What a sweep gives up around itself where the caller holds nothing.  Visible,
 // since an instantiation is no more visible than its arguments: Core<T>.
 struct DDX_API Nothing {};
@@ -83,6 +74,7 @@ template <typename C> class DDX_TEMPLATE_API Restricted;
 // its cells are laid out by.
 template <typename D, impl::Numeric T> class DDX_TEMPLATE_API JacobianSurface {
   using Want = rt::Want;
+  using Blocks = PerBlock<std::vector<T>>;
 
 public:
   // Dense row-major m x n; at m == 1 the leading axis goes and this is n long.
@@ -90,11 +82,7 @@ public:
   // here and this spelling never meets the compression.
   [[nodiscard]] constexpr result<std::vector<T>>
   jacobian(const rt::detail::CPointArg<T> auto &...args) const {
-    return self()
-        .template at<Want::Jacobian>({}, args...)
-        .transform([this](const auto &b) {
-          return dense(self().jacobian_sparsity(), b.jacobian);
-        });
+    return dense_at<Want::Jacobian, &Blocks::jacobian>({}, args...);
   }
 
   // The Jacobian alone, from a graph with no value block: whatever only the
@@ -102,11 +90,7 @@ public:
   // than its function is most of the graph.
   [[nodiscard]] constexpr result<std::vector<T>>
   gradient(const rt::detail::CPointArg<T> auto &...args) const {
-    return self()
-        .template at<Want::Gradient>({}, args...)
-        .transform([this](const auto &b) {
-          return dense(self().jacobian_sparsity(), b.jacobian);
-        });
+    return dense_at<Want::Gradient, &Blocks::jacobian>({}, args...);
   }
 
   // dJ/dv, dense row-major m x n: the derivative of every Jacobian cell along
@@ -114,11 +98,7 @@ public:
   [[nodiscard]] result<std::vector<T>>
   jacobian_jvp(std::span<const T> direction,
                const rt::detail::CPointArg<T> auto &...args) const {
-    return self()
-        .template at<Want::JacobianJvp>(direction, args...)
-        .transform([this](const auto &b) {
-          return dense(self().jacobian_sparsity(), b.hessian);
-        });
+    return dense_at<Want::JacobianJvp, &Blocks::hessian>(direction, args...);
   }
   // Along one symbol's basis vector: d/dx_j of the whole Jacobian.
   [[nodiscard]] result<std::vector<T>>
@@ -136,9 +116,7 @@ public:
   jacobian(const rt::detail::CColumns<const T *> auto &xs,
            const rt::detail::CColumns<T *> auto &f,
            const rt::detail::CColumns<T *> auto &g, std::size_t n) const {
-    return self().dispatch(Want::Jacobian, as_columns(xs),
-                           {.values = as_columns(f), .jacobian = as_columns(g)},
-                           n);
+    return batch<Want::Jacobian>(xs, n, f, g);
   }
 
   // Its own pipeline, not jacobian()'s with the partials dropped: on a coupled
@@ -146,8 +124,7 @@ public:
   [[nodiscard]] result<void>
   gradient(const rt::detail::CColumns<const T *> auto &xs,
            const rt::detail::CColumns<T *> auto &g, std::size_t n) const {
-    return self().dispatch(Want::Gradient, as_columns(xs),
-                           {.jacobian = as_columns(g)}, n);
+    return batch<Want::Gradient>(xs, n, g);
   }
 
   // The Jacobian, and its derivative along `v`.
@@ -157,14 +134,31 @@ public:
                const rt::detail::CColumns<T *> auto &f,
                const rt::detail::CColumns<T *> auto &g,
                const rt::detail::CColumns<T *> auto &dg, std::size_t n) const {
-    return self().dispatch(Want::JacobianJvp, as_columns(widen(xs, v)),
-                           {.values = as_columns(f),
-                            .jacobian = as_columns(g),
-                            .hessian = as_columns(dg)},
-                           n);
+    return batch<Want::JacobianJvp>(widen(xs, v), n, f, g, dg);
   }
 
 protected:
+  // A batch call for W, `outs` being its blocks in the table's order.
+  template <Want W>
+  [[nodiscard]] result<void> batch(const auto &xs, std::size_t n,
+                                   const auto &...outs) const {
+    constexpr WantInfo w = want_info(W);
+    const std::array<std::span<T *const>, sizeof...(outs)> given{
+        as_columns(outs)...};
+    auto next = given.begin();
+    Columns<T> out;
+    if constexpr (w.values) {
+      out.values = *next++;
+    }
+    if constexpr (w.jacobian != BlockShape::None) {
+      out.jacobian = *next++;
+    }
+    if constexpr (w.hessian != BlockShape::None) {
+      out.hessian = *next++;
+    }
+    return self().dispatch(W, as_columns(xs), out, n);
+  }
+
   [[nodiscard]] static auto
   as_columns(const std::ranges::contiguous_range auto &r) {
     using Ptr = std::ranges::range_value_t<std::remove_cvref_t<decltype(r)>>;
@@ -197,6 +191,16 @@ protected:
 private:
   [[nodiscard]] constexpr const D &self() const {
     return static_cast<const D &>(*this);
+  }
+  // One block of W's answer, the zeros put back.
+  template <Want W, auto Block>
+  [[nodiscard]] constexpr result<std::vector<T>>
+  dense_at(std::span<const T> along, const auto &...args) const {
+    return self()
+        .template at<W>(along, args...)
+        .transform([this](const auto &b) {
+          return dense(self().jacobian_sparsity(), b.*Block);
+        });
   }
 };
 
@@ -233,12 +237,10 @@ struct Rebalanced {
 struct Sweeps {
   std::shared_mutex arena_mutex;
   Lazy<std::vector<Hessian>> hessians;
-  Lazy<HessianVector> hvp;
-  Lazy<VectorJacobian> vjp;
-  Lazy<Tangent> jvp;
   Lazy<DenseHessian> dense;
-  Lazy<std::vector<NodeId>> tangent; // one forward sweep
-  Lazy<ArenaWalk> walk;              // a system's hessian() at a point
+  // By Want: the block a directional want adds -- Hvp, Vjp, Jvp, JacobianJvp.
+  std::array<Lazy<std::vector<NodeId>>, want_count> products;
+  Lazy<ArenaWalk> walk; // a system's hessian() at a point
 #ifdef DDX_HAS_JIT
   Lazy<Rebalanced> rebalanced;
 #endif
@@ -248,10 +250,14 @@ struct Sweeps {
 // threads may be inside one equation at once and resize() on a kept vector
 // allocates only when a sweep outgrows the last.  One set per call site.
 // release_tapes() gives them back.
+template <impl::Numeric T> struct TapeSet {
+  std::vector<T> point, tape, vtape;
+};
 template <impl::Numeric T> struct ThreadTapes {
-  std::vector<T> values, value_vtape; // a system's hessian() at a point
-  std::vector<T> at, tape, vtape;     // a batch, one point at a time
-  std::vector<T> lanes, lane_tape, lane_vtape; // a batch, block_lanes at once
+  TapeSet<T> values;           // a system's hessian() at a point
+  TapeSet<T> one;              // a batch, one point at a time
+  TapeSet<T> block;            // a batch, block_lanes at once
+  std::vector<T> kernel_tapes; // a kernel's tensor steps
   // A point call's output addresses: a dense block is n^2 of them, and a fresh
   // array that size is a page fault per page on every call.
   std::vector<T *> addresses;
@@ -324,14 +330,14 @@ public:
     std::vector<T> at(arena_->inputs().named(), T{});
     result<void> ok{};
     if constexpr ((impl::CEntry<Args> && ...) && sizeof...(Args) > 0) {
-      std::vector<bool> seen(at.size(), false);
-      ((ok = ok.and_then([&] { return assign_named(at, seen, args); })), ...);
-      ok = ok.and_then([&] { return whole(seen); });
+      ok = assign_named(
+          at, std::array{std::pair{std::remove_cvref_t<Args>::symbol.view(),
+                                   static_cast<T>(args.value)}...});
     } else if constexpr (sizeof...(Args) == 1 &&
                          (rt::detail::CNamedRange<Args, T> && ...)) {
       // Before the plain range: a map is an input_range too, and its elements
       // are pairs rather than the numbers assign_range would read.
-      ok = assign_named_range(at, args...);
+      ok = assign_named(at, args...);
     } else if constexpr (sizeof...(Args) == 1 &&
                          (std::ranges::input_range<Args> && ...)) {
       ok = assign_range(at, args...);
@@ -347,9 +353,7 @@ public:
   [[nodiscard]] result<std::vector<T>>
   hvp(std::span<const T> direction,
       const rt::detail::CPointArg<T> auto &...args) const {
-    return at<Want::Hvp>(direction, args...).transform([](auto b) {
-      return std::move(b.hessian);
-    });
+    return block_at<Want::Hvp, &Blocks::hessian>(direction, args...);
   }
 
   // The j-th Hessian column, named and not indexed: the symbol list exists
@@ -365,18 +369,14 @@ public:
   [[nodiscard]] result<std::vector<T>>
   vjp(std::span<const T> weights,
       const rt::detail::CPointArg<T> auto &...args) const {
-    return at<Want::Vjp>(weights, args...).transform([](auto b) {
-      return std::move(b.jacobian);
-    });
+    return block_at<Want::Vjp, &Blocks::jacobian>(weights, args...);
   }
 
   // J v, m long: the mirror of vjp().
   [[nodiscard]] result<std::vector<T>>
   jvp(std::span<const T> direction,
       const rt::detail::CPointArg<T> auto &...args) const {
-    return at<Want::Jvp>(direction, args...).transform([](auto b) {
-      return std::move(b.jacobian);
-    });
+    return block_at<Want::Jvp, &Blocks::jacobian>(direction, args...);
   }
 
   // A view with only the named symbols' Jacobian columns, in symbol order: the
@@ -455,38 +455,27 @@ public:
   // times over a dense term.  One output only.
   [[nodiscard]] result<std::vector<T>>
   dense_hessian(const rt::detail::CPointArg<T> auto &...args) const {
-    return at<Want::DenseHessian>({}, args...).transform([](auto b) {
-      return std::move(b.hessian);
-    });
+    return block_at<Want::DenseHessian, &Blocks::hessian>({}, args...);
   }
   // How many terms the sweep kept quadratic, and how many fell back to a dense
   // product: a model's structure defeated the algebra where the second is not
-  // zero -- still right, not O(n^2).  Nothing for a system, or for a block the
-  // sweep refused, which dense_hessian() answers with tensor_shape.
+  // zero -- still right, not O(n^2).  Refused as dense_hessian() would be:
+  // tensor_shape for a block the sweep refused, not_single_output for a system.
   struct DenseCost {
     std::size_t n2_terms = 0;
     std::size_t n3_terms = 0;
   };
-  [[nodiscard]] std::optional<DenseCost> dense_hessian_cost() const {
-    if (poisoned() || is_system()) {
-      return std::nullopt;
-    }
-    const DenseHessian &d = dense_sweep();
-    return d.block == no_node
-               ? std::nullopt
-               : std::optional{
-                     DenseCost{.n2_terms = d.n2_terms, .n3_terms = d.n3_terms}};
+  [[nodiscard]] result<DenseCost> dense_hessian_cost() const {
+    return ready(Want::DenseHessian).transform([this] {
+      const DenseHessian &d = dense_sweep();
+      return DenseCost{.n2_terms = d.n2_terms, .n3_terms = d.n3_terms};
+    });
   }
 
   // Whether to compile at all, and how; discards anything already compiled.
   // The one non-const member: a call overlapping it is the caller's race.
   auto &options(this auto &self, const jit::Options &opt) {
-    if (opt == self.options_) {
-      return self;
-    }
-    self.options_ = opt;
-    self.pipelines_ = std::make_unique<Pipelines>();
-    return self;
+    return replaced(self, self.options_, opt);
   }
   [[nodiscard]] const jit::Options &options() const noexcept {
     return options_;
@@ -496,12 +485,7 @@ public:
   // (rt::use_tensor_kernels) unless this equation is handed a table of its own.
   // A table decides the last bits, so the pipelines go with the old one.
   auto &tensor_kernels(this auto &self, const TensorKernelTable<T> &table) {
-    if (&table == self.kernels_) {
-      return self;
-    }
-    self.kernels_ = &table;
-    self.pipelines_ = std::make_unique<Pipelines>();
-    return self;
+    return replaced(self, self.kernels_, &table);
   }
   [[nodiscard]] constexpr const TensorKernelTable<T> &
   tensor_kernels() const noexcept {
@@ -527,27 +511,13 @@ public:
         });
   }
 
-  // Whether a batch call goes through compiled code: false with no backend,
-  // on a refused compile, and under Interpret.
-  [[nodiscard]] bool uses_kernel() const {
-    return !poisoned() && static_cast<bool>(pipeline(Want::Jacobian)->kernel);
-  }
-
-  // The codegen level of the kernel answering, and nothing where the sweep is.
-  [[nodiscard]] std::optional<jit::OptLevel> kernel_level() const {
-    if (poisoned()) {
-      return std::nullopt;
-    }
-    if (const auto l = pipeline(Want::Jacobian); l->kernel) {
-      return l->level;
-    } else {
-      return std::nullopt;
-    }
-  }
-
-  // Build `want`'s pipeline now and answer whether a kernel answers it.
-  [[nodiscard]] bool wait_for_kernel(Want want = Want::Jacobian) const {
-    return !poisoned() && static_cast<bool>(pipeline(want)->kernel);
+  // Whether a batch call for `want` goes through compiled code, building its
+  // pipeline now: false with no backend, on a refused compile, and under
+  // Interpret.
+  [[nodiscard]] bool uses_kernel(Want want = Want::Jacobian) const {
+    return ready(want)
+        .transform([&] { return static_cast<bool>(pipeline(want)->kernel); })
+        .value_or(false);
   }
 
   // One Taylor sweep: seed c[0] = x0, c[1] = 1, then un-normalise c[Order].
@@ -582,7 +552,7 @@ public:
   [[nodiscard]] result<void>
   evaluate(const rt::detail::CColumns<const T *> auto &xs,
            const rt::detail::CColumns<T *> auto &f, std::size_t n) const {
-    return dispatch(Want::Value, as_columns(xs), {.values = as_columns(f)}, n);
+    return this->template batch<Want::Value>(xs, n, f);
   }
 
   [[nodiscard]] result<void>
@@ -590,11 +560,7 @@ public:
           const rt::detail::CColumns<T *> auto &f,
           const rt::detail::CColumns<T *> auto &g,
           const rt::detail::CColumns<T *> auto &h, std::size_t n) const {
-    return dispatch(Want::Hessian, as_columns(xs),
-                    {.values = as_columns(f),
-                     .jacobian = as_columns(g),
-                     .hessian = as_columns(h)},
-                    n);
+    return this->template batch<Want::Hessian>(xs, n, f, g, h);
   }
 
   // `v` is a second block of input columns, not a second point: one column per
@@ -605,11 +571,7 @@ public:
                                  const rt::detail::CColumns<T *> auto &g,
                                  const rt::detail::CColumns<T *> auto &hv,
                                  std::size_t n) const {
-    return dispatch(Want::Hvp, as_columns(widen(xs, v)),
-                    {.values = as_columns(f),
-                     .jacobian = as_columns(g),
-                     .hessian = as_columns(hv)},
-                    n);
+    return this->template batch<Want::Hvp>(widen(xs, v), n, f, g, hv);
   }
 
   // `h` is n^2 columns, row-major: H(i, j) is column i n + j.
@@ -618,11 +580,7 @@ public:
                 const rt::detail::CColumns<T *> auto &f,
                 const rt::detail::CColumns<T *> auto &g,
                 const rt::detail::CColumns<T *> auto &h, std::size_t n) const {
-    return dispatch(Want::DenseHessian, as_columns(xs),
-                    {.values = as_columns(f),
-                     .jacobian = as_columns(g),
-                     .hessian = as_columns(h)},
-                    n);
+    return this->template batch<Want::DenseHessian>(xs, n, f, g, h);
   }
 
   [[nodiscard]] result<void> vjp(const rt::detail::CColumns<const T *> auto &xs,
@@ -630,8 +588,7 @@ public:
                                  const rt::detail::CColumns<T *> auto &f,
                                  const rt::detail::CColumns<T *> auto &out,
                                  std::size_t n) const {
-    return dispatch(Want::Vjp, as_columns(widen(xs, w)),
-                    {.values = as_columns(f), .jacobian = as_columns(out)}, n);
+    return this->template batch<Want::Vjp>(widen(xs, w), n, f, out);
   }
 
   [[nodiscard]] result<void> jvp(const rt::detail::CColumns<const T *> auto &xs,
@@ -639,8 +596,7 @@ public:
                                  const rt::detail::CColumns<T *> auto &f,
                                  const rt::detail::CColumns<T *> auto &out,
                                  std::size_t n) const {
-    return dispatch(Want::Jvp, as_columns(widen(xs, v)),
-                    {.values = as_columns(f), .jacobian = as_columns(out)}, n);
+    return this->template batch<Want::Jvp>(widen(xs, v), n, f, out);
   }
 
   // What a caller sizes buffers by.  None builds a pipeline, and only the
@@ -757,22 +713,14 @@ protected:
   [[nodiscard]] static constexpr std::optional<error>
   why_not(std::span<const Expression<T>> outputs) noexcept {
     for (const Expression<T> &e : outputs) {
-      if (const auto why = Rooting::why(e)) {
+      if (const auto why = Router::why(e)) {
         return error{*why};
       }
     }
-    if (arena_of(outputs) == nullptr) {
+    if (Router::first_arena(outputs) == nullptr) {
       return error{errc::no_graph};
     }
     return std::nullopt;
-  }
-  // The arena the outputs were built in: the first that names one, since a
-  // literal output names none.
-  [[nodiscard]] static constexpr Arena<T> *
-  arena_of(std::span<const Expression<T>> outputs) noexcept {
-    const auto named = std::ranges::find_if(
-        outputs, [](const auto &e) { return Rooting::arena(e) != nullptr; });
-    return named == outputs.end() ? nullptr : Rooting::arena(*named);
   }
 
   // The arena the outputs will be read in -- `owned`, or a copy of the one
@@ -781,8 +729,9 @@ protected:
                                            std::vector<NodeId>>
   rooted(std::span<const Expression<T>> outputs,
          std::unique_ptr<Arena<T>> owned) {
-    auto arena = owned ? std::move(owned)
-                       : std::make_unique<Arena<T>>(*arena_of(outputs));
+    auto arena =
+        owned ? std::move(owned)
+              : std::make_unique<Arena<T>>(*Router::first_arena(outputs));
     auto roots = outputs | std::views::transform([&arena](const auto &e) {
                    return e.id(*arena);
                  }) |
@@ -831,7 +780,7 @@ protected:
   [[nodiscard]] std::shared_ptr<const Compiled>
   pipeline_in(Pipelines &pipelines, const Cells &cells, Want want) const {
     return pipelines[std::to_underlying(want)].template snapshot<Yield>(
-        setting(), [&] { return frozen_for(want, cells); });
+        compiling(), [&] { return frozen_for(want, cells); });
   }
 
   [[nodiscard]] result<void> dispatch(Want want, std::span<const T *const> xs,
@@ -896,11 +845,11 @@ protected:
     // The tape is thread-kept; every id read below is scheduled, so it is
     // written this call.
     ThreadTapes<T> &kept = thread_tapes<T>();
-    std::vector<T> &values = kept.values;
+    std::vector<T> &values = kept.values.tape;
     [[maybe_unused]] const auto held = sweeping();
     values.resize(arena_->size());
-    kept.value_vtape.resize(walk.extent());
-    walk(*arena_, at, std::span<T>{values}, std::span<T>{kept.value_vtape},
+    kept.values.vtape.resize(walk.extent());
+    walk(*arena_, at, std::span<T>{values}, std::span<T>{kept.values.vtape},
          tensor_kernels());
     const impl::md::mdspan dense{
         h.data(), impl::md::dextents<std::size_t, 3>{roots_.size(), n, n}};
@@ -926,17 +875,14 @@ protected:
   // As unless_poisoned, and nullopt too for a system: the answer is about one
   // output's Hessian.
   [[nodiscard]] auto unless_system(auto &&value) const {
-    using V = std::remove_cvref_t<std::invoke_result_t<decltype(value)>>;
-    return poisoned() || is_system() ? std::optional<V>{}
-                                     : std::optional<V>{value()};
+    return is_system() ? decltype(unless_poisoned(value)){}
+                       : unless_poisoned(value);
   }
 
   // m long, always a vector: what System answers and Equation narrows.
   [[nodiscard]] constexpr result<std::vector<T>>
   values(const rt::detail::CPointArg<T> auto &...args) const {
-    return at<Want::Value>({}, args...).transform([](auto b) {
-      return std::move(b.values);
-    });
+    return block_at<Want::Value, &Blocks::values>({}, args...);
   }
 
 private:
@@ -956,35 +902,30 @@ private:
              impl::to<std::vector<Hessian>>();
     });
   }
-  // Root 0's only: a system refuses hvp before it gets here.
-  [[nodiscard]] const HessianVector &hvp_sweep() const {
-    return sweep(sweeps_->hvp,
-                 [this] { return derive_hvp(*arena_, roots_.front()); });
-  }
   [[nodiscard]] const DenseHessian &dense_sweep() const {
     return sweep(sweeps_->dense, [this] {
       return derive_dense_hessian(*arena_, roots_.front());
     });
   }
-  [[nodiscard]] const VectorJacobian &vjp_sweep() const {
-    return sweep(sweeps_->vjp, [this] { return derive_vjp(*arena_, roots_); });
-  }
-  [[nodiscard]] const Tangent &jvp_sweep() const {
-    return sweep(sweeps_->jvp, [this] { return derive_jvp(*arena_, roots_); });
-  }
-  [[nodiscard]] const std::vector<NodeId> &tangent_sweep() const {
-    return sweep(sweeps_->tangent, [this] {
-      return derive_jacobian_tangent(*arena_, jacobian_);
+  // The product a directional want adds.  Hvp is root 0's only: a system
+  // refuses it before it gets here.
+  [[nodiscard]] const std::vector<NodeId> &product(Want want) const {
+    return sweep(sweeps_->products[std::to_underlying(want)], [&] {
+      switch (want) {
+      case Want::Hvp:
+        return derive_hvp(*arena_, roots_.front()).product;
+      case Want::Vjp:
+        return derive_vjp(*arena_, roots_);
+      case Want::Jvp:
+        return derive_jvp(*arena_, roots_);
+      default:
+        return derive_jvp(*arena_, jacobian_.partial);
+      }
     });
   }
 
-  // The symbol named `name`, by slot: a parameter or an implicit is an input,
-  // not a symbol.
   [[nodiscard]] result<std::uint32_t> symbol(std::string_view name) const {
-    const auto input = arena_->lookup(name);
-    return input && input->op == OpCode::Var
-               ? result<std::uint32_t>{input->index}
-               : fail(errc::unknown_symbol);
+    return arena_->symbol(name);
   }
   [[nodiscard]] constexpr const Sparsity &jacobian_sparsity() const {
     return jacobian_.pattern;
@@ -1037,6 +978,23 @@ protected:
   }
 
 private:
+  using Blocks = PerBlock<std::vector<T>>;
+  // One block of W's answer.
+  template <Want W, auto Block>
+  [[nodiscard]] constexpr result<std::vector<T>>
+  block_at(std::span<const T> along, const auto &...args) const {
+    return at<W>(along, args...).transform([](auto b) {
+      return std::move(b.*Block);
+    });
+  }
+  // `member` set to `value`, and whatever was compiled for the old one gone.
+  static auto &replaced(auto &self, auto &member, const auto &value) {
+    if (!(member == value)) {
+      member = value;
+      self.pipelines_ = std::make_unique<Pipelines>();
+    }
+    return self;
+  }
   [[nodiscard]] auto reading() const {
     return std::shared_lock{sweeps_->arena_mutex};
   }
@@ -1066,9 +1024,9 @@ private:
       case BlockShape::Cells:
         return cells.kept ? cells.kept->size() : cells.jacobian.partial.size();
       case BlockShape::Symbols:
-        return n;
+        return extent(Direction::Symbols);
       case BlockShape::Functions:
-        return m;
+        return extent(Direction::Functions);
       case BlockShape::Colours:
         return hessians().front().compressed.size();
       case BlockShape::Dense:
@@ -1082,6 +1040,13 @@ private:
             .hessian = count(w.hessian)};
   }
 
+  // How many values a direction holds: one per symbol or per function.
+  [[nodiscard]] constexpr std::size_t extent(Direction d) const noexcept {
+    return d == Direction::Symbols     ? symbol_count()
+           : d == Direction::Functions ? roots_.size()
+                                       : 0;
+  }
+
   // One point of `W`: the blocks sized by the table, and where the pipeline
   // takes a direction -- one value per symbol or per function, as the table
   // says -- the point widened by it.  `pipelines` and `cells` are the
@@ -1091,32 +1056,27 @@ private:
   [[nodiscard]] constexpr result<PerBlock<std::vector<T>>>
   at_in(Pipelines *pipelines, const Cells &cells, std::span<const T> along,
         const rt::detail::CPointArg<T> auto &...args) const {
-    return point(args...).and_then(
-        [&](const std::vector<T> &pt) -> result<PerBlock<std::vector<T>>> {
-          constexpr Direction direction = want_info(W).direction;
-          if constexpr (direction != Direction::None) {
-            if (along.size() != (direction == Direction::Functions
-                                     ? roots_.size()
-                                     : symbol_count())) {
-              return fail(errc::wrong_direction);
-            }
-          }
-          const Layout size = sizes(W, cells);
-          PerBlock<std::vector<T>> out{.values = std::vector<T>(size.values),
-                                       .jacobian =
-                                           std::vector<T>(size.jacobian),
-                                       .hessian = std::vector<T>(size.hessian)};
-          const auto swept = [&] {
-            if constexpr (direction == Direction::None) {
-              return gather(pipelines, cells, W, pt, out.values, out.jacobian,
-                            out.hessian);
-            } else {
-              return gather(pipelines, cells, W, widen(pt, along), out.values,
-                            out.jacobian, out.hessian);
-            }
-          }();
-          return swept.transform([&] { return std::move(out); });
-        });
+    return point(args...).and_then([&](const std::vector<T> &pt)
+                                       -> result<PerBlock<std::vector<T>>> {
+      constexpr Direction direction = want_info(W).direction;
+      if (direction != Direction::None && along.size() != extent(direction)) {
+        return fail(errc::wrong_direction);
+      }
+      const Layout size = sizes(W, cells);
+      PerBlock<std::vector<T>> out{.values = std::vector<T>(size.values),
+                                   .jacobian = std::vector<T>(size.jacobian),
+                                   .hessian = std::vector<T>(size.hessian)};
+      const auto swept = [&] {
+        if constexpr (direction == Direction::None) {
+          return gather(pipelines, cells, W, pt, out.values, out.jacobian,
+                        out.hessian);
+        } else {
+          return gather(pipelines, cells, W, widen(pt, along), out.values,
+                        out.jacobian, out.hessian);
+        }
+      }();
+      return swept.transform([&] { return std::move(out); });
+    });
   }
   template <Want W>
   [[nodiscard]] constexpr result<PerBlock<std::vector<T>>>
@@ -1125,47 +1085,25 @@ private:
     return at_in<W>(pipelines_.get(), every_cell(), along, args...);
   }
 
-  // Naming a point is not the same as giving one: a symbol no argument reaches
-  // would otherwise be read as zero, which is a value and not a refusal.
+  // Name by name.  Naming a point is not the same as giving one: a symbol no
+  // entry reaches would otherwise be read as zero, which is a value and not a
+  // refusal.
   [[nodiscard]] constexpr result<void>
-  whole(const std::vector<bool> &seen) const {
+  assign_named(std::vector<T> &at,
+               const rt::detail::CNamedRange<T> auto &entries) const {
+    std::vector<bool> seen(at.size(), false);
+    for (const auto &[name, value] : entries) {
+      const auto input = arena_->lookup(std::string_view{name});
+      if (!input) {
+        return fail(errc::unknown_symbol);
+      }
+      const auto column =
+          input_column(arena_->inputs(), input->op, input->index);
+      at[column] = static_cast<T>(value);
+      seen[column] = true;
+    }
     return std::ranges::contains(seen, false) ? fail(errc::short_point)
                                               : result<void>{};
-  }
-
-  [[nodiscard]] constexpr result<void> assign_one(std::vector<T> &at,
-                                                  std::vector<bool> &seen,
-                                                  std::string_view name,
-                                                  const auto &value) const {
-    const auto input = arena_->lookup(name);
-    if (!input) {
-      return fail(errc::unknown_symbol);
-    }
-    const auto column = input_column(arena_->inputs(), input->op, input->index);
-    at[column] = static_cast<T>(value);
-    seen[column] = true;
-    return {};
-  }
-
-  template <impl::CEntry V>
-  [[nodiscard]] constexpr result<void>
-  assign_named(std::vector<T> &at, std::vector<bool> &seen, const V &nv) const {
-    return assign_one(at, seen, std::remove_cvref_t<V>::symbol.view(),
-                      nv.value);
-  }
-
-  [[nodiscard]] constexpr result<void>
-  assign_named_range(std::vector<T> &at,
-                     const rt::detail::CNamedRange<T> auto &vm) const {
-    std::vector<bool> seen(at.size(), false);
-    for (const auto &entry : vm) {
-      if (const auto ok =
-              assign_one(at, seen, std::string_view{entry.first}, entry.second);
-          !ok) {
-        return ok;
-      }
-    }
-    return whole(seen);
   }
 
   [[nodiscard]] constexpr result<void>
@@ -1229,20 +1167,12 @@ private:
 #pragma warning(pop)
 #endif
 
-  // What a pipeline needs of the equation.  No compiler is a pipeline that will
-  // never compile: an interpreting backend arrives here as one, and so does a
-  // host with no JIT.
-  [[nodiscard]] Setting setting() const {
-    Setting out;
-    if constexpr (jit::CKernelScalar<T>) {
-      out.options = effective_options();
-#ifdef DDX_HAS_JIT
-      if (options_.backend == jit::Backend::Compile) {
-        out.compiler = compiler();
-      }
-#endif
+  // The options a pipeline compiles under, and none under Interpret.
+  [[nodiscard]] std::optional<jit::Options> compiling() const {
+    if (jit::CKernelScalar<T> && options_.backend == jit::Backend::Compile) {
+      return effective_options();
     }
-    return out;
+    return std::nullopt;
   }
 
   // The graphs a pipeline computes.
@@ -1256,20 +1186,18 @@ private:
     Colouring colouring;
     switch (want) {
     case Want::Vjp:
-      added.jacobian = vjp_sweep().product;
-      break;
     case Want::Jvp:
-      added.jacobian = jvp_sweep().product;
+      added.jacobian = product(want);
       break;
     case Want::Hessian:
       added.hessian = hessians().front().compressed;
       colouring = hessians().front().colouring;
       break;
     case Want::Hvp:
-      added.hessian = hvp_sweep().product;
+      added.hessian = product(want);
       break;
     case Want::JacobianJvp: {
-      const auto &tangent = tangent_sweep();
+      const auto &tangent = product(want);
       added.hessian = cells.kept
                           ? *cells.kept | std::views::transform([&](auto k) {
                               return tangent[k];
@@ -1300,13 +1228,10 @@ private:
       if (pattern) {
         blocks.jacobian = partials.partial;
       }
-      const std::size_t directions =
-          info.direction == Direction::Symbols     ? symbol_count()
-          : info.direction == Direction::Functions ? roots.size()
-                                                   : 0;
-      return std::make_shared<const Graph<T>>(Graph<T>::freeze(
-          *arena_, std::move(blocks), colouring,
-          pattern ? partials.pattern : Sparsity{}, contracts(), directions));
+      return std::make_shared<const Graph<T>>(
+          Graph<T>::freeze(*arena_, std::move(blocks), colouring,
+                           pattern ? partials.pattern : Sparsity{}, contracts(),
+                           extent(info.direction)));
     };
     [[maybe_unused]] const bool rebalance = !cells.kept && rebalances(want);
     [[maybe_unused]] const auto held = reading();
@@ -1328,7 +1253,7 @@ private:
   [[nodiscard]] bool rebalances([[maybe_unused]] Want want) const {
 #ifdef DDX_HAS_JIT
     if constexpr (jit::CKernelScalar<T>) {
-      // No kernel is lowered over tensor rows, so no rebalanced copy either.
+      // A tensor step is the sweep's own, so its graph is never rebalanced.
       // The roots' cone, not the arena: a dense Hessian swept earlier leaves
       // tensor nodes no scalar root reads.  Read under the lock, as a sweep on
       // another thread may be appending.
@@ -1339,8 +1264,8 @@ private:
           return detail::on_tensors((*arena_)[v]);
         });
       };
-      if (!rebalanceable(want) || options_.backend != jit::Backend::Compile ||
-          setting().compiler == nullptr || tensors()) {
+      if (!rebalanceable(want) || !compiling() ||
+          detail::shared_compiler() == nullptr || tensors()) {
         return false;
       }
       (void)sweep(sweeps_->rebalanced, [this] {
@@ -1362,14 +1287,6 @@ private:
     return jit::for_batch(options_, block_lanes);
   }
 
-#ifdef DDX_HAS_JIT
-  // A Kernel does not own its code, so the compiler outlives every kernel.
-  // Null on a host with no JIT.
-  [[nodiscard]] static jit::Compiler *compiler() {
-    return rt::detail::shared_compiler();
-  }
-#endif
-
   // Decided in the *graph*, so every backend folds the same products.  On by
   // default in a JIT-less build as well -- DDX_JIT_DEFAULT_CONTRACT is the
   // JIT's -- so an answer does not depend on how the library was configured.
@@ -1383,77 +1300,59 @@ private:
     [[maybe_unused]] const auto held = sweeping();
     if constexpr (jit::CKernelScalar<T>) {
       if (c.kernel) {
-        c.kernel(xs, out.values, out.jacobian, out.hessian, n);
+        const detail::TensorCall<T> call{.arena = arena_.get(),
+                                         .graph = c.compile_graph.get(),
+                                         .kernels = c.kernels};
+        std::vector<T> &tapes = thread_tapes<T>().kernel_tapes;
+        tapes.resize(c.kernel.shape().tapes);
+        c.kernel(xs, out.values, out.jacobian, out.hessian, n,
+                 {.call = &call, .tapes = tapes});
         return;
       }
     }
     interpret(*c.graph, *c.kernels, xs, out, n);
   }
 
-  // The block sweep, within ~1.4x of a kernel and not a sad path.
+  // The block sweep: within ~1.4x of a kernel on a large graph at a batch of
+  // block_lanes or more, several times off it on a small one.  A short batch
+  // sweeps one point at a time rather than padding out to block_lanes.
   void interpret(const Graph<T> &graph, const TensorKernelTable<T> &kernels,
                  std::span<const T *const> xs, const Columns<T> &out,
                  std::size_t n) const {
-    const auto blocks = graph.output_rows();
-    const auto schedule = graph.schedule();
-    // Both tapes are sized by the graph, whose rows are packed by liveness:
-    // the schedule names rows, so a grown arena changes nothing here.
-    const TensorLayout &rows = graph.tensors();
-    const auto tensors = [&](std::vector<T> &vtape, std::size_t lanes) {
-      vtape.resize(rows.extent * lanes);
-      return detail::TapeView<T>{.scalar_rows = graph.rows(),
-                                 .tensor_rows = rows.rows,
-                                 .vtape = vtape.data(),
-                                 .kernels = &kernels};
-    };
-    // The graph's width, not the arena's symbol count: `xs` carries one column
-    // per input, and a pipeline may hold leaves that are not symbols.
-    const std::size_t inputs = graph.arity();
-
-    // Thread-kept (ThreadTapes).  resize() rather than assign(): every id
-    // read is written first, so zeroing the arena per call is waste.
-    //
-    // A short batch sweeps one point at a time rather than padding out to
-    // block_lanes, which on a batch of one is the whole cost.
     ThreadTapes<T> &kept = thread_tapes<T>();
-    if (n < block_lanes) {
-      const auto [at, tape, vtape] = std::tie(kept.at, kept.tape, kept.vtape);
-      at.resize(inputs);
-      tape.resize(graph.tape_rows());
-      const auto t = tensors(vtape, 1);
-      for (const std::size_t i : std::views::iota(0uz, n)) {
-        std::ranges::transform(xs, at.begin(),
-                               [i](const T *column) { return column[i]; });
-        evaluate_into(*arena_, at, schedule, std::span<T>{tape}, t);
-        scatter_blocks(blocks, std::span<const T>{tape},
-                       std::span<const T>{vtape}, out, i, 1, 1);
-      }
-      return;
-    }
+    n < block_lanes
+        ? sweep_points<1>(graph, kernels, kept.one, xs, out, n)
+        : sweep_points<block_lanes>(graph, kernels, kept.block, xs, out, n);
+  }
 
-    // block_lanes points per sweep: the switch is paid once per node per
-    // block, and each operation becomes a lane loop wide enough to vectorise.
-    // A short final block repeats its last point, and those lanes are never
-    // read back.
-    const auto [lanes, tape, vtape] =
-        std::tie(kept.lanes, kept.lane_tape, kept.lane_vtape);
-    lanes.resize(inputs * block_lanes);
-    tape.resize(graph.tape_rows() * block_lanes);
-    const auto t = tensors(vtape, block_lanes);
-
+  // W points per sweep: the switch is paid once per node per block, and each
+  // operation becomes a lane loop wide enough to vectorise.  A short final
+  // block repeats its last point, and those lanes are never read back.  The
+  // tapes are thread-kept and resized, not assigned: every row read is written
+  // first.  Both are sized by the graph, whose rows are packed by liveness, and
+  // its arity, not the arena's symbol count, is the column count of `xs`.
+  template <std::size_t W>
+  void sweep_points(const Graph<T> &graph, const TensorKernelTable<T> &kernels,
+                    TapeSet<T> &kept, std::span<const T *const> xs,
+                    const Columns<T> &out, std::size_t n) const {
+    auto &[point, tape, vtape] = kept;
+    point.resize(graph.arity() * W);
+    tape.resize(graph.tape_rows() * W);
+    vtape.resize(graph.tensors().extent * W);
+    const auto t = detail::TapeView<T>::of(graph, vtape.data(), &kernels);
     for (const std::size_t base :
-         std::views::iota(0uz, n) | std::views::stride(block_lanes)) {
-      const std::size_t width = std::min(block_lanes, n - base);
+         std::views::iota(0uz, n) | std::views::stride(W)) {
+      const std::size_t width = std::min(W, n - base);
       for (const auto [dst, column] :
-           std::views::zip(lanes | std::views::chunk(block_lanes), xs)) {
+           std::views::zip(point | std::views::chunk(W), xs)) {
         const auto tail =
             std::ranges::copy(std::span{column + base, width}, dst.begin()).out;
         std::ranges::fill(tail, dst.end(), column[base + width - 1]);
       }
-      evaluate_block<block_lanes>(*arena_, std::span<const T>{lanes}, schedule,
-                                  std::span<T>{tape}, t);
-      scatter_blocks(blocks, std::span<const T>{tape},
-                     std::span<const T>{vtape}, out, base, block_lanes, width);
+      evaluate_block<W>(*arena_, std::span<const T>{point}, graph.schedule(),
+                        std::span<T>{tape}, t);
+      scatter_blocks(graph.output_rows(), std::span<const T>{tape},
+                     std::span<const T>{vtape}, out, base, W, width);
     }
   }
 
@@ -1503,7 +1402,7 @@ public:
                  .partial = {},
                  .pattern = {.rowptr = {0}, .col = {}, .columns = next},
                  .zero = full.zero};
-    for (const Sparsity::Row &row : full.pattern) {
+    for (const Sparsity::Row &row : full.pattern.rows()) {
       for (const auto [i, j] : row.cols | std::views::enumerate) {
         if (chosen[j]) {
           const std::size_t k = row.offset + static_cast<std::size_t>(i);
@@ -1522,6 +1421,11 @@ public:
   [[nodiscard]] const Sparsity &jacobian_pattern() const {
     return jacobian_.pattern;
   }
+  [[nodiscard]] result<void> dispatch(Want want, std::span<const T *const> xs,
+                                      const Columns<T> &out,
+                                      std::size_t n) const {
+    return core_->dispatch_in(*pipelines_, cells(), want, xs, out, n);
+  }
 
 private:
   [[nodiscard]] typename C::Cells cells() const {
@@ -1539,11 +1443,6 @@ private:
   }
   [[nodiscard]] const Sparsity &jacobian_sparsity() const {
     return jacobian_.pattern;
-  }
-  [[nodiscard]] result<void> dispatch(Want want, std::span<const T *const> xs,
-                                      const Columns<T> &out,
-                                      std::size_t n) const {
-    return core_->dispatch_in(*pipelines_, cells(), want, xs, out, n);
   }
 
   const C *core_;

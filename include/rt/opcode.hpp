@@ -14,7 +14,6 @@
 #include <numeric>
 #include <optional>
 #include <ranges>
-#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -57,11 +56,7 @@ namespace ddx::rt {
   X(add, Add, "+", std::plus<>, SumOpFn)                                       \
   X(mul, Mul, "*", std::multiplies<>, MultiplyOpFn)                            \
   X(div, Div, "/", std::divides<>, DivideOpFn)                                 \
-  X(pow, Pow, "pow", impl::detail::pow_impl, PowOpFn)                          \
-  X(atan2, Atan2, "atan2", impl::detail::atan2_impl, Atan2OpFn)                \
-  X(hypot, Hypot, "hypot", impl::detail::hypot_impl, HypotOpFn)                \
-  X(max, Max, "max", impl::detail::max_impl, MaxOpFn)                          \
-  X(min, Min, "min", impl::detail::min_impl, MinOpFn)
+  DDX_BINARY_MATH_TABLE(X)
 
 // Their own table, and so no descriptor: the derivative is zero wherever it
 // exists, which is what rt/derivative.hpp's `default` already answers.

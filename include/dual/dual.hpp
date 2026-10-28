@@ -46,9 +46,9 @@ public:
     return *this;
   }
 
-private:
+  // get() on an rvalue yields an rvalue, as std::get does.
   template <std::size_t Index>
-  [[nodiscard]] static constexpr decltype(auto) slot(auto &&self) noexcept {
+  [[nodiscard]] constexpr decltype(auto) get(this auto &&self) noexcept {
     static_assert(Index < 2, "Dual index out of bounds");
     if constexpr (Index == 0) {
       return (DDX_FWD(self).val_);
@@ -56,13 +56,12 @@ private:
       return (DDX_FWD(self).deriv_);
     }
   }
-
-public:
-  DDX_SLOT_ACCESSOR(value, 0)
-  DDX_SLOT_ACCESSOR(deriv, 1)
-
-  // get() on an rvalue yields an rvalue, as std::get does.
-  DDX_KEYED_GET(std::size_t Index, Index)
+  [[nodiscard]] constexpr decltype(auto) value(this auto &&self) noexcept {
+    return DDX_FWD(self).template get<0>();
+  }
+  [[nodiscard]] constexpr decltype(auto) deriv(this auto &&self) noexcept {
+    return DDX_FWD(self).template get<1>();
+  }
 };
 
 // The primary lives in util/fmt.hpp, next to the formatter that reads it.
@@ -90,58 +89,6 @@ template <FixedString S, Numeric T>
 template <FixedString S, Numeric T>
 [[nodiscard]] constexpr auto dual_var_of(symbol_type<S>, const T &) noexcept {
   return Variable<Dual<T>, S>{};
-}
-
-template <Numeric T>
-DDX_ALWAYS_INLINE constexpr Dual<T> dual_add(const Dual<T> &a,
-                                             const Dual<T> &b) noexcept {
-  const auto &[av, ad] = a;
-  const auto &[bv, bd] = b;
-  return Dual<T>{av + bv, ad + bd};
-}
-
-template <Numeric T>
-DDX_ALWAYS_INLINE constexpr Dual<T>
-dual_add(const Dual<T> &a, const ConstOperand<T> auto &s) noexcept {
-  const auto &[av, ad] = a;
-  return Dual<T>{av + s, ad};
-}
-
-template <Numeric T>
-DDX_ALWAYS_INLINE constexpr Dual<T> dual_sub(const Dual<T> &a,
-                                             const Dual<T> &b) noexcept {
-  const auto &[av, ad] = a;
-  const auto &[bv, bd] = b;
-  return Dual<T>{av - bv, ad - bd};
-}
-
-template <Numeric T>
-DDX_ALWAYS_INLINE constexpr Dual<T>
-dual_sub(const Dual<T> &a, const ConstOperand<T> auto &s) noexcept {
-  const auto &[av, ad] = a;
-  return Dual<T>{av - s, ad};
-}
-
-template <Numeric T>
-DDX_ALWAYS_INLINE constexpr Dual<T> dual_sub(const ConstOperand<T> auto &s,
-                                             const Dual<T> &a) noexcept {
-  const auto &[av, ad] = a; // s - a == -(a - s);
-  return Dual<T>{-(av - s), -ad};
-}
-
-template <Numeric T>
-DDX_ALWAYS_INLINE constexpr Dual<T> dual_mul(const Dual<T> &a,
-                                             const Dual<T> &b) noexcept {
-  const auto &[av, ad] = a;
-  const auto &[bv, bd] = b;
-  return Dual<T>{av * bv, ad * bv + av * bd};
-}
-
-template <Numeric T>
-DDX_ALWAYS_INLINE constexpr Dual<T>
-dual_mul(const Dual<T> &a, const ConstOperand<T> auto &s) noexcept {
-  const auto &[av, ad] = a; // scalar distributes; no zero-derivative term
-  return Dual<T>{av * s, ad * s};
 }
 
 // Reciprocal form: one hardware division per nesting level instead of two.
@@ -178,28 +125,40 @@ DDX_ALWAYS_INLINE constexpr Dual<T> dual_div(const ConstOperand<T> auto &s,
   return Dual{q, -(q * ad) * inv};
 }
 
-// All three shapes of each operator; LEFT spells (scalar, Dual), the only one
-// that differs between operators.  Separate kernels rather than a promotion,
-// which would leave an `ad + 0` IEEE will not let the compiler fold.
-#define DDX_DUAL_BINOP(OP, COMB, LEFT)                                         \
+// All three shapes of each operator, (Dual, Dual), (Dual, scalar) and
+// (scalar, Dual), over av, ad, bv, bd and the scalar s.  Separate formulas
+// rather than a promotion, which would leave an `ad + 0` IEEE will not let the
+// compiler fold.  A scalar distributes, with no zero-derivative term.
+#define DDX_DUAL_BINOP(OP, BOTH, RIGHT, LEFT)                                  \
   template <DualLike A>                                                        \
-  constexpr auto operator OP(A &&a, DualCompatible<A> auto &&b) noexcept {     \
-    return COMB(a, b);                                                         \
+  DDX_ALWAYS_INLINE constexpr auto operator OP(                                \
+      A &&a, DualCompatible<A> auto &&b) noexcept {                            \
+    using T [[maybe_unused]] = dual_value_t<A>;                                \
+    [[maybe_unused]] const auto &[av, ad] = a;                                 \
+    [[maybe_unused]] const auto &[bv, bd] = b;                                 \
+    return BOTH;                                                               \
   }                                                                            \
   template <DualLike A>                                                        \
-  constexpr auto operator OP(                                                  \
+  DDX_ALWAYS_INLINE constexpr auto operator OP(                                \
       A &&a, ConstOperand<dual_value_t<A>> auto &&s) noexcept {                \
-    return COMB(a, s);                                                         \
+    using T [[maybe_unused]] = dual_value_t<A>;                                \
+    [[maybe_unused]] const auto &[av, ad] = a;                                 \
+    return RIGHT;                                                              \
   }                                                                            \
   template <DualLike A>                                                        \
-  constexpr auto operator OP(ConstOperand<dual_value_t<A>> auto &&s,           \
-                             A &&a) noexcept {                                 \
+  DDX_ALWAYS_INLINE constexpr auto operator OP(                                \
+      ConstOperand<dual_value_t<A>> auto &&s, A &&a) noexcept {                \
+    using T [[maybe_unused]] = dual_value_t<A>;                                \
+    [[maybe_unused]] const auto &[av, ad] = a;                                 \
     return LEFT;                                                               \
   }
-DDX_DUAL_BINOP(+, dual_add, dual_add(a, s))
-DDX_DUAL_BINOP(-, dual_sub, dual_sub(s, a))
-DDX_DUAL_BINOP(*, dual_mul, dual_mul(a, s))
-DDX_DUAL_BINOP(/, dual_div, dual_div(s, a))
+DDX_DUAL_BINOP(+, (Dual<T>{av + bv, ad + bd}), (Dual<T>{av + s, ad}),
+               (Dual<T>{av + s, ad}))
+DDX_DUAL_BINOP(-, (Dual<T>{av - bv, ad - bd}), (Dual<T>{av - s, ad}),
+               (Dual<T>{-(av - s), -ad})) // s - a == -(a - s)
+DDX_DUAL_BINOP(*, (Dual<T>{av * bv, ad *bv + av *bd}), (Dual<T>{av * s, ad *s}),
+               (Dual<T>{av * s, ad *s}))
+DDX_DUAL_BINOP(/, dual_div(a, b), dual_div(a, s), dual_div(s, a))
 #undef DDX_DUAL_BINOP
 
 constexpr auto operator-(DualLike auto &&a) noexcept {
@@ -311,11 +270,10 @@ struct binary_dual_combine {
     using DT = std::remove_cvref_t<A>;                                         \
     return binary_dual_combine<Desc, Value>{}(DT{s}, DT{a});                   \
   }
-DDX_DUAL_BINARY(pow, detail::PowOpFn, detail::pow_impl)
-DDX_DUAL_BINARY(atan2, detail::Atan2OpFn, detail::atan2_impl)
-DDX_DUAL_BINARY(hypot, detail::HypotOpFn, detail::hypot_impl)
-DDX_DUAL_BINARY(max, detail::MaxOpFn, detail::max_impl)
-DDX_DUAL_BINARY(min, detail::MinOpFn, detail::min_impl)
+#define DDX_DUAL_BINROW(fn, Op, label, functor, Desc)                          \
+  DDX_DUAL_BINARY(fn, detail::Desc, functor)
+DDX_BINARY_MATH_TABLE(DDX_DUAL_BINROW)
+#undef DDX_DUAL_BINROW
 #undef DDX_DUAL_BINARY
 
 // Linear, so it is its own derivative rule.  std::midpoint takes arithmetic

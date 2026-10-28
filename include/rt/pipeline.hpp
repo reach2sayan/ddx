@@ -9,20 +9,27 @@
 #include <concepts>
 #include <memory>
 #include <mutex> // unique_lock, which <shared_mutex> does not carry
+#include <optional>
 #include <shared_mutex>
 
 // One shape of graph per Want, and the kernel compiled from it.  An equation
 // keeps an array of these.
 namespace ddx::rt::detail {
 
-// A reader that finds the lock taken goes the slow way, so it waits only after
-// giving up what the writer may be waiting to reacquire.
-struct Guarded {
-  [[nodiscard]] auto try_read() const {
-    return std::shared_lock{mutex, std::try_to_lock};
-  }
-  [[nodiscard]] auto write() const { return std::unique_lock{mutex}; }
-  mutable std::shared_mutex mutex;
+#ifdef DDX_HAS_JIT
+// One LLJIT for the process -- a static in a class template would be per
+// specialisation -- reached only from a compiling backend, so an interpret-only
+// program never brings LLVM up.  Defined in libddx, so a program and the
+// library share it.  Null on a host with no JIT.
+[[nodiscard]] DDX_API jit::Compiler *shared_compiler();
+#endif
+
+// What a kernel's tensor steps compute with: the sweep's own arena, the graph
+// the kernel was lowered from, and the table.  Read under the arena's lock.
+template <impl::Numeric T> struct TensorCall {
+  const Arena<T> *arena = nullptr;
+  const Graph<T> *graph = nullptr;
+  const TensorKernelTable<T> *kernels = nullptr;
 };
 
 // Published, never written.
@@ -34,18 +41,9 @@ template <impl::Numeric T> struct Compiled {
   // costs tape locality.  Aliases `graph` where they agree.
   std::shared_ptr<const Graph<T>> compile_graph{};
   jit::Kernel<T> kernel{};
-  jit::OptLevel level = jit::OptLevel::O0; // what `kernel` was compiled at
   // What the sweep computes tensor rows with: resolved when the pipeline froze,
   // so a table the equation is handed later means a new pipeline.
   const TensorKernelTable<T> *kernels = nullptr;
-};
-
-// What a pipeline needs from the equation that owns it.  No compiler is a
-// pipeline that will never compile: an interpreting backend, a poisoned
-// equation and a host with no JIT all arrive here as one.
-struct Setting {
-  jit::Options options{};
-  jit::Compiler *compiler = nullptr;
 };
 
 // Frozen and compiled on first ask, by whichever caller asks first; every
@@ -55,44 +53,42 @@ public:
   using Held = Compiled<T>;
 
   // Ownership, not a reference: a reader holds its share for the whole call.
-  // `Yield` is let go before the write lock is waited for, so a compile never
-  // holds it; `freeze` is called at most once, under the write lock.
+  // No options is a pipeline that never compiles.  A reader that finds the
+  // lock taken lets `Yield` go before it waits, so a compile never holds it;
+  // `freeze` is called at most once, under the write lock.
   template <std::default_initializable Yield>
-  [[nodiscard]] std::shared_ptr<const Held> snapshot(const Setting &setting,
-                                                     auto &&freeze) {
-    if (const auto read = lock_.try_read(); read && ready_) {
+  [[nodiscard]] std::shared_ptr<const Held>
+  snapshot(const std::optional<jit::Options> &compiling, auto &&freeze) {
+    if (const std::shared_lock read{mutex_, std::try_to_lock}; read && ready_) {
       return ready_;
     }
     [[maybe_unused]] const Yield yielded{};
-    [[maybe_unused]] const auto fill =
-        lock_.write(); // another thread may have won
+    const std::unique_lock fill{mutex_}; // another thread may have won
     if (!ready_) {
-      ready_ = std::make_shared<const Held>(
-          compiled(setting, DDX_FWD(freeze)()));
+      ready_ =
+          std::make_shared<const Held>(compiled(compiling, DDX_FWD(freeze)()));
     }
     return ready_;
   }
 
 private:
   // A refused compile leaves the kernel empty, and the sweep stays.
-  [[nodiscard]] static Held compiled([[maybe_unused]] const Setting &setting,
-                                     Held held) {
+  [[nodiscard]] static Held
+  compiled([[maybe_unused]] const std::optional<jit::Options> &compiling,
+           Held held) {
 #ifdef DDX_HAS_JIT
     if constexpr (jit::CKernelScalar<T>) {
-      if (setting.compiler == nullptr) {
-        return held;
-      }
-      if (auto kernel =
-              setting.compiler->compile(*held.compile_graph, setting.options)) {
-        held.kernel = *std::move(kernel);
-        held.level = setting.options.codegen.codegen_level;
+      if (jit::Compiler *const c = shared_compiler(); compiling && c) {
+        if (auto kernel = c->compile(*held.compile_graph, *compiling)) {
+          held.kernel = *std::move(kernel);
+        }
       }
     }
 #endif
     return held;
   }
 
-  Guarded lock_;
+  std::shared_mutex mutex_;
   std::shared_ptr<const Held> ready_;
 };
 

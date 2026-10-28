@@ -16,7 +16,6 @@
 #include <optional>
 #include <ranges>
 #include <span>
-#include <string>
 #include <string_view>
 #include <type_traits> // std::remove_cvref_t
 #include <utility>     // std::move
@@ -29,7 +28,7 @@ namespace detail {
 // Befriended below: an equation is the one thing that takes an expression's
 // arena over, and the only reader of the poison an absent arena leaves; the
 // tensor factories in rt/tensor.hpp are the other way to a poisoned handle.
-struct Rooting {
+struct Router {
   template <impl::Numeric T>
   [[nodiscard]] static constexpr Arena<T> *
   arena(const Expression<T> &e) noexcept {
@@ -48,6 +47,14 @@ struct Rooting {
   template <impl::Numeric T>
   [[nodiscard]] static constexpr bool scalar(const Expression<T> &e) noexcept {
     return e.size() == 0 && !e.is_matrix();
+  }
+  // The arena of the first expression that names one; a literal names none.
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr Arena<T> *
+  first_arena(std::span<const Expression<T>> es) noexcept {
+    const auto named = std::ranges::find_if(
+        es, [](const auto &e) { return e.arena() != nullptr; });
+    return named == es.end() ? nullptr : named->arena();
   }
 };
 } // namespace detail
@@ -203,7 +210,8 @@ private:
                                                    const Expression &c,
                                                    const Expression &t,
                                                    const Expression &f) {
-    const Shape shape = t.size() ? t.shape() : (f.size() ? f.shape() : c.shape());
+    const Shape shape =
+        t.size() ? t.shape() : (f.size() ? f.shape() : c.shape());
     const auto fits = [&](const Expression &e) {
       return e.size() == 0 || e.shape() == shape;
     };
@@ -221,7 +229,6 @@ private:
   }
 
 public:
-
   // Hidden friends: ordinary functions for a given Expression<T>, so `x * 2`
   // and `2 * x` both convert.
   friend constexpr Expression operator+(const Expression &l,
@@ -291,7 +298,6 @@ private:
   }
 
 public:
-
 #define DDX_RT_UNFN(fn, Op, label, ...)                                        \
   friend constexpr Expression fn(const Expression &u) {                        \
     return form(OpCode::Op, u);                                                \
@@ -350,16 +356,14 @@ public:
 private:
   // What an Equation needs of an expression: which arena it names, and --
   // through poison() -- that it names none.
-  friend struct detail::Rooting;
+  friend struct detail::Router;
   template <impl::Numeric U> friend class ExternFunction;
   template <impl::Numeric U>
   friend Expression<U> named(OpCode, std::string_view) noexcept;
   template <impl::Numeric U>
   friend constexpr Expression<U> named(Arena<U> &, OpCode, std::string_view);
 
-  [[nodiscard]] constexpr Arena<T> *arena() const noexcept {
-    return arena_;
-  }
+  [[nodiscard]] constexpr Arena<T> *arena() const noexcept { return arena_; }
 
   // Not a pending literal, which would materialise into the first graph it
   // meets and put a zero where a symbol should be.
@@ -412,9 +416,9 @@ template <impl::Numeric T, std::invocable<const Expression<T> &> F>
 [[nodiscard]] constexpr Expression<T>
 implicit(Arena<T> &b, std::string_view name, F &&residual) {
   const Expression<T> z = named(b, OpCode::Implicit, name);
-  if (!detail::Rooting::why(z)) {
+  if (!detail::Router::why(z)) {
     const Expression<T> f = std::invoke(DDX_FWD(residual), z);
-    const auto why = detail::Rooting::why(f);
+    const auto why = detail::Router::why(f);
     b.close(z.id(b), why ? no_node : f.id(b), why);
   }
   return z;
@@ -449,7 +453,7 @@ public:
       if (a.why_) {
         return Expression<T>::poison(*a.why_);
       }
-      if (!detail::Rooting::scalar(a)) {
+      if (!detail::Router::scalar(a)) {
         return Expression<T>::poison(errc::tensor_shape);
       }
     }
@@ -530,7 +534,7 @@ extern_fn(ExternRecord record, std::type_identity_t<ExternFn<T>> fn) {
 #define DDX_RT_INPUT(fn, Op, ...)                                              \
   template <impl::Numeric T>                                                   \
     requires(OpCode::Op != OpCode::Implicit)                                   \
-  [[nodiscard]] constexpr Expression<T> fn(Arena<T> &b,                      \
+  [[nodiscard]] constexpr Expression<T> fn(Arena<T> &b,                        \
                                            std::string_view name) {            \
     return named(b, OpCode::Op, name);                                         \
   }                                                                            \

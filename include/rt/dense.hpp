@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <functional>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -29,10 +28,11 @@
 // vector node's tangent is a sum of terms, each Identity, Diag(d), Outer(u, g)
 // or Dense(M), all w x n; a scalar node's tangent is its gradient row, a vector
 // of width n.  Each rule is the matrix calculus of a linear map over a sum, and
-// only a MatVec over a Dense term needs a product of two dense matrices -- the one
-// n^3 case, counted so a caller can see when a model's structure defeated the
-// algebra.  Where the partials are the gradient vector's elements, the block
-// is that vector's terms summed; otherwise the partials' rows are stacked.
+// only a MatVec over a Dense term needs a product of two dense matrices -- the
+// one n^3 case, counted so a caller can see when a model's structure defeated
+// the algebra.  Where the partials are the gradient vector's elements, the
+// block is that vector's terms summed; otherwise the partials' rows are
+// stacked.
 //
 // A vector beside a few scalar symbols is swept alone, the scalars held: its
 // block is the Hessian at fixed scalars, and each scalar's row is one reverse
@@ -443,11 +443,8 @@ private:
       for (const auto &[left, term] : steps) {
         const E l = expr(left);
         const E t = expr(term);
-        const E pl =
-            r == no_node ? E{0} : contribution_to<0>(step, E{1}, l, t);
-        const E pr = row(term) == no_node
-                         ? E{0}
-                         : contribution_to<1>(step, E{1}, l, t);
+        const auto [pl, pr] = contributions(step, E{1}, l, t, r != no_node,
+                                            row(term) != no_node, E{0});
         r = add(scaled(pl, r), scaled(pr, row(term)));
       }
       return r;
@@ -470,12 +467,9 @@ private:
       // node's operands by id.
       const E l = expr(node.in[0]);
       const E r = expr(node.in[1]);
-      const E pl = row(node.in[0]) == no_node
-                       ? E{0}
-                       : contribution_to<0>(node.op, E{1}, l, r);
-      const E pr = row(node.in[1]) == no_node
-                       ? E{0}
-                       : contribution_to<1>(node.op, E{1}, l, r);
+      const auto [pl, pr] =
+          contributions(node.op, E{1}, l, r, row(node.in[0]) != no_node,
+                        row(node.in[1]) != no_node, E{0});
       return add(scaled(pl, row(node.in[0])), scaled(pr, row(node.in[1])));
     }
     case Kind::Ternary: { // picked, so the row not taken is never scaled by 0
@@ -491,7 +485,8 @@ private:
     }
     case Kind::Tensor:
       switch (node.op) {
-      case OpCode::MatConst: // a table, read through its MatRow: nothing moves it
+      case OpCode::MatConst: // a table, read through its MatRow: nothing moves
+                             // it
         return no_node;
       case OpCode::Gather:
         return std::ranges::fold_left(
@@ -518,7 +513,9 @@ private:
     case OpCode::Pack:
       if (is_symbols(v)) {
         out.push_back({.kind = Term::Kind::Identity});
-      } else {
+      } else if (std::ranges::any_of(arguments(b_, v), [this](NodeId g) {
+                   return row(g) != no_node;
+                 })) {
         ++n2_;
         out.push_back(
             {.kind = Term::Kind::Dense, .a = stacked(arguments(b_, v))});
@@ -534,12 +531,9 @@ private:
     case OpCode::Zip: {
       const E u = expr(node.in[0]);
       const E w = expr(node.in[1]);
-      const E pu = mat_[node.in[0]].empty()
-                       ? E{0}
-                       : contribution_to<0>(get<OpCode>(node), E{1}, u, w);
-      const E pw = mat_[node.in[1]].empty()
-                       ? E{0}
-                       : contribution_to<1>(get<OpCode>(node), E{1}, u, w);
+      const auto [pu, pw] = contributions(get<OpCode>(node), E{1}, u, w,
+                                          !mat_[node.in[0]].empty(),
+                                          !mat_[node.in[1]].empty(), E{0});
       out = scale(pu, mat_[node.in[0]]);
       impl::append(out, scale(pw, mat_[node.in[1]]));
       break;

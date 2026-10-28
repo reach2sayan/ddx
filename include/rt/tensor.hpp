@@ -36,29 +36,24 @@ namespace detail {
 // equation() callback's.
 template <impl::Numeric T>
 [[nodiscard]] Arena<T> *arena_of(std::span<const Expression<T>> scalars) {
-  for (const auto &s : scalars) {
-    if (Arena<T> *const b = Rooting::arena(s)) {
-      return b;
-    }
-  }
-  return current_arena<T>;
+  Arena<T> *const b = Router::first_arena(scalars);
+  return b != nullptr ? b : current_arena<T>;
 }
 
 // The refusal the factories share, and a factory over the equation()
 // callback's arena, refused outside one.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> refused(errc why) noexcept {
-  return Rooting::poison<T>(why);
+  return Router::poison<T>(why);
 }
-template <impl::Numeric T>
-[[nodiscard]] Expression<T> in_arena(auto &&make) {
+template <impl::Numeric T> [[nodiscard]] Expression<T> in_arena(auto &&make) {
   return current_arena<T> == nullptr ? refused<T>(errc::outside_equation)
                                      : DDX_FWD(make)(*current_arena<T>);
 }
 // The first operand's poison, if one is poisoned.
 [[nodiscard]] constexpr std::optional<errc> poisoned(const auto &...es) {
   std::optional<errc> why;
-  ((why = why ? why : Rooting::why(es)), ...);
+  ((why = why ? why : Router::why(es)), ...);
   return why;
 }
 // A table's rows and columns, which shape_of() leaves to the table itself.
@@ -73,8 +68,7 @@ template <impl::Numeric T>
 }
 // Why the operands are not all vector nodes of an arena, if they are not: a
 // pending literal has no width and a scalar node is not a vector.
-[[nodiscard]] constexpr std::optional<errc>
-not_a_vector(const auto &...vs) {
+[[nodiscard]] constexpr std::optional<errc> not_a_vector(const auto &...vs) {
   if (const auto why = poisoned(vs...)) {
     return why;
   }
@@ -92,10 +86,10 @@ pack(Arena<T> &b, std::span<const Expression<T>> scalars) {
     return detail::refused<T>(errc::tensor_shape);
   }
   for (const auto &s : scalars) {
-    if (const auto why = detail::Rooting::why(s)) {
+    if (const auto why = detail::Router::why(s)) {
       return detail::refused<T>(*why);
     }
-    if (!detail::Rooting::scalar(s)) {
+    if (!detail::Router::scalar(s)) {
       return detail::refused<T>(errc::tensor_shape);
     }
   }
@@ -119,20 +113,40 @@ template <impl::Numeric T>
   return pack(std::span<const Expression<T>>{scalars});
 }
 
-// n symbols named `name[0]` .. `name[n-1]`, packed: the one piece of sugar.
+namespace detail {
+// n inputs of `kind` named `name[0]` .. `name[n-1]`, packed.
+template <impl::Numeric T>
+[[nodiscard]] Expression<T> indexed(Arena<T> &b, OpCode kind,
+                                    std::string_view name, std::size_t n) {
+  const auto leaves = std::views::iota(0uz, n) |
+                      std::views::transform([&](std::size_t i) {
+                        return named(b, kind, std::format("{}[{}]", name, i));
+                      }) |
+                      impl::to<std::vector<Expression<T>>>();
+  return pack(b, std::span<const Expression<T>>{leaves});
+}
+} // namespace detail
+
+// n symbols named `name[0]` .. `name[n-1]`, packed; vec_param the same of
+// params, a vector the point brings and nothing differentiates.
 template <impl::Numeric T>
 [[nodiscard]] Expression<T> vec(Arena<T> &b, std::string_view name,
                                 std::size_t n) {
-  const auto symbols = std::views::iota(0uz, n) |
-                       std::views::transform([&](std::size_t i) {
-                         return var(b, std::format("{}[{}]", name, i));
-                       }) |
-                       impl::to<std::vector<Expression<T>>>();
-  return pack(b, std::span<const Expression<T>>{symbols});
+  return detail::indexed(b, OpCode::Var, name, n);
+}
+template <impl::Numeric T>
+[[nodiscard]] Expression<T> vec_param(Arena<T> &b, std::string_view name,
+                                      std::size_t n) {
+  return detail::indexed(b, OpCode::Param, name, n);
 }
 template <impl::Numeric T = double>
 [[nodiscard]] Expression<T> vec(std::string_view name, std::size_t n) {
   return detail::in_arena<T>([&](Arena<T> &b) { return vec(b, name, n); });
+}
+template <impl::Numeric T = double>
+[[nodiscard]] Expression<T> vec_param(std::string_view name, std::size_t n) {
+  return detail::in_arena<T>(
+      [&](Arena<T> &b) { return vec_param(b, name, n); });
 }
 
 // A constant vector or matrix, column-major.
@@ -179,7 +193,7 @@ template <impl::Numeric T>
   if (const auto why = detail::not_a_vector(v)) {
     return detail::refused<T>(*why);
   }
-  Arena<T> &b = *detail::Rooting::arena(v);
+  Arena<T> &b = *detail::Router::arena(v);
   return {b, b.make(OpCode::Sum, v.id())};
 }
 template <impl::Numeric T>
@@ -189,9 +203,8 @@ template <impl::Numeric T>
     return detail::refused<T>(*why);
   }
   // Either side may be a literal, which takes the other's width.
-  Arena<T> *const b = detail::Rooting::arena(u)
-                            ? detail::Rooting::arena(u)
-                            : detail::Rooting::arena(v);
+  Arena<T> *const b = detail::Router::arena(u) ? detail::Router::arena(u)
+                                               : detail::Router::arena(v);
   const Shape shape = u.size() ? u.shape() : v.shape();
   if (b == nullptr || shape.size() == 0 ||
       (u.size() != 0 && v.size() != 0 && u.shape() != v.shape()) ||
@@ -209,8 +222,8 @@ gemv(const Expression<T> &m, const Expression<T> &v, bool transposed = false) {
   if (const auto why = detail::poisoned(m, v)) {
     return detail::refused<T>(*why);
   }
-  Arena<T> *const b = detail::Rooting::arena(m);
-  if (b == nullptr || v.size() == 0 || detail::Rooting::arena(v) != b) {
+  Arena<T> *const b = detail::Router::arena(m);
+  if (b == nullptr || v.size() == 0 || detail::Router::arena(v) != b) {
     return detail::refused<T>(errc::tensor_shape);
   }
   const Shape shape = detail::matrix_shape(*b, m);
@@ -251,11 +264,11 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> operator%(const Expression<T> &l,
                                                 const Expression<T> &r) {
   const auto is_matrix = [](const Expression<T> &e) {
-    Arena<T> *const b = detail::Rooting::arena(e);
-    return b != nullptr && !detail::Rooting::why(e) &&
+    Arena<T> *const b = detail::Router::arena(e);
+    return b != nullptr && !detail::Router::why(e) &&
            detail::matrix_shape(*b, e).cols > 1;
   };
-  if (is_matrix(r) && !detail::Rooting::why(l)) {
+  if (is_matrix(r) && !detail::Router::why(l)) {
     return detail::refused<T>(errc::tensor_shape);
   }
   return is_matrix(l) ? gemv(l, r) : dot(l, r);
@@ -268,8 +281,8 @@ template <impl::Numeric T>
   if (const auto why = detail::not_a_vector(u, w)) {
     return detail::refused<T>(*why);
   }
-  Arena<T> *const b = detail::Rooting::arena(u);
-  if (detail::Rooting::arena(w) != b || u.shape().cols != 1 ||
+  Arena<T> *const b = detail::Router::arena(u);
+  if (detail::Router::arena(w) != b || u.shape().cols != 1 ||
       w.shape().cols != 1) {
     return detail::refused<T>(errc::tensor_shape);
   }
@@ -285,13 +298,13 @@ add_at(const Expression<T> &v, const Expression<T> &s, std::size_t i) {
   if (const auto why = detail::not_a_vector(v)) {
     return detail::refused<T>(*why);
   }
-  if (const auto why = detail::Rooting::why(s)) {
+  if (const auto why = detail::Router::why(s)) {
     return detail::refused<T>(*why);
   }
-  if (i >= v.size() || !detail::Rooting::scalar(s)) {
+  if (i >= v.size() || !detail::Router::scalar(s)) {
     return detail::refused<T>(errc::tensor_shape);
   }
-  Arena<T> &b = *detail::Rooting::arena(v);
+  Arena<T> &b = *detail::Router::arena(v);
   return {b, b.make(opcode<OpCode::AddAt>,
                     Element{static_cast<std::uint32_t>(i)}, v.id(), s.id(b))};
 }

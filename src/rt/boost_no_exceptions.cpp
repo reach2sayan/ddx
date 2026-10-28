@@ -15,20 +15,14 @@
 
 namespace boost {
 
-#if defined(__GNUC__) || defined(__clang__)
-#define DDX_BOOST_THROW_VISIBILITY __attribute__((visibility("default")))
-#else
-#define DDX_BOOST_THROW_VISIBILITY
-#endif
-
-DDX_BOOST_THROW_VISIBILITY void throw_exception(const std::exception &e) {
+BOOST_SYMBOL_VISIBLE void throw_exception(const std::exception &e) {
   std::fprintf(stderr, "ddx: boost threw with exceptions disabled: %s\n",
                e.what());
   std::abort();
 }
 
-DDX_BOOST_THROW_VISIBILITY void throw_exception(const std::exception &e,
-                                                const source_location &loc) {
+BOOST_SYMBOL_VISIBLE void throw_exception(const std::exception &e,
+                                          const source_location &loc) {
   std::fprintf(stderr,
                "ddx: boost threw with exceptions disabled: %s (%s:%u)\n",
                e.what(), loc.file_name(), loc.line());

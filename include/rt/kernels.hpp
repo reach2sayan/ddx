@@ -18,16 +18,14 @@
 #include "util/export.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <concepts>
 #include <cstddef>
-#include <functional>
-#include <numeric>
 #include <ranges>
 #include <span>
 #include <string_view>
-#include <utility>
 
 namespace ddx::rt {
 
@@ -62,6 +60,8 @@ template <impl::Numeric T = double> struct TensorKernelTable {
   void (*zip)(OpCode, In, In, Out) = nullptr;
   T (*sum)(In) = nullptr;
   void (*gemm)(std::size_t, std::size_t, std::size_t, In, In, Out) = nullptr;
+  // Optional: M v and M^T v of a square M in one pass.  Null is two gemvs.
+  void (*gemv_pair)(std::size_t, In, In, Out, Out) = nullptr;
   std::string_view name;
 };
 
@@ -70,25 +70,51 @@ template <impl::Numeric T = double> struct TensorKernelTable {
 template <typename B, impl::Numeric T = double>
   requires TensorKernels<B, T>
 [[nodiscard]] consteval TensorKernelTable<T> tensor_kernel_table() noexcept {
-  return {.gemv = &B::gemv,
-          .dot = &B::dot,
-          .scale = &B::scale,
-          .map = &B::map,
-          .zip = &B::zip,
-          .sum = &B::sum,
-          .gemm = &B::gemm,
-          .name = B::name};
+  TensorKernelTable<T> t{.gemv = &B::gemv,
+                         .dot = &B::dot,
+                         .scale = &B::scale,
+                         .map = &B::map,
+                         .zip = &B::zip,
+                         .sum = &B::sum,
+                         .gemm = &B::gemm,
+                         .name = B::name};
+  if constexpr (requires { B::gemv_pair; }) {
+    t.gemv_pair = &B::gemv_pair;
+  }
+  return t;
 }
 
 namespace reference {
 
 // Straight loops, each written so the compiler vectorises it; the one
-// backend ddx ships and tests against, at any scalar.  The dot and gemv inner
-// loops take one rounding per term, as the scalar sweep's contraction does.
+// backend ddx ships and tests against, at any scalar.  A reduction runs in
+// kLanes independent partial sums, folded pairwise at the end: one chain of
+// dependent adds is the latency of an add per term, kLanes of them are a
+// register's worth of terms per add.  Every product goes through madd, so no
+// -O level or contraction setting moves a bit.
 template <impl::Numeric T = double> struct Kernels {
   static constexpr std::string_view name = "reference";
   using In = typename TensorKernelTable<T>::In;
   using Out = typename TensorKernelTable<T>::Out;
+  static constexpr std::size_t kLanes = 16;
+
+  [[nodiscard]] static constexpr T madd(T a, T b, T c) noexcept {
+    if constexpr (std::floating_point<T>) {
+      return std::fma(a, b, c);
+    } else { // a field-like scalar: no fma, and no rounding to keep
+      return a * b + c;
+    }
+  }
+
+  template <std::size_t N>
+  [[nodiscard]] static constexpr T fold(std::array<T, N> &acc) noexcept {
+    for (std::size_t w = N / 2; w > 0; w /= 2) {
+      for (std::size_t l = 0; l < w; ++l) {
+        acc[l] = acc[l] + acc[l + w];
+      }
+    }
+    return acc[0];
+  }
 
   static constexpr void gemv(std::size_t r, std::size_t c, In m, In v, Out out,
                              bool transposed) noexcept {
@@ -99,25 +125,100 @@ template <impl::Numeric T = double> struct Kernels {
       }
       return;
     }
-    // out = sum_j v[j] column_j: one pass per column, contiguous both sides.
+    // out = sum_j v[j] column_j, four columns a pass so out is read and
+    // written a quarter as often; each out[i] still takes j in order.
     std::ranges::fill(out, T{});
-    for (std::size_t j = 0; j < c; ++j) {
-      const T x = v[j];
-      const T *DDX_RESTRICT col = m.data() + j * r;
-      T *DDX_RESTRICT y = out.data();
+    T *DDX_RESTRICT y = out.data();
+    std::size_t j = 0;
+    for (; j + 4 <= c; j += 4) {
+      const T *DDX_RESTRICT c0 = m.data() + j * r;
+      const T *DDX_RESTRICT c1 = c0 + r;
+      const T *DDX_RESTRICT c2 = c1 + r;
+      const T *DDX_RESTRICT c3 = c2 + r;
+      const T x0 = v[j], x1 = v[j + 1], x2 = v[j + 2], x3 = v[j + 3];
       for (std::size_t i = 0; i < r; ++i) {
-        if constexpr (std::floating_point<T>) {
-          y[i] = std::fma(col[i], x, y[i]);
-        } else { // a field-like scalar: no fma, and no rounding to keep
-          y[i] = y[i] + col[i] * x;
-        }
+        y[i] = madd(c3[i], x3,
+                    madd(c2[i], x2, madd(c1[i], x1, madd(c0[i], x0, y[i]))));
+      }
+    }
+    for (; j < c; ++j) {
+      const T *DDX_RESTRICT col = m.data() + j * r;
+      const T x = v[j];
+      for (std::size_t i = 0; i < r; ++i) {
+        y[i] = madd(col[i], x, y[i]);
       }
     }
   }
 
+  // M v into `plain` and M^T v into `transposed`, M n x n: one pass over M,
+  // four columns a pass, each column's dot in eight lanes.
+  static constexpr void gemv_pair(std::size_t n, In m, In v, Out plain,
+                                  Out transposed) noexcept {
+    constexpr std::size_t L = 8;
+    std::ranges::fill(plain, T{});
+    T *DDX_RESTRICT y = plain.data();
+    const T *DDX_RESTRICT x = v.data();
+    const std::size_t whole = n / L * L;
+    const auto columns =
+        [&]<std::size_t C>(std::integral_constant<std::size_t, C>,
+                           std::size_t j0) {
+          std::array<const T *, C> col{};
+          std::array<T, C> xj{};
+          for (std::size_t d = 0; d < C; ++d) {
+            col[d] = m.data() + (j0 + d) * n;
+            xj[d] = x[j0 + d];
+          }
+          std::array<std::array<T, L>, C> acc{};
+          for (std::size_t i = 0; i < whole; i += L) {
+            for (std::size_t l = 0; l < L; ++l) {
+              T yi = y[i + l];
+              for (std::size_t d = 0; d < C; ++d) {
+                const T mi = col[d][i + l];
+                yi = madd(mi, xj[d], yi);
+                acc[d][l] = madd(mi, x[i + l], acc[d][l]);
+              }
+              y[i + l] = yi;
+            }
+          }
+          for (std::size_t i = whole; i < n; ++i) {
+            for (std::size_t d = 0; d < C; ++d) {
+              y[i] = madd(col[d][i], xj[d], y[i]);
+              acc[d][i - whole] = madd(col[d][i], x[i], acc[d][i - whole]);
+            }
+          }
+          for (std::size_t d = 0; d < C; ++d) {
+            transposed[j0 + d] = fold(acc[d]);
+          }
+        };
+    std::size_t j = 0;
+    for (; j + 4 <= n; j += 4) {
+      columns(std::integral_constant<std::size_t, 4>{}, j);
+    }
+    for (; j < n; ++j) {
+      columns(std::integral_constant<std::size_t, 1>{}, j);
+    }
+  }
+
+  // kLanes accumulators over n elements, folded: `step(acc, i)` takes
+  // element i into one.
+  [[nodiscard]] static constexpr T reduce(std::size_t n, auto step) noexcept {
+    std::array<T, kLanes> acc{};
+    const std::size_t whole = n / kLanes * kLanes;
+    for (std::size_t i = 0; i < whole; i += kLanes) {
+      for (std::size_t l = 0; l < kLanes; ++l) {
+        acc[l] = step(acc[l], i + l);
+      }
+    }
+    for (std::size_t i = whole; i < n; ++i) {
+      acc[i - whole] = step(acc[i - whole], i);
+    }
+    return fold(acc);
+  }
+
   [[nodiscard]] static constexpr T dot(In u, In v) noexcept {
-    return std::transform_reduce(u.begin(), u.end(), v.begin(), T{},
-                                 std::plus<>{}, [](T a, T b) { return a * b; });
+    return reduce(u.size(), [a = u.data(), b = v.data()](T acc, std::size_t i) {
+      return madd(a[i], b[i], acc);
+    });
   }
 
   static constexpr void scale(T s, In v, Out out) noexcept {
@@ -153,7 +254,8 @@ template <impl::Numeric T = double> struct Kernels {
   }
 
   [[nodiscard]] static constexpr T sum(In v) noexcept {
-    return std::reduce(v.begin(), v.end(), T{});
+    return reduce(v.size(),
+                  [a = v.data()](T acc, std::size_t i) { return acc + a[i]; });
   }
 
   // out = A B, one column of B at a time: a gemv per column.

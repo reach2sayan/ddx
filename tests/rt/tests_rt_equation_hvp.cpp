@@ -211,7 +211,7 @@ TEST(RtEquationHvp, TheKernelAgreesWithTheSweepToTheBit) {
     double *const gp[]{g[0].data(), g[1].data(), g[2].data()};
     double *const hp[]{hv[0].data(), hv[1].data(), hv[2].data()};
     eq.options({.backend = which});
-    const bool kernel = eq.wait_for_kernel();
+    const bool kernel = eq.uses_kernel();
     EXPECT_TRUE(eq.hvp(xp, vp, fp, gp, hp, n).has_value());
     return std::tuple{hv, kernel};
   };

@@ -1,5 +1,4 @@
 #include "ddx.hpp"
-#include "jit/format.hpp"
 #include "jit/kernel.hpp"
 #include "jit/tests_jit_common.hpp"
 #include "rt/bridge.hpp"
@@ -329,7 +328,7 @@ TEST(JitValue, AFloatGraphAgreesAcrossWidthsAndWithTheSweep) {
       min(x, y) + sign(x - y);
   const auto graph =
       ddx::rt::GraphBuilder{b}.value(f).build_jacobian().finish();
-  const auto ir = std::format("{}", ddx::jit::Ir{compiler(), graph});
+  const auto ir = *compiler().ir(graph);
   EXPECT_NE(ir.find("float"), std::string::npos);
   EXPECT_EQ(ir.find("double"), std::string::npos);
 
@@ -385,7 +384,7 @@ TEST(JitValue, AFloatEquationRunsItsKernel) {
   const auto swept = build();
   auto compiled = build();
   compiled.options({.backend = ddx::jit::Backend::Compile, .points = 1});
-  ASSERT_TRUE(compiled.wait_for_kernel());
+  ASSERT_TRUE(compiled.uses_kernel());
   ASSERT_TRUE(compiled.uses_kernel());
   for (const float x : {0.3f, 0.7f, 1.1f, 2.9f}) {
     const std::array p{x, 1.3f};
@@ -589,36 +588,6 @@ TEST(JitValue, ConstantFoldsToAStore) {
   EXPECT_DOUBLE_EQ(got[0], 7.0);
   EXPECT_DOUBLE_EQ(got[1], 7.0);
 }
-
-// The names the object cache had still compile, and do nothing.
-#if defined(_MSC_VER) && !defined(__clang__)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#else
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
-TEST(JitValue, TheCacheNamesAreInert) {
-  const Scratch dir{"jit_inert"};
-  Arena<> b;
-  const auto x = var(b, "x");
-  const auto graph = Graph<>::freeze(b, std::array{(x * x).id(b)});
-  ddx::jit::Options opt;
-  opt.cache_dir = dir.string();
-  const auto kernel = compiler().compile(graph, opt);
-  ASSERT_TRUE(kernel.has_value()) << kernel.error().detail;
-  EXPECT_FALSE(std::filesystem::exists(dir)) << "a cache was written";
-  EXPECT_TRUE(kernel->object().empty());
-  EXPECT_TRUE(kernel->symbol().empty());
-  const auto adopted = compiler().adopt(std::span<const std::byte>{}, "", graph);
-  ASSERT_FALSE(adopted.has_value());
-  EXPECT_EQ(adopted.error().code, ddx::errc::jit_object);
-}
-#if defined(_MSC_VER) && !defined(__clang__)
-#pragma warning(pop)
-#else
-#pragma GCC diagnostic pop
-#endif
 
 TEST(JitValue, SeparateCompilesCoexist) {
   Arena<> b1;

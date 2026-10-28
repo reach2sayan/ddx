@@ -5,7 +5,6 @@
 #include "ops/numeric.hpp"
 #include "ops/unary_math.hpp"
 #include "util/fixed_string.hpp"
-#include <array>
 #include <cmath>
 #include <concepts>
 #include <cstdint>
@@ -35,7 +34,6 @@ template <Numeric T, typename func, CFixedString auto symbol, Notation note,
           int prec>
 struct OpDescriptor {
   using value_type = T;
-  using func_type = func;
   static constexpr std::string_view label = symbol.view();
   static constexpr Notation notation = note;
   static constexpr int precedence = prec;
@@ -210,11 +208,7 @@ template <bool IsMax> struct extremum_impl {
     if (a == b) {
       if constexpr (CArithmetic<R>) {
         if (a == R{}) {
-          if constexpr (IsMax) {
-            return R{a + b};
-          } else {
-            return R{-((-a) + (-b))};
-          }
+          return IsMax ? R{a + b} : R{-((-a) + (-b))};
         }
         return R{a};
       } else {
@@ -222,18 +216,10 @@ template <bool IsMax> struct extremum_impl {
       }
     }
     if (a < b) {
-      if constexpr (IsMax) {
-        return R{b};
-      } else {
-        return R{a};
-      }
+      return IsMax ? R{b} : R{a};
     }
     if (b < a) {
-      if constexpr (IsMax) {
-        return R{a};
-      } else {
-        return R{b};
-      }
+      return IsMax ? R{a} : R{b};
     }
     return R{(a - b) * R{}};
   }

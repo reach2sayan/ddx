@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <ranges>
 #include <utility>
 #include <vector>
@@ -73,6 +74,18 @@ template <std::size_t I, impl::Numeric T>
   default:
     return H<T>{0};
   }
+}
+
+// Both operands' rules, `absent` for an operand that does not move; the left
+// built first, always: `make` orders a commutative node's operands by id, so
+// the order nodes are built in is part of the answer.
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::pair<H<T>, H<T>>
+contributions(OpCode op, const H<T> &adj, const H<T> &l, const H<T> &r,
+              bool left, bool right, const H<T> &absent) {
+  H<T> cl = left ? contribution_to<0>(op, adj, l, r) : absent;
+  H<T> cr = right ? contribution_to<1>(op, adj, l, r) : absent;
+  return {std::move(cl), std::move(cr)};
 }
 
 // The same rule seeded with a unit adjoint: Arena::make fires the x*1 rule
@@ -302,6 +315,32 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
     }
   };
 
+  // dot(A, M) where A is N (.) u w^T, a matrix adjoint as MatVec and the
+  // elementwise rules built it: u . (M (.) N) w, never forming A, which then
+  // nothing reads.  A sum of such contracts term by term.
+  const auto contracted = [&](this const auto &self, NodeId id,
+                              const Expression<T> &m)
+      -> std::optional<Expression<T>> {
+    const Node<T> &at = b[id];
+    if (at.op == OpCode::Outer && shape_of(b, id).cols > 1) {
+      return dot(expr(at.in[0]), gemv(m, expr(at.in[1])));
+    }
+    if (at.op != OpCode::Zip) {
+      return std::nullopt;
+    }
+    const OpCode op = detail::get<OpCode>(at);
+    if (op == OpCode::Add) {
+      const auto l = self(at.in[0], m);
+      const auto r = l ? self(at.in[1], m) : std::nullopt;
+      return r ? std::optional{*l + *r} : std::nullopt;
+    }
+    if (op != OpCode::Mul) {
+      return std::nullopt;
+    }
+    const auto l = self(at.in[1], m * expr(at.in[0]));
+    return l ? l : self(at.in[0], m * expr(at.in[1]));
+  };
+
   for (const NodeId v : detail::live_ids(live) | std::views::reverse) {
     // no_node is "nothing reached it", a folded Const 0 is "what reached it
     // cancelled"; neither contributes below.
@@ -337,9 +376,8 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
       for (const auto &[left, term] : steps | std::views::reverse) {
         const Expression<T> l = expr(left);
         const Expression<T> r = expr(term);
-        add_to(term, g, [&] {
-          return detail::contribution_to<1>(step, carried, l, r);
-        });
+        add_to(term, g,
+               [&] { return detail::contribution_to<1>(step, carried, l, r); });
         carried = detail::contribution_to<0>(step, carried, l, r);
       }
       add_to(steps.front().first, g, [&] { return carried; });
@@ -365,16 +403,15 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
       break;
     }
     case Kind::Binary: {
-      // Both rules before either sum: `make` orders a commutative node's
-      // operands by id, so the order nodes are built in is part of the answer.
+      // Both rules before either sum.
       const Expression<T> l = expr(node.in[0]);
       const Expression<T> r = expr(node.in[1]);
-      const Expression<T> cl =
-          moves(node.in[0]) ? detail::contribution_to<0>(op, a, l, r) : zero;
-      const Expression<T> cr =
-          moves(node.in[1]) ? detail::contribution_to<1>(op, a, l, r) : zero;
-      add_to(node.in[0], g, [&] { return cl; });
-      add_to(node.in[1], g, [&] { return cr; });
+      // A pair, not a structured binding: clang will not constant-evaluate a
+      // binding captured by reference.
+      const auto c = detail::contributions(op, a, l, r, moves(node.in[0]),
+                                           moves(node.in[1]), zero);
+      add_to(node.in[0], g, [&] { return c.first; });
+      add_to(node.in[1], g, [&] { return c.second; });
       break;
     }
     case Kind::Tensor: {
@@ -401,7 +438,9 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
         });
         break;
       case OpCode::Scale:
-        add_to(node.in[0], g, [&] { return dot(a, expr(node.in[1])); });
+        add_to(node.in[0], g, [&] {
+          return contracted(adj[v], expr(node.in[1])).value_or(dot(a, expr(node.in[1])));
+        });
         add_to(node.in[1], g, [&] { return expr(node.in[0]) * a; });
         break;
       case OpCode::Sum:
@@ -609,13 +648,11 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       const Expression<T> l{b, node.in[0]};
       const Expression<T> r{b, node.in[1]};
       const Expression<T> one{1};
-      const Expression<T> pl =
-          moves[node.in[0]] ? detail::contribution_to<0>(op, one, l, r) : one;
-      const Expression<T> pr =
-          moves[node.in[1]] ? detail::contribution_to<1>(op, one, l, r) : one;
+      const auto p = detail::contributions(op, one, l, r, moves[node.in[0]],
+                                           moves[node.in[1]], one);
       d[v] = moved(
-          v, node.in[0], [&] { return pl * dv(node.in[0]); }, node.in[1],
-          [&] { return pr * dv(node.in[1]); });
+          v, node.in[0], [&] { return p.first * dv(node.in[0]); }, node.in[1],
+          [&] { return p.second * dv(node.in[1]); });
       break;
     }
     case Kind::Tensor: {
@@ -633,50 +670,25 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       case OpCode::Gather:
         d[v] = dv(node.in[0])[detail::get<Element>(node).value].id(b);
         break;
-      case OpCode::Scale:
-        d[v] = moved(
-            v, node.in[0], [&] { return dv(node.in[0]) * expr(node.in[1]); },
-            node.in[1], [&] { return expr(node.in[0]) * dv(node.in[1]); });
-        break;
       case OpCode::Sum:
         d[v] = sum(dv(node.in[0])).id(b);
-        break;
-      case OpCode::Dot:
-        d[v] = moved(
-            v, node.in[0],
-            [&] { return dot(dv(node.in[0]), expr(node.in[1])); }, node.in[1],
-            [&] { return dot(expr(node.in[0]), dv(node.in[1])); });
         break;
       case OpCode::AddAt:
         d[v] = b.make(opcode<OpCode::AddAt>, detail::get<Element>(node),
                       at(node.in[0]), at(node.in[1]));
         break;
+      case OpCode::Scale: // the bilinear ops: the node with one operand's
+      case OpCode::Dot:   // tangent in that operand's slot
       case OpCode::MatVec:
-        d[v] = moved(
-            v, node.in[0],
-            [&] {
-              return expr(b.make(opcode<OpCode::MatVec>,
-                                 detail::get<Orientation>(node), at(node.in[0]),
-                                 node.in[1]));
-            },
-            node.in[1],
-            [&] {
-              return expr(b.make(opcode<OpCode::MatVec>,
-                                 detail::get<Orientation>(node), node.in[0],
-                                 at(node.in[1])));
-            });
+      case OpCode::Outer: {
+        const auto with = [&](std::size_t slot) {
+          return [&, slot] {
+            return expr(b.replaced(v, slot, at(node.in[slot])));
+          };
+        };
+        d[v] = moved(v, node.in[0], with(0), node.in[1], with(1));
         break;
-      case OpCode::Outer:
-        d[v] = moved(
-            v, node.in[0],
-            [&] {
-              return expr(b.make(OpCode::Outer, at(node.in[0]), node.in[1]));
-            },
-            node.in[1],
-            [&] {
-              return expr(b.make(OpCode::Outer, node.in[0], at(node.in[1])));
-            });
-        break;
+      }
       default: // the dense sweep's own rows, built under no root
         std::unreachable();
       }
@@ -761,13 +773,50 @@ derive_jacobian(Arena<T> &b, std::span<const NodeId> roots) {
 // One root rather than a span: a span is not constructible from a NodeId, so
 // this and the m-root overload never compete.
 template <impl::DiffMode Mode = impl::DiffMode::Reverse, impl::Numeric T>
-[[nodiscard]] constexpr JacobianRow derive_jacobian(Arena<T> &b,
-                                                    NodeId root) {
+[[nodiscard]] constexpr JacobianRow derive_jacobian(Arena<T> &b, NodeId root) {
   if constexpr (Mode == impl::DiffMode::Symbolic) {
     return build_symbolic_jacobian(b, root);
   } else {
     return build_reverse_jacobian(b, root);
   }
+}
+
+namespace detail {
+// The arena f is differentiated in, or why it cannot be.
+template <impl::Numeric T>
+[[nodiscard]] result<Arena<T> *> differentiable(const Expression<T> &f) {
+  Arena<T> *const b = arena_of<T>({&f, 1});
+  const auto why = b == nullptr        ? std::optional{errc::outside_equation}
+                   : Router::scalar(f) ? Router::why(f)
+                                       : errc::tensor_shape;
+  return why ? fail(*why) : result<Arena<T> *>{b};
+}
+} // namespace detail
+
+// df/dx for every symbol, in symbols() order, as nodes to build on: sound in
+// an arena still being built, the sweep's nodes landing above f's.  Each one
+// poisoned, as f is, where f cannot be differentiated.
+template <impl::Numeric T>
+[[nodiscard]] std::vector<Expression<T>> gradient(const Expression<T> &f) {
+  const auto b = detail::differentiable(f);
+  if (!b) {
+    const Arena<T> *const at = detail::arena_of<T>({&f, 1});
+    return std::vector(at ? at->symbols().size() : 1uz,
+                       detail::Router::poison<T>(b.error().code));
+  }
+  return derive_jacobian(**b, f.id(**b)).partial |
+         std::views::transform([&b](NodeId p) {
+           return p == no_node ? Expression<T>{T{0}} : Expression<T>{**b, p};
+         }) |
+         impl::to<std::vector<Expression<T>>>();
+}
+// One symbol's, by name: unknown_symbol for anything but a var.
+template <impl::Numeric T>
+[[nodiscard]] Expression<T> derivative(const Expression<T> &f,
+                                       std::string_view symbol) {
+  const auto in = detail::differentiable(f).and_then(
+      [&](const Arena<T> *b) { return b->symbol(symbol); });
+  return in ? gradient(f)[*in] : detail::Router::poison<T>(in.error().code);
 }
 
 // One sweep per colour.  Sweeping from the sum of a colour's partials gives,
@@ -865,28 +914,13 @@ template <impl::Numeric T>
 // w'J, the same re-rooting one order down: sweeping from s = Sum_i w_i f_i
 // gives ds/dx_j = (w'J)_j.  One sweep and n columns, where jacobian() is m
 // sweeps and pattern.nonzeros() columns; the seed slots here are counted in
-// functions, not symbols.
-struct VectorJacobian {
-  std::vector<NodeId> value;   // m
-  std::vector<NodeId> product; // n -- w'J
-  BOOST_DESCRIBE_CLASS(VectorJacobian, (), (value, product), (), ())
-};
-
+// functions, not symbols.  n nodes, w'J.
 template <impl::Numeric T>
-[[nodiscard]] constexpr VectorJacobian
+[[nodiscard]] constexpr std::vector<NodeId>
 derive_vjp(Arena<T> &b, std::span<const NodeId> roots) {
   const auto along = detail::seeded_sum(b, roots);
-  return {.value = {roots.begin(), roots.end()},
-          .product = build_reverse_jacobian(b, along.id(b)).partial};
+  return build_reverse_jacobian(b, along.id(b)).partial;
 }
-
-// J v, the one product that is a forward sweep: one pass, m outputs, whatever
-// n is.
-struct Tangent {
-  std::vector<NodeId> value;   // m
-  std::vector<NodeId> product; // m -- J v
-  BOOST_DESCRIBE_CLASS(Tangent, (), (value, product), (), ())
-};
 
 namespace detail {
 // One seed per symbol: the direction a forward sweep carries.
@@ -899,21 +933,13 @@ template <impl::Numeric T>
 }
 } // namespace detail
 
-template <impl::Numeric T>
-[[nodiscard]] constexpr Tangent derive_jvp(Arena<T> &b,
-                                           std::span<const NodeId> roots) {
-  return {.value = {roots.begin(), roots.end()},
-          .product = tangent_sweep(b, roots, detail::seeds_along(b))};
-}
-
-// The Jacobian's derivative along v, dJ/dv: its own cells carried forward
-// along the seeds in one pass over their cone.  One node per Jacobian cell, so
-// the block has the Jacobian's layout and reads with its Sparsity -- for m
-// functions, every d2 f_i / dx_j dv in a single forward sweep.
+// J v, the one product that is a forward sweep: one pass, a node per root,
+// whatever n is.  Rooted at the Jacobian's cells it is dJ/dv, every
+// d2 f_i / dx_j dv in a single sweep, with the Jacobian's layout.
 template <impl::Numeric T>
 [[nodiscard]] constexpr std::vector<NodeId>
-derive_jacobian_tangent(Arena<T> &b, const Jacobian &j) {
-  return tangent_sweep(b, j.partial, detail::seeds_along(b));
+derive_jvp(Arena<T> &b, std::span<const NodeId> roots) {
+  return tangent_sweep(b, roots, detail::seeds_along(b));
 }
 
 } // namespace ddx::rt

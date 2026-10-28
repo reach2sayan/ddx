@@ -128,7 +128,7 @@ element by element under a vector one. `len(v)` and `v.shape` give the shape and
 Shapes are checked where an expression is formed: a mismatch, or an index past
 the end, raises `errc.tensor_shape`. An output is always a scalar: a model
 that returns a vector raises `errc.tensor_shape` too, so reduce it or return
-its elements as a system. A model holding vector nodes is interpreted — no kernel is compiled for it, and `uses_kernel` stays `False`.
+its elements as a system. A model holding vector nodes compiles like any other: each vector operation is a vectorised loop in the kernel, and the answers agree with the interpreter's to a few ulps, the sums being taken in a different order.
 
 ### Written down instead
 
@@ -271,7 +271,7 @@ is the spelling.
 | `bad_syntax` | a string the grammar does not accept |
 | `unknown_function` | a string calls a function that does not exist |
 | `wrong_argument_count` | a string calls one with the wrong arity |
-| `jit_target`, `jit_module`, `jit_object`, `jit_verify`, `jit_lookup` | the compiler could not produce or link a kernel |
+| `jit_target`, `jit_module`, `jit_verify`, `jit_lookup` | the compiler could not produce or link a kernel |
 
 ## Compiling
 
@@ -297,8 +297,7 @@ that call waits for it.
 `points` is the batch you intend to hand one call, stated because the kernel is
 built before any call exists to infer it from. It decides the lane width and
 nothing else: a call carrying some other number is answered correctly, just not
-by the kernel that number would have built. `cache_dir` is deprecated and
-ignored: setting it warns.
+by the kernel that number would have built.
 
 ## Reference
 

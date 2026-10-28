@@ -182,7 +182,7 @@ TEST(RtRestrict, KeepsOnlyTheChosenColumns) {
                                  std::array<std::string_view, 2>{"T", "P"}));
 
   std::size_t cells_in_tp = 0;
-  for (const auto &row : eq.jacobian_pattern()->get()) {
+  for (const auto &row : eq.jacobian_pattern()->get().rows()) {
     cells_in_tp += static_cast<std::size_t>(
         std::ranges::count_if(row, [](std::uint32_t c) { return c < 2; }));
   }

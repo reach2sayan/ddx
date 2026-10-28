@@ -48,11 +48,6 @@ template <typename T>
 concept CTupleLike =
     requires { std::tuple_size<std::remove_cvref_t<T>>::value; };
 
-// Every sweep threads two of these: the point and the node-value cache.
-template <typename R>
-concept CNumericBuffer = std::ranges::random_access_range<R> &&
-                         Numeric<std::ranges::range_value_t<R>>;
-
 namespace detail {
 template <typename F, typename Seq>
 inline constexpr bool index_invocable_v = false;

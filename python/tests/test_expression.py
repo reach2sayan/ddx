@@ -53,10 +53,11 @@ def test_every_exported_unary_is_covered() -> None:
     # `select` is the one ternary.
     ternary = {"select"}
     # Not operations at all: these build, read or run an equation.
-    not_an_op = {"equation", "implicit", "param", "release_tapes", "var"}
+    not_an_op = {"derivative", "equation", "gradient", "implicit", "param",
+                 "release_tapes", "var"}
     # Vectors and matrices: factories and reductions, not scalar operations.
     vectors = {"dot", "gemv", "mat_constant", "outer", "pack", "sum",
-               "transpose", "vec", "vec_constant"}
+               "transpose", "vec", "vec_constant", "vec_param"}
     assert functions - binary - ternary - not_an_op - vectors == set(UNARY)
 
 
@@ -298,3 +299,26 @@ def test_a_comparison_is_infix_in_text() -> None:
     )
     assert ddx.equation("x != y").evaluate([1.0, 3.0]) == 1.0
     assert ddx.equation("x == y").evaluate([3.0, 3.0]) == 1.0
+
+
+def test_a_derivative_is_an_expression_to_build_on() -> None:
+    """d h/d Tr taken inside the model, with the pressure moving with T."""
+
+    def model() -> ddx.Expression:
+        T, Tr = ddx.var("T"), ddx.var("Tr")
+        ps = ddx.exp(1.0 - 2.0 / T)
+        h = Tr * Tr * ddx.log(ps) + ddx.sin(Tr) * ps
+        assert len(ddx.gradient(h)) == 2
+        return T * T * ddx.derivative(h, "Tr")
+
+    T, Tr = 1.3, 0.7
+    ps = math.exp(1.0 - 2.0 / T)
+    d = 2 * Tr * math.log(ps) + math.cos(Tr) * ps
+    value, gradient = ddx.equation(model).jacobian([T, Tr])
+    assert value == pytest.approx(T * T * d)
+    assert gradient == pytest.approx(
+        [2 * T * d + 4 * Tr + 2 * math.cos(Tr) * ps,
+         T * T * (2 * math.log(ps) - math.sin(Tr) * ps)]
+    )
+    with pytest.raises(ddx.Error):
+        ddx.equation(lambda: ddx.derivative(ddx.var("x"), "y"))

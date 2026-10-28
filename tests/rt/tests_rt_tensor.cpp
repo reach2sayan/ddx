@@ -170,7 +170,7 @@ Batch batch_jacobian(const auto &eq, std::size_t width, std::size_t points,
                      auto &&at) {
   Batch r{.xs = std::vector(width, std::vector<double>(points)),
           .f = std::vector<double>(points),
-          .g = std::vector(width, std::vector<double>(points))};
+          .g = std::vector(eq.symbols()->size(), std::vector<double>(points))};
   for (std::size_t p = 0; p < points; ++p) {
     const auto x = at(p);
     for (std::size_t i = 0; i < width; ++i) {
@@ -901,7 +901,9 @@ TEST(RtTensorDense, RefusesASystem) {
   EXPECT_EQ(
       sys.dense_hessian(std::span<const double>{composition(3)}).error().code,
       ddx::errc::not_single_output);
-  EXPECT_FALSE(sys.dense_hessian_cost().has_value());
+  EXPECT_EQ(sys.dense_hessian_cost().error().code,
+            ddx::errc::not_single_output);
+  EXPECT_FALSE(sys.uses_kernel(ddx::rt::Want::DenseHessian));
 }
 
 TEST(RtTensorDense, CostAtManySpecies) {
@@ -1040,6 +1042,36 @@ TEST(RtMatrix, ExpOfTemperatureTimesATableMatchesTheScalarGraph) {
 
 // The UNIQUAC-type tau_ij = exp(-(A0 + A1 T + A2 T^2) / (R T)), read
 // transposed as sum_j theta_j tau_ji.
+// A matrix chosen by a guard on T: the adjoint reaching T is contracted
+// through the chosen arm and only there.
+TEST(RtMatrix, AGuardedMatrixMatchesTheScalarGraph) {
+  constexpr std::size_t n = 6;
+  const auto b1 = pair_table(n, 1, -0.5, 0.5);
+  const auto b2 = pair_table(n, 2, 0.2, 1.1);
+  const auto want = ddx::rt::equation([&] {
+    const RE T = ddx::rt::var("T");
+    const auto x = symbols(n);
+    RE acc{0};
+    for (std::size_t i = 0; i < n; ++i) {
+      for (std::size_t j = 0; j < n; ++j) {
+        const std::size_t k = i + j * n;
+        acc += x[i] * select(T > 1.2, exp(T * b1[k]), b2[k] / T) * x[j];
+      }
+    }
+    return acc;
+  });
+  const auto got = ddx::rt::equation([&] {
+    const RE T = ddx::rt::var("T");
+    const RV x = ddx::rt::vec("x", n);
+    const auto M = select(T > 1.2, exp(T * ddx::rt::mat_constant(n, n, b1)),
+                          ddx::rt::mat_constant(n, n, b2) / T);
+    return dot(x, gemv(M, x));
+  });
+  for (const double T : {1.0, 1.3}) {
+    expect_same_with_temperature(want, got, at_temperature(n, T), 1e-11);
+  }
+}
+
 TEST(RtMatrix, TemperatureDependentTauMatchesTheScalarGraph) {
   constexpr std::size_t n = 12;
   constexpr double R = 8.314;
@@ -1339,7 +1371,8 @@ TEST(RtMatrix, DenseHessianRefusesACompositionDependentMatrix) {
   const auto at = composition(n);
   EXPECT_EQ(got.dense_hessian(std::span<const double>{at}).error().code,
             ddx::errc::tensor_shape);
-  EXPECT_FALSE(got.dense_hessian_cost().has_value()) << "no block, no cost";
+  EXPECT_EQ(got.dense_hessian_cost().error().code, ddx::errc::tensor_shape);
+  EXPECT_FALSE(got.uses_kernel(ddx::rt::Want::DenseHessian));
   expect_same_derivatives(want, got, at, 1e-11);
 }
 
@@ -1494,6 +1527,59 @@ TEST(RtTensorDense, TheBlockIsSummedNotStacked) {
 
 // exp(T B) is a few nodes whatever n is, and its gradient stays O(n): the
 // matrix is one row, not n^2 scalars.
+// A vector the point brings answers as the same vector baked in -- in the
+// dense sweep too, where its Pack is no term -- and a second vector through
+// the same equation answers for that one.
+TEST(RtMatrix, AParamVectorIsTheConstantItCarries) {
+  constexpr std::size_t n = 7;
+  const auto b = pair_table(n, 4, -0.5, 0.5);
+  const auto c = composition(n);
+  const auto model = [&](const RV &weights) {
+    const RV x = ddx::rt::vec("x", n);
+    return dot(x, gemv(ddx::rt::mat_constant(n, n, b), x)) +
+           dot(weights, log(x));
+  };
+  const auto baked = ddx::rt::equation([&] {
+    return model(ddx::rt::vec_constant(std::span<const double>{c}));
+  });
+  const auto param =
+      ddx::rt::equation([&] { return model(ddx::rt::vec_param("c", n)); });
+  ASSERT_FALSE(param.poisoned()) << param.status()->code;
+  EXPECT_TRUE(std::ranges::equal(*param.symbols(), *baked.symbols()));
+  EXPECT_EQ(param.params()->size(), n);
+
+  const auto x = drifted(n, 3);
+  auto with = x;
+  with.insert(with.end(), c.begin(), c.end());
+  const std::span<const double> at{x}, wat{with};
+  const auto d = direction(n);
+  expect_close(*baked.evaluate(at), *param.evaluate(wat), 0.0, "value");
+  expect_close(*baked.gradient(at), *param.gradient(wat), 0.0, "gradient");
+  expect_close(*baked.hessian(at), *param.hessian(wat), 0.0, "hessian");
+  expect_close(*baked.hvp(d, at), *param.hvp(d, wat), 0.0, "hvp");
+  expect_close(*baked.dense_hessian(at), *param.dense_hessian(wat), 0.0,
+               "dense_hessian");
+  EXPECT_EQ(baked.dense_hessian_cost()->n2_terms,
+            param.dense_hessian_cost()->n2_terms);
+
+  auto other = with;
+  other.back() *= 2.0;
+  EXPECT_NE(*param.evaluate(std::span<const double>{other}),
+            *param.evaluate(wat));
+  expect_batch_matches(param,
+                       batch_jacobian(param, 2 * n, 16, [&](std::size_t p) {
+                         auto at_p = drifted(n, p);
+                         const auto w = drifted(n, p + 7);
+                         at_p.insert(at_p.end(), w.begin(), w.end());
+                         return at_p;
+                       }));
+  expect_threads_agree([&] { return *param.gradient(wat); });
+  EXPECT_TRUE(ddx::rt::equation([] {
+                return sum(ddx::rt::vec("v", 2)) +
+                       sum(ddx::rt::vec_param("v", 2));
+              }).poisoned());
+}
+
 TEST(RtMatrix, NodesDoNotGrowWithTheSquare) {
   const auto nodes = [](std::size_t n) {
     const auto table = pair_table(n, 12, -0.5, 0.5);
@@ -1505,7 +1591,12 @@ TEST(RtMatrix, NodesDoNotGrowWithTheSquare) {
     const RE f = dot(x, gemv(exp(T * B), x));
     EXPECT_FALSE(f.poisoned());
     const std::size_t model = b.size() - n; // past the n Var leaves
-    (void)ddx::rt::build_reverse_jacobian(b, f.id(b));
+    const auto row = ddx::rt::build_reverse_jacobian(b, f.id(b));
+    // dT reads the table through gemvs: no n x n adjoint is formed for it.
+    const auto live = ddx::rt::detail::reachable(b, std::span{&row.partial[0], 1});
+    for (const auto v : std::views::iota(0u, static_cast<ddx::rt::NodeId>(b.size()))) {
+      EXPECT_FALSE(live[v] && b[v].op == ddx::rt::OpCode::Outer) << "node " << v;
+    }
     return std::pair{model, b.size()};
   };
   const auto [model_10, gradient_10] = nodes(10);
@@ -1528,10 +1619,10 @@ TEST(RtTensor, ReleasedTapesGrowBackToTheSameBits) {
   };
   const auto before = sweep();
   const auto &kept = ddx::rt::detail::thread_tapes<double>();
-  ASSERT_GT(kept.lane_vtape.capacity(), 0u);
+  ASSERT_GT(kept.block.vtape.capacity(), 0u);
   ddx::rt::release_tapes();
-  EXPECT_EQ(kept.lane_tape.capacity(), 0u);
-  EXPECT_EQ(kept.lane_vtape.capacity(), 0u);
+  EXPECT_EQ(kept.block.tape.capacity(), 0u);
+  EXPECT_EQ(kept.block.vtape.capacity(), 0u);
   EXPECT_EQ(sweep(), before);
 }
 
@@ -1590,13 +1681,91 @@ TEST(RtMatrix, CostAtAThousandSpecies) {
   auto tx = at;
   tx.insert(tx.begin(), 298.15);
   const std::span<const double> q{tx};
-  ASSERT_TRUE(mv.prepare({ddx::rt::Want::DenseHessian}).has_value());
+  ASSERT_TRUE(mv.prepare({ddx::rt::Want::Gradient, ddx::rt::Want::DenseHessian})
+                  .has_value());
+  (void)mv.gradient(q);
   (void)mv.dense_hessian(q);
   const auto t5 = std::chrono::steady_clock::now();
   ASSERT_TRUE(mv.dense_hessian(q).has_value());
   const auto t6 = std::chrono::steady_clock::now();
+  ASSERT_TRUE(mv.gradient(q).has_value());
+  const auto t7 = std::chrono::steady_clock::now();
   std::printf("[ ddx ] n = %zu: Debye-Hueckel + double sum dense_hessian "
               "%.2f ms; M(T) gradient %.2f ms, dense_hessian %.2f ms; T a "
-              "var, dense_hessian %.2f ms\n",
-              n, ms(t0, t1), ms(t2, t3), ms(t3, t4), ms(t5, t6));
+              "var, dense_hessian %.2f ms, gradient %.2f ms (%.2fx)\n",
+              n, ms(t0, t1), ms(t2, t3), ms(t3, t4), ms(t5, t6), ms(t6, t7),
+              ms(t6, t7) / ms(t2, t3));
+}
+
+// The graph's own simplifications over tensors: a commutative Zip or a Dot is
+// one node either way round, constants fold to the table they are, a gemv of
+// a scaled vector is the scale of the gemv, and the two products of a
+// quadratic form are a pair the schedule runs together.
+TEST(RtTensorGraph, CommutativeOpsAreOneNodeEitherWayRound) {
+  ddx::rt::Arena<> b;
+  const auto arena = ddx::rt::detail::scoped_arena(b);
+  const RV x = ddx::rt::vec(b, "x", 4);
+  const RV y = ddx::rt::vec(b, "y", 4);
+  EXPECT_EQ((x + y).id(b), (y + x).id(b));
+  EXPECT_EQ((x * y).id(b), (y * x).id(b));
+  EXPECT_EQ(dot(x, y).id(b), dot(y, x).id(b));
+  EXPECT_NE((x / y).id(b), (y / x).id(b));
+}
+
+TEST(RtTensorGraph, ConstantsFoldToTheirTable) {
+  using ddx::rt::OpCode;
+  ddx::rt::Arena<> b;
+  const auto arena = ddx::rt::detail::scoped_arena(b);
+  const std::vector<double> u{1, 2, 3};
+  const std::vector<double> w{0.5, -1, 4};
+  const std::vector<double> m{1, 2, 3, 4, 5, 6, 7, 8, 9}; // column-major
+  const RE d = dot(ddx::rt::vec_constant(u), ddx::rt::vec_constant(w));
+  ASSERT_EQ(b.op_of(d.id(b)), OpCode::Const);
+  EXPECT_EQ(b[d.id(b)].value, 0.5 - 2 + 12);
+
+  const RV p = gemv(ddx::rt::mat_constant(3, 3, m), ddx::rt::vec_constant(u));
+  ASSERT_EQ(b.op_of(p.id(b)), OpCode::VecConst);
+  EXPECT_EQ(b.tensors()[ddx::rt::detail::get<ddx::rt::TensorRef>(b[p.id(b)])
+                            .value]
+                .data,
+            (std::vector<double>{30, 36, 42}));
+
+  EXPECT_TRUE(ddx::rt::is_table(
+      b, exp(-0.5 * ddx::rt::mat_constant(3, 3, m)).id(b)));
+  // A symbol in the way leaves the node as it is.
+  const RV x = ddx::rt::vec(b, "x", 3);
+  EXPECT_EQ(b.op_of(dot(x, ddx::rt::vec_constant(u)).id(b)), OpCode::Dot);
+}
+
+TEST(RtTensorGraph, AGemvOfAScaledVectorIsTheScaledGemv) {
+  using ddx::rt::OpCode;
+  ddx::rt::Arena<> b;
+  const auto arena = ddx::rt::detail::scoped_arena(b);
+  const RV x = ddx::rt::vec(b, "x", 3);
+  const RE s = ddx::rt::var(b, "s");
+  const std::vector<double> m{1, 2, 3, 4, 5, 6, 7, 8, 9};
+  const RE g = gemv(ddx::rt::mat_constant(3, 3, m), s * x);
+  ASSERT_EQ(b.op_of(g.id(b)), OpCode::Scale);
+  EXPECT_EQ(b.op_of(b.operands(g.id(b))[1]), OpCode::MatVec);
+}
+
+TEST(RtTensorGraph, AQuadraticFormsTwoProductsAreAPair) {
+  constexpr std::size_t n = 5;
+  ddx::rt::Arena<> b;
+  const auto arena = ddx::rt::detail::scoped_arena(b);
+  const RV x = ddx::rt::vec(b, "x", n);
+  const RE f = dot(x, gemv(ddx::rt::mat_constant(n, n, matrix(n, n)), x));
+  const auto g =
+      ddx::rt::GraphBuilder{b}.value(f).build_jacobian().finish();
+  const auto steps = g.schedule();
+  const auto products = std::views::iota(0uz, steps.size()) |
+                        std::views::filter([&](std::size_t p) {
+                          return g.op_of(steps[p].node) ==
+                                 ddx::rt::OpCode::MatVec;
+                        }) |
+                        ddx::impl::to<std::vector<std::size_t>>();
+  ASSERT_EQ(products.size(), 2u);
+  EXPECT_EQ(products[1], products[0] + 1);
+  EXPECT_EQ(g.pairs()[steps[products[0]].node], steps[products[1]].node);
+  EXPECT_EQ(g.pairs()[steps[products[1]].node], steps[products[0]].node);
 }

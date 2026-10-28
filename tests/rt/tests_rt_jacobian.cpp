@@ -400,7 +400,7 @@ TEST(RtJacobian, AFoldedPartialIsAStructuralHole) {
   // Row 0 keeps c alone, row 1 keeps d alone, row 2 is a constant.
   EXPECT_EQ(pattern.nonzeros(), 2u);
   const auto widths =
-      pattern |
+      pattern.rows() |
       std::views::transform([](const auto &row) { return row.size(); }) |
       ddx::impl::to<std::vector<std::size_t>>();
   EXPECT_EQ(widths, (std::vector<std::size_t>{1, 1, 0}));
@@ -616,7 +616,7 @@ TEST(RtJacobian, SelectSurvivesEveryWalkerThatRebuildsANode) {
 
 #ifdef DDX_HAS_JIT
   eq.options({.backend = ddx::jit::Backend::Compile, .points = 1});
-  ASSERT_TRUE(eq.wait_for_kernel());
+  ASSERT_TRUE(eq.uses_kernel());
   const auto compiled = *eq.jacobian(std::span<const double>{at});
   EXPECT_EQ(swept, compiled) << "the kernel and the sweep disagree on a select";
 #endif
@@ -664,8 +664,8 @@ TEST(RtJacobian, ComparisonsAgreeWithTheKernelAtNaN) {
     const std::array<double, 3> at{nan, 1.0, 2.0}; // c, f, t
     const double interpreted = *raw.evaluate(std::span<const double>{at});
     raw.options({.backend = ddx::jit::Backend::Compile, .points = 1});
-    ASSERT_TRUE(raw.wait_for_kernel());
-    // Through jacobian(), not evaluate(): wait_for_kernel() waits on the
+    ASSERT_TRUE(raw.uses_kernel());
+    // Through jacobian(), not evaluate(): uses_kernel() builds the
     // Jacobian lane, and the values lane would still be interpreting.
     double value = 0.0;
     std::vector<double> cells(*raw.jacobian_columns());
@@ -685,7 +685,7 @@ TEST(RtJacobian, ComparisonsAgreeWithTheKernelAtNaN) {
   }
 
   model.options({.backend = ddx::jit::Backend::Compile, .points = 1});
-  ASSERT_TRUE(model.wait_for_kernel());
+  ASSERT_TRUE(model.uses_kernel());
   for (const auto [i, at] : std::views::enumerate(points)) {
     const double compiled = *model.evaluate(std::span<const double>{at});
     const double interpreted = swept[static_cast<std::size_t>(i)];
@@ -796,4 +796,50 @@ TEST(RtJacobian, PowAtAZeroBaseIsGuardedOnTheGraph) {
   }
   EXPECT_DOUBLE_EQ(ddx::rt::evaluate(b, cubic.partial[0], std::array{2.0}),
                    12.0);
+}
+
+// A partial taken during construction is a node to build on: Proton's frozen-
+// argument shape, d h/d Tr at the reference with the pressure moving with T.
+TEST(RtJacobian, DerivativeBuildsOnTheGraph) {
+  using RE = ddx::rt::Expression<>;
+  const auto eq = ddx::rt::equation([] {
+    const RE T = ddx::rt::var("T"), Tr = ddx::rt::var("Tr"),
+             P = ddx::rt::var("P");
+    const RE ps = exp(1.0 - 2.0 / T);
+    const RE h = Tr * Tr * log(ps) + sin(Tr) * ps;
+    EXPECT_EQ(ddx::rt::gradient(h).size(), 3u);
+    return T * T * ddx::rt::derivative(h, "Tr") +
+           P * (1.0 + ddx::rt::derivative(h, "P"));
+  });
+  const double T = 1.3, Tr = 0.7, P = 2.0;
+  const double ps = std::exp(1.0 - 2.0 / T), D = 2 * Tr * std::log(ps) +
+                                                 std::cos(Tr) * ps;
+  expect_close(*eq.evaluate(T, Tr, P), T * T * D + P);
+  const auto J = *eq.jacobian(T, Tr, P);
+  expect_close(J[0], 2 * T * D + 4 * Tr + 2 * std::cos(Tr) * ps);
+  expect_close(J[1], T * T * (2 * std::log(ps) - std::sin(Tr) * ps));
+  expect_close(J[2], 1.0);
+  EXPECT_EQ(eq.jacobian_pattern()->get().nonzeros(), 3u);
+}
+
+TEST(RtJacobian, DerivativeRefusals) {
+  using RE = ddx::rt::Expression<>;
+  const auto refused = [](auto make) {
+    return ddx::rt::equation([&] { return make(); }).evaluate(1.0).error().code;
+  };
+  EXPECT_EQ(refused([] {
+              return ddx::rt::derivative(ddx::rt::var("x") * 2.0, "y");
+            }),
+            ddx::errc::unknown_symbol);
+  EXPECT_EQ(refused([] {
+              const RE x = ddx::rt::var("x");
+              return x + ddx::rt::derivative(x * ddx::rt::param("p"), "p");
+            }),
+            ddx::errc::unknown_symbol);
+  EXPECT_EQ(refused([] {
+              const auto v = ddx::rt::vec("v", 2);
+              return sum(v) + ddx::rt::derivative(v, "v[0]");
+            }),
+            ddx::errc::tensor_shape);
+  EXPECT_TRUE(ddx::rt::derivative(RE{2.0}, "x").poisoned());
 }

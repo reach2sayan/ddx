@@ -24,35 +24,11 @@ namespace bp = boost::parser;
 static_assert(BOOST_PARSER_USE_STD_TUPLE,
               "rt::text: Boost.Parser must use std::tuple, not Hana");
 
-// Named rather than found: the accessors reach an action through argument-
-// dependent lookup on the parse context, and the context names boost::parser
-// only through its error handler -- which below is one of ours.
-using bp::_attr;
-using bp::_globals;
-using bp::_locals;
-using bp::_pass;
-using bp::_val;
-
 // The name and arguments of a call, which the grammar reads as one sequence and
 // an aggregate attribute takes apart.
 struct Call {
   std::string name;
   std::vector<std::uint32_t> args;
-};
-
-// only that the parse failed and leaves the errc to say what about it did.
-struct Silent {
-  template <typename Iter, typename Sentinel>
-  constexpr bp::error_handler_result
-  operator()(Iter, Sentinel, const bp::parse_error<Iter> &) const {
-    return bp::error_handler_result::fail;
-  }
-  template <typename Context>
-  constexpr void diagnose(bp::diagnostic_kind, std::string_view,
-                          const Context &) const {}
-  template <typename Context, typename Iter>
-  constexpr void diagnose(bp::diagnostic_kind, std::string_view,
-                          const Context &, Iter) const {}
 };
 
 // What the actions build.  Carried through with_globals rather than captured:
@@ -285,7 +261,9 @@ result<Ast> parse(const std::string_view source) {
   Building building;
   // No expectation points in the grammar, so nothing above throws; the catch is
   // what keeps that a property of this file rather than of every caller.
-  Silent quiet;
+  // With no callbacks it says only that the parse failed, and leaves the errc
+  // to say what about it did.
+  const bp::callback_error_handler quiet;
   const auto root = [&]() noexcept -> std::optional<std::uint32_t> {
     try {
       return bp::parse(

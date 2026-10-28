@@ -26,7 +26,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ._ddx import (Backend, Call, Expression, OptLevel, Restricted, VecLib, Want, abs,  # noqa: A004  -- the opcode is spelled `abs`, as it is in C++
+from ._ddx import (Backend, Call, Expression, OptLevel, Restricted, VecLib, Want,
+                   abs,  # noqa: A004  -- the opcode is spelled `abs`, as it is in C++
                    acos, acosh, add, asin, asinh, atan, atan2, atanh,
                    cbrt, cos, cosh, div, erf, errc, exp,
                    has_jit, hypot, le, lt,
@@ -36,9 +37,9 @@ from ._ddx import (Backend, Call, Expression, OptLevel, Restricted, VecLib, Want
                    pow,  # noqa: A004
                    implicit, param, select, sign, sin, sinh, sqrt, tan, tanh,
                    var,
-                   dot, gemv, mat_constant, outer, pack, release_tapes,
+                   derivative, dot, gemv, gradient, mat_constant, outer, pack, release_tapes,
                    sum,  # noqa: A004
-                   Transposed, transpose, vec, vec_constant, )
+                   Transposed, transpose, vec, vec_constant, vec_param, )
 from ._options import Options
 
 if TYPE_CHECKING:
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
 		"""A refusal from ddx, carrying the code it refused with."""
 		code: errc
 	
+	
 	class Equation(_extension.Equation):
 		"""A frozen model, with the conveniences this module installs."""
 		__name__: str
@@ -61,7 +63,9 @@ if TYPE_CHECKING:
 		def compile(self, **kwargs: Any) -> Equation:  # noqa: ANN401, D102
 			pass
 	
+	
 	Model = Callable[[], Expression | tuple[Expression, ...]]
+	
 	
 	def equation(model: Model | str | list[str]) -> Equation:
 		"""Build an equation from a model, or from expressions written as text --
@@ -75,12 +79,15 @@ else:
 # build that was never installed.
 from ._ddx import __version__
 
+
 # The two places pydantic sits between a caller and the struct.
 def _get_options(self: Equation) -> Options:
 	return Options._from_native(self._options)
 
+
 def _set_options(self: Equation, options: Options) -> None:
 	self._options = options._native()
+
 
 def _compile(self: Equation, **kwargs: Any) -> Equation:  # noqa: ANN401
 	"""Compile this equation's graph, and answer once the kernel is built.
@@ -93,16 +100,17 @@ def _compile(self: Equation, **kwargs: Any) -> Equation:  # noqa: ANN401
 	self.wait_for_kernel()
 	return self
 
+
 Equation.options = property(_get_options, _set_options)  # type: ignore[assignment]
 Equation.compile = _compile  # type: ignore[method-assign]
 
 __all__ = ["Backend", "Call", "Equation", "Error", "Expression", "OptLevel", "Restricted",
-           "Options", "VecLib", "Want", "__version__",	"abs", "acos", "acosh",	"add",
-           "asin", "asinh",	"atan", "atan2", "atanh", "cbrt", "cos",
+           "Options", "VecLib", "Want", "__version__", "abs", "acos", "acosh", "add",
+           "asin", "asinh", "atan", "atan2", "atanh", "cbrt", "cos",
            "cosh", "div", "equation", "erf", "errc", "exp",
            "has_jit", "hypot", "le", "log", "log10", "lt", "max",
            "min", "mul", "neg", "param", "pow", "select", "sign", "sin", "sinh", "sqrt",
            "implicit",
            "tan", "tanh", "var",
-           "dot", "gemv", "mat_constant", "outer", "pack", "release_tapes",
-           "sum", "Transposed", "transpose", "vec", "vec_constant",]
+           "derivative", "dot", "gemv", "gradient", "mat_constant", "outer", "pack", "release_tapes",
+           "sum", "Transposed", "transpose", "vec", "vec_constant", "vec_param", ]

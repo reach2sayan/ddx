@@ -39,7 +39,7 @@ TEST(JitExtern, AKernelCallsTheFunctionAndAgreesWithTheSweep) {
   const auto swept = model();
   auto compiled = model();
   compiled.options({.backend = ddx::jit::Backend::Compile});
-  ASSERT_TRUE(compiled.wait_for_kernel());
+  ASSERT_TRUE(compiled.uses_kernel());
   ASSERT_TRUE(compiled.uses_kernel());
 
   // Enough points for the wide loop and a ragged tail.
@@ -70,7 +70,7 @@ TEST(JitExtern, AKernelCallsTheFunctionAndAgreesWithTheSweep) {
 
   // The Hessian lane compiles from the swept graph, so it matches exactly.
   compiled.options({.backend = ddx::jit::Backend::Compile, .points = 1});
-  ASSERT_TRUE(compiled.wait_for_kernel(ddx::rt::Want::Hessian));
+  ASSERT_TRUE(compiled.uses_kernel(ddx::rt::Want::Hessian));
   EXPECT_EQ(*compiled.hessian(0.3, 1.1), *swept.hessian(0.3, 1.1));
 }
 
@@ -102,7 +102,7 @@ TEST(JitExtern, EveryFunctionAndComponentSurvivesTheRebuild) {
   const auto swept = model();
   auto compiled = model();
   compiled.options({.backend = ddx::jit::Backend::Compile});
-  ASSERT_TRUE(compiled.wait_for_kernel());
+  ASSERT_TRUE(compiled.uses_kernel());
   ASSERT_TRUE(compiled.uses_kernel());
   // The spine is long enough to be blocked, so the last bits may differ; a
   // wrong function or component differs in the first.

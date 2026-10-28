@@ -60,8 +60,7 @@ TEST(RtSystem, JacobianStacksTheScalarRows) {
       EXPECT_DOUBLE_EQ(J[k * 3 + j], row[j]) << "d f" << k << " / d x" << j;
     }
     EXPECT_TRUE(std::ranges::equal(
-        *std::ranges::next(pattern.begin(), static_cast<std::ptrdiff_t>(k)),
-        *eq.jacobian_pattern()->get().begin()))
+        pattern.rows()[k], eq.jacobian_pattern()->get().rows()[0]))
         << "row " << k;
   }
 }

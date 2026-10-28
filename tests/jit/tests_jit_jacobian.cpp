@@ -205,7 +205,7 @@ TEST(JitJacobian, ADenseHessianSweptFirstLeavesTheKernelsBits) {
   ASSERT_TRUE(swept.dense_hessian(std::array{0.7, 1.3}).has_value());
   for (auto *eq : {&fresh, &swept}) {
     eq->options({.backend = ddx::jit::Backend::Compile, .points = 1});
-    ASSERT_TRUE(eq->wait_for_kernel(ddx::rt::Want::Value));
+    ASSERT_TRUE(eq->uses_kernel(ddx::rt::Want::Value));
   }
   for (const double x : {0.3, 0.7, 1.1, 2.9, 4.2}) {
     const std::array p{x, 1.3};

@@ -27,7 +27,7 @@ TEST(RtParam, SymbolsTakeTheOrderTheyAreNamedIn) {
   EXPECT_DOUBLE_EQ(*eq.evaluate(1.0, 2.0), 4.0);
   EXPECT_DOUBLE_EQ(*eq.evaluate("a"_s = 2.0, "b"_s = 1.0), 4.0);
   EXPECT_EQ(*eq.jacobian(1.0, 2.0), (std::vector{4.0, 4.0}));
-  const auto &row = *eq.jacobian_pattern()->get().begin();
+  const auto row = eq.jacobian_pattern()->get().rows()[0];
   EXPECT_EQ(std::vector(row.begin(), row.end()),
             (std::vector<std::uint32_t>{0, 1}));
 }

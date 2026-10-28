@@ -145,11 +145,9 @@ DDX_EXPR_UNFN(abs, AbsOp, "abs")
   constexpr auto NAME(const LHS &a, S s) noexcept {                            \
     return NAME(a, promote_scalar<typename LHS::value_type>(s));               \
   }
-DDX_EXPR_BINFN(pow, PowOp)
-DDX_EXPR_BINFN(atan2, Atan2Op)
-DDX_EXPR_BINFN(hypot, HypotOp)
-DDX_EXPR_BINFN(max, MaxOp)
-DDX_EXPR_BINFN(min, MinOp)
+#define DDX_EXPR_BINROW(fn, Name, ...) DDX_EXPR_BINFN(fn, Name##Op)
+DDX_BINARY_MATH_TABLE(DDX_EXPR_BINROW)
+#undef DDX_EXPR_BINROW
 #undef DDX_EXPR_BINFN
 
 namespace detail {
@@ -240,7 +238,7 @@ public:
   using value_type = T;
 
   [[nodiscard]] constexpr auto derivative() const noexcept {
-    return Lit < T, frozen ? 0 : 1 > {};
+    return Lit<T, frozen ? 0 : 1>{};
   }
 
   // A frozen symbol takes the seed's value and drops its derivative slots.

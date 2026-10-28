@@ -51,14 +51,12 @@ template <Numeric S, md::CStaticExtents Ext,
           md::CLayoutFor<Ext> Layout = md::layout_right>
 class md_tensor {
 public:
-  using element_type = S;
   using value_type = S;
   using extents_type = Ext;
   using layout_type = Layout;
   using mapping_type = typename Layout::template mapping<Ext>;
   using index_type = typename Ext::index_type;
   using reference = S &;
-  using const_reference = const S &;
 
   static constexpr std::size_t rank() noexcept { return Ext::rank(); }
 
@@ -84,28 +82,26 @@ public:
     return Ext{}.extent(r);
   }
 
-  // Const-ness rides on the qualifier, so one body serves every category.
-#define DDX_MD_TENSOR_ACCESSORS(Q, SELF)                                       \
-  [[nodiscard]] constexpr auto *data() Q noexcept {                            \
-    return SELF.data_.data();                                                  \
-  }                                                                            \
-                                                                               \
-  template <std::integral... I>                                                \
-    requires(sizeof...(I) == Ext::rank())                                      \
-  [[nodiscard]] constexpr auto &operator[](I... idx) Q noexcept {              \
-    return SELF.data_[static_cast<std::size_t>(                                \
-        kMapping(static_cast<index_type>(idx)...))];                           \
-  }                                                                            \
-                                                                               \
-  [[nodiscard]] constexpr decltype(auto) at_index(                             \
-      const std::array<index_type, Ext::rank()> &idx) Q noexcept {             \
-    return index_apply<Ext::rank()>(                                           \
-        [&]<std::size_t... K>() -> decltype(auto) {                            \
-          return SELF.data_[static_cast<std::size_t>(kMapping(idx[K]...))];    \
-        });                                                                    \
+  // Const-ness rides on `self`, so one body serves every category.
+  [[nodiscard]] constexpr auto *data(this auto &&self) noexcept {
+    return DDX_FWD(self).data_.data();
   }
-  DDX_VALUE_CATEGORIES(DDX_MD_TENSOR_ACCESSORS)
-#undef DDX_MD_TENSOR_ACCESSORS
+
+  template <std::integral... I>
+    requires(sizeof...(I) == Ext::rank())
+  [[nodiscard]] constexpr auto &operator[](this auto &&self,
+                                           I... idx) noexcept {
+    return DDX_FWD(self).data_[static_cast<std::size_t>(
+        kMapping(static_cast<index_type>(idx)...))];
+  }
+
+  [[nodiscard]] constexpr decltype(auto)
+  at_index(this auto &&self,
+           const std::array<index_type, Ext::rank()> &idx) noexcept {
+    return index_apply<Ext::rank()>([&]<std::size_t... K>() -> decltype(auto) {
+      return DDX_FWD(self).data_[static_cast<std::size_t>(kMapping(idx[K]...))];
+    });
+  }
 
   [[nodiscard]] friend constexpr bool operator==(const md_tensor &a,
                                                  const md_tensor &b) noexcept {
@@ -123,20 +119,5 @@ using nd_tensor_t = md_tensor<S, uniform_extents_t<N, Order>, Layout>;
 template <Numeric S, std::size_t Lead, std::size_t N, std::size_t Order,
           typename Layout = layout_leading_simplex<1>>
 using nd_stack_t = md_tensor<S, stacked_extents_t<Lead, N, Order>, Layout>;
-
-// Index-based, not a pointer walk into data(): under a packed mapping a row is
-// not contiguous.  The sweeps fill a plain array first, since a rank-1 mdspan
-// is not a range.
-template <Numeric S, md::CStaticExtents Ext, md::CLayoutFor<Ext> Layout,
-          std::ranges::input_range R>
-  requires(Ext::rank() == 2)
-constexpr void assign_row(md_tensor<S, Ext, Layout> &t,
-                          typename Ext::index_type i, R &&src) noexcept {
-  for (auto &&[k, v] : std::views::zip(
-           std::views::iota(typename Ext::index_type{0}, Ext{}.extent(1)),
-           src)) {
-    t[i, k] = v;
-  }
-}
 
 } // namespace ddx::impl

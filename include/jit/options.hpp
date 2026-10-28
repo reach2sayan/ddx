@@ -5,25 +5,27 @@
 
 #include <boost/describe.hpp>
 
-#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <optional>
 #include <string>
-#include <string_view>
 
 // What a caller says about compiling, and nothing that compiles: header types
 // in every build, so an Equation has one shape whether or not a backend was
 // compiled in.  jit/kernel.hpp holds the LLVM side.
 namespace ddx::rt {
 template <impl::Numeric T> class Graph;
+namespace detail {
+template <impl::Numeric T> struct TensorCall;
+} // namespace detail
 } // namespace ddx::rt
 
 namespace ddx::jit {
 
 // Off: glibc's vector routines are ~4 ULP where the scalar ones are ~0.5.
 enum class VecLib : std::uint8_t { None, Auto, Libmvec };
+BOOST_DESCRIBE_ENUM(VecLib, None, Auto, Libmvec)
 
 struct compile_error {
   errc code;
@@ -41,6 +43,7 @@ template <typename T> using compile_result = std::expected<T, compile_error>;
 
 // LLVM's -O0 to -O3, for the IR pipeline and for codegen.
 enum class OptLevel : std::uint8_t { O0, O1, O2, O3 };
+BOOST_DESCRIBE_ENUM(OptLevel, O0, O1, O2, O3)
 
 static_assert(DDX_JIT_DEFAULT_OPT >= 0 && DDX_JIT_DEFAULT_OPT <= 3);
 inline constexpr OptLevel default_opt_level =
@@ -73,15 +76,8 @@ private:
 
 // Compile builds each kernel on the first call that needs it, and that call
 // waits for it.
-enum class Backend : std::uint8_t {
-  Interpret,
-  Compile,
-#ifdef __clang__
-  Adapt __attribute__((unavailable("removed; use Backend::Compile"))) = Compile
-#else
-  Adapt [[deprecated("removed; use Backend::Compile")]] = Compile
-#endif
-};
+enum class Backend : std::uint8_t { Interpret, Compile };
+BOOST_DESCRIBE_ENUM(Backend, Interpret, Compile)
 
 // What decides the machine code, and nothing else.
 struct Codegen {
@@ -106,8 +102,8 @@ struct Codegen {
                        (), ())
 };
 
-// The identity, and around it the policy: whether and when to compile, what to
-// keep.  None of the policy reaches the emitter.
+// The identity, and around it the policy: whether to compile, and for what
+// batch.  None of the policy reaches the emitter.
 struct Options {
   // Read by Equation, never by Compiler::compile().
   Backend backend = Backend::Interpret;
@@ -116,17 +112,6 @@ struct Options {
   std::size_t points = 1;
   Codegen codegen{};
   bool time_passes = false; // Per-pass timing to stderr
-  // Nothing is cached.  The deprecation is on the conversion, not the member:
-  // a deprecated member warns wherever a struct holding Options is copied.
-  struct Ignored {
-    Ignored() = default;
-    template <typename S>
-      requires std::constructible_from<std::string_view, const S &>
-    [[deprecated("ignored: no object cache")]] Ignored(const S &) noexcept {}
-    [[nodiscard]] static constexpr bool empty() noexcept { return true; }
-    friend bool operator==(const Ignored &, const Ignored &) = default;
-  };
-  Ignored cache_dir{};
 
   friend bool operator==(const Options &, const Options &) = default;
 };
@@ -153,14 +138,21 @@ struct KernelShape {
   std::size_t values = 0;
   std::size_t jacobian = 0;
   std::size_t hessian = 0;
+  // Elements of T in the interpreter's two tapes, `lanes` wide, which a
+  // kernel's tensor steps sweep through.  Zero for a scalar graph.
+  std::size_t tapes = 0;
 
   template <impl::Numeric T>
-  [[nodiscard]] static KernelShape of(const rt::Graph<T> &g) {
+  [[nodiscard]] static KernelShape of(const rt::Graph<T> &g,
+                                      std::size_t lanes = 1) {
     const auto &layout = g.layout();
-    return KernelShape{.arity = g.arity(),
-                       .values = layout.values,
-                       .jacobian = layout.jacobian,
-                       .hessian = layout.hessian};
+    return KernelShape{
+        .arity = g.arity(),
+        .values = layout.values,
+        .jacobian = layout.jacobian,
+        .hessian = layout.hessian,
+        .tapes =
+            g.has_tensors() ? (g.tape_rows() + g.tensors().extent) * lanes : 0};
   }
   [[nodiscard]] constexpr std::size_t outputs() const noexcept {
     return values + jacobian + hessian;

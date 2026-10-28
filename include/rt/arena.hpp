@@ -2,6 +2,7 @@
 
 #include "ops/algebra.hpp"
 #include "rt/apply.hpp"
+#include "rt/kernels.hpp"
 #include "rt/opcode.hpp"
 #include "util/config.hpp"
 #include "util/error.hpp"
@@ -363,6 +364,98 @@ struct Shape {
     }
   }
 }
+// A tensor node's arithmetic over its operands' elements, through a kernel
+// table: a row into `to`, a reduction into `reduced`.  What the sweep runs per
+// lane and a fold runs once; `in(i)` and `scalar(i)` read operand i.  False
+// for a node that is not arithmetic -- a copy, a list, a table, a select.
+template <impl::Numeric U>
+DDX_ALWAYS_INLINE constexpr bool tensor_row(const auto &s, NodeId v, auto in,
+                                            auto scalar, std::span<U> to,
+                                            U &reduced, const auto &kt) {
+  const auto &n = s[v];
+  switch (n.op) {
+  case OpCode::Map:
+    kt.map(detail::get<OpCode>(n), in(0), to);
+    break;
+  case OpCode::Zip:
+    kt.zip(detail::get<OpCode>(n), in(0), in(1), to);
+    break;
+  case OpCode::Scale:
+    kt.scale(scalar(0), in(1), to);
+    break;
+  case OpCode::Sum:
+    reduced = kt.sum(in(0));
+    break;
+  case OpCode::Dot:
+    reduced = kt.dot(in(0), in(1));
+    break;
+  case OpCode::Gather:
+    reduced = in(0)[detail::get<Element>(n).value];
+    break;
+  case OpCode::AddAt:
+    std::ranges::copy(in(0), to.begin());
+    to[detail::get<Element>(n).value] =
+        to[detail::get<Element>(n).value] + scalar(1);
+    break;
+  // The matrix rows; a matrix is column-major.
+  case OpCode::Diag: {
+    const auto d = in(0);
+    std::ranges::fill(to, U{});
+    for (std::size_t i = 0; i < d.size(); ++i) {
+      to[i + i * d.size()] = d[i];
+    }
+    break;
+  }
+  case OpCode::Outer: {
+    const auto u = in(0);
+    const auto g = in(1);
+    for (std::size_t j = 0; j < g.size(); ++j) {
+      kt.scale(g[j], u, to.subspan(j * u.size(), u.size()));
+    }
+    break;
+  }
+  case OpCode::RowScale: { // diag(a) M: every column scaled by a
+    const auto d = in(0);
+    const auto m = in(1);
+    for (std::size_t j = 0; j < m.size() / d.size(); ++j) {
+      kt.zip(OpCode::Mul, d, m.subspan(j * d.size(), d.size()),
+             to.subspan(j * d.size(), d.size()));
+    }
+    break;
+  }
+  case OpCode::ColScale: { // M diag(b): column j scaled by b[j]
+    const auto m = in(0);
+    const auto d = in(1);
+    const std::size_t rows = m.size() / d.size();
+    for (std::size_t j = 0; j < d.size(); ++j) {
+      kt.scale(d[j], m.subspan(j * rows, rows), to.subspan(j * rows, rows));
+    }
+    break;
+  }
+  case OpCode::MatVec: {
+    const Shape m = shape_of(s, n.in[0]);
+    kt.gemv(m.rows, m.cols, in(0), in(1), to,
+            detail::get<Orientation>(n) == Orientation::transposed);
+    break;
+  }
+  case OpCode::MatMul: {
+    const Shape l = shape_of(s, n.in[0]);
+    kt.gemm(l.rows, l.cols, shape_of(s, n.in[1]).cols, in(0), in(1), to);
+    break;
+  }
+  case OpCode::RowOf: {
+    const auto from = in(0);
+    const std::size_t rows = shape_of(s, n.in[0]).rows;
+    for (std::size_t j = 0; j < to.size(); ++j) {
+      to[j] = from[detail::get<Element>(n).value + j * rows];
+    }
+    break;
+  }
+  default:
+    return false;
+  }
+  return true;
+}
 // A MatRow over a mat_constant table, either way round: a constant.
 [[nodiscard]] constexpr bool is_table(const auto &s, NodeId v) {
   return s.op_of(v) == OpCode::MatRow &&
@@ -380,7 +473,6 @@ struct Shape {
 template <impl::Numeric T> class DDX_TEMPLATE_API Arena {
 public:
   using value_type = T;
-  using node_type = Node<T>;
 
   [[nodiscard]] constexpr NodeId constant(const T &v) {
     return intern({.op = OpCode::Const, .value = v});
@@ -476,6 +568,14 @@ public:
     }
     return formed(n);
   }
+  // The same node with operand `slot` replaced: rebuild() maps by value, which
+  // would replace both operands of a Dot(x, x).
+  [[nodiscard]] constexpr NodeId replaced(NodeId v, std::size_t slot,
+                                          NodeId u) {
+    Node<T> n = model_[v];
+    n.in[slot] = u;
+    return formed(n);
+  }
 
   [[nodiscard]] constexpr const Node<T> &operator[](NodeId id) const {
     return model_[id];
@@ -546,6 +646,14 @@ public:
     const auto at = std::ranges::lower_bound(by_name_, name, {}, name_of());
     return at != by_name_.end() && name_of()(*at) == name ? std::optional{*at}
                                                           : std::nullopt;
+  }
+  // The slot of the symbol named `name`: a param or an implicit is an input,
+  // not a symbol.
+  [[nodiscard]] constexpr result<std::uint32_t>
+  symbol(std::string_view name) const {
+    const auto in = lookup(name);
+    return in && in->op == OpCode::Var ? result<std::uint32_t>{in->index}
+                                       : fail(errc::unknown_symbol);
   }
 
   // A Const of `v`, or a VecConst of nothing but `v`: what a cancelled term
@@ -899,14 +1007,34 @@ private:
     return in;
   }
 
-  // A node with a list or a tensor node is interned as given: past fold() --
-  // no identity below reads a vector or a list -- and past the commutative
-  // swap, which is a Zip's inner op's business and not Zip's.  fold() and the
-  // swap are binary questions, and a select's are fold_select()'s.
+  // A node with a list or a tensor node is past fold() -- no identity below
+  // reads a vector or a list -- but not past the commutative swap, a Zip's by
+  // its inner op and a Dot's by Mul's, nor past fold_tensor().  A scale by
+  // one is its vector.  A gemv of a
+  // scaled vector is the scale of the gemv, where * commutes: what lets a
+  // reverse sweep's product share its matrix pass with the forward one.
   [[nodiscard]] constexpr NodeId formed(Node<T> n) {
     auto &[a, b, c] = n.in;
     if (has_list(n.op) || kind_of(n.op) == Kind::Tensor) {
-      return intern(n);
+      const bool commutes =
+          (n.op == OpCode::Zip && is_commutative<T>(detail::get<OpCode>(n))) ||
+          (n.op == OpCode::Dot && is_commutative<T>(OpCode::Mul));
+      if (commutes && b < a) {
+        std::swap(a, b);
+      }
+      if (n.op == OpCode::Scale && holds(a, 1)) {
+        return b;
+      }
+      if constexpr (impl::CCommutativeMultiply<T>) {
+        if (n.op == OpCode::MatVec && model_.nodes[b].op == OpCode::Scale) {
+          const auto [s, v, _] = model_.nodes[b].in;
+          return make(
+              OpCode::Scale, s,
+              make(opcode<OpCode::MatVec>, detail::get<Orientation>(n), a, v));
+        }
+      }
+      const NodeId id = intern(n);
+      return fold_tensor(id).value_or(id);
     }
     if (kind_of(n.op) == Kind::Ternary) {
       if (const auto chosen = fold_select(a, b, c)) {
@@ -921,6 +1049,88 @@ private:
       }
     }
     return intern(n);
+  }
+
+  // A tensor node over constants, computed now by the reference kernels the
+  // sweep runs: the table it is, or the Const a reduction is.  Not while
+  // constant evaluating, which computes no tensor row.
+  constexpr std::optional<NodeId> fold_tensor(NodeId v) {
+    if consteval {
+      return std::nullopt;
+    }
+    using K = reference::Kernels<T>;
+    const Node<T> n = model_.nodes[v];
+    const auto [a, b, c] = n.in;
+    const auto scalar = [this](NodeId u) -> std::optional<T> {
+      if (u == no_node || model_.nodes[u].op != OpCode::Const) {
+        return std::nullopt;
+      }
+      return model_.nodes[u].value;
+    };
+    // Column-major, a table either way round.
+    const auto elements = [this](NodeId u) -> std::optional<std::vector<T>> {
+      if (u == no_node) {
+        return std::nullopt;
+      }
+      const Node<T> &x = model_.nodes[u];
+      if (x.op == OpCode::VecConst) {
+        return model_.tensors[detail::get<TensorRef>(x).value].data;
+      }
+      if (x.op != OpCode::MatRow ||
+          model_.nodes[x.in[0]].op != OpCode::MatConst) {
+        return std::nullopt;
+      }
+      const TensorConst<T> &m =
+          model_.tensors[detail::get<TensorRef>(model_.nodes[x.in[0]]).value];
+      if (detail::get<Orientation>(x) == Orientation::plain) {
+        return m.data;
+      }
+      std::vector<T> t(m.data.size());
+      for (std::size_t i = 0; i < m.rows; ++i) {
+        for (std::size_t j = 0; j < m.cols; ++j) {
+          t[j + i * m.cols] = m.data[i + j * m.rows];
+        }
+      }
+      return t;
+    };
+    const Shape s = shape_of(*this, v);
+    std::vector<T> out(s.size());
+    const auto table = [&]() -> NodeId {
+      const NodeId t = tensor_const(s.rows, s.cols, out);
+      return s.cols == 1 ? t
+                         : make(opcode<OpCode::MatRow>, Orientation::plain, t);
+    };
+    if (n.op == OpCode::Pack) {
+      for (const auto [e, item] : arguments(*this, v) | std::views::enumerate) {
+        const auto x = scalar(item);
+        if (!x) {
+          return std::nullopt;
+        }
+        out[static_cast<std::size_t>(e)] = *x;
+      }
+      return table();
+    }
+    if (has_list(n.op)) {
+      return std::nullopt;
+    }
+    // Every operand a constant, or nothing to do.
+    const auto u = elements(a);
+    const auto w = elements(b);
+    const auto su = scalar(a);
+    const auto sw = scalar(b);
+    if ((a != no_node && !u && !su) || (b != no_node && !w && !sw) ||
+        c != no_node) {
+      return std::nullopt;
+    }
+    T reduced{};
+    const bool computed = tensor_row(
+        *this, v, [&](int i) { return std::span<const T>{i == 0 ? *u : *w}; },
+        [&](int i) { return i == 0 ? *su : *sw; }, std::span<T>{out}, reduced,
+        K{});
+    if (!computed) {
+      return std::nullopt;
+    }
+    return detail::is_scalar(n) ? constant(reduced) : table();
   }
 
   // A Count-carrying node -- a Pack, a StackRows or a fold -- over `items`.
@@ -1073,12 +1283,83 @@ reads_of(const auto &s, const Step &step) {
   return out;
 }
 
+// Which step each tensor node is computed inside, else no_node.  A kernel
+// forms an elementwise node read once, by a step that reads each element of
+// it once, inside that step's loop rather than as a row of its own; the sweep
+// forms every row regardless.  A step reads the elements of the operands at
+// these slots once each; any other slot -- a gemv's vector, an outer's two --
+// it reads over and over.
+[[nodiscard]] constexpr bool reads_once(OpCode op, std::size_t slot) noexcept {
+  switch (op) {
+  case OpCode::Map:
+  case OpCode::Sum:
+  case OpCode::MatVec:
+  case OpCode::ColScale:
+  case OpCode::Diag:
+  case OpCode::MatRow:
+  case OpCode::Gather:
+  case OpCode::RowOf:
+  case OpCode::AddAt:
+    return slot == 0;
+  case OpCode::Scale:
+  case OpCode::RowScale:
+    return slot == 1;
+  case OpCode::Zip:
+  case OpCode::Dot:
+  case OpCode::VSelect:
+    return true;
+  default:
+    return false;
+  }
+}
+[[nodiscard]] constexpr std::vector<NodeId>
+fused_into(const auto &s, std::span<const Step> schedule,
+           std::span<const NodeId> outputs) {
+  std::vector<NodeId> into(s.size(), no_node);
+  std::vector<std::uint32_t> uses(s.size(), 0);
+  for (const Step &step : schedule) {
+    for_each_operand(s, step.node, [&](NodeId u) { ++uses[u]; });
+  }
+  for (const NodeId o : outputs) {
+    uses[o] += 2;
+  }
+  const auto elementwise = [&s](NodeId u) {
+    switch (s.op_of(u)) {
+    case OpCode::Map:
+    case OpCode::Zip:
+    case OpCode::Scale:
+    case OpCode::Outer:
+    case OpCode::RowScale:
+    case OpCode::ColScale:
+    case OpCode::VSelect:
+    case OpCode::Diag:
+      return is_tensor(s[u]);
+    case OpCode::MatRow:
+      return get<Orientation>(s[u]) == Orientation::transposed;
+    default:
+      return false;
+    }
+  };
+  for (const Step &step : schedule) {
+    if (has_list(s.op_of(step.node))) {
+      continue;
+    }
+    for (const auto [slot, u] : s.operands(step.node) | std::views::enumerate) {
+      if (u != no_node && uses[u] == 1 && elementwise(u) &&
+          reads_once(s.op_of(step.node), static_cast<std::size_t>(slot))) {
+        into[u] = step.node;
+      }
+    }
+  }
+  return into;
+}
+
 // The last schedule position at which each node is read -- its own, if
 // nothing reads it -- and past the end for an output.  Indexed by id over the
-// source.
+// source.  A node computed inside its reader reads its operands there.
 [[nodiscard]] constexpr std::vector<std::uint32_t>
 last_uses(const auto &s, std::span<const Step> schedule,
-          std::span<const NodeId> outputs) {
+          std::span<const NodeId> outputs, std::span<const NodeId> fused = {}) {
   std::vector<std::uint32_t> last(s.size(), 0);
   // Ascending, and a node is formed before anything reads it, so the last
   // write is the last use.
@@ -1086,6 +1367,14 @@ last_uses(const auto &s, std::span<const Step> schedule,
     last[step.node] = static_cast<std::uint32_t>(p);
     for (const NodeId u : reads_of(s, step)) {
       last[u] = static_cast<std::uint32_t>(p);
+    }
+  }
+  // Descending, so a chain of them reaches the step that forms it.
+  for (const Step &step : schedule | std::views::reverse) {
+    if (!fused.empty() && fused[step.node] != no_node) {
+      for_each_operand(s, step.node, [&](NodeId u) {
+        last[u] = std::max(last[u], last[step.node]);
+      });
     }
   }
   for (const NodeId o : outputs) {
@@ -1163,22 +1452,25 @@ struct TensorLayout {
 namespace detail {
 [[nodiscard]] constexpr TensorLayout
 tensor_layout(const auto &s, std::span<const Step> schedule,
-              std::span<const NodeId> outputs = {}) {
+              std::span<const NodeId> outputs = {},
+              std::span<const NodeId> fused = {}) {
   TensorLayout out;
   if (std::ranges::none_of(schedule, [&s](const Step &step) {
         return is_tensor(s[step.node]);
       })) {
     return out;
   }
-  const auto last = last_uses(s, schedule, outputs);
+  const auto last = last_uses(s, schedule, outputs, fused);
   out.rows.resize(s.size());
   std::vector<TensorRow> free; // (at, width) runs no live row holds
   for (const auto [p, step] : schedule | std::views::enumerate) {
     const auto at = static_cast<std::uint32_t>(p);
-    // A table's MatRow is the table, read in place: no row of its own.
+    // A table's MatRow is the table, read in place: no row of its own unless
+    // it is an output, which leaves through a row.
     if (is_tensor(s[step.node]) &&
         !(is_table(s, step.node) &&
-          get<Orientation>(s[step.node]) == Orientation::plain)) {
+          get<Orientation>(s[step.node]) == Orientation::plain &&
+          !std::ranges::contains(outputs, step.node))) {
       const std::uint32_t w = width_of(s, step.node);
       const auto fit = std::ranges::find(free, w, &TensorRow::width);
       if (fit == free.end()) {
@@ -1194,6 +1486,14 @@ tensor_layout(const auto &s, std::span<const Step> schedule,
     // once per node however often this step reads it.
     auto reads = reads_of(s, step);
     reads.push_back(step.node);
+    // What a node computed here reads, read here too.
+    for (std::size_t r = 0; !fused.empty() && r < reads.size(); ++r) {
+      if (fused[reads[r]] == step.node ||
+          (fused[reads[r]] != no_node &&
+           std::ranges::contains(reads, fused[reads[r]]))) {
+        for_each_operand(s, reads[r], [&](NodeId u) { reads.push_back(u); });
+      }
+    }
     std::ranges::sort(reads);
     reads.erase(std::ranges::unique(reads).begin(), reads.end());
     for (const NodeId u : reads) {

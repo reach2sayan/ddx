@@ -68,39 +68,29 @@ struct WantInfo {
   BlockShape jacobian;
   BlockShape hessian;
 };
-inline constexpr auto want_table = [] {
-  std::array<WantInfo, 0
-#define DDX_RT_WANT(...) +1
-             DDX_RT_WANT_TABLE(DDX_RT_WANT)
-#undef DDX_RT_WANT
-             >
-      t{};
-  std::size_t i = 0;
+inline constexpr std::array want_table{
 #define DDX_RT_WANT(Name, single, second, rebalance, direction, values, jac,   \
                     hes)                                                       \
-  t[i++] = {#Name,                                                             \
-            single,                                                            \
-            second,                                                            \
-            rebalance,                                                         \
-            Direction::direction,                                              \
-            values,                                                            \
-            BlockShape::jac,                                                   \
-            BlockShape::hes};
-  DDX_RT_WANT_TABLE(DDX_RT_WANT)
+  WantInfo{#Name,                                                              \
+           single,                                                             \
+           second,                                                             \
+           rebalance,                                                          \
+           Direction::direction,                                               \
+           values,                                                             \
+           BlockShape::jac,                                                    \
+           BlockShape::hes},
+    DDX_RT_WANT_TABLE(DDX_RT_WANT)
 #undef DDX_RT_WANT
-  return t;
-}();
+};
 inline constexpr std::size_t want_count = want_table.size();
 
 // The Wants in table order, so a pipeline zipped against them needs no cast
 // back from an index.
-inline constexpr auto want_values = [] {
-  std::array<Want, want_count> out{};
-  for (const std::size_t i : std::views::iota(0uz, want_count)) {
-    out[i] = static_cast<Want>(i);
-  }
-  return out;
-}();
+inline constexpr std::array want_values{
+#define DDX_RT_WANT(Name, ...) Want::Name,
+    DDX_RT_WANT_TABLE(DDX_RT_WANT)
+#undef DDX_RT_WANT
+};
 
 [[nodiscard]] constexpr const WantInfo &want_info(Want w) noexcept {
   return want_table[std::to_underlying(w)];
@@ -247,12 +237,28 @@ public:
       }
       g.has_tensors_ |= detail::on_tensors(g.properties_[v]);
     }
+    if (g.has_tensors_) {
+      g.pair_products();
+    }
     // The tape packed by liveness, scalar rows and tensor rows alike; off the
     // arena, which holds the tensor table the widths come from.
     auto packed = detail::pack_rows(b, g.schedule_, g.outputs_);
     g.rows_ = std::move(packed.by_id);
     g.tape_rows_ = packed.rows;
-    g.tensors_ = detail::tensor_layout(b, g.schedule_, g.outputs_);
+    g.fused_ = detail::fused_into(g, g.schedule_, g.outputs_);
+    g.tensors_ = detail::tensor_layout(b, g.schedule_, g.outputs_, g.fused_);
+    if (g.has_tensors_) {
+      g.shapes_.resize(b.size());
+      for (const Step &step : g.schedule_) {
+        const NodeId v = step.node;
+        if (b.op_of(v) == OpCode::MatConst) {
+          const auto &m = b.tensors()[detail::get<TensorRef>(b[v]).value];
+          g.shapes_[v] = {.rows = m.rows, .cols = m.cols};
+        } else if (detail::is_tensor(b[v])) {
+          g.shapes_[v] = shape_of(b, v);
+        }
+      }
+    }
     g.output_rows_ = g.outputs_ | std::views::transform([&g, &b](NodeId o) {
                        if (!detail::is_tensor(b[o])) {
                          return TensorRow{.at = g.rows_[o]};
@@ -297,13 +303,26 @@ public:
   }
   // Every has_list node's ids, shared with the arena: what arguments() reads.
   [[nodiscard]] std::span<const NodeId> lists() const { return lists_; }
-  // Whether a live node is a tensor op: what a kernel, which computes scalars
-  // only, refuses, and what makes the sweep carry a second tape.
+  // Whether a live node is a tensor op: what makes the sweep carry a second
+  // tape, and a kernel call the interpreter's step for that node.
   [[nodiscard]] bool has_tensors() const noexcept { return has_tensors_; }
   // Where each tensor-valued node's rows sit in that tape.
   [[nodiscard]] const TensorLayout &tensors() const noexcept {
     return tensors_;
   }
+  // By id, a tensor node's rows x cols, and a table's; what a kernel's loops
+  // run over.
+  [[nodiscard]] Shape shape(NodeId v) const { return shapes_[v]; }
+  // By id, the step a kernel computes a node inside, or no_node where the
+  // node is a row of its own.  The tensor layout keeps such a node's operands
+  // live until that step.
+  [[nodiscard]] NodeId fused_into(NodeId v) const {
+    return fused_.empty() ? no_node : fused_[v];
+  }
+  // By id, the other product of a pair -- one matrix times one vector, both
+  // ways round -- which the schedule runs next to it, else no_node.  Empty
+  // for a graph with no tensor.
+  [[nodiscard]] std::span<const NodeId> pairs() const { return paired_; }
 
   // How many input columns `xs` carries: the symbol count is not the width.
   [[nodiscard]] std::size_t arity() const { return inputs_.total(); }
@@ -351,6 +370,49 @@ private:
             .jacobian = all.subspan(counts_.values, counts_.jacobian),
             .hessian = all.subspan(counts_.values + counts_.jacobian,
                                    counts_.hessian)};
+  }
+
+  // M v and M^T v, which a quadratic form's value and gradient both ask for,
+  // are a pair: the later step moves to just after the earlier, where both
+  // its operands already are, so a kernel reads the matrix once for the two.
+  void pair_products() {
+    paired_.assign(properties_.size(), no_node);
+    std::vector<bool> later(properties_.size(), false);
+    std::vector<NodeId> products;
+    for (const NodeId v : schedule_ | std::views::transform(&Step::node)) {
+      if (op_of(v) != OpCode::MatVec) {
+        continue;
+      }
+      const auto mate = std::ranges::find_if(products, [&](NodeId u) {
+        return paired_[u] == no_node && operands(u)[0] == operands(v)[0] &&
+               operands(u)[1] == operands(v)[1];
+      });
+      if (mate == products.end()) {
+        products.push_back(v);
+        continue;
+      }
+      paired_[*mate] = v;
+      paired_[v] = *mate;
+      later[v] = true;
+    }
+    std::vector<Step> moved(properties_.size());
+    for (const Step &step : schedule_) {
+      if (later[step.node]) {
+        moved[step.node] = step;
+      }
+    }
+    std::vector<Step> out;
+    out.reserve(schedule_.size());
+    for (const Step &step : schedule_) {
+      if (later[step.node]) {
+        continue;
+      }
+      out.push_back(step);
+      if (paired_[step.node] != no_node) {
+        out.push_back(moved[paired_[step.node]]);
+      }
+    }
+    schedule_ = std::move(out);
   }
 
   // Nothing but the outputs and what they reach needs to be emitted.
@@ -410,6 +472,9 @@ private:
   std::vector<NodeId> lists_;
   bool has_tensors_ = false;
   TensorLayout tensors_;
+  std::vector<Shape> shapes_;
+  std::vector<NodeId> fused_;
+  std::vector<NodeId> paired_;
   std::vector<std::uint32_t> rows_;
   std::size_t tape_rows_ = 0;
   std::vector<bool> live_;
@@ -436,45 +501,37 @@ public:
 
   // A system: m functions over the same symbols.
   constexpr GraphBuilder &values(std::initializer_list<Expression<T>> roots) {
-    roots_ =
-        roots |
-        std::views::transform([&](const auto &e) { return e.id(*arena_); }) |
-        impl::to<std::vector<NodeId>>();
-    blocks_.values = roots_;
-    return *this;
+    return values_from(roots | std::views::transform([&](const auto &e) {
+                         return e.id(*arena_);
+                       }) |
+                       impl::to<std::vector<NodeId>>());
   }
 
-  // Nodes a caller already has: Equation builds its derivative in the
-  // constructor and freezes only on a batch call.
-  constexpr GraphBuilder &values_from(std::span<const NodeId> roots) {
+  // Nodes a caller already has.  Not `output`: the functions to differentiate
+  // only, so the graph carries no value block and whatever only the value
+  // needs is not live.
+  constexpr GraphBuilder &values_from(std::span<const NodeId> roots,
+                                      bool output = true) {
     roots_.assign(roots.begin(), roots.end());
-    blocks_.values = roots_;
+    blocks_.values = output ? roots_ : std::vector<NodeId>{};
     return *this;
   }
 
-  // The functions to differentiate, and not outputs: the graph then carries
-  // no value block, and whatever only the value needs is not live.
-  constexpr GraphBuilder &roots_from(std::span<const NodeId> roots) {
-    roots_.assign(roots.begin(), roots.end());
-    blocks_.values.clear();
-    return *this;
-  }
-
-  // The whole sweep rather than its nodes: the pattern is what makes the block
-  // readable, so the two must not travel separately.
-  constexpr GraphBuilder &jacobian_from(const Jacobian &j) {
-    jacobian_pattern_ = j.pattern;
-    return block(&OutputBlocks::jacobian, j.partial);
-  }
-
-  // Every partial, in symbol order.  One reverse sweep per function.
+  // Every partial, in symbol order, with the pattern that makes the block
+  // readable.  One reverse sweep per function.
   constexpr GraphBuilder &build_jacobian() {
-    return jacobian_from(rt::derive_jacobian(*arena_, roots_));
+    const Jacobian j = rt::derive_jacobian(*arena_, roots_);
+    jacobian_pattern_ = j.pattern;
+    blocks_.jacobian = j.partial;
+    return *this;
   }
 
   // Compressed by colour, not n x n: a handful of columns when banded.
   GraphBuilder &build_hessian() {
-    return hessian_from(rt::derive_hessian(*arena_, roots_.front()));
+    const Hessian h = rt::derive_hessian(*arena_, roots_.front());
+    colouring_ = h.colouring;
+    blocks_.hessian = h.compressed;
+    return *this;
   }
 
   [[nodiscard]] Graph<T> finish(bool contract = true) const {
@@ -483,16 +540,6 @@ public:
   }
 
 private:
-  constexpr GraphBuilder &block(std::vector<NodeId> OutputBlocks::*which,
-                                std::span<const NodeId> ids) {
-    (blocks_.*which).assign(ids.begin(), ids.end());
-    return *this;
-  }
-  constexpr GraphBuilder &hessian_from(const Hessian &h) {
-    colouring_ = h.colouring;
-    return block(&OutputBlocks::hessian, h.compressed);
-  }
-
   Arena<T> *arena_;
   std::vector<NodeId> roots_;
   OutputBlocks blocks_;

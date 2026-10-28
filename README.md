@@ -114,8 +114,8 @@ and matrices takes the whole arm under a scalar condition and element by
 element under a condition of the arms' shape, a scalar arm taking the other's
 shape; the arm not taken never reaches a derivative, even where it is
 infinite. They compute at
-the equation's scalar (`double` or `float`), are never an output, and are
-computed by a kernel table of that scalar — `rt::use_tensor_kernels(table)` or
+the equation's scalar (`double` or `float`), are never an output, and,
+interpreted, are computed by a kernel table of that scalar — `rt::use_tensor_kernels(table)` or
 `eq.tensor_kernels(table)`, built with `rt::tensor_kernel_table<K, T>()` over a
 type satisfying `rt::TensorKernels<K, T>` (`T` defaults to `double`). Inherit
 `rt::reference::Kernels<T>` and replace only the rows your library does better;
@@ -164,6 +164,7 @@ const auto sys = *rt::equation("x*x + y*y - 4", "x*y - 1");
 | Binary | `pow` `atan2` `hypot` `max` `min` |
 | Comparison | `<` `<=` `>` `>=` `==` `!=` — answer `1.0` or `0.0` |
 | Conditional | `select(cond, if_true, if_false)` |
+| Derivative | `derivative(f, "x")`, `gradient(f)` — expressions, to build on inside the lambda |
 
 A loop of `+=`, `*=` or `/=` is stored as one node over all its terms, not a
 chain of one node per step, so a long sum or product stays cheap to evaluate
@@ -259,16 +260,14 @@ Nothing compiles unless asked. Under `Compile`, the first call to each lane
 
 ```cpp
 eq.options({.backend = rt::Backend::Compile, .points = 4096});
-eq.wait_for_kernel();          // optional: build the Jacobian kernel now
+eq.uses_kernel();              // optional: build the Jacobian kernel now; true
 eq.jacobian(xs, f, g, n);      // compiled
-eq.uses_kernel();              // true
 ```
 
 | `Backend` | Is |
 |---|---|
 | `Interpret` | default; LLVM is never loaded |
 | `Compile` | compile each lane on its first call |
-| `Adapt` | `Compile`; an error under Clang, deprecated elsewhere |
 
 | `jit::Options` field | Default | Is |
 |---|---|---|
@@ -279,10 +278,14 @@ eq.uses_kernel();              // true
 | `codegen.slp_vectorize`, `codegen.loop_vectorize` | `false` | extra vectorisation |
 | `codegen.veclib` | `None` | `Libmvec` for vector transcendentals |
 | `codegen.contract` | `DDX_FP_FLAGS` | fuse multiply-add |
-| `cache_dir` | empty | deprecated, ignored |
 | `time_passes` | `false` | per-pass timing to stderr |
 
-`kernel_level()` says which `codegen_level` the answering kernel was built at.
+A model with vectors compiles too. Each vector operation is a loop in the
+kernel, vectorised by LLVM, and an elementwise operation read once is computed
+inside its reader's loop rather than stored; only the dense Hessian's matrix
+products still go through the interpreter. The kernel's sums take their own order, so a compiled
+answer agrees with the interpreted one to a few ulps rather than to the bit,
+and a kernel table computes the interpreted sweep only.
 
 ## Python
 

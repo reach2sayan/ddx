@@ -1,4 +1,3 @@
-#include "jit/format.hpp"
 #include "jit/kernel.hpp"
 #include "jit/tests_jit_common.hpp"
 #include "rt/derivative.hpp"
@@ -9,7 +8,6 @@
 
 #include <format>
 #include <regex>
-#include <sstream>
 #include <string>
 
 // A scalar fallback is silent -- right answers, slowly -- so vectorisation is
@@ -46,7 +44,7 @@ std::string ir_for(auto build, std::size_t nvars, ddx::jit::Options opt = {}) {
   }
   const auto root = build(vars);
   const auto graph = Graph<>::freeze(b, std::array{root.id(b)});
-  return std::format("{}", ddx::jit::Ir{compiler(), graph, opt});
+  return *compiler().ir(graph, opt);
 }
 
 // nounwind is what Kernel::operator()'s noexcept rests on, and willreturn lets
@@ -130,7 +128,7 @@ TEST(JitVectorize, JacobianLoopVectorises) {
                          .value(x * y + x * x - y)
                          .build_jacobian()
                          .finish();
-  const auto ir = std::format("{}", ddx::jit::Ir{compiler(), graph});
+  const auto ir = *compiler().ir(graph);
   EXPECT_TRUE(has_vector_doubles(ir)) << "the Jacobian loop stayed scalar";
 }
 
@@ -150,7 +148,7 @@ TEST(JitVectorize, WideTranscendentalJacobianIsVector) {
   const auto graph =
       ddx::rt::GraphBuilder{b}.value(f).build_jacobian().finish();
   ASSERT_EQ(graph.layout().values + graph.layout().jacobian, 17u);
-  const auto ir = std::format("{}", ddx::jit::Ir{compiler(), graph});
+  const auto ir = *compiler().ir(graph);
   EXPECT_TRUE(has_vector_doubles(ir)) << "33 columns stayed scalar";
   EXPECT_NE(ir.find("llvm.masked.load"), std::string::npos)
       << "the batch tail is not masked";
@@ -196,18 +194,5 @@ TEST(JitVectorize, EveryVectorSymbolResolves) {
 } // namespace
 
 namespace {
-
-// operator<< goes through the formatter, as it does for an expression.
-TEST(JitVectorize, IrStreamsAndFormatsAlike) {
-  Arena<> b;
-  const auto x = var(b, "x");
-  const auto graph = Graph<>::freeze(b, std::array{sin(x).id(b)});
-  const ddx::jit::Ir ir{compiler(), graph};
-
-  std::ostringstream os;
-  os << ir;
-  EXPECT_EQ(os.str(), std::format("{}", ir));
-  EXPECT_NE(os.str().find("define"), std::string::npos);
-}
 
 } // namespace

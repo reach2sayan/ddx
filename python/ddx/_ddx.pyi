@@ -3,6 +3,8 @@ ddx's runtime expression graph and LLVM JIT
 """
 from __future__ import annotations
 import enum
+import numpy
+import numpy.typing
 import typing
 __all__: list[str] = ['Backend', 'Call', 'Equation', 'Error', 'Expression',
                       'VecLib', 'Want', 'abs', 'acos', 'acosh', 'add', 'asin',
@@ -13,7 +15,7 @@ __all__: list[str] = ['Backend', 'Call', 'Equation', 'Error', 'Expression',
                       'max', 'min', 'mul', 'neg', 'pow', 'select', 'sign',
                       'sin', 'sinh', 'sqrt', 'tan', 'tanh', 'var',
                       'implicit', 'param', 'Restricted',
-                      'dot', 'gemv',
+                      'derivative', 'dot', 'gemv', 'gradient', 'vec_param',
                       'mat_constant', 'outer', 'pack', 'release_tapes', 'sum', 'Transposed', 'transpose', 'vec', 'vec_constant']
 class Backend(enum.IntEnum):
     """
@@ -220,7 +222,6 @@ class Want(enum.IntEnum):
 class _Options:
     __hash__: typing.ClassVar[None] = None
     backend: Backend
-    cache_dir: str
     contract: bool
     loop_vectorize: bool
     slp_vectorize: bool
@@ -269,13 +270,12 @@ class errc(enum.IntEnum):
     tensor_kernel: typing.ClassVar[errc]  # value = <errc.tensor_kernel: 17>
     jit_target: typing.ClassVar[errc]  # value = <errc.jit_target: 18>
     jit_module: typing.ClassVar[errc]  # value = <errc.jit_module: 19>
-    jit_object: typing.ClassVar[errc]  # value = <errc.jit_object: 20>
-    jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 21>
-    jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 22>
-    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 23>
-    unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 24>
-    wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 25>
-    unclosed_implicit: typing.ClassVar[errc]  # value = <errc.unclosed_implicit: 26>
+    jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 20>
+    jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 21>
+    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 22>
+    unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 23>
+    wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 24>
+    unclosed_implicit: typing.ClassVar[errc]  # value = <errc.unclosed_implicit: 25>
     @classmethod
     def __new__(cls, value):
         ...
@@ -362,12 +362,20 @@ def param(name: str) -> Expression:
     ...
 def var(name: str) -> Expression:
     ...
+def derivative(f: Expression, symbol: str) -> Expression:
+    ...
 def dot(u: Expression, v: Expression) -> Expression:
     ...
 def gemv(matrix: Expression, v: Expression, transposed: bool = False) -> Expression:
     """M v, or M^T v when transposed: a mat_constant table or a computed matrix."""
-def mat_constant(rows: typing.SupportsInt | typing.SupportsIndex, cols: typing.SupportsInt | typing.SupportsIndex, data: typing.Sequence[typing.SupportsFloat]) -> Expression:
+def gradient(f: Expression) -> list[Expression]:
+    """df/dx for every symbol, in declaration order."""
+@typing.overload
+def mat_constant(rows: typing.SupportsInt | typing.SupportsIndex, cols: typing.SupportsInt | typing.SupportsIndex, data: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> Expression:
     """A constant rows x cols matrix from column-major data."""
+@typing.overload
+def mat_constant(matrix: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> Expression:
+    """A constant matrix from a 2-D array."""
 def outer(u: Expression, w: Expression) -> Expression:
     """u w^T, the matrix of every product of an element of u with one of w."""
 def pack(scalars: typing.Sequence[Expression]) -> Expression:
@@ -380,7 +388,9 @@ def sum(v: Expression) -> Expression:
     ...
 def vec(name: str, n: typing.SupportsInt | typing.SupportsIndex) -> Expression:
     """n symbols named name[0] .. name[n-1], packed."""
-def vec_constant(data: typing.Sequence[typing.SupportsFloat]) -> Expression:
+def vec_param(name: str, n: typing.SupportsInt | typing.SupportsIndex) -> Expression:
+    """n params named name[0] .. name[n-1], packed."""
+def vec_constant(data: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> Expression:
     ...
 __version__: str = ...
 has_jit: bool = True
