@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <ranges>
 #include <utility>
 #include <vector>
@@ -314,6 +315,32 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
     }
   };
 
+  // dot(A, M) where A is N (.) u w^T, a matrix adjoint as MatVec and the
+  // elementwise rules built it: u . (M (.) N) w, never forming A, which then
+  // nothing reads.  A sum of such contracts term by term.
+  const auto contracted = [&](this const auto &self, NodeId id,
+                              const Expression<T> &m)
+      -> std::optional<Expression<T>> {
+    const Node<T> &at = b[id];
+    if (at.op == OpCode::Outer && shape_of(b, id).cols > 1) {
+      return dot(expr(at.in[0]), gemv(m, expr(at.in[1])));
+    }
+    if (at.op != OpCode::Zip) {
+      return std::nullopt;
+    }
+    const OpCode op = detail::get<OpCode>(at);
+    if (op == OpCode::Add) {
+      const auto l = self(at.in[0], m);
+      const auto r = l ? self(at.in[1], m) : std::nullopt;
+      return r ? std::optional{*l + *r} : std::nullopt;
+    }
+    if (op != OpCode::Mul) {
+      return std::nullopt;
+    }
+    const auto l = self(at.in[1], m * expr(at.in[0]));
+    return l ? l : self(at.in[0], m * expr(at.in[1]));
+  };
+
   for (const NodeId v : detail::live_ids(live) | std::views::reverse) {
     // no_node is "nothing reached it", a folded Const 0 is "what reached it
     // cancelled"; neither contributes below.
@@ -411,7 +438,9 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
         });
         break;
       case OpCode::Scale:
-        add_to(node.in[0], g, [&] { return dot(a, expr(node.in[1])); });
+        add_to(node.in[0], g, [&] {
+          return contracted(adj[v], expr(node.in[1])).value_or(dot(a, expr(node.in[1])));
+        });
         add_to(node.in[1], g, [&] { return expr(node.in[0]) * a; });
         break;
       case OpCode::Sum:
