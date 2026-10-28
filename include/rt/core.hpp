@@ -548,7 +548,9 @@ public:
 
   // Build `want`'s pipeline now and answer whether a kernel answers it.
   [[nodiscard]] bool wait_for_kernel(Want want = Want::Jacobian) const {
-    return !poisoned() && static_cast<bool>(pipeline(want)->kernel);
+    return ready(want)
+        .transform([&] { return static_cast<bool>(pipeline(want)->kernel); })
+        .value_or(false);
   }
 
   // One Taylor sweep: seed c[0] = x0, c[1] = 1, then un-normalise c[Order].
