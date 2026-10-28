@@ -115,20 +115,40 @@ template <impl::Numeric T>
   return pack(std::span<const Expression<T>>{scalars});
 }
 
-// n symbols named `name[0]` .. `name[n-1]`, packed: the one piece of sugar.
+namespace detail {
+// n inputs of `kind` named `name[0]` .. `name[n-1]`, packed.
+template <impl::Numeric T>
+[[nodiscard]] Expression<T> indexed(Arena<T> &b, OpCode kind,
+                                    std::string_view name, std::size_t n) {
+  const auto leaves = std::views::iota(0uz, n) |
+                      std::views::transform([&](std::size_t i) {
+                        return named(b, kind, std::format("{}[{}]", name, i));
+                      }) |
+                      impl::to<std::vector<Expression<T>>>();
+  return pack(b, std::span<const Expression<T>>{leaves});
+}
+} // namespace detail
+
+// n symbols named `name[0]` .. `name[n-1]`, packed; vec_param the same of
+// params, a vector the point brings and nothing differentiates.
 template <impl::Numeric T>
 [[nodiscard]] Expression<T> vec(Arena<T> &b, std::string_view name,
                                 std::size_t n) {
-  const auto symbols = std::views::iota(0uz, n) |
-                       std::views::transform([&](std::size_t i) {
-                         return var(b, std::format("{}[{}]", name, i));
-                       }) |
-                       impl::to<std::vector<Expression<T>>>();
-  return pack(b, std::span<const Expression<T>>{symbols});
+  return detail::indexed(b, OpCode::Var, name, n);
+}
+template <impl::Numeric T>
+[[nodiscard]] Expression<T> vec_param(Arena<T> &b, std::string_view name,
+                                      std::size_t n) {
+  return detail::indexed(b, OpCode::Param, name, n);
 }
 template <impl::Numeric T = double>
 [[nodiscard]] Expression<T> vec(std::string_view name, std::size_t n) {
   return detail::in_arena<T>([&](Arena<T> &b) { return vec(b, name, n); });
+}
+template <impl::Numeric T = double>
+[[nodiscard]] Expression<T> vec_param(std::string_view name, std::size_t n) {
+  return detail::in_arena<T>(
+      [&](Arena<T> &b) { return vec_param(b, name, n); });
 }
 
 // A constant vector or matrix, column-major.

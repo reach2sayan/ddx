@@ -398,6 +398,12 @@ PYBIND11_MODULE(_ddx, m) {
       },
       pyb::arg("name"), pyb::arg("n"));
   m.def(
+      "vec_param",
+      [in_arena](std::string_view name, std::size_t n) {
+        return in_arena([&](auto &b) { return rt::vec_param(b, name, n); });
+      },
+      pyb::arg("name"), pyb::arg("n"));
+  m.def(
       "pack",
       [](const std::vector<PyExpression> &scalars) {
         return PyExpression::pack(scalars, ddx::py::current_arena);

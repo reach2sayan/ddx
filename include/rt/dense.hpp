@@ -512,7 +512,9 @@ private:
     case OpCode::Pack:
       if (is_symbols(v)) {
         out.push_back({.kind = Term::Kind::Identity});
-      } else {
+      } else if (std::ranges::any_of(arguments(b_, v), [this](NodeId g) {
+                   return row(g) != no_node;
+                 })) {
         ++n2_;
         out.push_back(
             {.kind = Term::Kind::Dense, .a = stacked(arguments(b_, v))});

@@ -170,7 +170,7 @@ Batch batch_jacobian(const auto &eq, std::size_t width, std::size_t points,
                      auto &&at) {
   Batch r{.xs = std::vector(width, std::vector<double>(points)),
           .f = std::vector<double>(points),
-          .g = std::vector(width, std::vector<double>(points))};
+          .g = std::vector(eq.symbols()->size(), std::vector<double>(points))};
   for (std::size_t p = 0; p < points; ++p) {
     const auto x = at(p);
     for (std::size_t i = 0; i < width; ++i) {
@@ -1497,6 +1497,59 @@ TEST(RtTensorDense, TheBlockIsSummedNotStacked) {
 
 // exp(T B) is a few nodes whatever n is, and its gradient stays O(n): the
 // matrix is one row, not n^2 scalars.
+// A vector the point brings answers as the same vector baked in -- in the
+// dense sweep too, where its Pack is no term -- and a second vector through
+// the same equation answers for that one.
+TEST(RtMatrix, AParamVectorIsTheConstantItCarries) {
+  constexpr std::size_t n = 7;
+  const auto b = pair_table(n, 4, -0.5, 0.5);
+  const auto c = composition(n);
+  const auto model = [&](const RV &weights) {
+    const RV x = ddx::rt::vec("x", n);
+    return dot(x, gemv(ddx::rt::mat_constant(n, n, b), x)) +
+           dot(weights, log(x));
+  };
+  const auto baked = ddx::rt::equation([&] {
+    return model(ddx::rt::vec_constant(std::span<const double>{c}));
+  });
+  const auto param =
+      ddx::rt::equation([&] { return model(ddx::rt::vec_param("c", n)); });
+  ASSERT_FALSE(param.poisoned()) << param.status()->code;
+  EXPECT_TRUE(std::ranges::equal(*param.symbols(), *baked.symbols()));
+  EXPECT_EQ(param.params()->size(), n);
+
+  const auto x = drifted(n, 3);
+  auto with = x;
+  with.insert(with.end(), c.begin(), c.end());
+  const std::span<const double> at{x}, wat{with};
+  const auto d = direction(n);
+  expect_close(*baked.evaluate(at), *param.evaluate(wat), 0.0, "value");
+  expect_close(*baked.gradient(at), *param.gradient(wat), 0.0, "gradient");
+  expect_close(*baked.hessian(at), *param.hessian(wat), 0.0, "hessian");
+  expect_close(*baked.hvp(d, at), *param.hvp(d, wat), 0.0, "hvp");
+  expect_close(*baked.dense_hessian(at), *param.dense_hessian(wat), 0.0,
+               "dense_hessian");
+  EXPECT_EQ(baked.dense_hessian_cost()->n2_terms,
+            param.dense_hessian_cost()->n2_terms);
+
+  auto other = with;
+  other.back() *= 2.0;
+  EXPECT_NE(*param.evaluate(std::span<const double>{other}),
+            *param.evaluate(wat));
+  expect_batch_matches(param,
+                       batch_jacobian(param, 2 * n, 16, [&](std::size_t p) {
+                         auto at_p = drifted(n, p);
+                         const auto w = drifted(n, p + 7);
+                         at_p.insert(at_p.end(), w.begin(), w.end());
+                         return at_p;
+                       }));
+  expect_threads_agree([&] { return *param.gradient(wat); });
+  EXPECT_TRUE(ddx::rt::equation([] {
+                return sum(ddx::rt::vec("v", 2)) +
+                       sum(ddx::rt::vec_param("v", 2));
+              }).poisoned());
+}
+
 TEST(RtMatrix, NodesDoNotGrowWithTheSquare) {
   const auto nodes = [](std::size_t n) {
     const auto table = pair_table(n, 12, -0.5, 0.5);

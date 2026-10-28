@@ -13,7 +13,7 @@ __all__: list[str] = ['Backend', 'Call', 'Equation', 'Error', 'Expression',
                       'max', 'min', 'mul', 'neg', 'pow', 'select', 'sign',
                       'sin', 'sinh', 'sqrt', 'tan', 'tanh', 'var',
                       'implicit', 'param', 'Restricted',
-                      'derivative', 'dot', 'gemv', 'gradient',
+                      'derivative', 'dot', 'gemv', 'gradient', 'vec_param',
                       'mat_constant', 'outer', 'pack', 'release_tapes', 'sum', 'Transposed', 'transpose', 'vec', 'vec_constant']
 class Backend(enum.IntEnum):
     """
@@ -382,6 +382,8 @@ def sum(v: Expression) -> Expression:
     ...
 def vec(name: str, n: typing.SupportsInt | typing.SupportsIndex) -> Expression:
     """n symbols named name[0] .. name[n-1], packed."""
+def vec_param(name: str, n: typing.SupportsInt | typing.SupportsIndex) -> Expression:
+    """n params named name[0] .. name[n-1], packed."""
 def vec_constant(data: typing.Sequence[typing.SupportsFloat]) -> Expression:
     ...
 __version__: str = ...

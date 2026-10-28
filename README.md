@@ -164,6 +164,7 @@ const auto sys = *rt::equation("x*x + y*y - 4", "x*y - 1");
 | Binary | `pow` `atan2` `hypot` `max` `min` |
 | Comparison | `<` `<=` `>` `>=` `==` `!=` — answer `1.0` or `0.0` |
 | Conditional | `select(cond, if_true, if_false)` |
+| Derivative | `derivative(f, "x")`, `gradient(f)` — expressions, to build on inside the lambda |
 
 A loop of `+=`, `*=` or `/=` is stored as one node over all its terms, not a
 chain of one node per step, so a long sum or product stays cheap to evaluate
