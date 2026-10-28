@@ -1042,6 +1042,36 @@ TEST(RtMatrix, ExpOfTemperatureTimesATableMatchesTheScalarGraph) {
 
 // The UNIQUAC-type tau_ij = exp(-(A0 + A1 T + A2 T^2) / (R T)), read
 // transposed as sum_j theta_j tau_ji.
+// A matrix chosen by a guard on T: the adjoint reaching T is contracted
+// through the chosen arm and only there.
+TEST(RtMatrix, AGuardedMatrixMatchesTheScalarGraph) {
+  constexpr std::size_t n = 6;
+  const auto b1 = pair_table(n, 1, -0.5, 0.5);
+  const auto b2 = pair_table(n, 2, 0.2, 1.1);
+  const auto want = ddx::rt::equation([&] {
+    const RE T = ddx::rt::var("T");
+    const auto x = symbols(n);
+    RE acc{0};
+    for (std::size_t i = 0; i < n; ++i) {
+      for (std::size_t j = 0; j < n; ++j) {
+        const std::size_t k = i + j * n;
+        acc += x[i] * select(T > 1.2, exp(T * b1[k]), b2[k] / T) * x[j];
+      }
+    }
+    return acc;
+  });
+  const auto got = ddx::rt::equation([&] {
+    const RE T = ddx::rt::var("T");
+    const RV x = ddx::rt::vec("x", n);
+    const auto M = select(T > 1.2, exp(T * ddx::rt::mat_constant(n, n, b1)),
+                          ddx::rt::mat_constant(n, n, b2) / T);
+    return dot(x, gemv(M, x));
+  });
+  for (const double T : {1.0, 1.3}) {
+    expect_same_with_temperature(want, got, at_temperature(n, T), 1e-11);
+  }
+}
+
 TEST(RtMatrix, TemperatureDependentTauMatchesTheScalarGraph) {
   constexpr std::size_t n = 12;
   constexpr double R = 8.314;
@@ -1561,7 +1591,12 @@ TEST(RtMatrix, NodesDoNotGrowWithTheSquare) {
     const RE f = dot(x, gemv(exp(T * B), x));
     EXPECT_FALSE(f.poisoned());
     const std::size_t model = b.size() - n; // past the n Var leaves
-    (void)ddx::rt::build_reverse_jacobian(b, f.id(b));
+    const auto row = ddx::rt::build_reverse_jacobian(b, f.id(b));
+    // dT reads the table through gemvs: no n x n adjoint is formed for it.
+    const auto live = ddx::rt::detail::reachable(b, std::span{&row.partial[0], 1});
+    for (const auto v : std::views::iota(0u, static_cast<ddx::rt::NodeId>(b.size()))) {
+      EXPECT_FALSE(live[v] && b[v].op == ddx::rt::OpCode::Outer) << "node " << v;
+    }
     return std::pair{model, b.size()};
   };
   const auto [model_10, gradient_10] = nodes(10);
@@ -1646,15 +1681,20 @@ TEST(RtMatrix, CostAtAThousandSpecies) {
   auto tx = at;
   tx.insert(tx.begin(), 298.15);
   const std::span<const double> q{tx};
-  ASSERT_TRUE(mv.prepare({ddx::rt::Want::DenseHessian}).has_value());
+  ASSERT_TRUE(mv.prepare({ddx::rt::Want::Gradient, ddx::rt::Want::DenseHessian})
+                  .has_value());
+  (void)mv.gradient(q);
   (void)mv.dense_hessian(q);
   const auto t5 = std::chrono::steady_clock::now();
   ASSERT_TRUE(mv.dense_hessian(q).has_value());
   const auto t6 = std::chrono::steady_clock::now();
+  ASSERT_TRUE(mv.gradient(q).has_value());
+  const auto t7 = std::chrono::steady_clock::now();
   std::printf("[ ddx ] n = %zu: Debye-Hueckel + double sum dense_hessian "
               "%.2f ms; M(T) gradient %.2f ms, dense_hessian %.2f ms; T a "
-              "var, dense_hessian %.2f ms\n",
-              n, ms(t0, t1), ms(t2, t3), ms(t3, t4), ms(t5, t6));
+              "var, dense_hessian %.2f ms, gradient %.2f ms (%.2fx)\n",
+              n, ms(t0, t1), ms(t2, t3), ms(t3, t4), ms(t5, t6), ms(t6, t7),
+              ms(t6, t7) / ms(t2, t3));
 }
 
 // The graph's own simplifications over tensors: a commutative Zip or a Dot is
