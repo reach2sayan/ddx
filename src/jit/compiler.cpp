@@ -24,6 +24,8 @@
 #include <llvm/ExecutionEngine/Orc/Mangling.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/DiagnosticInfo.h>
+#include <llvm/IR/DiagnosticPrinter.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassInstrumentation.h>
@@ -418,6 +420,20 @@ private:
     const boost::scope::scope_exit clock{
         [this, start = Clock::now()] { rep_.emit = Clock::now() - start; }};
     auto ctx = std::make_unique<llvm::LLVMContext>();
+    // A tensor loop is marked for the vectoriser, which says so on stderr
+    // when it declines one; that is the loop running scalar, not an error.
+    ctx->setDiagnosticHandlerCallBack(
+        [](const llvm::DiagnosticInfo *d, void *) {
+          if (d->getKind() == llvm::DK_OptimizationFailure) {
+            return;
+          }
+          llvm::DiagnosticPrinterRawOStream out(llvm::errs());
+          llvm::errs() << llvm::LLVMContext::getDiagnosticMessagePrefix(
+                              d->getSeverity())
+                       << ": ";
+          d->print(out);
+          llvm::errs() << '\n';
+        });
     auto m = detail::emit_module(*ctx, g_, name_, lanes(),
                                  host_.jit.getDataLayout(), host_.triple);
     if (!m) {

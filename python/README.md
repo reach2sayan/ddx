@@ -128,7 +128,7 @@ element by element under a vector one. `len(v)` and `v.shape` give the shape and
 Shapes are checked where an expression is formed: a mismatch, or an index past
 the end, raises `errc.tensor_shape`. An output is always a scalar: a model
 that returns a vector raises `errc.tensor_shape` too, so reduce it or return
-its elements as a system. A model holding vector nodes compiles like any other: each vector operation runs through the kernel table, and the answers are the interpreter's to the bit.
+its elements as a system. A model holding vector nodes compiles like any other: each vector operation is a vectorised loop in the kernel, and the answers agree with the interpreter's to a few ulps, the sums being taken in a different order.
 
 ### Written down instead
 

@@ -226,8 +226,11 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
       // The matrix rows.  Shapes come off the arena, as the widths do; a
       // matrix is column-major.
       case OpCode::MatRow: { // a table transposed, or a computed matrix
-        if (table(v)) {
-          break; // read in place by in()
+        if (table(v)) { // read in place by in(), copied only for an output
+          if (w != 0) {
+            std::ranges::copy(in(v, k), to.begin());
+          }
+          break;
         }
         // Every other MatRow is a transpose: of the table, or of a row.
         const Shape m = shape_of(b, v); // cols x rows of the source

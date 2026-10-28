@@ -1602,3 +1602,76 @@ TEST(RtMatrix, CostAtAThousandSpecies) {
               "var, dense_hessian %.2f ms\n",
               n, ms(t0, t1), ms(t2, t3), ms(t3, t4), ms(t5, t6));
 }
+
+// The graph's own simplifications over tensors: a commutative Zip or a Dot is
+// one node either way round, constants fold to the table they are, a gemv of
+// a scaled vector is the scale of the gemv, and the two products of a
+// quadratic form are a pair the schedule runs together.
+TEST(RtTensorGraph, CommutativeOpsAreOneNodeEitherWayRound) {
+  ddx::rt::Arena<> b;
+  const auto arena = ddx::rt::detail::scoped_arena(b);
+  const RV x = ddx::rt::vec(b, "x", 4);
+  const RV y = ddx::rt::vec(b, "y", 4);
+  EXPECT_EQ((x + y).id(b), (y + x).id(b));
+  EXPECT_EQ((x * y).id(b), (y * x).id(b));
+  EXPECT_EQ(dot(x, y).id(b), dot(y, x).id(b));
+  EXPECT_NE((x / y).id(b), (y / x).id(b));
+}
+
+TEST(RtTensorGraph, ConstantsFoldToTheirTable) {
+  using ddx::rt::OpCode;
+  ddx::rt::Arena<> b;
+  const auto arena = ddx::rt::detail::scoped_arena(b);
+  const std::vector<double> u{1, 2, 3};
+  const std::vector<double> w{0.5, -1, 4};
+  const std::vector<double> m{1, 2, 3, 4, 5, 6, 7, 8, 9}; // column-major
+  const RE d = dot(ddx::rt::vec_constant(u), ddx::rt::vec_constant(w));
+  ASSERT_EQ(b.op_of(d.id(b)), OpCode::Const);
+  EXPECT_EQ(b[d.id(b)].value, 0.5 - 2 + 12);
+
+  const RV p = gemv(ddx::rt::mat_constant(3, 3, m), ddx::rt::vec_constant(u));
+  ASSERT_EQ(b.op_of(p.id(b)), OpCode::VecConst);
+  EXPECT_EQ(b.tensors()[ddx::rt::detail::get<ddx::rt::TensorRef>(b[p.id(b)])
+                            .value]
+                .data,
+            (std::vector<double>{30, 36, 42}));
+
+  EXPECT_TRUE(ddx::rt::is_table(
+      b, exp(-0.5 * ddx::rt::mat_constant(3, 3, m)).id(b)));
+  // A symbol in the way leaves the node as it is.
+  const RV x = ddx::rt::vec(b, "x", 3);
+  EXPECT_EQ(b.op_of(dot(x, ddx::rt::vec_constant(u)).id(b)), OpCode::Dot);
+}
+
+TEST(RtTensorGraph, AGemvOfAScaledVectorIsTheScaledGemv) {
+  using ddx::rt::OpCode;
+  ddx::rt::Arena<> b;
+  const auto arena = ddx::rt::detail::scoped_arena(b);
+  const RV x = ddx::rt::vec(b, "x", 3);
+  const RE s = ddx::rt::var(b, "s");
+  const std::vector<double> m{1, 2, 3, 4, 5, 6, 7, 8, 9};
+  const RE g = gemv(ddx::rt::mat_constant(3, 3, m), s * x);
+  ASSERT_EQ(b.op_of(g.id(b)), OpCode::Scale);
+  EXPECT_EQ(b.op_of(b.operands(g.id(b))[1]), OpCode::MatVec);
+}
+
+TEST(RtTensorGraph, AQuadraticFormsTwoProductsAreAPair) {
+  constexpr std::size_t n = 5;
+  ddx::rt::Arena<> b;
+  const auto arena = ddx::rt::detail::scoped_arena(b);
+  const RV x = ddx::rt::vec(b, "x", n);
+  const RE f = dot(x, gemv(ddx::rt::mat_constant(n, n, matrix(n, n)), x));
+  const auto g =
+      ddx::rt::GraphBuilder{b}.value(f).build_jacobian().finish();
+  const auto steps = g.schedule();
+  const auto products = std::views::iota(0uz, steps.size()) |
+                        std::views::filter([&](std::size_t p) {
+                          return g.op_of(steps[p].node) ==
+                                 ddx::rt::OpCode::MatVec;
+                        }) |
+                        ddx::impl::to<std::vector<std::size_t>>();
+  ASSERT_EQ(products.size(), 2u);
+  EXPECT_EQ(products[1], products[0] + 1);
+  EXPECT_EQ(g.paired_with(steps[products[0]].node), steps[products[1]].node);
+  EXPECT_EQ(g.paired_with(steps[products[1]].node), steps[products[0]].node);
+}

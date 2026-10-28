@@ -2,6 +2,7 @@
 
 #include "ops/algebra.hpp"
 #include "rt/apply.hpp"
+#include "rt/kernels.hpp"
 #include "rt/opcode.hpp"
 #include "util/config.hpp"
 #include "util/error.hpp"
@@ -899,14 +900,34 @@ private:
     return in;
   }
 
-  // A node with a list or a tensor node is interned as given: past fold() --
-  // no identity below reads a vector or a list -- and past the commutative
-  // swap, which is a Zip's inner op's business and not Zip's.  fold() and the
-  // swap are binary questions, and a select's are fold_select()'s.
+  // A node with a list or a tensor node is past fold() -- no identity below
+  // reads a vector or a list -- but not past the commutative swap, a Zip's by
+  // its inner op and a Dot's by Mul's, nor past fold_tensor().  A scale by
+  // one is its vector.  A gemv of a
+  // scaled vector is the scale of the gemv, where * commutes: what lets a
+  // reverse sweep's product share its matrix pass with the forward one.
   [[nodiscard]] constexpr NodeId formed(Node<T> n) {
     auto &[a, b, c] = n.in;
     if (has_list(n.op) || kind_of(n.op) == Kind::Tensor) {
-      return intern(n);
+      const bool commutes =
+          (n.op == OpCode::Zip && is_commutative<T>(detail::get<OpCode>(n))) ||
+          (n.op == OpCode::Dot && is_commutative<T>(OpCode::Mul));
+      if (commutes && b < a) {
+        std::swap(a, b);
+      }
+      if (n.op == OpCode::Scale && holds(a, 1)) {
+        return b;
+      }
+      if constexpr (impl::CCommutativeMultiply<T>) {
+        if (n.op == OpCode::MatVec && model_.nodes[b].op == OpCode::Scale) {
+          const auto [s, v, _] = model_.nodes[b].in;
+          return make(OpCode::Scale, s,
+                      make(opcode<OpCode::MatVec>,
+                           detail::get<Orientation>(n), a, v));
+        }
+      }
+      const NodeId id = intern(n);
+      return fold_tensor(id).value_or(id);
     }
     if (kind_of(n.op) == Kind::Ternary) {
       if (const auto chosen = fold_select(a, b, c)) {
@@ -921,6 +942,143 @@ private:
       }
     }
     return intern(n);
+  }
+
+  // A tensor node over constants, computed now by the reference kernels the
+  // sweep runs: the table it is, or the Const a reduction is.  Not while
+  // constant evaluating, which computes no tensor row.
+  constexpr std::optional<NodeId> fold_tensor(NodeId v) {
+    if consteval {
+      return std::nullopt;
+    }
+    using K = reference::Kernels<T>;
+    const Node<T> n = model_.nodes[v];
+    const auto [a, b, c] = n.in;
+    const auto scalar = [this](NodeId u) -> std::optional<T> {
+      if (u == no_node || model_.nodes[u].op != OpCode::Const) {
+        return std::nullopt;
+      }
+      return model_.nodes[u].value;
+    };
+    // Column-major, a table either way round.
+    const auto elements = [this](NodeId u) -> std::optional<std::vector<T>> {
+      if (u == no_node) {
+        return std::nullopt;
+      }
+      const Node<T> &x = model_.nodes[u];
+      if (x.op == OpCode::VecConst) {
+        return model_.tensors[detail::get<TensorRef>(x).value].data;
+      }
+      if (x.op != OpCode::MatRow ||
+          model_.nodes[x.in[0]].op != OpCode::MatConst) {
+        return std::nullopt;
+      }
+      const TensorConst<T> &m =
+          model_.tensors[detail::get<TensorRef>(model_.nodes[x.in[0]]).value];
+      if (detail::get<Orientation>(x) == Orientation::plain) {
+        return m.data;
+      }
+      std::vector<T> t(m.data.size());
+      for (std::size_t i = 0; i < m.rows; ++i) {
+        for (std::size_t j = 0; j < m.cols; ++j) {
+          t[j + i * m.cols] = m.data[i + j * m.rows];
+        }
+      }
+      return t;
+    };
+    const Shape s = shape_of(*this, v);
+    std::vector<T> out(s.size());
+    const auto table = [&]() -> NodeId {
+      const NodeId t = tensor_const(s.rows, s.cols, out);
+      return s.cols == 1 ? t
+                         : make(opcode<OpCode::MatRow>, Orientation::plain, t);
+    };
+    if (n.op == OpCode::Pack) {
+      for (const auto [e, item] : arguments(*this, v) | std::views::enumerate) {
+        const auto x = scalar(item);
+        if (!x) {
+          return std::nullopt;
+        }
+        out[static_cast<std::size_t>(e)] = *x;
+      }
+      return table();
+    }
+    if (has_list(n.op)) {
+      return std::nullopt;
+    }
+    // Every operand a constant, or nothing to do.
+    const auto u = elements(a);
+    const auto w = elements(b);
+    const auto su = scalar(a);
+    const auto sw = scalar(b);
+    if ((a != no_node && !u && !su) || (b != no_node && !w && !sw) ||
+        c != no_node) {
+      return std::nullopt;
+    }
+    switch (n.op) {
+    case OpCode::Map:
+      K::map(detail::get<OpCode>(n), *u, out);
+      return table();
+    case OpCode::Zip:
+      K::zip(detail::get<OpCode>(n), *u, *w, out);
+      return table();
+    case OpCode::Scale:
+      K::scale(*su, *w, out);
+      return table();
+    case OpCode::Sum:
+      return constant(K::sum(*u));
+    case OpCode::Dot:
+      return constant(K::dot(*u, *w));
+    case OpCode::Gather:
+      return constant((*u)[detail::get<Element>(n).value]);
+    case OpCode::MatVec: {
+      const Shape m = shape_of(*this, a);
+      K::gemv(m.rows, m.cols, *u, *w, out,
+              detail::get<Orientation>(n) == Orientation::transposed);
+      return table();
+    }
+    case OpCode::MatMul: {
+      const Shape l = shape_of(*this, a);
+      K::gemm(l.rows, l.cols, shape_of(*this, b).cols, *u, *w, out);
+      return table();
+    }
+    case OpCode::Outer:
+      for (std::size_t j = 0; j < w->size(); ++j) {
+        K::scale((*w)[j], *u, std::span<T>{out}.subspan(j * u->size(), u->size()));
+      }
+      return table();
+    case OpCode::RowScale:
+      for (std::size_t j = 0; j < s.cols; ++j) {
+        K::zip(OpCode::Mul, *u, std::span<const T>{*w}.subspan(j * s.rows, s.rows),
+               std::span<T>{out}.subspan(j * s.rows, s.rows));
+      }
+      return table();
+    case OpCode::ColScale:
+      for (std::size_t j = 0; j < s.cols; ++j) {
+        K::scale((*w)[j], std::span<const T>{*u}.subspan(j * s.rows, s.rows),
+                 std::span<T>{out}.subspan(j * s.rows, s.rows));
+      }
+      return table();
+    case OpCode::Diag:
+      for (std::size_t i = 0; i < u->size(); ++i) {
+        out[i + i * u->size()] = (*u)[i];
+      }
+      return table();
+    case OpCode::AddAt:
+      std::ranges::copy(*u, out.begin());
+      out[detail::get<Element>(n).value] =
+          out[detail::get<Element>(n).value] + *sw;
+      return table();
+    case OpCode::RowOf: {
+      const std::size_t rows = shape_of(*this, a).rows;
+      for (std::size_t j = 0; j < out.size(); ++j) {
+        out[j] = (*u)[detail::get<Element>(n).value + j * rows];
+      }
+      return table();
+    }
+    default:
+      return std::nullopt;
+    }
   }
 
   // A Count-carrying node -- a Pack, a StackRows or a fold -- over `items`.
@@ -1256,10 +1414,12 @@ tensor_layout(const auto &s, std::span<const Step> schedule,
   std::vector<TensorRow> free; // (at, width) runs no live row holds
   for (const auto [p, step] : schedule | std::views::enumerate) {
     const auto at = static_cast<std::uint32_t>(p);
-    // A table's MatRow is the table, read in place: no row of its own.
+    // A table's MatRow is the table, read in place: no row of its own unless
+    // it is an output, which leaves through a row.
     if (is_tensor(s[step.node]) &&
         !(is_table(s, step.node) &&
-          get<Orientation>(s[step.node]) == Orientation::plain)) {
+          get<Orientation>(s[step.node]) == Orientation::plain &&
+          !std::ranges::contains(outputs, step.node))) {
       const std::uint32_t w = width_of(s, step.node);
       const auto fit = std::ranges::find(free, w, &TensorRow::width);
       if (fit == free.end()) {

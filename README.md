@@ -114,8 +114,8 @@ and matrices takes the whole arm under a scalar condition and element by
 element under a condition of the arms' shape, a scalar arm taking the other's
 shape; the arm not taken never reaches a derivative, even where it is
 infinite. They compute at
-the equation's scalar (`double` or `float`), are never an output, and are
-computed by a kernel table of that scalar — `rt::use_tensor_kernels(table)` or
+the equation's scalar (`double` or `float`), are never an output, and,
+interpreted, are computed by a kernel table of that scalar — `rt::use_tensor_kernels(table)` or
 `eq.tensor_kernels(table)`, built with `rt::tensor_kernel_table<K, T>()` over a
 type satisfying `rt::TensorKernels<K, T>` (`T` defaults to `double`). Inherit
 `rt::reference::Kernels<T>` and replace only the rows your library does better;
@@ -284,9 +284,12 @@ eq.uses_kernel();              // true
 
 `kernel_level()` says which `codegen_level` the answering kernel was built at.
 
-A model with vectors compiles too: its scalars run in the kernel, and each
-vector operation is the interpreter's own step through the equation's kernel
-table, so a compiled answer is the interpreted one to the bit.
+A model with vectors compiles too. Each vector operation is a loop in the
+kernel, vectorised by LLVM, and an elementwise operation read once is computed
+inside its reader's loop rather than stored; only the dense Hessian's matrix
+products still go through the interpreter. The kernel's sums take their own order, so a compiled
+answer agrees with the interpreted one to a few ulps rather than to the bit,
+and a kernel table computes the interpreted sweep only.
 
 ## Python
 

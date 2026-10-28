@@ -247,6 +247,9 @@ public:
       }
       g.has_tensors_ |= detail::on_tensors(g.properties_[v]);
     }
+    if (g.has_tensors_) {
+      g.pair_products();
+    }
     // The tape packed by liveness, scalar rows and tensor rows alike; off the
     // arena, which holds the tensor table the widths come from.
     auto packed = detail::pack_rows(b, g.schedule_, g.outputs_);
@@ -327,6 +330,11 @@ public:
   [[nodiscard]] NodeId fused_into(NodeId v) const {
     return fused_.empty() ? no_node : fused_[v];
   }
+  // By id, the other product of a pair -- one matrix times one vector, both
+  // ways round -- which the schedule runs next to it, else no_node.
+  [[nodiscard]] NodeId paired_with(NodeId v) const {
+    return paired_.empty() ? no_node : paired_[v];
+  }
 
   // How many input columns `xs` carries: the symbol count is not the width.
   [[nodiscard]] std::size_t arity() const { return inputs_.total(); }
@@ -374,6 +382,49 @@ private:
             .jacobian = all.subspan(counts_.values, counts_.jacobian),
             .hessian = all.subspan(counts_.values + counts_.jacobian,
                                    counts_.hessian)};
+  }
+
+  // M v and M^T v, which a quadratic form's value and gradient both ask for,
+  // are a pair: the later step moves to just after the earlier, where both
+  // its operands already are, so a kernel reads the matrix once for the two.
+  void pair_products() {
+    paired_.assign(properties_.size(), no_node);
+    std::vector<bool> later(properties_.size(), false);
+    std::vector<NodeId> products;
+    for (const NodeId v : schedule_ | std::views::transform(&Step::node)) {
+      if (op_of(v) != OpCode::MatVec) {
+        continue;
+      }
+      const auto mate = std::ranges::find_if(products, [&](NodeId u) {
+        return paired_[u] == no_node && operands(u)[0] == operands(v)[0] &&
+               operands(u)[1] == operands(v)[1];
+      });
+      if (mate == products.end()) {
+        products.push_back(v);
+        continue;
+      }
+      paired_[*mate] = v;
+      paired_[v] = *mate;
+      later[v] = true;
+    }
+    std::vector<Step> moved(properties_.size());
+    for (const Step &step : schedule_) {
+      if (later[step.node]) {
+        moved[step.node] = step;
+      }
+    }
+    std::vector<Step> out;
+    out.reserve(schedule_.size());
+    for (const Step &step : schedule_) {
+      if (later[step.node]) {
+        continue;
+      }
+      out.push_back(step);
+      if (paired_[step.node] != no_node) {
+        out.push_back(moved[paired_[step.node]]);
+      }
+    }
+    schedule_ = std::move(out);
   }
 
   // Nothing but the outputs and what they reach needs to be emitted.
@@ -435,6 +486,7 @@ private:
   TensorLayout tensors_;
   std::vector<Shape> shapes_;
   std::vector<NodeId> fused_;
+  std::vector<NodeId> paired_;
   std::vector<std::uint32_t> rows_;
   std::size_t tape_rows_ = 0;
   std::vector<bool> live_;

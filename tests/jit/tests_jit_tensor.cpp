@@ -73,7 +73,8 @@ template <typename T> auto msevec_t(std::size_t n) {
   });
 }
 
-// What the dense Hessian's block is built from: a Diag, an Outer, a RowScale
+// What the dense Hessian's block is built from: a Diag, an Outer (of a
+// parameter, so it does not fold to a table), a RowScale
 // and a ColScale, a MatMul over StackRows, and RowOf for the scalar symbol
 // beside the vector.
 template <typename T> ddx::rt::Expression<T> dense_block(std::size_t n) {
@@ -87,7 +88,8 @@ template <typename T> ddx::rt::Expression<T> dense_block(std::size_t n) {
   const E s = dot(x, x);
   return dot(x, gemv(m(7), x * x)) + sum(log(x) * gemv(m(8), x, true)) -
          sum(x * log(gemv(m(9), x / sum(x), true))) +
-         dot(x, gemv(ddx::rt::outer(r, r * r), x)) + s * s * sum(x) +
+         dot(x, gemv(ddx::rt::outer(r, ddx::rt::param<T>("P") * r), x)) +
+         s * s * sum(x) +
          t * sum(x * log(x)) + t * log(t);
 }
 template <typename T> auto dense(std::size_t n) {
