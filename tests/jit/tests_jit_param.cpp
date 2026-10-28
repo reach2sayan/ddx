@@ -74,4 +74,28 @@ TEST(JitParam, AnEquationWithAParamCompilesAndAgreesWithTheSweep) {
   }
 }
 
+// A partial taken during construction is ordinary nodes: compiled, every
+// derivative of it is the sweep's.
+TEST(JitParam, ADerivativeBuiltIntoTheGraphCompiles) {
+  const auto build = [] {
+    return ddx::rt::equation([] {
+      const auto T = ddx::rt::var("T");
+      const auto Tr = ddx::rt::var("Tr");
+      const auto ps = exp(1.0 - 2.0 / T);
+      const auto h = Tr * Tr * log(ps) + sin(Tr) * ps;
+      return T * T * ddx::rt::derivative(h, "Tr");
+    });
+  };
+  const auto swept = build();
+  auto compiled = build();
+  compiled.options({.backend = ddx::jit::Backend::Compile, .points = 1});
+  ASSERT_TRUE(compiled.uses_kernel());
+  ASSERT_TRUE(compiled.uses_kernel(ddx::rt::Want::Hessian));
+  const std::array at{1.3, 0.7};
+  const std::array v{0.4, -1.1};
+  EXPECT_EQ(*compiled.jacobian(at), *swept.jacobian(at));
+  EXPECT_EQ(*compiled.hessian(at), *swept.hessian(at));
+  EXPECT_EQ(*compiled.hvp(v, at), *swept.hvp(v, at));
+}
+
 } // namespace
