@@ -370,8 +370,8 @@ struct Shape {
 // for a node that is not arithmetic -- a copy, a list, a table, a select.
 template <impl::Numeric U>
 DDX_ALWAYS_INLINE constexpr bool tensor_row(const auto &s, NodeId v, auto in,
-                                            auto scalar,
-                          std::span<U> to, U &reduced, const auto &kt) {
+                                            auto scalar, std::span<U> to,
+                                            U &reduced, const auto &kt) {
   const auto &n = s[v];
   switch (n.op) {
   case OpCode::Map:
@@ -1028,9 +1028,9 @@ private:
       if constexpr (impl::CCommutativeMultiply<T>) {
         if (n.op == OpCode::MatVec && model_.nodes[b].op == OpCode::Scale) {
           const auto [s, v, _] = model_.nodes[b].in;
-          return make(OpCode::Scale, s,
-                      make(opcode<OpCode::MatVec>,
-                           detail::get<Orientation>(n), a, v));
+          return make(
+              OpCode::Scale, s,
+              make(opcode<OpCode::MatVec>, detail::get<Orientation>(n), a, v));
         }
       }
       const NodeId id = intern(n);
@@ -1124,8 +1124,7 @@ private:
     }
     T reduced{};
     const bool computed = tensor_row(
-        *this, v,
-        [&](int i) { return std::span<const T>{i == 0 ? *u : *w}; },
+        *this, v, [&](int i) { return std::span<const T>{i == 0 ? *u : *w}; },
         [&](int i) { return i == 0 ? *su : *sw; }, std::span<T>{out}, reduced,
         K{});
     if (!computed) {
@@ -1360,8 +1359,7 @@ fused_into(const auto &s, std::span<const Step> schedule,
 // source.  A node computed inside its reader reads its operands there.
 [[nodiscard]] constexpr std::vector<std::uint32_t>
 last_uses(const auto &s, std::span<const Step> schedule,
-          std::span<const NodeId> outputs,
-          std::span<const NodeId> fused = {}) {
+          std::span<const NodeId> outputs, std::span<const NodeId> fused = {}) {
   std::vector<std::uint32_t> last(s.size(), 0);
   // Ascending, and a node is formed before anything reads it, so the last
   // write is the last use.

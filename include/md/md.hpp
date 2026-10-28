@@ -22,8 +22,8 @@ namespace ddx::impl::md {
 
 using DDX_MDSPAN_NS::dextents;
 using DDX_MDSPAN_NS::extents;
-using DDX_MDSPAN_NS::mdspan;
 using DDX_MDSPAN_NS::layout_right;
+using DDX_MDSPAN_NS::mdspan;
 
 namespace detail {
 template <typename T> inline constexpr bool is_extents_v = false;

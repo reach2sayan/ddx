@@ -210,7 +210,8 @@ private:
                                                    const Expression &c,
                                                    const Expression &t,
                                                    const Expression &f) {
-    const Shape shape = t.size() ? t.shape() : (f.size() ? f.shape() : c.shape());
+    const Shape shape =
+        t.size() ? t.shape() : (f.size() ? f.shape() : c.shape());
     const auto fits = [&](const Expression &e) {
       return e.size() == 0 || e.shape() == shape;
     };
@@ -228,7 +229,6 @@ private:
   }
 
 public:
-
   // Hidden friends: ordinary functions for a given Expression<T>, so `x * 2`
   // and `2 * x` both convert.
   friend constexpr Expression operator+(const Expression &l,
@@ -298,7 +298,6 @@ private:
   }
 
 public:
-
 #define DDX_RT_UNFN(fn, Op, label, ...)                                        \
   friend constexpr Expression fn(const Expression &u) {                        \
     return form(OpCode::Op, u);                                                \
@@ -364,9 +363,7 @@ private:
   template <impl::Numeric U>
   friend constexpr Expression<U> named(Arena<U> &, OpCode, std::string_view);
 
-  [[nodiscard]] constexpr Arena<T> *arena() const noexcept {
-    return arena_;
-  }
+  [[nodiscard]] constexpr Arena<T> *arena() const noexcept { return arena_; }
 
   // Not a pending literal, which would materialise into the first graph it
   // meets and put a zero where a symbol should be.
@@ -537,7 +534,7 @@ extern_fn(ExternRecord record, std::type_identity_t<ExternFn<T>> fn) {
 #define DDX_RT_INPUT(fn, Op, ...)                                              \
   template <impl::Numeric T>                                                   \
     requires(OpCode::Op != OpCode::Implicit)                                   \
-  [[nodiscard]] constexpr Expression<T> fn(Arena<T> &b,                      \
+  [[nodiscard]] constexpr Expression<T> fn(Arena<T> &b,                        \
                                            std::string_view name) {            \
     return named(b, OpCode::Op, name);                                         \
   }                                                                            \

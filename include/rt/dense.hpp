@@ -28,10 +28,11 @@
 // vector node's tangent is a sum of terms, each Identity, Diag(d), Outer(u, g)
 // or Dense(M), all w x n; a scalar node's tangent is its gradient row, a vector
 // of width n.  Each rule is the matrix calculus of a linear map over a sum, and
-// only a MatVec over a Dense term needs a product of two dense matrices -- the one
-// n^3 case, counted so a caller can see when a model's structure defeated the
-// algebra.  Where the partials are the gradient vector's elements, the block
-// is that vector's terms summed; otherwise the partials' rows are stacked.
+// only a MatVec over a Dense term needs a product of two dense matrices -- the
+// one n^3 case, counted so a caller can see when a model's structure defeated
+// the algebra.  Where the partials are the gradient vector's elements, the
+// block is that vector's terms summed; otherwise the partials' rows are
+// stacked.
 //
 // A vector beside a few scalar symbols is swept alone, the scalars held: its
 // block is the Hessian at fixed scalars, and each scalar's row is one reverse
@@ -484,7 +485,8 @@ private:
     }
     case Kind::Tensor:
       switch (node.op) {
-      case OpCode::MatConst: // a table, read through its MatRow: nothing moves it
+      case OpCode::MatConst: // a table, read through its MatRow: nothing moves
+                             // it
         return no_node;
       case OpCode::Gather:
         return std::ranges::fold_left(
@@ -529,10 +531,9 @@ private:
     case OpCode::Zip: {
       const E u = expr(node.in[0]);
       const E w = expr(node.in[1]);
-      const auto [pu, pw] =
-          contributions(get<OpCode>(node), E{1}, u, w,
-                        !mat_[node.in[0]].empty(), !mat_[node.in[1]].empty(),
-                        E{0});
+      const auto [pu, pw] = contributions(get<OpCode>(node), E{1}, u, w,
+                                          !mat_[node.in[0]].empty(),
+                                          !mat_[node.in[1]].empty(), E{0});
       out = scale(pu, mat_[node.in[0]]);
       impl::append(out, scale(pw, mat_[node.in[1]]));
       break;

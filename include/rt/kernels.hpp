@@ -159,36 +159,37 @@ template <impl::Numeric T = double> struct Kernels {
     T *DDX_RESTRICT y = plain.data();
     const T *DDX_RESTRICT x = v.data();
     const std::size_t whole = n / L * L;
-    const auto columns = [&]<std::size_t C>(std::integral_constant<std::size_t, C>,
-                                            std::size_t j0) {
-      std::array<const T *, C> col{};
-      std::array<T, C> xj{};
-      for (std::size_t d = 0; d < C; ++d) {
-        col[d] = m.data() + (j0 + d) * n;
-        xj[d] = x[j0 + d];
-      }
-      std::array<std::array<T, L>, C> acc{};
-      for (std::size_t i = 0; i < whole; i += L) {
-        for (std::size_t l = 0; l < L; ++l) {
-          T yi = y[i + l];
+    const auto columns =
+        [&]<std::size_t C>(std::integral_constant<std::size_t, C>,
+                           std::size_t j0) {
+          std::array<const T *, C> col{};
+          std::array<T, C> xj{};
           for (std::size_t d = 0; d < C; ++d) {
-            const T mi = col[d][i + l];
-            yi = madd(mi, xj[d], yi);
-            acc[d][l] = madd(mi, x[i + l], acc[d][l]);
+            col[d] = m.data() + (j0 + d) * n;
+            xj[d] = x[j0 + d];
           }
-          y[i + l] = yi;
-        }
-      }
-      for (std::size_t i = whole; i < n; ++i) {
-        for (std::size_t d = 0; d < C; ++d) {
-          y[i] = madd(col[d][i], xj[d], y[i]);
-          acc[d][i - whole] = madd(col[d][i], x[i], acc[d][i - whole]);
-        }
-      }
-      for (std::size_t d = 0; d < C; ++d) {
-        transposed[j0 + d] = fold(acc[d]);
-      }
-    };
+          std::array<std::array<T, L>, C> acc{};
+          for (std::size_t i = 0; i < whole; i += L) {
+            for (std::size_t l = 0; l < L; ++l) {
+              T yi = y[i + l];
+              for (std::size_t d = 0; d < C; ++d) {
+                const T mi = col[d][i + l];
+                yi = madd(mi, xj[d], yi);
+                acc[d][l] = madd(mi, x[i + l], acc[d][l]);
+              }
+              y[i + l] = yi;
+            }
+          }
+          for (std::size_t i = whole; i < n; ++i) {
+            for (std::size_t d = 0; d < C; ++d) {
+              y[i] = madd(col[d][i], xj[d], y[i]);
+              acc[d][i - whole] = madd(col[d][i], x[i], acc[d][i - whole]);
+            }
+          }
+          for (std::size_t d = 0; d < C; ++d) {
+            transposed[j0 + d] = fold(acc[d]);
+          }
+        };
     std::size_t j = 0;
     for (; j + 4 <= n; j += 4) {
       columns(std::integral_constant<std::size_t, 4>{}, j);
@@ -253,9 +254,8 @@ template <impl::Numeric T = double> struct Kernels {
   }
 
   [[nodiscard]] static constexpr T sum(In v) noexcept {
-    return reduce(v.size(), [a = v.data()](T acc, std::size_t i) {
-      return acc + a[i];
-    });
+    return reduce(v.size(),
+                  [a = v.data()](T acc, std::size_t i) { return acc + a[i]; });
   }
 
   // out = A B, one column of B at a time: a gemv per column.

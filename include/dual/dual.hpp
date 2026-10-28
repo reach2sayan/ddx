@@ -156,8 +156,8 @@ DDX_DUAL_BINOP(+, (Dual<T>{av + bv, ad + bd}), (Dual<T>{av + s, ad}),
                (Dual<T>{av + s, ad}))
 DDX_DUAL_BINOP(-, (Dual<T>{av - bv, ad - bd}), (Dual<T>{av - s, ad}),
                (Dual<T>{-(av - s), -ad})) // s - a == -(a - s)
-DDX_DUAL_BINOP(*, (Dual<T>{av * bv, ad * bv + av * bd}),
-               (Dual<T>{av * s, ad * s}), (Dual<T>{av * s, ad * s}))
+DDX_DUAL_BINOP(*, (Dual<T>{av * bv, ad *bv + av *bd}), (Dual<T>{av * s, ad *s}),
+               (Dual<T>{av * s, ad *s}))
 DDX_DUAL_BINOP(/, dual_div(a, b), dual_div(a, s), dual_div(s, a))
 #undef DDX_DUAL_BINOP
 

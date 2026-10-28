@@ -98,7 +98,6 @@ lanes_fma(bool negated, const T *DDX_RESTRICT x, const T *DDX_RESTRICT y,
   }
 }
 
-
 // The tape row an id names, W points wide.
 template <std::size_t W, impl::Numeric U>
 [[nodiscard]] constexpr auto lanes_of(std::span<U> tape) {
@@ -216,7 +215,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
       // The matrix rows.  Shapes come off the arena, as the widths do; a
       // matrix is column-major.
       case OpCode::MatRow: { // a table transposed, or a computed matrix
-        if (table(v)) { // read in place by in(), copied only for an output
+        if (table(v)) {      // read in place by in(), copied only for an output
           if (w != 0) {
             std::ranges::copy(in(v, k), to.begin());
           }
@@ -314,9 +313,9 @@ DDX_NOINLINE constexpr void lanes_fold(const Arena<T> &b, NodeId v, OpCode op,
         for (const auto [i, term] : arguments(b, v) | std::views::enumerate) {
           const U *const r = row(term);
           for (std::size_t k = 0; k < W; ++k) {
-            out[k] = i == 0 ? r[k]
-                            : supported<typename R::functor, U, R::ok>(out[k],
-                                                                      r[k]);
+            out[k] =
+                i == 0 ? r[k]
+                       : supported<typename R::functor, U, R::ok>(out[k], r[k]);
           }
         }
       }
@@ -351,8 +350,8 @@ DDX_NOINLINE constexpr void lanes_fold(const Arena<T> &b, NodeId v, OpCode op,
 // a sweep of scalars nothing.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_ALWAYS_INLINE constexpr void
-lanes_opaque(const Arena<T> &b, NodeId v, const Node<T> &n, bool fused,
-             U *out, auto &&lane, const TapeView<U> &t) {
+lanes_opaque(const Arena<T> &b, NodeId v, const Node<T> &n, bool fused, U *out,
+             auto &&lane, const TapeView<U> &t) {
   if (on_tensors(n)) {
     lanes_tensor<W>(b, v, n, out, lane, t);
   } else if (kind_of(n.op) == Kind::Nary) {
@@ -368,9 +367,8 @@ lanes_opaque(const Arena<T> &b, NodeId v, const Node<T> &n, bool fused,
 // and the tape base with it -- reloaded on every step of the sweep.
 template <std::size_t W, impl::Numeric T, typename U>
 DDX_ALWAYS_INLINE constexpr void
-lanes_apply(const Arena<T> &b, NodeId i, const Node<T> &n,
-            U *DDX_RESTRICT out, auto &&lane, const Step &s,
-            const TapeView<U> &t) {
+lanes_apply(const Arena<T> &b, NodeId i, const Node<T> &n, U *DDX_RESTRICT out,
+            auto &&lane, const Step &s, const TapeView<U> &t) {
   const auto &in = s.in;
   const bool opaque = dispatch<U>(s.op, [&]<typename R>(R) {
     using Fn = typename R::functor;

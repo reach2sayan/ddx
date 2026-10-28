@@ -196,9 +196,11 @@ private:
   template <Want W, auto Block>
   [[nodiscard]] constexpr result<std::vector<T>>
   dense_at(std::span<const T> along, const auto &...args) const {
-    return self().template at<W>(along, args...).transform([this](const auto &b) {
-      return dense(self().jacobian_sparsity(), b.*Block);
-    });
+    return self()
+        .template at<W>(along, args...)
+        .transform([this](const auto &b) {
+          return dense(self().jacobian_sparsity(), b.*Block);
+        });
   }
 };
 
@@ -252,9 +254,9 @@ template <impl::Numeric T> struct TapeSet {
   std::vector<T> point, tape, vtape;
 };
 template <impl::Numeric T> struct ThreadTapes {
-  TapeSet<T> values;          // a system's hessian() at a point
-  TapeSet<T> one;             // a batch, one point at a time
-  TapeSet<T> block;           // a batch, block_lanes at once
+  TapeSet<T> values;           // a system's hessian() at a point
+  TapeSet<T> one;              // a batch, one point at a time
+  TapeSet<T> block;            // a batch, block_lanes at once
   std::vector<T> kernel_tapes; // a kernel's tensor steps
   // A point call's output addresses: a dense block is n^2 of them, and a fresh
   // array that size is a page fault per page on every call.
@@ -727,8 +729,9 @@ protected:
                                            std::vector<NodeId>>
   rooted(std::span<const Expression<T>> outputs,
          std::unique_ptr<Arena<T>> owned) {
-    auto arena = owned ? std::move(owned)
-                       : std::make_unique<Arena<T>>(*Router::first_arena(outputs));
+    auto arena =
+        owned ? std::move(owned)
+              : std::make_unique<Arena<T>>(*Router::first_arena(outputs));
     auto roots = outputs | std::views::transform([&arena](const auto &e) {
                    return e.id(*arena);
                  }) |
@@ -980,8 +983,9 @@ private:
   template <Want W, auto Block>
   [[nodiscard]] constexpr result<std::vector<T>>
   block_at(std::span<const T> along, const auto &...args) const {
-    return at<W>(along, args...).transform(
-        [](auto b) { return std::move(b.*Block); });
+    return at<W>(along, args...).transform([](auto b) {
+      return std::move(b.*Block);
+    });
   }
   // `member` set to `value`, and whatever was compiled for the old one gone.
   static auto &replaced(auto &self, auto &member, const auto &value) {
@@ -1052,29 +1056,27 @@ private:
   [[nodiscard]] constexpr result<PerBlock<std::vector<T>>>
   at_in(Pipelines *pipelines, const Cells &cells, std::span<const T> along,
         const rt::detail::CPointArg<T> auto &...args) const {
-    return point(args...).and_then(
-        [&](const std::vector<T> &pt) -> result<PerBlock<std::vector<T>>> {
-          constexpr Direction direction = want_info(W).direction;
-          if (direction != Direction::None &&
-              along.size() != extent(direction)) {
-            return fail(errc::wrong_direction);
-          }
-          const Layout size = sizes(W, cells);
-          PerBlock<std::vector<T>> out{.values = std::vector<T>(size.values),
-                                       .jacobian =
-                                           std::vector<T>(size.jacobian),
-                                       .hessian = std::vector<T>(size.hessian)};
-          const auto swept = [&] {
-            if constexpr (direction == Direction::None) {
-              return gather(pipelines, cells, W, pt, out.values, out.jacobian,
-                            out.hessian);
-            } else {
-              return gather(pipelines, cells, W, widen(pt, along), out.values,
-                            out.jacobian, out.hessian);
-            }
-          }();
-          return swept.transform([&] { return std::move(out); });
-        });
+    return point(args...).and_then([&](const std::vector<T> &pt)
+                                       -> result<PerBlock<std::vector<T>>> {
+      constexpr Direction direction = want_info(W).direction;
+      if (direction != Direction::None && along.size() != extent(direction)) {
+        return fail(errc::wrong_direction);
+      }
+      const Layout size = sizes(W, cells);
+      PerBlock<std::vector<T>> out{.values = std::vector<T>(size.values),
+                                   .jacobian = std::vector<T>(size.jacobian),
+                                   .hessian = std::vector<T>(size.hessian)};
+      const auto swept = [&] {
+        if constexpr (direction == Direction::None) {
+          return gather(pipelines, cells, W, pt, out.values, out.jacobian,
+                        out.hessian);
+        } else {
+          return gather(pipelines, cells, W, widen(pt, along), out.values,
+                        out.jacobian, out.hessian);
+        }
+      }();
+      return swept.transform([&] { return std::move(out); });
+    });
   }
   template <Want W>
   [[nodiscard]] constexpr result<PerBlock<std::vector<T>>>
@@ -1226,10 +1228,10 @@ private:
       if (pattern) {
         blocks.jacobian = partials.partial;
       }
-      return std::make_shared<const Graph<T>>(Graph<T>::freeze(
-          *arena_, std::move(blocks), colouring,
-          pattern ? partials.pattern : Sparsity{}, contracts(),
-          extent(info.direction)));
+      return std::make_shared<const Graph<T>>(
+          Graph<T>::freeze(*arena_, std::move(blocks), colouring,
+                           pattern ? partials.pattern : Sparsity{}, contracts(),
+                           extent(info.direction)));
     };
     [[maybe_unused]] const bool rebalance = !cells.kept && rebalances(want);
     [[maybe_unused]] const auto held = reading();

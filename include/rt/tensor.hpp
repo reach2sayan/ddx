@@ -46,8 +46,7 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> refused(errc why) noexcept {
   return Router::poison<T>(why);
 }
-template <impl::Numeric T>
-[[nodiscard]] Expression<T> in_arena(auto &&make) {
+template <impl::Numeric T> [[nodiscard]] Expression<T> in_arena(auto &&make) {
   return current_arena<T> == nullptr ? refused<T>(errc::outside_equation)
                                      : DDX_FWD(make)(*current_arena<T>);
 }
@@ -69,8 +68,7 @@ template <impl::Numeric T>
 }
 // Why the operands are not all vector nodes of an arena, if they are not: a
 // pending literal has no width and a scalar node is not a vector.
-[[nodiscard]] constexpr std::optional<errc>
-not_a_vector(const auto &...vs) {
+[[nodiscard]] constexpr std::optional<errc> not_a_vector(const auto &...vs) {
   if (const auto why = poisoned(vs...)) {
     return why;
   }
@@ -205,9 +203,8 @@ template <impl::Numeric T>
     return detail::refused<T>(*why);
   }
   // Either side may be a literal, which takes the other's width.
-  Arena<T> *const b = detail::Router::arena(u)
-                            ? detail::Router::arena(u)
-                            : detail::Router::arena(v);
+  Arena<T> *const b = detail::Router::arena(u) ? detail::Router::arena(u)
+                                               : detail::Router::arena(v);
   const Shape shape = u.size() ? u.shape() : v.shape();
   if (b == nullptr || shape.size() == 0 ||
       (u.size() != 0 && v.size() != 0 && u.shape() != v.shape()) ||

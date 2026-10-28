@@ -238,7 +238,7 @@ public:
   using value_type = T;
 
   [[nodiscard]] constexpr auto derivative() const noexcept {
-    return Lit < T, frozen ? 0 : 1 > {};
+    return Lit<T, frozen ? 0 : 1>{};
   }
 
   // A frozen symbol takes the seed's value and drops its derivative slots.

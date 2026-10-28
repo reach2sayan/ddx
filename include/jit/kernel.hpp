@@ -29,9 +29,10 @@ using Externs = std::vector<std::shared_ptr<const void>>;
 template <impl::Numeric T>
 [[nodiscard]] Externs externs_of(const rt::Graph<T> &g) {
   return g.externs() |
-         std::views::transform([](const auto &e) -> std::shared_ptr<const void> {
-           return e.fn;
-         }) |
+         std::views::transform(
+             [](const auto &e) -> std::shared_ptr<const void> {
+               return e.fn;
+             }) |
          impl::to<Externs>();
 }
 
@@ -78,7 +79,7 @@ public:
 private:
   function_type fn_ = nullptr;
   std::shared_ptr<void> code_; // Held, never read
-  Externs externs_; // Held, never read
+  Externs externs_;            // Held, never read
   KernelShape shape_{};
 };
 
@@ -100,7 +101,6 @@ public:
 private:
   struct Impl;
   DDX_JIT_API explicit Compiler(std::shared_ptr<Impl> impl) noexcept;
-
   std::shared_ptr<Impl> impl_;
 };
 

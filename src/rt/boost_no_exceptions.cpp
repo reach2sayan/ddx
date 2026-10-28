@@ -22,7 +22,7 @@ BOOST_SYMBOL_VISIBLE void throw_exception(const std::exception &e) {
 }
 
 BOOST_SYMBOL_VISIBLE void throw_exception(const std::exception &e,
-                                                const source_location &loc) {
+                                          const source_location &loc) {
   std::fprintf(stderr,
                "ddx: boost threw with exceptions disabled: %s (%s:%u)\n",
                e.what(), loc.file_name(), loc.line());

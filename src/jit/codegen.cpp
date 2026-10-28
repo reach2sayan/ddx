@@ -60,8 +60,8 @@ llvm::Intrinsic::ID intrinsic_for(rt::OpCode op) {
 llvm::Function *declare(llvm::Module &m, llvm::StringRef name,
                         llvm::FunctionType *type,
                         std::optional<llvm::MemoryEffects> effects = {}) {
-  auto *fn = llvm::cast<llvm::Function>(
-      m.getOrInsertFunction(name, type).getCallee());
+  auto *fn =
+      llvm::cast<llvm::Function>(m.getOrInsertFunction(name, type).getCallee());
   if (effects) {
     fn->setMemoryEffects(*effects);
   }
@@ -129,19 +129,17 @@ public:
   [[nodiscard]] llvm::Value *load(llvm::Value *column, llvm::Value *index,
                                   llvm::Value *mask,
                                   const llvm::Twine &name) const {
-    llvm::Value *const at =
-        b_.CreateInBoundsGEP(lanes_.scalar, column, index);
+    llvm::Value *const at = b_.CreateInBoundsGEP(lanes_.scalar, column, index);
     if (!lanes_.vector()) {
       return b_.CreateLoad(lanes_.ty, at, name);
     }
-    return b_.CreateMaskedLoad(lanes_.ty, at, llvm::Align(alignof(T)),
-                               mask, constant(1.0), name);
+    return b_.CreateMaskedLoad(lanes_.ty, at, llvm::Align(alignof(T)), mask,
+                               constant(1.0), name);
   }
 
   void store(llvm::Value *v, llvm::Value *column, llvm::Value *index,
              llvm::Value *mask) const {
-    llvm::Value *const at =
-        b_.CreateInBoundsGEP(lanes_.scalar, column, index);
+    llvm::Value *const at = b_.CreateInBoundsGEP(lanes_.scalar, column, index);
     if (!lanes_.vector()) {
       b_.CreateStore(v, at);
       return;
@@ -220,7 +218,8 @@ public:
     llvm::Value *const answer = entry.CreateAlloca(
         scalar, llvm::ConstantInt::get(i64, components), "extern.out");
     llvm::Value *const fn = llvm::ConstantExpr::getIntToPtr(
-        llvm::ConstantInt::get(i64, reinterpret_cast<std::uintptr_t>(e.fn.get())),
+        llvm::ConstantInt::get(i64,
+                               reinterpret_cast<std::uintptr_t>(e.fn.get())),
         b_.getPtrTy());
 
     Answers out(components * lanes_.width);
@@ -233,9 +232,8 @@ public:
                    {fn, in, llvm::ConstantInt::get(i64, e.arity), answer,
                     llvm::ConstantInt::get(i64, components)});
       for (const std::size_t c : std::views::iota(0uz, components)) {
-        out[c * lanes_.width + lane] =
-            b_.CreateLoad(scalar,
-                          b_.CreateConstInBoundsGEP1_64(scalar, answer, c));
+        out[c * lanes_.width + lane] = b_.CreateLoad(
+            scalar, b_.CreateConstInBoundsGEP1_64(scalar, answer, c));
       }
     });
     return out;
@@ -378,20 +376,23 @@ public:
     // In the entry block, once per call.
     auto *const decl =
         declare(m, libm_name<T>(tensor_table_symbol),
-                llvm::FunctionType::get(
-                    b.getPtrTy(), {b.getPtrTy(), b.getInt64Ty()}, false),
+                llvm::FunctionType::get(b.getPtrTy(),
+                                        {b.getPtrTy(), b.getInt64Ty()}, false),
                 llvm::MemoryEffects::readOnly());
-    for (const rt::NodeId v : g.schedule() | std::views::transform(&rt::Step::node)) {
+    for (const rt::NodeId v :
+         g.schedule() | std::views::transform(&rt::Step::node)) {
       if (g.op_of(v) == rt::OpCode::VecConst ||
           g.op_of(v) == rt::OpCode::MatConst) {
         tables_[v] = b.CreateCall(
-            decl, {tapes.call,
-                   b.getInt64(rt::detail::get<rt::TensorRef>(g[v]).value)},
+            decl,
+            {tapes.call,
+             b.getInt64(rt::detail::get<rt::TensorRef>(g[v]).value)},
             "table");
       }
       // A step and the output scatter read rows; a loop reads a table in place.
       if (!handles(v)) {
-        rt::detail::for_each_operand(g, v, [&](rt::NodeId u) { stepped_[u] = true; });
+        rt::detail::for_each_operand(g, v,
+                                     [&](rt::NodeId u) { stepped_[u] = true; });
       }
     }
     for (const rt::NodeId o : g.outputs()) {
@@ -499,8 +500,7 @@ private:
                                   std::uint64_t r) const {
     return add(i, b_.CreateMul(j, i64(r)));
   }
-  [[nodiscard]] llvm::Value *element(llvm::Value *base,
-                                     llvm::Value *at) const {
+  [[nodiscard]] llvm::Value *element(llvm::Value *base, llvm::Value *at) const {
     return b_.CreateInBoundsGEP(lanes_.scalar, base, at);
   }
   [[nodiscard]] llvm::Value *read(llvm::Value *base, llvm::Value *at) const {
@@ -509,9 +509,8 @@ private:
   // Lane k of u's row.
   [[nodiscard]] llvm::Value *row(rt::NodeId u) const {
     const rt::TensorRow &r = g_.tensors().rows[u];
-    return element(tapes_.vtape,
-                   add(i64(std::uint64_t{r.at} * lanes_.width),
-                       b_.CreateMul(k_, i64(r.width))));
+    return element(tapes_.vtape, add(i64(std::uint64_t{r.at} * lanes_.width),
+                                     b_.CreateMul(k_, i64(r.width))));
   }
   // Lane k of a scalar node, which is SSA: its tape row may be another
   // node's by the time a fused reader runs.
@@ -520,10 +519,9 @@ private:
                              : b_.CreateExtractElement(value_[u], k_);
   }
   void scalar_out(rt::NodeId v, llvm::Value *x) const {
-    b_.CreateStore(x, element(tapes_.tape,
-                              add(i64(std::uint64_t{g_.rows()[v]} *
-                                      lanes_.width),
-                                  k_)));
+    b_.CreateStore(
+        x, element(tapes_.tape,
+                   add(i64(std::uint64_t{g_.rows()[v]} * lanes_.width), k_)));
   }
 
   // Element (i, j) of u: off a table, off u's row, or computed here.
@@ -534,9 +532,10 @@ private:
     case rt::OpCode::MatRow:
       if (const rt::NodeId a = operand(u, 0);
           g_.op_of(a) == rt::OpCode::MatConst) {
-        const bool plain = rt::detail::get<rt::Orientation>(g_[u]) ==
-                           rt::Orientation::plain;
-        return read(tables_[a], plain ? flat(i, j, rows(a)) : flat(j, i, rows(a)));
+        const bool plain =
+            rt::detail::get<rt::Orientation>(g_[u]) == rt::Orientation::plain;
+        return read(tables_[a],
+                    plain ? flat(i, j, rows(a)) : flat(j, i, rows(a)));
       }
       break;
     default:
@@ -668,7 +667,8 @@ private:
       return;
     case rt::OpCode::Pack:
       for (const auto [e, arg] : rt::arguments(g_, v) | std::views::enumerate) {
-        b_.CreateStore(scalar(arg), element(row(v), i64(static_cast<std::uint64_t>(e))));
+        b_.CreateStore(scalar(arg),
+                       element(row(v), i64(static_cast<std::uint64_t>(e))));
       }
       return;
     case rt::OpCode::Gather:
@@ -688,12 +688,12 @@ private:
     }
     case rt::OpCode::Sum:
     case rt::OpCode::Dot:
-      scalar_out(v, each(g_.shape(a), {zero}, [&](auto i, auto j, const auto &acc) {
-                      return Carried{p.op == rt::OpCode::Sum
-                                         ? b_.CreateFAdd(acc[0], at(a, i, j))
-                                         : fmuladd(at(a, i, j), at(b, i, j),
-                                                   acc[0])};
-                    })[0]);
+      scalar_out(
+          v, each(g_.shape(a), {zero}, [&](auto i, auto j, const auto &acc) {
+            return Carried{p.op == rt::OpCode::Sum
+                               ? b_.CreateFAdd(acc[0], at(a, i, j))
+                               : fmuladd(at(a, i, j), at(b, i, j), acc[0])};
+          })[0]);
       return;
     case rt::OpCode::MatVec: {
       // A pair is one nest, at whichever of the two comes first.
@@ -750,9 +750,8 @@ llvm::Function *declare_kernel(llvm::Module &m, llvm::StringRef name,
   llvm::PointerType *const ptr = llvm::PointerType::getUnqual(ctx);
   // xs, f, g, h, n, tensors, tapes -- four column arrays, the batch length,
   // and what the tensor steps read.
-  auto *const fty =
-      llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
-                              {ptr, ptr, ptr, ptr, i64, ptr, ptr}, false);
+  auto *const fty = llvm::FunctionType::get(
+      llvm::Type::getVoidTy(ctx), {ptr, ptr, ptr, ptr, i64, ptr, ptr}, false);
   auto *const fn =
       llvm::Function::Create(fty, llvm::Function::ExternalLinkage, name, m);
 
@@ -830,9 +829,8 @@ HoistedColumns hoist_columns(llvm::IRBuilder<> &b, llvm::Function &fn,
 // reads stored to the tape; a scalar either yields is read back.
 template <CKernelScalar T>
 [[nodiscard]] std::vector<llvm::Value *>
-emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops,
-           const rt::Graph<T> &g, const HoistedColumns &cols,
-           llvm::Value *index, llvm::Value *mask) {
+emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops, const rt::Graph<T> &g,
+           const HoistedColumns &cols, llvm::Value *index, llvm::Value *mask) {
   std::vector<llvm::Value *> value(g.size(), nullptr);
   std::map<std::pair<std::uint32_t, rt::NodeId>, typename Emitter<T>::Answers>
       called;
@@ -960,9 +958,9 @@ void emit_tensor_stores(const Emitter<T> &emit, const rt::Graph<T> &g,
 
 template <CKernelScalar T>
 std::unique_ptr<llvm::Module>
-emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g,
-            llvm::StringRef name, const unsigned width,
-            const llvm::DataLayout &layout, llvm::StringRef triple) {
+emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g, llvm::StringRef name,
+            const unsigned width, const llvm::DataLayout &layout,
+            llvm::StringRef triple) {
   auto m = std::make_unique<llvm::Module>("ddx.jit", ctx);
   // Before the first instruction: IRBuilder reads the layout for every
   // alignment it fills in without being told one.
@@ -998,8 +996,8 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g,
                       : TensorTapes{};
 
   // An element of a tensor loop is one T, whatever the kernel's width.
-  const Emitter<T> elem(*m, b, LaneType{.width = 1, .scalar = scalar, .ty = scalar},
-                        tensors);
+  const Emitter<T> elem(
+      *m, b, LaneType{.width = 1, .scalar = scalar, .ty = scalar}, tensors);
   std::optional<TensorLoops<T>> loops;
   if (g.has_tensors()) {
     loops.emplace(*m, b, g, elem, lanes, tensors);

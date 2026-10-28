@@ -8,8 +8,8 @@
 
 #include <concepts>
 #include <memory>
-#include <optional>
 #include <mutex> // unique_lock, which <shared_mutex> does not carry
+#include <optional>
 #include <shared_mutex>
 
 // One shape of graph per Want, and the kernel compiled from it.  An equation
@@ -59,15 +59,14 @@ public:
   template <std::default_initializable Yield>
   [[nodiscard]] std::shared_ptr<const Held>
   snapshot(const std::optional<jit::Options> &compiling, auto &&freeze) {
-    if (const std::shared_lock read{mutex_, std::try_to_lock};
-        read && ready_) {
+    if (const std::shared_lock read{mutex_, std::try_to_lock}; read && ready_) {
       return ready_;
     }
     [[maybe_unused]] const Yield yielded{};
     const std::unique_lock fill{mutex_}; // another thread may have won
     if (!ready_) {
-      ready_ = std::make_shared<const Held>(
-          compiled(compiling, DDX_FWD(freeze)()));
+      ready_ =
+          std::make_shared<const Held>(compiled(compiling, DDX_FWD(freeze)()));
     }
     return ready_;
   }

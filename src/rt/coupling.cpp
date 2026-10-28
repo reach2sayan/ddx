@@ -55,7 +55,8 @@ Colouring colour_columns(const CouplingRows &rows) {
                                 edges.begin(), edges.end(), n};
 
   // Greedy colouring is only as good as the order it walks.
-  Colouring out{.colour = std::vector<std::size_t>(n, 0), .scatter = {}, .cell = {}};
+  Colouring out{
+      .colour = std::vector<std::size_t>(n, 0), .scatter = {}, .cell = {}};
   const auto order = boost::smallest_last_vertex_ordering(conflicts);
   // clang-format off
   const auto count = static_cast<std::size_t>(

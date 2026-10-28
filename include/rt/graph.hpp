@@ -71,8 +71,14 @@ struct WantInfo {
 inline constexpr std::array want_table{
 #define DDX_RT_WANT(Name, single, second, rebalance, direction, values, jac,   \
                     hes)                                                       \
-  WantInfo{#Name,  single, second,          rebalance, Direction::direction, \
-           values, BlockShape::jac, BlockShape::hes},
+  WantInfo{#Name,                                                              \
+           single,                                                             \
+           second,                                                             \
+           rebalance,                                                          \
+           Direction::direction,                                               \
+           values,                                                             \
+           BlockShape::jac,                                                    \
+           BlockShape::hes},
     DDX_RT_WANT_TABLE(DDX_RT_WANT)
 #undef DDX_RT_WANT
 };
@@ -240,8 +246,7 @@ public:
     g.rows_ = std::move(packed.by_id);
     g.tape_rows_ = packed.rows;
     g.fused_ = detail::fused_into(g, g.schedule_, g.outputs_);
-    g.tensors_ =
-        detail::tensor_layout(b, g.schedule_, g.outputs_, g.fused_);
+    g.tensors_ = detail::tensor_layout(b, g.schedule_, g.outputs_, g.fused_);
     if (g.has_tensors_) {
       g.shapes_.resize(b.size());
       for (const Step &step : g.schedule_) {

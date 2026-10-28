@@ -217,8 +217,7 @@ template <CKernelScalar T>
 
 // Asked of the target's cost model rather than a feature list, so
 // prefer-256-bit parts answer 256 as the backend would split them anyway.
-[[nodiscard]] unsigned
-vector_bits(llvm::orc::JITTargetMachineBuilder machine) {
+[[nodiscard]] unsigned vector_bits(llvm::orc::JITTargetMachineBuilder machine) {
   auto tm = machine.createTargetMachine();
   if (!tm) {
     llvm::consumeError(tm.takeError());
@@ -406,20 +405,21 @@ struct Compiler::Impl {
   [[nodiscard]] compile_result<std::unique_ptr<llvm::Module>>
   module(llvm::LLVMContext &ctx, const rt::Graph<T> &g, const Options &opt,
          const std::string &name) const {
-    return target().and_then([&](std::unique_ptr<llvm::TargetMachine> tm)
-                                 -> compile_result<std::unique_ptr<llvm::Module>> {
-      quiet_vectoriser(ctx);
-      auto m = detail::emit_module(ctx, g, name, lanes<T>(opt, g.has_tensors()),
-                                   jit->getDataLayout(),
-                                   tm->getTargetTriple().str());
-      if (!m) {
-        // The emitter has already written the verifier's own diagnosis.
-        return std::unexpected{compile_error{
-            errc::jit_verify, "the emitted module failed verification"}};
-      }
-      optimize(*m, *tm, opt, libmvec);
-      return m;
-    });
+    return target().and_then(
+        [&](std::unique_ptr<llvm::TargetMachine> tm)
+            -> compile_result<std::unique_ptr<llvm::Module>> {
+          quiet_vectoriser(ctx);
+          auto m = detail::emit_module(
+              ctx, g, name, lanes<T>(opt, g.has_tensors()),
+              jit->getDataLayout(), tm->getTargetTriple().str());
+          if (!m) {
+            // The emitter has already written the verifier's own diagnosis.
+            return std::unexpected{compile_error{
+                errc::jit_verify, "the emitted module failed verification"}};
+          }
+          optimize(*m, *tm, opt, libmvec);
+          return m;
+        });
   }
 
   // At the codegen level for the backend, and at the default for the IR
@@ -450,15 +450,16 @@ struct Compiler::Impl {
     return self->module(ctx, g, opt, name)
         .and_then([&](std::unique_ptr<llvm::Module> m) {
           return self->target(opt.codegen.codegen_level)
-              .and_then([&](std::unique_ptr<llvm::TargetMachine> tm)
-                            -> compile_result<std::unique_ptr<llvm::MemoryBuffer>> {
-                auto object = llvm::orc::SimpleCompiler{*tm}(*m);
-                if (!object) {
-                  return std::unexpected{as_error(errc::jit_module, "compiling",
-                                                  object.takeError())};
-                }
-                return std::move(*object);
-              });
+              .and_then(
+                  [&](std::unique_ptr<llvm::TargetMachine> tm)
+                      -> compile_result<std::unique_ptr<llvm::MemoryBuffer>> {
+                    auto object = llvm::orc::SimpleCompiler{*tm}(*m);
+                    if (!object) {
+                      return std::unexpected{as_error(
+                          errc::jit_module, "compiling", object.takeError())};
+                    }
+                    return std::move(*object);
+                  });
         })
         .and_then([&](std::unique_ptr<llvm::MemoryBuffer> object)
                       -> compile_result<Kernel<T>> {
@@ -510,7 +511,7 @@ compile_result<std::string> Compiler::ir(const rt::Graph<T> &g,
 #define DDX_JIT_INSTANCES(T)                                                   \
   template DDX_INSTANCE_API compile_result<Kernel<T>> Compiler::compile(       \
       const rt::Graph<T> &, const Options &);                                  \
-  template DDX_INSTANCE_API compile_result<std::string> Compiler::ir(           \
+  template DDX_INSTANCE_API compile_result<std::string> Compiler::ir(          \
       const rt::Graph<T> &, const Options &) const;
 DDX_JIT_INSTANCES(double)
 DDX_JIT_INSTANCES(float)

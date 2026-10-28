@@ -101,8 +101,9 @@ struct Cell {
 // rather than propagated: a partial the sweep folded to the zero constant *is*
 // structurally zero, so this is exact where `coupling_pattern` is conservative.
 //
-// The block is its rows: `for (const Row &r : pattern.rows())`, and `cells(values)`
-// zips those rows against a value block.  Nothing outside reads `rowptr`.
+// The block is its rows: `for (const Row &r : pattern.rows())`, and
+// `cells(values)` zips those rows against a value block.  Nothing outside reads
+// `rowptr`.
 struct Sparsity {
   std::vector<std::size_t> rowptr; // rows() + 1, or empty for no rows
   std::vector<std::uint32_t> col;  // nonzeros(), ascending within a row
@@ -280,8 +281,7 @@ template <impl::Numeric T>
   };
   // What a field op couples between the supports of its operands; false
   // for any other op, which couples their union with itself.
-  const auto step = [&rows](OpCode op, const SymbolSet &l,
-                            const SymbolSet &r) {
+  const auto step = [&rows](OpCode op, const SymbolSet &l, const SymbolSet &r) {
     if (op == OpCode::Mul) {
       detail::couple(rows, l, r);
     } else if (op == OpCode::Div) {

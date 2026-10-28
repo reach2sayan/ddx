@@ -349,9 +349,8 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
       for (const auto &[left, term] : steps | std::views::reverse) {
         const Expression<T> l = expr(left);
         const Expression<T> r = expr(term);
-        add_to(term, g, [&] {
-          return detail::contribution_to<1>(step, carried, l, r);
-        });
+        add_to(term, g,
+               [&] { return detail::contribution_to<1>(step, carried, l, r); });
         carried = detail::contribution_to<0>(step, carried, l, r);
       }
       add_to(steps.front().first, g, [&] { return carried; });
@@ -382,8 +381,8 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
       const Expression<T> r = expr(node.in[1]);
       // A pair, not a structured binding: clang will not constant-evaluate a
       // binding captured by reference.
-      const auto c = detail::contributions(
-          op, a, l, r, moves(node.in[0]), moves(node.in[1]), zero);
+      const auto c = detail::contributions(op, a, l, r, moves(node.in[0]),
+                                           moves(node.in[1]), zero);
       add_to(node.in[0], g, [&] { return c.first; });
       add_to(node.in[1], g, [&] { return c.second; });
       break;
@@ -620,8 +619,8 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       const Expression<T> l{b, node.in[0]};
       const Expression<T> r{b, node.in[1]};
       const Expression<T> one{1};
-      const auto p = detail::contributions(
-          op, one, l, r, moves[node.in[0]], moves[node.in[1]], one);
+      const auto p = detail::contributions(op, one, l, r, moves[node.in[0]],
+                                           moves[node.in[1]], one);
       d[v] = moved(
           v, node.in[0], [&] { return p.first * dv(node.in[0]); }, node.in[1],
           [&] { return p.second * dv(node.in[1]); });
@@ -745,8 +744,7 @@ derive_jacobian(Arena<T> &b, std::span<const NodeId> roots) {
 // One root rather than a span: a span is not constructible from a NodeId, so
 // this and the m-root overload never compete.
 template <impl::DiffMode Mode = impl::DiffMode::Reverse, impl::Numeric T>
-[[nodiscard]] constexpr JacobianRow derive_jacobian(Arena<T> &b,
-                                                    NodeId root) {
+[[nodiscard]] constexpr JacobianRow derive_jacobian(Arena<T> &b, NodeId root) {
   if constexpr (Mode == impl::DiffMode::Symbolic) {
     return build_symbolic_jacobian(b, root);
   } else {
@@ -759,9 +757,9 @@ namespace detail {
 template <impl::Numeric T>
 [[nodiscard]] result<Arena<T> *> differentiable(const Expression<T> &f) {
   Arena<T> *const b = arena_of<T>({&f, 1});
-  const auto why = b == nullptr       ? std::optional{errc::outside_equation}
+  const auto why = b == nullptr        ? std::optional{errc::outside_equation}
                    : Router::scalar(f) ? Router::why(f)
-                                        : errc::tensor_shape;
+                                       : errc::tensor_shape;
   return why ? fail(*why) : result<Arena<T> *>{b};
 }
 } // namespace detail
