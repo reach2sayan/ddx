@@ -372,7 +372,7 @@ public:
   TensorLoops(llvm::Module &m, llvm::IRBuilder<> &b, const rt::Graph<T> &g,
               const Emitter<T> &elem, LaneType lanes, TensorTapes tapes)
       : m_{m}, b_{b}, g_{g}, elem_{elem}, lanes_{lanes}, tapes_{tapes},
-        tables_(g.size(), nullptr) {
+        tables_(g.size(), nullptr), stepped_(g.size(), false) {
     // In the entry block, once per call.
     auto *const decl = llvm::cast<llvm::Function>(
         m.getOrInsertFunction(
@@ -391,6 +391,13 @@ public:
                    b.getInt64(rt::detail::get<rt::TensorRef>(g[v]).value)},
             "table");
       }
+      // A step and the output scatter read rows; a loop reads a table in place.
+      if (!handles(v)) {
+        rt::detail::for_each_operand(g, v, [&](rt::NodeId u) { stepped_[u] = true; });
+      }
+    }
+    for (const rt::NodeId o : g.outputs()) {
+      stepped_[o] = true;
     }
   }
 
@@ -465,7 +472,12 @@ private:
       llvm::Metadata *const enable[] = {
           llvm::MDString::get(ctx, "llvm.loop.vectorize.enable"),
           llvm::ConstantAsMetadata::get(b_.getTrue())};
-      llvm::Metadata *const ops[] = {nullptr, llvm::MDNode::get(ctx, enable)};
+      // Unrolled whole first, a reduction is a serial chain the vectoriser
+      // never sees.
+      llvm::Metadata *const keep[] = {
+          llvm::MDString::get(ctx, "llvm.loop.unroll.disable")};
+      llvm::Metadata *const ops[] = {nullptr, llvm::MDNode::get(ctx, enable),
+                                     llvm::MDNode::get(ctx, keep)};
       llvm::MDNode *const id = llvm::MDNode::getDistinct(ctx, ops);
       id->replaceOperandWith(0, id);
       br->setMetadata(llvm::LLVMContext::MD_loop, id);
@@ -586,12 +598,17 @@ private:
     case rt::OpCode::MatConst:
       return;
     case rt::OpCode::MatRow:
+      // A table has no row; its transpose has one only for a step to read.
       if (g_.op_of(a) == rt::OpCode::MatConst &&
-          rt::detail::get<rt::Orientation>(p) == rt::Orientation::plain) {
+          (rt::detail::get<rt::Orientation>(p) == rt::Orientation::plain ||
+           !stepped_[v])) {
         return; // the table, read in place
       }
       break;
     case rt::OpCode::VecConst:
+      if (!stepped_[v]) {
+        return;
+      }
       b_.CreateMemCpy(row(v), llvm::Align(alignof(T)), tables_[v],
                       llvm::Align(alignof(T)), s.size() * sizeof(T));
       return;
@@ -640,19 +657,33 @@ private:
         });
         return;
       }
-      // out += b[j] column_j, a column a pass
+      // out += b[j] column_j, four columns a pass so out is loaded and
+      // stored a quarter as often.
       b_.CreateMemSet(out, b_.getInt8(0), m.rows * sizeof(T),
                       llvm::Align(alignof(T)));
-      loop(m.cols, {}, false, [&](llvm::Value *j, auto) {
-        llvm::Value *const x = at(b, j);
+      const auto columns = [&](llvm::Value *j0, std::uint64_t count) {
+        llvm::SmallVector<llvm::Value *, 4> js, xs;
+        for (std::uint64_t d = 0; d < count; ++d) {
+          js.push_back(add(j0, i64(d)));
+          xs.push_back(at(b, js.back()));
+        }
         loop(m.rows, {}, true, [&](llvm::Value *i, auto) {
           llvm::Value *const to = element(out, i);
-          b_.CreateStore(
-              fmuladd(at(a, i, j), x, b_.CreateLoad(lanes_.scalar, to)), to);
+          llvm::Value *acc = b_.CreateLoad(lanes_.scalar, to);
+          for (const auto [j, x] : std::views::zip(js, xs)) {
+            acc = fmuladd(at(a, i, j), x, acc);
+          }
+          b_.CreateStore(acc, to);
           return Carried{};
         });
+      };
+      loop(m.cols / 4, {}, false, [&](llvm::Value *q, auto) {
+        columns(b_.CreateMul(q, i64(4)), 4);
         return Carried{};
       });
+      if (m.cols % 4 != 0) {
+        columns(i64(m.cols / 4 * 4), m.cols % 4);
+      }
       return;
     }
     case rt::OpCode::RowOf: {
@@ -682,6 +713,7 @@ private:
   LaneType lanes_;
   TensorTapes tapes_;
   std::vector<llvm::Value *> tables_; // by id: a table's elements
+  std::vector<bool> stepped_;         // by id: read as a row, not in place
   std::span<llvm::Value *const> value_;
   llvm::Value *k_ = nullptr;
 };
