@@ -1219,7 +1219,7 @@ private:
     // product reads it: y's never reaches H(x*x + y) v.
     const WantInfo &info = want_info(want);
     const auto freeze = [&](std::span<const NodeId> roots,
-                            const Jacobian &partials) {
+                            const Jacobian &partials, bool for_kernel) {
       OutputBlocks blocks = added;
       if (info.values) {
         blocks.values.assign(roots.begin(), roots.end());
@@ -1231,16 +1231,20 @@ private:
       return std::make_shared<const Graph<T>>(
           Graph<T>::freeze(*arena_, std::move(blocks), colouring,
                            pattern ? partials.pattern : Sparsity{}, contracts(),
-                           extent(info.direction)));
+                           extent(info.direction), for_kernel));
     };
     [[maybe_unused]] const bool rebalance = !cells.kept && rebalances(want);
     [[maybe_unused]] const auto held = reading();
-    auto swept = freeze(roots_, cells.jacobian);
+    auto swept = freeze(roots_, cells.jacobian, false);
     auto compiled = swept;
 #ifdef DDX_HAS_JIT
-    if (rebalance) {
-      const Rebalanced &over = sweeps_->rebalanced.peek();
-      compiled = freeze(over.roots, over.derivative);
+    // The kernel's own graph where it differs: over rebalanced roots, or with
+    // a tensor's elementwise rows fused into their readers.
+    if (rebalance || (swept->has_tensors() && compiling())) {
+      const Rebalanced *over =
+          rebalance ? &sweeps_->rebalanced.peek() : nullptr;
+      compiled = freeze(over ? over->roots : roots_,
+                        over ? over->derivative : cells.jacobian, true);
     }
 #endif
     return {.graph = std::move(swept),
@@ -1343,11 +1347,19 @@ private:
     for (const std::size_t base :
          std::views::iota(0uz, n) | std::views::stride(W)) {
       const std::size_t width = std::min(W, n - base);
-      for (const auto [dst, column] :
-           std::views::zip(point | std::views::chunk(W), xs)) {
-        const auto tail =
-            std::ranges::copy(std::span{column + base, width}, dst.begin()).out;
-        std::ranges::fill(tail, dst.end(), column[base + width - 1]);
+      // One point is a gather, which on a small graph is a fair part of it.
+      if constexpr (W == 1) {
+        std::ranges::transform(
+            xs, point.begin(),
+            [base](const T *column) { return column[base]; });
+      } else {
+        for (const auto [dst, column] :
+             std::views::zip(point | std::views::chunk(W), xs)) {
+          const auto tail =
+              std::ranges::copy(std::span{column + base, width}, dst.begin())
+                  .out;
+          std::ranges::fill(tail, dst.end(), column[base + width - 1]);
+        }
       }
       evaluate_block<W>(*arena_, std::span<const T>{point}, graph.schedule(),
                         std::span<T>{tape}, t);

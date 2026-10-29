@@ -187,11 +187,15 @@ public:
   // `contract` is settled here, not per sweep: it decides the arithmetic, so
   // changing it afterwards means freezing again.
   // `directions` is how many direction columns the call hands, read or not.
+  // `fuse` is for a kernel, which forms an elementwise row inside its reader:
+  // the operands then live to that reader, which a sweep -- computing every
+  // row on its own -- pays for in tape and nothing else.
   [[nodiscard]] static Graph freeze(const Arena<T> &b, OutputBlocks blocks,
                                     Colouring colouring = {},
                                     Sparsity jacobian = {},
                                     bool contract = true,
-                                    std::size_t directions = 0) {
+                                    std::size_t directions = 0,
+                                    bool fuse = true) {
     Graph g;
     // Node counts per block, and the column counts: a vector output is one
     // column per element.
@@ -245,7 +249,9 @@ public:
     auto packed = detail::pack_rows(b, g.schedule_, g.outputs_);
     g.rows_ = std::move(packed.by_id);
     g.tape_rows_ = packed.rows;
-    g.fused_ = detail::fused_into(g, g.schedule_, g.outputs_);
+    if (fuse) {
+      g.fused_ = detail::fused_into(g, g.schedule_, g.outputs_);
+    }
     g.tensors_ = detail::tensor_layout(b, g.schedule_, g.outputs_, g.fused_);
     if (g.has_tensors_) {
       g.shapes_.resize(b.size());
@@ -329,8 +335,7 @@ public:
 
   [[nodiscard]] bool live(NodeId v) const { return live_[v]; }
 
-  // How many ids the freeze kept, which is what a compile reports having
-  // emitted.
+  // How many ids the freeze kept.
   [[nodiscard]] std::size_t live_count() const { return live_order_.size(); }
 
   // The ids left to compute, in topological order so a consumer emits them in

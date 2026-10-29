@@ -17,9 +17,12 @@
 #include "util/config.hpp"
 #include "util/export.hpp"
 
+#include <boost/mp11/algorithm.hpp>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <concepts>
 #include <cstddef>
@@ -106,13 +109,16 @@ template <impl::Numeric T = double> struct Kernels {
     }
   }
 
+  // Unrolled at compile time: as a loop it stays one, over a spilled array,
+  // and on a short row costs more than the row.
   template <std::size_t N>
   [[nodiscard]] static constexpr T fold(std::array<T, N> &acc) noexcept {
-    for (std::size_t w = N / 2; w > 0; w /= 2) {
-      for (std::size_t l = 0; l < w; ++l) {
-        acc[l] = acc[l] + acc[l + w];
-      }
-    }
+    boost::mp11::mp_for_each<boost::mp11::mp_iota_c<std::bit_width(N) - 1>>(
+        [&](auto level) {
+          constexpr std::size_t w = N >> (level + 1);
+          boost::mp11::mp_for_each<boost::mp11::mp_iota_c<w>>(
+              [&](auto l) { acc[l] = acc[l] + acc[l + w]; });
+        });
     return acc[0];
   }
 

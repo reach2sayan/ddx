@@ -201,8 +201,18 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
     const TensorKernelTable<U> &kt = *t.kernels;
     // Lane k of a scalar operand.
     const auto at = [&](NodeId s, std::size_t k) { return lane(t.row(s))[k]; };
+    const bool paired =
+        n.op == OpCode::MatVec && !t.pairs.empty() && t.pairs[v] != no_node;
     for (std::size_t k = 0; k < W; ++k) {
       const auto to = mine(k);
+      // The arithmetic first, in one dispatch: on a short row a second switch
+      // in front of it is a fair part of the step.
+      if (!paired &&
+          tensor_row(
+              b, v, [&](std::size_t i) { return in(n.in[i], k); },
+              [&](std::size_t i) { return at(n.in[i], k); }, to, out[k], kt)) {
+        continue;
+      }
       switch (n.op) {
       case OpCode::VecConst:
         std::ranges::copy(b.tensors()[get<TensorRef>(n).value].data,
@@ -262,36 +272,28 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
       }
       case OpCode::MatConst: // a table its MatRow reads in place
         break;
-      case OpCode::MatVec:
-        if (const NodeId mate = t.pairs.empty() ? no_node : t.pairs[v];
-            mate != no_node) {
-          if (mate > v) { // the pair's first, so both: one pass over the matrix
-            const auto [other_at, other_w] = row(mate);
-            const std::span<U> other{other_at + k * other_w, other_w};
-            const bool transposed =
-                get<Orientation>(n) == Orientation::transposed;
-            if (kt.gemv_pair != nullptr) {
-              kt.gemv_pair(shape_of(b, n.in[0]).rows, in(n.in[0], k),
-                           in(n.in[1], k), transposed ? other : to,
-                           transposed ? to : other);
-            } else {
-              const Shape m = shape_of(b, n.in[0]);
-              kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), to,
-                      transposed);
-              kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), other,
-                      !transposed);
-            }
+      case OpCode::MatVec: // paired
+        if (const NodeId mate = t.pairs[v]; mate > v) {
+          // The pair's first, so both: one pass over the matrix.
+          const auto [other_at, other_w] = row(mate);
+          const std::span<U> other{other_at + k * other_w, other_w};
+          const bool transposed =
+              get<Orientation>(n) == Orientation::transposed;
+          if (kt.gemv_pair != nullptr) {
+            kt.gemv_pair(shape_of(b, n.in[0]).rows, in(n.in[0], k),
+                         in(n.in[1], k), transposed ? other : to,
+                         transposed ? to : other);
+          } else {
+            const Shape m = shape_of(b, n.in[0]);
+            kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), to,
+                    transposed);
+            kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), other,
+                    !transposed);
           }
-          break;
         }
-        [[fallthrough]];
+        break;
       default:
-        if (!tensor_row(
-                b, v, [&](std::size_t i) { return in(n.in[i], k); },
-                [&](std::size_t i) { return at(n.in[i], k); }, to, out[k],
-                kt)) {
-          std::unreachable();
-        }
+        std::unreachable();
       }
     }
   }
