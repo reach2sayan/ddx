@@ -9,7 +9,7 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR
     endif ()
 endif ()
 
-project(ddx VERSION 5.0.0 LANGUAGES CXX)
+project(ddx VERSION 5.0.1 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 

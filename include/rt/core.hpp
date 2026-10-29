@@ -1347,11 +1347,19 @@ private:
     for (const std::size_t base :
          std::views::iota(0uz, n) | std::views::stride(W)) {
       const std::size_t width = std::min(W, n - base);
-      for (const auto [dst, column] :
-           std::views::zip(point | std::views::chunk(W), xs)) {
-        const auto tail =
-            std::ranges::copy(std::span{column + base, width}, dst.begin()).out;
-        std::ranges::fill(tail, dst.end(), column[base + width - 1]);
+      // One point is a gather, which on a small graph is a fair part of it.
+      if constexpr (W == 1) {
+        std::ranges::transform(
+            xs, point.begin(),
+            [base](const T *column) { return column[base]; });
+      } else {
+        for (const auto [dst, column] :
+             std::views::zip(point | std::views::chunk(W), xs)) {
+          const auto tail =
+              std::ranges::copy(std::span{column + base, width}, dst.begin())
+                  .out;
+          std::ranges::fill(tail, dst.end(), column[base + width - 1]);
+        }
       }
       evaluate_block<W>(*arena_, std::span<const T>{point}, graph.schedule(),
                         std::span<T>{tape}, t);
