@@ -93,7 +93,7 @@ public:
   }
   // (), (n,) for a vector, (rows, cols) for a matrix, constant or computed.
   [[nodiscard]] std::vector<std::size_t> shape() const {
-    if (!arena_) {
+    if (!arena_ || expression_.pending()) {
       return {};
     }
     const rt::Node<double> &n = (*arena_)[expression_.id()];

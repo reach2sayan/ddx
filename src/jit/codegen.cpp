@@ -672,12 +672,16 @@ private:
       }
       return;
     case rt::OpCode::Gather:
-      scalar_out(v, at(a, i64(rt::detail::get<rt::Element>(p).value)));
+    {
+      // A flat index: a fused matrix is read by its row and its column.
+      const std::uint64_t e = rt::detail::get<rt::Element>(p).value;
+      scalar_out(v, at(a, i64(e % rows(a)), i64(e / rows(a))));
       return;
+    }
     case rt::OpCode::AddAt: {
       llvm::Value *const out = row(v);
-      loop(s.size(), {}, true, [&](llvm::Value *i, auto) {
-        b_.CreateStore(at(a, i), element(out, i));
+      each(s, {}, [&](llvm::Value *i, llvm::Value *j, auto) {
+        b_.CreateStore(at(a, i, j), element(out, flat(i, j, s.rows)));
         return Carried{};
       });
       llvm::Value *const to =

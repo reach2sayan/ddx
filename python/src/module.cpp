@@ -49,45 +49,39 @@ thread_local std::shared_ptr<rt::Arena<double>> current_arena;
 // pointer, so it cannot capture.
 pyb::handle error_class;
 
+// The model running now.
+[[nodiscard]] PyExpression::SharedArena arena_now() {
+  if (!current_arena) {
+    fail_with(errc::outside_equation);
+  }
+  return current_arena;
+}
+
 // A symbol or a parameter of the model running now.  C++ carries a poison
 // instead, unable to afford a branch per input; Python already pays more per
 // call than the branch costs.
 [[nodiscard]] PyExpression make_input(rt::OpCode kind, std::string_view name) {
-  if (!current_arena) {
-    fail_with(errc::outside_equation);
-  }
-  const auto e = rt::named(*current_arena, kind, name);
+  const auto arena = arena_now();
+  const auto e = rt::named(*arena, kind, name);
   if (e.poisoned()) {
     fail_with(errc::name_clash);
   }
-  return {e, current_arena};
+  return {e, arena};
 }
 
 // An implicit input and the residual `residual(z)` it is a root of; a
 // poisoned residual is kept on the arena for the equation.
 [[nodiscard]] PyExpression make_implicit(std::string_view name,
                                          const pyb::function &residual) {
-  if (!current_arena) {
-    fail_with(errc::outside_equation);
-  }
+  const auto arena = arena_now();
   const auto z =
-      rt::implicit(*current_arena, name, [&](const rt::Expression<double> &e) {
-        return residual(PyExpression{e, current_arena})
-            .cast<PyExpression>()
-            .base();
+      rt::implicit(*arena, name, [&](const rt::Expression<double> &e) {
+        return residual(PyExpression{e, arena}).cast<PyExpression>().base();
       });
   if (z.poisoned()) {
     fail_with(errc::name_clash);
   }
-  return {z, current_arena};
-}
-
-// The model running now, for a vector that names no scalar of it.
-[[nodiscard]] PyExpression::SharedArena arena_now() {
-  if (!current_arena) {
-    fail_with(errc::outside_equation);
-  }
-  return current_arena;
+  return {z, arena};
 }
 
 // One root, or m of them from a tuple or list.  The count is a runtime value
@@ -109,7 +103,7 @@ pyb::handle error_class;
            // constant.
            const auto e = pyb::cast<PyExpression>(item);
            if (e.poisoned()) {
-             fail_with(errc::outside_equation);
+             fail_with(*rt::detail::Router::why(e.base()));
            }
            return e.root_in(arena);
          }) |
@@ -245,6 +239,17 @@ PYBIND11_MODULE(_ddx, m) {
       // A vector: its length, one element as a scalar, and its shape.
       .def("__len__", &PyExpression::size)
       .def("__getitem__", &PyExpression::at, pyb::arg("i"))
+      .def("__iter__",
+           [](const PyExpression &e) {
+             if (e.size() == 0) {
+               ddx::py::fail_with(ddx::errc::tensor_shape);
+             }
+             pyb::list elements;
+             for (const std::size_t i : std::views::iota(0uz, e.size())) {
+               elements.append(e.at(i));
+             }
+             return pyb::iter(elements);
+           })
       .def_property_readonly("shape", [](const PyExpression &e) {
         return pyb::tuple(pyb::cast(e.shape()));
       });
@@ -355,6 +360,13 @@ PYBIND11_MODULE(_ddx, m) {
   // is below.
   for (const auto i : std::views::iota(0uz, rt::op_count)) {
     const auto op = static_cast<rt::OpCode>(i);
+    // An operator already spells these.
+    if (std::ranges::contains(std::array{rt::OpCode::Neg, rt::OpCode::Add,
+                                         rt::OpCode::Mul, rt::OpCode::Div,
+                                         rt::OpCode::Lt, rt::OpCode::Le},
+                              op)) {
+      continue;
+    }
     const std::string name{rt::name_of(op)};
     switch (rt::kind_of(op)) {
     case rt::Kind::Unary:
@@ -423,13 +435,6 @@ PYBIND11_MODULE(_ddx, m) {
       pyb::arg("data"));
   m.def(
       "mat_constant",
-      [in_arena, data_of](std::size_t rows, std::size_t cols, const Columns &data) {
-        return in_arena(
-            [&](auto &b) { return rt::mat_constant(b, rows, cols, data_of(data)); });
-      },
-      pyb::arg("rows"), pyb::arg("cols"), pyb::arg("data"));
-  m.def(
-      "mat_constant",
       [in_arena, data_of](const Columns &m) {
         if (m.ndim() != 2) {
           ddx::py::fail_with(errc::tensor_shape);
@@ -447,21 +452,6 @@ PYBIND11_MODULE(_ddx, m) {
         return reduce(v, [](const auto &a) { return sum(a); });
       },
       pyb::arg("v"));
-  m.def(
-      "dot",
-      [](const PyExpression &u, const PyExpression &v) {
-        return reduce(u, v,
-                      [](const auto &a, const auto &b) { return dot(a, b); });
-      },
-      pyb::arg("u"), pyb::arg("v"));
-  m.def(
-      "gemv",
-      [](const PyExpression &M, const PyExpression &v, bool transposed) {
-        return reduce(M, v, [transposed](const auto &a, const auto &b) {
-          return gemv(a, b, transposed);
-        });
-      },
-      pyb::arg("matrix"), pyb::arg("v"), pyb::arg("transposed") = false);
   pyb::class_<PyTransposed>(m, "Transposed")
       .def(
           "__matmul__",
@@ -473,8 +463,7 @@ PYBIND11_MODULE(_ddx, m) {
           pyb::is_operator());
   m.def(
       "transpose", [](const PyExpression &M) { return PyTransposed{M}; },
-      pyb::arg("matrix"),
-      "M^T, as the left side of @: transpose(M) @ v is gemv(M, v, True).");
+      pyb::arg("matrix"), "M^T, as the left side of @.");
   m.def("release_tapes", &rt::release_tapes<double>,
         "Free this thread's sweep tapes; the next sweep grows them again.");
   m.def(
@@ -487,6 +476,9 @@ PYBIND11_MODULE(_ddx, m) {
 
   // Derivatives as expressions to build on, in the model running now.
   const auto rooted = [](const PyExpression &f) {
+    if (f.poisoned()) {
+      ddx::py::fail_with(*rt::detail::Router::why(f.base()));
+    }
     const auto arena = f.arena() ? f.arena() : ddx::py::arena_now();
     return std::pair{PyExpression::Base{*arena, f.base().id(*arena)}, arena};
   };
@@ -578,12 +570,10 @@ PYBIND11_MODULE(_ddx, m) {
             }
             o.codegen.lanes = *lanes;
           })
-      .def_readwrite("time_passes", &jit::Options::time_passes)
       .def(pyb::self == pyb::self);
   codegen("opt_level", &jit::Codegen::opt_level);
   codegen("codegen_level", &jit::Codegen::codegen_level);
   codegen("slp_vectorize", &jit::Codegen::slp_vectorize);
-  codegen("loop_vectorize", &jit::Codegen::loop_vectorize);
   codegen("veclib", &jit::Codegen::veclib);
   codegen("contract", &jit::Codegen::contract);
 
@@ -597,7 +587,6 @@ PYBIND11_MODULE(_ddx, m) {
 
   pyb::class_<PyEquation>(m, "Equation", pyb::dynamic_attr())
       .def("__repr__", &PyEquation::repr)
-      .def("__call__", &PyEquation::evaluate, pyb::arg("x"))
       .def("evaluate", &PyEquation::evaluate, pyb::arg("x"))
       .def("jacobian", &PyEquation::jacobian, pyb::arg("x"))
       .def("gradient", &PyEquation::gradient, pyb::arg("x"))
@@ -633,9 +622,6 @@ PYBIND11_MODULE(_ddx, m) {
       .def_property_readonly("inputs", &PyEquation::inputs_list)
       .def_property_readonly("arity", &PyEquation::width)
       .def_property_readonly("outputs", &PyEquation::height)
-      .def_property_readonly(
-          "uses_kernel",
-          [](const PyEquation &self) { return self.uses_kernel(); })
       // Colours, not n: the Hessian is stored compressed and scattered on
       // read, so this is what the compiled kernel actually computes per point.
       .def_property_readonly("hessian_colours",
@@ -646,7 +632,7 @@ PYBIND11_MODULE(_ddx, m) {
                                }
                                return *colours;
                              })
-      .def("wait_for_kernel", &PyEquation::uses_kernel, pyb::kw_only(),
+      .def("uses_kernel", &PyEquation::uses_kernel, pyb::kw_only(),
            pyb::arg("want") = PyEquation::Want::Jacobian)
       .def_property(
           "_options", [](const PyEquation &self) { return self.options(); },

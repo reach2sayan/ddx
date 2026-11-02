@@ -23,7 +23,6 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassInstrumentation.h>
 #include <llvm/IR/PassManager.h>
-#include <llvm/IR/PassTimingInfo.h>
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/TargetSelect.h>
@@ -184,18 +183,15 @@ template <CKernelScalar T> void define_scalar(auto &def) {
 
 // In *this process*, not whether the target could have one: promising a vector
 // sin that cannot be called fails at link.
-[[nodiscard]] bool want_veclib(const llvm::Triple &triple, const Options &opt,
-                               const bool have) {
-  return have && (opt.codegen.veclib == VecLib::Libmvec ||
-                  (opt.codegen.veclib == VecLib::Auto && triple.isOSLinux() &&
-                   triple.getArch() == llvm::Triple::x86_64));
+[[nodiscard]] bool want_veclib(const Options &opt, const bool have) {
+  return have && opt.codegen.veclib == VecLib::Libmvec;
 }
 
 llvm::TargetLibraryInfoImpl target_library_info(const llvm::Triple &triple,
                                                 const Options &opt,
                                                 const bool have) {
   llvm::TargetLibraryInfoImpl tlii(triple);
-  if (want_veclib(triple, opt, have)) {
+  if (want_veclib(opt, have)) {
     tlii.addVectorizableFunctionsFromVecLib(
         llvm::TargetLibraryInfoImpl::LIBMVEC_X86, triple);
   }
@@ -248,19 +244,14 @@ void optimize(llvm::Module &m, llvm::TargetMachine &tm, const Options &opt,
   llvm::CGSCCAnalysisManager cgam;
   llvm::ModuleAnalysisManager mam;
 
-  // A disabled handler registers nothing, so this is the same pipeline.
-  llvm::PassInstrumentationCallbacks pic;
-  llvm::TimePassesHandler timers(opt.time_passes);
-  timers.setOutStream(llvm::errs());
-  timers.registerCallbacks(pic);
-
   // The loop is already emitted `lanes` wide, and the loop vectoriser pays for
-  // an alias check between every pair of columns and then declines.
+  // an alias check between every pair of columns and then declines.  False is
+  // "only where forced": a tensor loop's metadata still asks for it.
   llvm::PipelineTuningOptions pto;
   pto.SLPVectorization = opt.codegen.slp_vectorize;
-  pto.LoopVectorization = opt.codegen.loop_vectorize;
+  pto.LoopVectorization = false;
 
-  llvm::PassBuilder pb(&tm, pto, std::nullopt, &pic);
+  llvm::PassBuilder pb(&tm, pto);
   // Before registerFunctionAnalyses, which would otherwise install the default
   // llvm::TargetLibraryAnalysis and with it an empty vector-function table.
   fam.registerPass([&] { return llvm::TargetLibraryAnalysis(tlii); });
@@ -280,7 +271,7 @@ void optimize(llvm::Module &m, llvm::TargetMachine &tm, const Options &opt,
   llvm::ModulePassManager mpm = level == llvm::OptimizationLevel::O0
                                     ? pb.buildO0DefaultPipeline(level)
                                     : pb.buildPerModuleDefaultPipeline(level);
-  if (want_veclib(triple, opt, have_libmvec)) {
+  if (want_veclib(opt, have_libmvec)) {
     llvm::FunctionPassManager fpm;
     fpm.addPass(llvm::ReplaceWithVeclib());
     mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
@@ -394,7 +385,7 @@ struct Compiler::Impl {
   [[nodiscard]] unsigned lanes(const Options &opt, const bool tensors) const {
     const unsigned host = bits / unsigned{8 * sizeof(T)};
     const unsigned w = opt.codegen.lanes.stated().value_or(
-        want_veclib(machine->getTargetTriple(), opt, libmvec)
+        want_veclib(opt, libmvec)
             ? std::min(host, veclib_lanes[std::same_as<T, float>])
             : host);
     return tensors ? std::bit_floor(std::min(w, widest_tensor_lanes)) : w;

@@ -45,7 +45,6 @@ class Call:
     
 class Equation:
     _options: _Options
-    def __call__(self, x: typing.Any) -> typing.Any: pass
     def __repr__(self) -> str: pass
     def buffer(self, x: typing.Any, *, want: Want = ...) -> Call: pass
     def evaluate(self, x: typing.Any) -> typing.Any: pass
@@ -60,7 +59,7 @@ class Equation:
     def jvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
     def nodes(self, *, want: Want = ...) -> int: pass
     def vjp(self, w: typing.Any, x: typing.Any) -> tuple: pass
-    def wait_for_kernel(self, *, want: Want = ...) -> bool: pass
+    def uses_kernel(self, *, want: Want = ...) -> bool: pass
     @property
     def arity(self) -> int: pass
     @property
@@ -73,8 +72,6 @@ class Equation:
     def params(self) -> list[str]: pass
     @property
     def symbols(self) -> list[str]: pass
-    @property
-    def uses_kernel(self) -> bool: pass
     
 class Error(RuntimeError):
     pass
@@ -103,6 +100,7 @@ class Expression:
     def __init__(self, value: typing.SupportsFloat | typing.SupportsIndex) -> None: pass
     def __len__(self) -> int: pass
     def __getitem__(self, i: typing.SupportsInt | typing.SupportsIndex) -> Expression: pass
+    def __iter__(self) -> typing.Iterator[Expression]: pass
     @typing.overload
     def __le__(self, arg0: Expression) -> Expression: pass
     @typing.overload
@@ -188,8 +186,7 @@ class VecLib(enum.IntEnum):
     """
     Which vector math library a lane may call.
     """
-    AUTO: typing.ClassVar[VecLib]  # value = <VecLib.AUTO: 1>
-    LIBMVEC: typing.ClassVar[VecLib]  # value = <VecLib.LIBMVEC: 2>
+    LIBMVEC: typing.ClassVar[VecLib]  # value = <VecLib.LIBMVEC: 1>
     NONE: typing.ClassVar[VecLib]  # value = <VecLib.NONE: 0>
     @classmethod
     def __new__(cls, value): pass
@@ -223,9 +220,7 @@ class _Options:
     __hash__: typing.ClassVar[None] = None
     backend: Backend
     contract: bool
-    loop_vectorize: bool
     slp_vectorize: bool
-    time_passes: bool
     veclib: VecLib
     def __eq__(self, arg0: _Options) -> bool: pass
     def __init__(self) -> None: pass
@@ -289,8 +284,6 @@ def acos(x: Expression) -> Expression:
     ...
 def acosh(x: Expression) -> Expression:
     ...
-def add(x: Expression, y: Expression) -> Expression:
-    ...
 def asin(x: Expression) -> Expression:
     ...
 def asinh(x: Expression) -> Expression:
@@ -307,8 +300,6 @@ def cos(x: Expression) -> Expression:
     ...
 def cosh(x: Expression) -> Expression:
     ...
-def div(x: Expression, y: Expression) -> Expression:
-    ...
 @typing.overload
 def equation(source: str) -> Equation:
     ...
@@ -324,21 +315,13 @@ def exp(x: Expression) -> Expression:
     ...
 def hypot(x: Expression, y: Expression) -> Expression:
     ...
-def le(x: Expression, y: Expression) -> Expression:
-    ...
 def log(x: Expression) -> Expression:
     ...
 def log10(x: Expression) -> Expression:
     ...
-def lt(x: Expression, y: Expression) -> Expression:
-    ...
 def max(x: Expression, y: Expression) -> Expression:
     ...
 def min(x: Expression, y: Expression) -> Expression:
-    ...
-def mul(x: Expression, y: Expression) -> Expression:
-    ...
-def neg(x: Expression) -> Expression:
     ...
 def pow(x: Expression, y: Expression) -> Expression:
     ...
@@ -364,16 +347,8 @@ def var(name: str) -> Expression:
     ...
 def derivative(f: Expression, symbol: str) -> Expression:
     ...
-def dot(u: Expression, v: Expression) -> Expression:
-    ...
-def gemv(matrix: Expression, v: Expression, transposed: bool = False) -> Expression:
-    """M v, or M^T v when transposed: a mat_constant table or a computed matrix."""
 def gradient(f: Expression) -> list[Expression]:
     """df/dx for every symbol, in declaration order."""
-@typing.overload
-def mat_constant(rows: typing.SupportsInt | typing.SupportsIndex, cols: typing.SupportsInt | typing.SupportsIndex, data: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> Expression:
-    """A constant rows x cols matrix from column-major data."""
-@typing.overload
 def mat_constant(matrix: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> Expression:
     """A constant matrix from a 2-D array."""
 def outer(u: Expression, w: Expression) -> Expression:
@@ -383,7 +358,7 @@ def pack(scalars: typing.Sequence[Expression]) -> Expression:
 def release_tapes() -> None:
     """Free this thread's sweep tapes; the next sweep grows them again."""
 def transpose(matrix: Expression) -> Transposed:
-    """M^T, as the left side of @: transpose(M) @ v is gemv(M, v, True)."""
+    """M^T, as the left side of @."""
 def sum(v: Expression) -> Expression:
     ...
 def vec(name: str, n: typing.SupportsInt | typing.SupportsIndex) -> Expression:

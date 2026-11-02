@@ -21,6 +21,7 @@
 #include <boost/container/small_vector.hpp>
 
 #include <cstdint>
+#include <limits>
 #include <format>
 #include <initializer_list>
 #include <ranges>
@@ -173,7 +174,10 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T>
 mat_constant(Arena<T> &b, std::size_t rows, std::size_t cols,
              std::span<const T> data) {
-  if (rows == 0 || cols == 0 || data.size() != rows * cols) {
+  // Each fits 32 bits first, so the product below cannot wrap.
+  constexpr std::size_t most = std::numeric_limits<std::uint32_t>::max();
+  if (rows == 0 || cols == 0 || rows > most || cols > most ||
+      data.size() != rows * cols) {
     return detail::refused<T>(errc::tensor_shape);
   }
   return {b, b.tensor_const(static_cast<std::uint32_t>(rows),
@@ -207,6 +211,8 @@ template <impl::Numeric T>
                                                : detail::Router::arena(v);
   const Shape shape = u.size() ? u.shape() : v.shape();
   if (b == nullptr || shape.size() == 0 ||
+      (!u.pending() && !v.pending() &&
+       detail::Router::arena(u) != detail::Router::arena(v)) ||
       (u.size() != 0 && v.size() != 0 && u.shape() != v.shape()) ||
       (!u.pending() && u.size() == 0) || (!v.pending() && v.size() == 0)) {
     return detail::refused<T>(errc::tensor_shape);

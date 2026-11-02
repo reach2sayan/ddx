@@ -131,8 +131,11 @@ constexpr bool all_zero(CArithmetic auto x) noexcept {
   return x == std::remove_cvref_t<decltype(x)>{};
 }
 
-constexpr double to_double(const Numeric auto &x) noexcept {
-  return static_cast<double>(val(x));
+// Equal in every component, which is what makes two constants one;
+// operator== compares val() alone and cannot say this either.
+template <std::equality_comparable T>
+constexpr bool same_value(const T &a, const T &b) noexcept {
+  return a == b;
 }
 
 } // namespace ddx::impl

@@ -36,7 +36,7 @@ def test_gradient_is_the_jacobian_without_the_value(
 
 
 def test_call_is_evaluate(scalar: ddx.Equation, expected: Derivatives) -> None:
-    assert scalar([2.0, 3.0]) == pytest.approx(expected.f)
+    assert scalar.evaluate([2.0, 3.0]) == pytest.approx(expected.f)
 
 
 def test_the_three_point_spellings_agree(scalar: ddx.Equation) -> None:
@@ -197,8 +197,8 @@ def test_symbols_take_the_order_they_are_named_in() -> None:
 
     eq = ddx.equation(model)
     assert eq.symbols == ["b", "a"]
-    assert eq([1.0, 2.0]) == 4.0  # b = 1, a = 2
-    assert eq({"a": 2.0, "b": 1.0}) == 4.0
+    assert eq.evaluate([1.0, 2.0]) == 4.0  # b = 1, a = 2
+    assert eq.evaluate({"a": 2.0, "b": 1.0}) == 4.0
 
 
 def test_a_param_is_an_input_with_no_column() -> None:
@@ -211,13 +211,13 @@ def test_a_param_is_an_input_with_no_column() -> None:
     assert eq.params == ["a"]
     assert eq.inputs == ["x", "a"]
     assert eq.arity == 1
-    assert eq([3.0, 2.0]) == 18.0
+    assert eq.evaluate([3.0, 2.0]) == 18.0
     _, gradient = eq.jacobian({"x": 3.0, "a": 5.0})
     assert gradient.tolist() == [30.0]
     _, _, hv = eq.hvp([1.0], [3.0, 5.0])  # a direction is over the symbols only
     assert hv.tolist() == [10.0]
     with pytest.raises(ddx.Error) as missing:
-        eq({"x": 3.0})
+        eq.evaluate({"x": 3.0})
     assert missing.value.code is ddx.errc.wrong_arity
 
 

@@ -32,11 +32,8 @@ class Options(BaseModel):
     codegen_level: OptLevel = _DEFAULTS.codegen_level
 
     slp_vectorize: bool = _DEFAULTS.slp_vectorize
-    loop_vectorize: bool = _DEFAULTS.loop_vectorize
     veclib: VecLib = _DEFAULTS.veclib
     contract: bool = _DEFAULTS.contract
-
-    time_passes: bool = _DEFAULTS.time_passes
 
     def _native(self) -> _ddx._Options:
         native = _ddx._Options()

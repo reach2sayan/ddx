@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <format>
 #include <functional>
 #include <initializer_list>
 #include <latch>
@@ -355,4 +356,93 @@ TEST(JitTensor, BatchesAndThreadsAreBitIdentical) {
     }
   }
   EXPECT_TRUE(std::ranges::all_of(ok, std::identity{}));
+}
+
+// One element of a matrix the kernel never forms: the flat index is its row and
+// its column, and the kernel reads the element the sweep does.
+TEST(JitTensor, AGatherFromAFusedMatrixReadsItsRowAndColumn) {
+  using RE = ddx::rt::Expression<double>;
+  const auto check = [](auto element, double want) {
+    const auto swept = ddx::rt::equation(element);
+    auto compiled = ddx::rt::equation(element);
+    compiled.options({.backend = ddx::jit::Backend::Compile, .points = 1});
+    ASSERT_TRUE(compiled.uses_kernel());
+    const std::array<double, 5> at{2.0, 3.0, 5.0, 7.0, 11.0};
+    const std::span<const double> point{at};
+    EXPECT_DOUBLE_EQ(*swept.evaluate(point), want);
+    EXPECT_DOUBLE_EQ(*compiled.evaluate(point), want);
+    EXPECT_EQ(*compiled.jacobian(point), *swept.jacobian(point));
+  };
+  // Column-major: element 4 of a 3 x 2 is (1, 1).
+  check(
+      [] -> RE {
+        const RE u = ddx::rt::vec("u", 3);
+        const RE w = ddx::rt::vec("w", 2);
+        return ddx::rt::outer(u, w)[4];
+      },
+      3.0 * 11.0);
+  check(
+      [] -> RE {
+        const RE u = ddx::rt::vec("u", 3);
+        const RE w = ddx::rt::vec("w", 2);
+        return exp(ddx::rt::outer(u, w))[4];
+      },
+      std::exp(3.0 * 11.0));
+}
+
+// A kernel over rebalanced roots is checked against the sweep's layout, so it
+// must have that layout, cell for cell, wherever the rebalanced sums fold
+// differently.
+TEST(JitRebalance, AKernelKeepsTheLayoutOfTheSweep) {
+  using RE = ddx::rt::Expression<double>;
+  constexpr std::size_t count = 16;
+  const auto names = [](std::size_t i) { return std::format("y{}", i); };
+  const auto check = [&](auto model) {
+    const auto swept = ddx::rt::equation(model);
+    auto compiled = ddx::rt::equation(model);
+    compiled.options({.backend = ddx::jit::Backend::Compile, .points = 1});
+    ASSERT_TRUE(compiled.uses_kernel());
+    const auto at = std::views::iota(0uz, *swept.input_count()) |
+                    std::views::transform([](std::size_t i) {
+                      return 0.5 + 0.125 * static_cast<double>(i);
+                    }) |
+                    std::ranges::to<std::vector>();
+    const std::span<const double> point{at};
+    const auto want = *swept.jacobian(point);
+    const auto got = *compiled.jacobian(point);
+    ASSERT_EQ(got.size(), want.size());
+    for (const auto [g, w] : std::views::zip(got, want)) {
+      EXPECT_NEAR(g, w, 1e-9);
+    }
+  };
+  // Two spellings of one sum: rebalanced they are one node, and a/b folds to 1.
+  check([&] {
+    std::vector<RE> y;
+    for (const std::size_t i : std::views::iota(0uz, count)) {
+      y.push_back(ddx::rt::var(names(i)));
+    }
+    RE chain = y[0];
+    for (const RE &term : y | std::views::drop(1)) {
+      chain = chain + term;
+    }
+    RE folded{0};
+    for (const RE &term : y) {
+      folded += term;
+    }
+    return std::vector<RE>{chain / folded, chain};
+  });
+  // A partial whose constant adjoints cancel in only one summation order.
+  check([&]() -> RE {
+    const RE x = ddx::rt::var("x");
+    const double big = 9007199254740992.0;
+    const RE y0 = ddx::rt::var(names(0));
+    const RE y1 = ddx::rt::var(names(1));
+    RE f = y0 + y1 + x;
+    f = f + (-big) * x;
+    f = f + big * x;
+    for (const std::size_t i : std::views::iota(2uz, count)) {
+      f = f + ddx::rt::var(names(i));
+    }
+    return f;
+  });
 }

@@ -245,4 +245,132 @@ TEST(RtExtern, ASystemThroughOneFunction) {
   EXPECT_NEAR(J[1], j[1], 1e-13);
 }
 
+// A function that sweeps another equation: the inner sweep has the same scalar,
+// so the same thread-kept buffers, and is larger, so it would grow them under
+// the outer sweep's feet.
+void expect_reentry_matches(auto inner_model, auto native_model,
+                            auto outer_model, std::size_t symbols,
+                            ddx::rt::Backend backend) {
+  auto inner = ddx::rt::equation(inner_model);
+  inner.options({.backend = backend});
+  auto native = ddx::rt::equation(native_model);
+  auto eq = ddx::rt::equation([&] {
+    const auto g = ddx::rt::extern_fn(
+        {.name = "nested", .arity = 2, .order = 1},
+        [&inner](std::span<const double> in, std::span<double> out) {
+          out[0] = *inner.evaluate(in);
+          const auto partials = *inner.jacobian(in);
+          out[1] = partials[0];
+          out[2] = partials[1];
+        });
+    return outer_model(g);
+  });
+  ASSERT_FALSE(eq.poisoned());
+  eq.options({.backend = backend});
+
+  constexpr std::size_t n = 37;
+  const auto column = [](std::size_t j, std::size_t p) {
+    const auto phase = static_cast<double>(j * 7 + p);
+    return 0.25 + 0.5 * std::abs(std::sin(1.0 + phase));
+  };
+  // Every point call, then a batch at each sweep width.
+  for (const std::size_t p : std::views::iota(0uz, 3uz)) {
+    const auto at = std::views::iota(0uz, symbols) |
+                    std::views::transform(
+                        [&](std::size_t j) { return column(j, p); }) |
+                    std::ranges::to<std::vector>();
+    const std::span<const double> point{at};
+    EXPECT_NEAR(*eq.evaluate(point), *native.evaluate(point), 1e-10);
+    expect_close(*eq.jacobian(point), *native.jacobian(point), 1e-10);
+  }
+  for (const std::size_t count : {3uz, n}) {
+    std::vector<std::vector<double>> columns(symbols,
+                                             std::vector<double>(count));
+    std::vector<std::vector<double>> partials(symbols,
+                                              std::vector<double>(count));
+    std::vector<std::vector<double>> want = partials;
+    std::vector<double> f(count);
+    std::vector<double> want_f(count);
+    std::vector<const double *> xs;
+    std::vector<double *> gs;
+    std::vector<double *> want_gs;
+    for (const std::size_t j : std::views::iota(0uz, symbols)) {
+      for (const std::size_t p : std::views::iota(0uz, count)) {
+        columns[j][p] = column(j, p);
+      }
+      xs.push_back(columns[j].data());
+      gs.push_back(partials[j].data());
+      want_gs.push_back(want[j].data());
+    }
+    const std::array<double *, 1> fs{f.data()};
+    const std::array<double *, 1> want_fs{want_f.data()};
+    ASSERT_TRUE(eq.jacobian(xs, fs, gs, count).has_value());
+    ASSERT_TRUE(native.jacobian(xs, want_fs, want_gs, count).has_value());
+    expect_close(f, want_f, 1e-10);
+    for (const std::size_t j : std::views::iota(0uz, symbols)) {
+      expect_close(partials[j], want[j], 1e-10);
+    }
+  }
+}
+
+[[nodiscard]] RE nested_terms(const RE &a, const RE &b) {
+  RE acc{0};
+  for (const int k : std::views::iota(0, 96)) {
+    const double c = 1.0 + 0.01 * k;
+    acc += sin(a * c) * b + exp(b * c * 0.1);
+  }
+  return acc;
+}
+
+[[nodiscard]] std::vector<ddx::rt::Backend> reentry_backends() {
+#ifdef DDX_HAS_JIT
+  return {ddx::rt::Backend::Interpret, ddx::rt::Backend::Compile};
+#else
+  return {ddx::rt::Backend::Interpret};
+#endif
+}
+
+TEST(RtExtern, AFunctionMaySweepAnotherEquation) {
+  for (const ddx::rt::Backend backend : reentry_backends()) {
+    expect_reentry_matches(
+        [] {
+          const auto a = ddx::rt::var("a");
+          const auto b = ddx::rt::var("b");
+          return nested_terms(a, b);
+        },
+        [] {
+          const auto a = ddx::rt::var("a");
+          const auto b = ddx::rt::var("b");
+          return nested_terms(a, b) * a + log(a + b);
+        },
+        [](const auto &g) {
+          const auto a = ddx::rt::var("a");
+          const auto b = ddx::rt::var("b");
+          return g(a, b) * a + log(a + b);
+        },
+        2, backend);
+  }
+}
+
+TEST(RtExtern, AFunctionMaySweepAnotherTensorEquation) {
+  const auto tensor_terms = [](const RE &v) {
+    return nested_terms(v[0], v[1]) + sum(v * log(v)) + dot(v, v * v);
+  };
+  for (const ddx::rt::Backend backend : reentry_backends()) {
+    expect_reentry_matches(
+        [=] { return tensor_terms(ddx::rt::vec("v", 2)); },
+        [=] {
+          const auto x = ddx::rt::vec("x", 3);
+          return tensor_terms(ddx::rt::pack(std::vector{x[0], x[1]})) *
+                     dot(x, x) +
+                 sum(x * x);
+        },
+        [](const auto &g) {
+          const auto x = ddx::rt::vec("x", 3);
+          return g(x[0], x[1]) * dot(x, x) + sum(x * x);
+        },
+        3, backend);
+  }
+}
+
 } // namespace

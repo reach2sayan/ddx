@@ -42,7 +42,7 @@ namespace ddx::rt::detail {
 // A point keyed by name at run time: any range of (name, value), which is the
 // map spelling of the names rt::var(name) reads.  Entry keys off a FixedString
 // and so cannot say a name the program only learns while it runs.
-template <typename R, typename T>
+template <typename R>
 concept CNamedRange =
     std::ranges::input_range<R> &&
     requires(const std::ranges::range_value_t<R> &e) {
@@ -50,10 +50,10 @@ concept CNamedRange =
       requires impl::Numeric<std::remove_cvref_t<decltype(e.second)>>;
     };
 
-template <typename A, typename T>
+template <typename A>
 concept CPointArg =
     impl::Numeric<std::remove_cvref_t<A>> || impl::CEntry<A> ||
-    CNamedRange<A, T> ||
+    CNamedRange<A> ||
     (std::ranges::input_range<A> &&
      impl::Numeric<std::remove_cvref_t<std::ranges::range_value_t<A>>>);
 
@@ -81,7 +81,7 @@ public:
   // The graph holds only the cells the pattern names, so the zeros go back in
   // here and this spelling never meets the compression.
   [[nodiscard]] constexpr result<std::vector<T>>
-  jacobian(const rt::detail::CPointArg<T> auto &...args) const {
+  jacobian(const rt::detail::CPointArg auto &...args) const {
     return dense_at<Want::Jacobian, &Blocks::jacobian>({}, args...);
   }
 
@@ -89,7 +89,7 @@ public:
   // value needs is not swept, which on a model whose derivative is simpler
   // than its function is most of the graph.
   [[nodiscard]] constexpr result<std::vector<T>>
-  gradient(const rt::detail::CPointArg<T> auto &...args) const {
+  gradient(const rt::detail::CPointArg auto &...args) const {
     return dense_at<Want::Gradient, &Blocks::jacobian>({}, args...);
   }
 
@@ -97,13 +97,13 @@ public:
   // `direction`, one forward sweep however many functions there are.
   [[nodiscard]] result<std::vector<T>>
   jacobian_jvp(std::span<const T> direction,
-               const rt::detail::CPointArg<T> auto &...args) const {
+               const rt::detail::CPointArg auto &...args) const {
     return dense_at<Want::JacobianJvp, &Blocks::hessian>(direction, args...);
   }
   // Along one symbol's basis vector: d/dx_j of the whole Jacobian.
   [[nodiscard]] result<std::vector<T>>
   jacobian_jvp(std::string_view along,
-               const rt::detail::CPointArg<T> auto &...args) const {
+               const rt::detail::CPointArg auto &...args) const {
     return self().unit(along).and_then([&](const auto &e) {
       return jacobian_jvp(std::span<const T>{e}, args...);
     });
@@ -270,6 +270,33 @@ template <impl::Numeric T>
   return kept;
 }
 
+// A sweep's tapes for the length of the sweep.  An extern may sweep another
+// equation on this thread, which keeps its tapes in the same place, so a sweep
+// that can call one takes the thread's set away and puts it back after: the
+// inner sweep finds none and grows its own.
+template <impl::Numeric T> class TapeLease {
+public:
+  explicit TapeLease(bool calls_out) : thread_(thread_tapes<T>()) {
+    if (calls_out) {
+      taken_.emplace(std::move(thread_));
+    }
+  }
+  ~TapeLease() {
+    if (taken_) {
+      thread_ = std::move(*taken_);
+    }
+  }
+  TapeLease(const TapeLease &) = delete;
+  TapeLease &operator=(const TapeLease &) = delete;
+  [[nodiscard]] ThreadTapes<T> &tapes() noexcept {
+    return taken_ ? *taken_ : thread_;
+  }
+
+private:
+  ThreadTapes<T> &thread_;
+  std::optional<ThreadTapes<T>> taken_;
+};
+
 // An equation: an arena of its own, its roots, the Jacobian swept up front and
 // every other sweep on first ask, a pipeline per Want.  Equation, System and
 // the Python Equation are this plus the spellings their callers want.  `Yield`
@@ -321,7 +348,7 @@ public:
   }
 
   // The input list exists only at run time, so every spelling can refuse.
-  template <rt::detail::CPointArg<T>... Args>
+  template <rt::detail::CPointArg... Args>
   [[nodiscard]] constexpr result<std::vector<T>>
   point(const Args &...args) const {
     if (bad_) {
@@ -334,7 +361,7 @@ public:
           at, std::array{std::pair{std::remove_cvref_t<Args>::symbol.view(),
                                    static_cast<T>(args.value)}...});
     } else if constexpr (sizeof...(Args) == 1 &&
-                         (rt::detail::CNamedRange<Args, T> && ...)) {
+                         (rt::detail::CNamedRange<Args> && ...)) {
       // Before the plain range: a map is an input_range too, and its elements
       // are pairs rather than the numbers assign_range would read.
       ok = assign_named(at, args...);
@@ -352,15 +379,14 @@ public:
   // a point value however the point itself is spelled.
   [[nodiscard]] result<std::vector<T>>
   hvp(std::span<const T> direction,
-      const rt::detail::CPointArg<T> auto &...args) const {
+      const rt::detail::CPointArg auto &...args) const {
     return block_at<Want::Hvp, &Blocks::hessian>(direction, args...);
   }
 
   // The j-th Hessian column, named and not indexed: the symbol list exists
   // only at run time.
   [[nodiscard]] result<std::vector<T>>
-  hvp(std::string_view along,
-      const rt::detail::CPointArg<T> auto &...args) const {
+  hvp(std::string_view along, const rt::detail::CPointArg auto &...args) const {
     return unit(along).and_then(
         [&](const auto &e) { return hvp(std::span<const T>{e}, args...); });
   }
@@ -368,14 +394,14 @@ public:
   // w'J, n long: one weight per function.
   [[nodiscard]] result<std::vector<T>>
   vjp(std::span<const T> weights,
-      const rt::detail::CPointArg<T> auto &...args) const {
+      const rt::detail::CPointArg auto &...args) const {
     return block_at<Want::Vjp, &Blocks::jacobian>(weights, args...);
   }
 
   // J v, m long: the mirror of vjp().
   [[nodiscard]] result<std::vector<T>>
   jvp(std::span<const T> direction,
-      const rt::detail::CPointArg<T> auto &...args) const {
+      const rt::detail::CPointArg auto &...args) const {
     return block_at<Want::Jvp, &Blocks::jacobian>(direction, args...);
   }
 
@@ -407,7 +433,7 @@ public:
   // F(z, x) for each implicit's closure, at a point: zero, to rounding, where
   // the caller's root is one.  ddx never solves for z; this is the check.
   [[nodiscard]] result<std::vector<T>>
-  residual(const rt::detail::CPointArg<T> auto &...args) const {
+  residual(const rt::detail::CPointArg auto &...args) const {
     return point(args...).transform([this](const auto &at) {
       [[maybe_unused]] const auto held = reading();
       const auto closures = arena_->closures();
@@ -421,7 +447,7 @@ public:
 
   // Dense row-major m x n x n; the graph holds it compressed by colour.
   [[nodiscard]] result<std::vector<T>>
-  hessian(const rt::detail::CPointArg<T> auto &...args) const {
+  hessian(const rt::detail::CPointArg auto &...args) const {
     if (!poisoned() && is_system()) {
       // Off the arena, one output's Hessian at a time: no pipeline holds m
       // colourings.  The gate is the pipeline's, asked without one.
@@ -454,7 +480,7 @@ public:
   // cone walked with matrix tangents, where hessian() colours and sweeps n + 1
   // times over a dense term.  One output only.
   [[nodiscard]] result<std::vector<T>>
-  dense_hessian(const rt::detail::CPointArg<T> auto &...args) const {
+  dense_hessian(const rt::detail::CPointArg auto &...args) const {
     return block_at<Want::DenseHessian, &Blocks::hessian>({}, args...);
   }
   // How many terms the sweep kept quadratic, and how many fell back to a dense
@@ -657,7 +683,6 @@ public:
 
 protected:
   using Surface::as_columns;
-  using Surface::dense;
   using Surface::widen;
   using Compiled = detail::Compiled<T>;
   using Pipeline = detail::Pipeline<T>;
@@ -680,12 +705,26 @@ protected:
                  return !detail::is_scalar((*arena_)[r]);
                })) {
       poison(error{errc::tensor_shape});
+    } else if (no_kernel_for_tensors()) {
+      poison(error{errc::unsupported_scalar});
     } else {
       // One reverse sweep per output is cheap, and it is what the column
       // counts, the pattern and constant evaluation read.
       jacobian_ = derive_jacobian(*arena_, roots_);
     }
     settle();
+  }
+
+  // A tensor row is computed by a table of kernels, at floating point only.
+  [[nodiscard]] constexpr bool no_kernel_for_tensors() const {
+    if constexpr (std::floating_point<T>) {
+      return false;
+    } else {
+      const auto live = detail::reachable(*arena_, roots_);
+      return std::ranges::any_of(detail::live_ids(live), [this](NodeId v) {
+        return detail::on_tensors((*arena_)[v]);
+      });
+    }
   }
 
   // Refused: by the code it carries, with nothing left to read.  poisoned()
@@ -702,6 +741,7 @@ protected:
       return;
     }
     first_order_ = first_order_only(*arena_, roots_);
+    calls_out_ = !arena_->externs().empty();
     if !consteval {
       pipelines_ = std::make_unique<Pipelines>();
       sweeps_ = std::make_unique<Sweeps>();
@@ -844,7 +884,8 @@ protected:
     const std::size_t n = symbol_count();
     // The tape is thread-kept; every id read below is scheduled, so it is
     // written this call.
-    ThreadTapes<T> &kept = thread_tapes<T>();
+    TapeLease<T> lease{calls_out_};
+    ThreadTapes<T> &kept = lease.tapes();
     std::vector<T> &values = kept.values.tape;
     [[maybe_unused]] const auto held = sweeping();
     values.resize(arena_->size());
@@ -881,7 +922,7 @@ protected:
 
   // m long, always a vector: what System answers and Equation narrows.
   [[nodiscard]] constexpr result<std::vector<T>>
-  values(const rt::detail::CPointArg<T> auto &...args) const {
+  values(const rt::detail::CPointArg auto &...args) const {
     return block_at<Want::Value, &Blocks::values>({}, args...);
   }
 
@@ -967,7 +1008,8 @@ protected:
                : result<void>{};
   }
   [[nodiscard]] constexpr result<void> blocked(Want want) const {
-    return want == Want::DenseHessian && dense_sweep().block == no_node
+    return want == Want::DenseHessian && symbol_count() != 0 &&
+                   dense_sweep().block == no_node
                ? fail(errc::tensor_shape)
                : result<void>{};
   }
@@ -1055,7 +1097,7 @@ private:
   template <Want W>
   [[nodiscard]] constexpr result<PerBlock<std::vector<T>>>
   at_in(Pipelines *pipelines, const Cells &cells, std::span<const T> along,
-        const rt::detail::CPointArg<T> auto &...args) const {
+        const rt::detail::CPointArg auto &...args) const {
     return point(args...).and_then([&](const std::vector<T> &pt)
                                        -> result<PerBlock<std::vector<T>>> {
       constexpr Direction direction = want_info(W).direction;
@@ -1081,7 +1123,7 @@ private:
   template <Want W>
   [[nodiscard]] constexpr result<PerBlock<std::vector<T>>>
   at(std::span<const T> along,
-     const rt::detail::CPointArg<T> auto &...args) const {
+     const rt::detail::CPointArg auto &...args) const {
     return at_in<W>(pipelines_.get(), every_cell(), along, args...);
   }
 
@@ -1090,7 +1132,7 @@ private:
   // refusal.
   [[nodiscard]] constexpr result<void>
   assign_named(std::vector<T> &at,
-               const rt::detail::CNamedRange<T> auto &entries) const {
+               const rt::detail::CNamedRange auto &entries) const {
     std::vector<bool> seen(at.size(), false);
     for (const auto &[name, value] : entries) {
       const auto input = arena_->lookup(std::string_view{name});
@@ -1206,7 +1248,10 @@ private:
       break;
     }
     case Want::DenseHessian:
-      added.hessian = {dense_sweep().block};
+      // No symbols, no block.
+      if (dense_sweep().block != no_node) {
+        added.hessian = {dense_sweep().block};
+      }
       break;
     case Want::Value:
     case Want::Jacobian:
@@ -1243,8 +1288,15 @@ private:
     if (rebalance || (swept->has_tensors() && compiling())) {
       const Rebalanced *over =
           rebalance ? &sweeps_->rebalanced.peek() : nullptr;
-      compiled = freeze(over ? over->roots : roots_,
+      auto own = freeze(over ? over->roots : roots_,
                         over ? over->derivative : cells.jacobian, true);
+      // Calls are checked against the swept graph, and a rebalanced sum can
+      // fold where the swept one did not.  Same layout, or no second graph.
+      if (in_order(own->layout()) == in_order(swept->layout()) &&
+          own->jacobian_pattern().rowptr == swept->jacobian_pattern().rowptr &&
+          own->jacobian_pattern().col == swept->jacobian_pattern().col) {
+        compiled = std::move(own);
+      }
     }
 #endif
     return {.graph = std::move(swept),
@@ -1302,28 +1354,29 @@ private:
   void run(const Compiled &c, std::span<const T *const> xs,
            const Columns<T> &out, std::size_t n) const {
     [[maybe_unused]] const auto held = sweeping();
+    TapeLease<T> lease{calls_out_};
     if constexpr (jit::CKernelScalar<T>) {
       if (c.kernel) {
         const detail::TensorCall<T> call{.arena = arena_.get(),
                                          .graph = c.compile_graph.get(),
                                          .kernels = c.kernels};
-        std::vector<T> &tapes = thread_tapes<T>().kernel_tapes;
+        std::vector<T> &tapes = lease.tapes().kernel_tapes;
         tapes.resize(c.kernel.shape().tapes);
         c.kernel(xs, out.values, out.jacobian, out.hessian, n,
                  {.call = &call, .tapes = tapes});
         return;
       }
     }
-    interpret(*c.graph, *c.kernels, xs, out, n);
+    interpret(lease.tapes(), *c.graph, *c.kernels, xs, out, n);
   }
 
   // The block sweep: within ~1.4x of a kernel on a large graph at a batch of
   // block_lanes or more, several times off it on a small one.  A short batch
   // sweeps one point at a time rather than padding out to block_lanes.
-  void interpret(const Graph<T> &graph, const TensorKernelTable<T> &kernels,
+  void interpret(ThreadTapes<T> &kept, const Graph<T> &graph,
+                 const TensorKernelTable<T> &kernels,
                  std::span<const T *const> xs, const Columns<T> &out,
                  std::size_t n) const {
-    ThreadTapes<T> &kept = thread_tapes<T>();
     n < block_lanes
         ? sweep_points<1>(graph, kernels, kept.one, xs, out, n)
         : sweep_points<block_lanes>(graph, kernels, kept.block, xs, out, n);
@@ -1384,6 +1437,7 @@ private:
   std::optional<error> bad_{};
   // A reachable extern supplies first partials only; see orders().
   bool first_order_ = false;
+  bool calls_out_ = false; // an extern in the arena: see TapeLease
 };
 
 // restrict()'s answer: the equation's Jacobian narrowed to some symbols'
@@ -1447,7 +1501,7 @@ private:
   template <Want W>
   [[nodiscard]] result<PerBlock<std::vector<T>>>
   at(std::span<const T> along,
-     const rt::detail::CPointArg<T> auto &...args) const {
+     const rt::detail::CPointArg auto &...args) const {
     return core_->template at_in<W>(pipelines_.get(), cells(), along, args...);
   }
   [[nodiscard]] auto unit(std::string_view along) const {

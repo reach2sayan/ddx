@@ -17,7 +17,8 @@ target_include_directories(ddx_jit_objs SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
 target_link_libraries(ddx_jit_objs PRIVATE ddx Boost::headers ${DDX_LLVM_LIBS})
 ddx_target_flags(ddx_jit_objs)
 
-# RTTI as LLVM has it: compiler.cpp derives from IRCompiler.
+# RTTI as LLVM has it: a vtable LLVM's headers emit here must not name typeinfo
+# LLVM never built.
 if (NOT LLVM_ENABLE_RTTI)
     target_compile_options(ddx_jit_objs PRIVATE
             $<IF:$<CXX_COMPILER_ID:MSVC>,/GR-,-fno-rtti>)

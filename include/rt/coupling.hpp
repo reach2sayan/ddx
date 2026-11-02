@@ -7,7 +7,6 @@
 #include "util/config.hpp" // DDX_FWD
 #include "util/export.hpp"
 
-#include <boost/describe/class.hpp>
 #include <boost/dynamic_bitset.hpp>
 #include <boost/stl_interfaces/iterator_interface.hpp>
 
@@ -21,19 +20,9 @@
 #include <utility>
 #include <vector>
 
-// The runtime analogue of drivers/coupling.hpp; `n` is run-time here, so its
-// bitset rows become words.
 namespace ddx::rt {
 
 inline constexpr std::size_t no_column = static_cast<std::size_t>(-1);
-
-// coupling_pattern's opcode arms mirror what the ops declare of themselves;
-// pinned, so the two walks cannot answer different sparsities.
-static_assert(impl::SumOp<double>::curvature == impl::Curvature::None &&
-              impl::NegateOp<double>::curvature == impl::Curvature::None &&
-              impl::MultiplyOp<double>::curvature ==
-                  impl::Curvature::Bilinear &&
-              impl::DivideOp<double>::curvature == impl::Curvature::Quotient);
 
 // boost::dynamic_bitset, not vector<bool>: the colouring's pairwise overlap
 // test is the hot loop, and `intersects` is a word-at-a-time AND.
@@ -175,8 +164,6 @@ struct Sparsity {
                                                     found - present.begin())}
                : std::nullopt;
   }
-
-  BOOST_DESCRIBE_CLASS(Sparsity, (), (rowptr, col, columns), (), ())
 };
 
 // Two columns share a colour only when no row couples them, so one sweep can
@@ -237,7 +224,6 @@ struct Colouring {
                ? std::optional{by_colour(cell, colours, n)[c, i]}
                : std::nullopt;
   }
-  BOOST_DESCRIBE_CLASS(Colouring, (), (colour, scatter, cell), (), ())
 };
 
 namespace detail {

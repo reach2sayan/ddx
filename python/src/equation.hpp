@@ -140,6 +140,7 @@ public:
   // What one call for `want` evaluates: the contracted live order, which is
   // the sweep and what the kernel is lowered from.
   [[nodiscard]] std::size_t nodes(Want want) const {
+    unwrap(ready(want));
     return pipeline(want)->graph->schedule().size();
   }
 
@@ -459,7 +460,9 @@ public:
       f_.emplace(eq_->shape_of({outputs}, at_), blocks.values.size(),
                  at_.size());
     }
-    if (!blocks.jacobian.empty()) {
+    // A pattern of no cells is still a block, of zeros.
+    if (!blocks.jacobian.empty() ||
+        rt::want_info(want_).jacobian == rt::BlockShape::Cells) {
       partials_.emplace(blocks.jacobian.size(), at_.size());
       g_.emplace(eq_->shape_of({outputs, ssize(n)}, at_), at_.size());
     }

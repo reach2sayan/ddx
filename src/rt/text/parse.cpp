@@ -37,7 +37,12 @@ struct Call {
 struct Building {
   Ast ast;
   errc why = errc::bad_syntax; // what the refusing action meant, if one did
+  std::uint32_t depth = 0;     // of the nesting the grammar recurses for
 };
+
+// CPython's own limit on nested parentheses: deep enough for anything written
+// by hand, and shallow enough for a thread's stack in a debug build.
+inline constexpr std::uint32_t deepest = 200;
 
 [[nodiscard]] constexpr std::uint32_t append(Ast &ast, const Term t) {
   ast.terms.push_back(t);
@@ -126,6 +131,14 @@ constexpr auto leaf = [](auto &ctx) {
 };
 
 constexpr auto assign = [](auto &ctx) { _val(ctx) = _attr(ctx); };
+
+// A stack overflow cannot be refused, so too deep is a syntax error before it
+// is that.  A failed branch never ascends and the count stays high, which costs
+// nothing: nothing parses after a `(` or a `**` that failed.
+constexpr auto descend = [](auto &ctx) {
+  _pass(ctx) = ++_globals(ctx).depth <= deepest;
+};
+constexpr auto ascend = [](auto &ctx) { --_globals(ctx).depth; };
 
 // A token is a span of the source, and raw[] says so: the attribute of a
 // sequence of char parsers is a merge rule per shape, and a number's shape has
@@ -216,16 +229,21 @@ constexpr auto number_def = literal[act::leaf<LiteralIndex>];
 constexpr auto symbol_def = identifier[act::leaf<NameIndex>];
 // One argument at least; the action below checks the count against
 // arity_of, which is 1, 2 or -- for select -- 3.
-constexpr auto call_text_def = identifier >> '(' >> (expression % ',') >> ')';
+constexpr auto call_text_def = identifier >> '(' >> bp::eps[act::descend] >>
+                               (expression % ',') >> bp::eps[act::ascend] >>
+                               ')';
 constexpr auto call_def = call_text[act::apply];
-constexpr auto group_def = '(' >> expression >> ')';
+constexpr auto group_def = '(' >> bp::eps[act::descend] >> expression >>
+                           bp::eps[act::ascend] >> ')';
 // call before symbol: both open with an identifier.
 constexpr auto operand_def = number | call | symbol | group;
 
 // Each action rides the operand it consumes, never the sequence that reaches
 // it: a sequence pairing a literal with one attribute answers _attr with none.
-constexpr auto power_def = operand[act::assign] >>
-                           -(bp::lit("**") >> unary[act::fold<OpCode::Pow>]);
+constexpr auto power_def =
+    operand[act::assign] >>
+    -(bp::lit("**") >> bp::eps[act::descend] >> unary[act::fold<OpCode::Pow>] >>
+      bp::eps[act::ascend]);
 // The signs iterate rather than recurse: a rule that names itself inside its
 // own definition reports no attribute back to the reference, and ("-"|"+")*
 // power is the same language as Python's right-recursive u_expr anyway.

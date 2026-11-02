@@ -83,6 +83,42 @@ inline constexpr auto node_of =
 
 } // namespace detail
 
+// c ? a : b, which is nothing when neither arm is anything.
+template <CExpression C, CExpression A, CExpression B>
+[[nodiscard]] constexpr auto selected(const C &c, const A &a,
+                                      const B &b) noexcept {
+  if constexpr (detail::is_zero_v<A> && detail::is_zero_v<B>) {
+    return a;
+  } else {
+    return Expression<SelectOp<typename C::value_type>, C, A, B>{c, a, b};
+  }
+}
+
+// x == 0, as the graph spells it: both ways round, so a NaN answers no.
+template <CExpression E>
+[[nodiscard]] constexpr auto zero_test(const E &e) noexcept {
+  using T = typename E::value_type;
+  const Lit<T, 0> zero{};
+  return Expression<LeOp<T>, E, Lit<T, 0>>{e, zero} *
+         Expression<LeOp<T>, Lit<T, 0>, E>{zero, e};
+}
+
+// d, or the zero it stands for where a and factor both vanish.  A literal that
+// is not zero, on either, never vanishes and carries no guard; nor does a
+// scalar with no order to ask.
+template <CExpression A, CExpression F, CExpression D>
+[[nodiscard]] constexpr auto unless_vanishing(const A &a, const F &factor,
+                                              const D &d) noexcept {
+  using T = typename A::value_type;
+  if constexpr (detail::is_zero_v<D> || !std::totally_ordered<T> ||
+                (CLit<A> && !detail::is_zero_v<A>) ||
+                (CLit<F> && !detail::is_zero_v<F>)) {
+    return d;
+  } else {
+    return selected(zero_test(a) * zero_test(factor), Lit<T, 0>{}, d);
+  }
+}
+
 template <typename A, typename B>
   requires CBinaryOperands<A, B>
 constexpr auto operator+(const A &a, const B &b) noexcept {
@@ -227,8 +263,7 @@ public:
 template <Numeric T> Lit(T) -> Lit<T>;
 
 // Frozen: still reads its slot from the seed array, but differentiates to
-// zero.  Which of the two reasons it is frozen for matters only to the
-// rewrites in traits.hpp; every engine here asks `frozen`.
+// zero.
 template <Numeric T, CFixedString auto symbol, Freeze Kind>
 class Variable : public EquationConvertible<Variable<T, symbol, Kind>> {
 public:
@@ -236,6 +271,7 @@ public:
   static constexpr Freeze freeze = Kind;
   static constexpr bool frozen = Kind != Freeze::none;
   using value_type = T;
+  template <Freeze K> using refrozen = Variable<T, symbol, K>;
 
   [[nodiscard]] constexpr auto derivative() const noexcept {
     return Lit<T, frozen ? 0 : 1>{};

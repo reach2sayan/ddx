@@ -6,8 +6,6 @@
 #include "rt/tensor.hpp"
 #include "util/ranges.hpp"
 
-#include <boost/describe/class.hpp>
-
 #include <algorithm>
 #include <cstddef>
 #include <functional>
@@ -283,7 +281,8 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
   };
   const auto fits = [&b](NodeId g, NodeId child) {
     return g == no_node || !detail::is_tensor(b[g]) ||
-           shape_of(b, g) == shape_of(b, child);
+           (detail::is_tensor(b[child]) &&
+            shape_of(b, g) == shape_of(b, child));
   };
 
   // `g` is the edge's guard; a child reached by an unguarded edge is always
@@ -321,7 +320,8 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
   const auto contracted = [&](this const auto &self, NodeId id,
                               const Expression<T> &m)
       -> std::optional<Expression<T>> {
-    const Node<T> &at = b[id];
+    // By value: building below may reallocate.
+    const Node<T> at = b[id];
     if (at.op == OpCode::Outer && shape_of(b, id).cols > 1) {
       return dot(expr(at.in[0]), gemv(m, expr(at.in[1])));
     }
@@ -739,7 +739,6 @@ struct Jacobian {
         .transform([this](std::size_t k) { return partial[k]; })
         .value_or(zero);
   }
-  BOOST_DESCRIBE_CLASS(Jacobian, (), (value, partial, pattern, zero), (), ())
 };
 
 template <impl::Numeric T>
@@ -839,8 +838,6 @@ struct Hessian {
   [[nodiscard]] constexpr std::size_t colours() const {
     return colouring.count();
   }
-  BOOST_DESCRIBE_CLASS(Hessian, (),
-                       (value, partial, compressed, colouring, zero), (), ())
 };
 
 template <impl::Numeric T>
@@ -899,7 +896,6 @@ struct HessianVector {
   NodeId value = no_node;
   std::vector<NodeId> partial; // n -- the gradient, which comes free
   std::vector<NodeId> product; // n -- H v
-  BOOST_DESCRIBE_CLASS(HessianVector, (), (value, partial, product), (), ())
 };
 
 template <impl::Numeric T>

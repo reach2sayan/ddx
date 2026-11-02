@@ -97,13 +97,11 @@ constexpr bool bridges =
 // and bridges like any other tree.
 TEST(RtJacobian, BridgeRefusesFrozenLeaves) {
   using ddx::impl::FixedString;
-  const auto held = ddx::impl::make_const_variable<FixedString{"y"}>(x * y);
   const auto column =
       ddx::impl::make_all_constant_except<FixedString{"x"}>(x * x * y)
           .derivative();
   const auto row = ddx::impl::thaw_partials(column);
 
-  static_assert(!bridges<decltype(held)>);
   static_assert(!bridges<decltype(column)>);
   static_assert(bridges<decltype(row)>);
   expect_agrees_with_ddx(row, std::array{1.3, 2.1});

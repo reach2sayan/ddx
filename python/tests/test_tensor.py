@@ -14,6 +14,9 @@ N = 5
 M = [math.sin(1.0 + i * 7 + j * 3) for j in range(N) for i in range(N)]  # column-major
 
 
+MATRIX = np.reshape(M, (N, N), order="F")
+
+
 def m_at(i: int, j: int) -> float:
     return M[i + j * N]
 
@@ -26,8 +29,8 @@ def scalar_model() -> ddx.Expression:
 
 def tensor_model() -> ddx.Expression:
     x = ddx.vec("x", N)
-    C = ddx.mat_constant(N, N, M)
-    return ddx.dot(x, ddx.gemv(C, x)) + ddx.sum(x * ddx.log(x)) + 2.0 * x[0] * x[1]
+    C = ddx.mat_constant(MATRIX)
+    return x @ (C @ x) + ddx.sum(x * ddx.log(x)) + 2.0 * x[0] * x[1]
 
 
 POINT = [0.3 + 0.1 * i for i in range(N)]
@@ -48,36 +51,15 @@ def test_the_vector_spelling_agrees_with_the_scalar_one() -> None:
     np.testing.assert_allclose(got_h, want_h, rtol=1e-12)
 
 
-def test_matmul_is_dot_and_gemv_to_the_bit() -> None:
-    def calls() -> ddx.Expression:
-        x = ddx.vec("x", N)
-        c = ddx.mat_constant(N, N, M)
-        t = ddx.exp(0.1 * c)
-        return (ddx.dot(x, ddx.gemv(c, x)) + ddx.dot(ddx.log(x), ddx.gemv(t, x, True))
-                + ddx.dot(x, x))
-
-    def operators() -> ddx.Expression:
-        x = ddx.vec("x", N)
-        c = ddx.mat_constant(N, N, M)
-        t = ddx.exp(0.1 * c)
-        return x @ (c @ x) + ddx.log(x) @ (ddx.transpose(t) @ x) + x @ x
-
-    want = ddx.equation(calls)
-    got = ddx.equation(operators)
-    assert want.evaluate(POINT) == got.evaluate(POINT)
-    np.testing.assert_array_equal(got.gradient(POINT), want.gradient(POINT))
-    np.testing.assert_array_equal(got.hessian(POINT)[2], want.hessian(POINT)[2])
-
-
 @pytest.mark.parametrize("product", [
     lambda x, c: c @ c,
     lambda x, c: x @ c,
     lambda x, c: ddx.vec("y", N + 1) @ x,
     lambda x, c: ddx.transpose(c) @ ddx.vec("y", N + 1),
 ])
-def test_matmul_refuses_what_the_calls_refuse(product) -> None:  # noqa: ANN001
+def test_matmul_refuses_a_shape_mismatch(product) -> None:  # noqa: ANN001
     with pytest.raises(ddx.Error) as refused:
-        ddx.equation(lambda: product(ddx.vec("x", N), ddx.mat_constant(N, N, M)))
+        ddx.equation(lambda: product(ddx.vec("x", N), ddx.mat_constant(MATRIX)))
     assert refused.value.code == ddx.errc.tensor_shape
 
 
@@ -103,11 +85,11 @@ def test_a_vector_knows_its_length_and_elements() -> None:
             _ = v[3]
         assert refused.value.code == ddx.errc.tensor_shape
         w = ddx.pack([v[2], v[1], v[0]])
-        C = ddx.mat_constant(2, 3, [1.0] * 6)
+        C = ddx.mat_constant(np.ones((2, 3)))
         assert C.shape == (2, 3)
         assert v[0].shape == ()
         head = ddx.pack([v[0], v[1]])
-        return ddx.dot(v, w) + ddx.sum(ddx.gemv(C, head, transposed=True))
+        return v @ w + ddx.sum(ddx.transpose(C) @ head)
 
     eq = ddx.equation(model)
     v = [1.0, 2.0, 3.0]
@@ -116,7 +98,7 @@ def test_a_vector_knows_its_length_and_elements() -> None:
 
 def test_shapes_are_refused_where_they_are_formed() -> None:
     def mismatched() -> ddx.Expression:
-        return ddx.dot(ddx.vec("a", 2), ddx.vec("b", 3))
+        return ddx.vec("a", 2) @ ddx.vec("b", 3)
 
     with pytest.raises(ddx.Error) as refused:
         ddx.equation(mismatched)
@@ -161,10 +143,10 @@ def test_a_matrix_of_temperature_matches_the_scalar_spelling() -> None:
     def tensor() -> ddx.Expression:
         T = ddx.var("T")
         x = ddx.vec("x", N)
-        tau = ddx.exp(T * ddx.mat_constant(N, N, M))
+        tau = ddx.exp(T * ddx.mat_constant(MATRIX))
         assert tau.shape == (N, N)
         assert ddx.outer(x, x).shape == (N, N)
-        return ddx.dot(x, ddx.gemv(tau, x))
+        return x @ (tau @ x)
 
     want = ddx.equation(scalar)
     got = ddx.equation(tensor)
@@ -186,8 +168,8 @@ def test_released_tapes_grow_back_to_the_same_numbers() -> None:
 def test_a_param_vector_is_the_constant_it_carries() -> None:
     """vec_param's elements arrive with the point; nothing differentiates them."""
     c = [0.3, -0.2, 0.7]
-    baked = ddx.equation(lambda: ddx.dot(ddx.vec_constant(c), ddx.log(ddx.vec("x", 3))))
-    brought = ddx.equation(lambda: ddx.dot(ddx.vec_param("c", 3), ddx.log(ddx.vec("x", 3))))
+    baked = ddx.equation(lambda: ddx.vec_constant(c) @ ddx.log(ddx.vec("x", 3)))
+    brought = ddx.equation(lambda: ddx.vec_param("c", 3) @ ddx.log(ddx.vec("x", 3)))
     x = [0.2, 0.5, 0.3]
     assert list(brought.params) == ["c[0]", "c[1]", "c[2]"]
     assert np.array_equal(brought.jacobian(x + c)[1], baked.jacobian(x)[1])
@@ -196,12 +178,99 @@ def test_a_param_vector_is_the_constant_it_carries() -> None:
 
 
 def test_a_matrix_constant_takes_a_two_dimensional_array() -> None:
-    """Any order, any float dtype: the shape is the array's, the data column-major."""
+    """Any order, any float dtype: the shape is the array's."""
     m = np.arange(6.0).reshape(2, 3)
     x = [0.5, -1.0, 2.0]
-    flat = ddx.equation(lambda: ddx.sum(ddx.mat_constant(2, 3, m.ravel(order="F")) @ ddx.vec("x", 3)))
+    want = float((m @ np.array(x)).sum())
     for given in (m, np.asfortranarray(m), m.astype(np.float32), m.tolist()):
         whole = ddx.equation(lambda given=given: ddx.sum(ddx.mat_constant(given) @ ddx.vec("x", 3)))
-        assert whole.evaluate(x) == flat.evaluate(x)
+        assert whole.evaluate(x) == pytest.approx(want)
     with pytest.raises(ddx.Error):
         ddx.equation(lambda: ddx.sum(ddx.mat_constant(np.ones(3)) @ ddx.vec("x", 3)))
+
+def test_a_zero_partial_has_no_shape() -> None:
+    seen = {}
+
+    def model() -> ddx.Expression:
+        x = ddx.var("x")
+        y = ddx.var("y")
+        seen["shape"] = ddx.derivative(x, "y").shape
+        seen["cell"] = ddx.gradient(x)[1].shape
+        return x * y
+
+    ddx.equation(model)
+    assert seen == {"shape": (), "cell": ()}
+
+
+def test_a_shape_error_has_no_shape_either() -> None:
+    seen = {}
+
+    def model() -> ddx.Expression:
+        x = ddx.var("x")
+        try:
+            seen["shape"] = (ddx.vec("a", 2) + ddx.vec("b", 3)).shape
+        except ddx.Error as refused:
+            seen["code"] = refused.code
+        return x
+
+    ddx.equation(model)
+    assert seen.get("shape") == () or seen.get("code") == ddx.errc.tensor_shape
+
+
+def test_a_shape_error_at_the_root_names_the_shape() -> None:
+    with pytest.raises(ddx.Error) as refused:
+        ddx.equation(lambda: ddx.vec("a", 2) + ddx.vec("b", 3))
+    assert refused.value.code == ddx.errc.tensor_shape
+
+
+def test_a_derivative_of_a_shape_error_is_not_zero() -> None:
+    def model() -> ddx.Expression:
+        return ddx.derivative(ddx.vec("a", 2) + ddx.vec("b", 3), "a[0]")
+
+    with pytest.raises(ddx.Error) as refused:
+        ddx.equation(model)
+    assert refused.value.code == ddx.errc.tensor_shape
+
+
+def test_expressions_of_two_equations_do_not_compose() -> None:
+    saved = {}
+
+    def first() -> ddx.Expression:
+        saved["u"] = ddx.var("u")
+        return saved["u"]
+
+    ddx.equation(first)
+    with pytest.raises(ddx.Error) as refused:
+        ddx.equation(lambda: ddx.var("x") * saved["u"])
+    assert refused.value.code == ddx.errc.tensor_shape
+
+
+def test_a_vector_iterates_its_elements() -> None:
+    seen = {}
+
+    def model() -> ddx.Expression:
+        v = ddx.vec("v", 3)
+        seen["count"] = len(list(v))
+        total = ddx.Expression(0.0)
+        for element in v:
+            total = total + element
+        return total
+
+    eq = ddx.equation(model)
+    assert seen["count"] == 3
+    assert eq.evaluate([1.0, 2.0, 3.0]) == pytest.approx(6.0)
+
+
+def test_nodes_refuses_what_the_call_refuses() -> None:
+    def model() -> ddx.Expression:
+        x = ddx.vec("x", 2)
+        # An outer product a symbol moves has no dense form.
+        return x @ (ddx.outer(x * x, x) @ x)
+
+    eq = ddx.equation(model)
+    with pytest.raises(ddx.Error) as refused:
+        eq.dense_hessian([0.5, 0.25])
+    assert refused.value.code == ddx.errc.tensor_shape
+    with pytest.raises(ddx.Error) as also:
+        eq.nodes(want=ddx.Want.DENSE_HESSIAN)
+    assert also.value.code == ddx.errc.tensor_shape

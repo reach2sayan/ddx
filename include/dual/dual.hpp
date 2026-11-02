@@ -78,6 +78,12 @@ template <Numeric T> constexpr bool all_zero(const Dual<T> &d) noexcept {
   const auto &[real, dual] = d;
   return all_zero(real) && all_zero(dual);
 }
+template <Numeric T>
+constexpr bool same_value(const Dual<T> &a, const Dual<T> &b) noexcept {
+  const auto &[a_real, a_dual] = a;
+  const auto &[b_real, b_dual] = b;
+  return same_value(a_real, b_real) && same_value(a_dual, b_dual);
+}
 
 // dual_var_of<"x">(v) — here rather than beside var_of() because it needs Dual
 // complete, not declared.
@@ -179,20 +185,17 @@ template <template <Numeric> class Fn> struct unary_dual_combine {
     using Comp = std::remove_cvref_t<decltype(v)>;
     using DT = std::remove_cvref_t<decltype(x)>;
     using S = scalar_base_t<Comp>;
+    const Comp fv = Fn<S>{}(v);
+    // Left out, as binary_dual_combine leaves it: a partial that is infinite
+    // here, sqrt's at 0, times no motion is nothing, not NaN.
+    if (all_zero(d)) {
+      return DT{fv};
+    }
     if constexpr (detail::has_deriv_from_value_v<Fn<S>, Comp>) {
-      const Comp fv = Fn<S>{}(v);
       return DT{fv, Fn<S>::deriv_from_value(v, fv) * d};
     } else {
-      return DT{Fn<S>{}(v), Fn<S>::deriv(v) * d};
+      return DT{fv, Fn<S>::deriv(v) * d};
     }
-  }
-};
-struct abs_combine {
-  constexpr auto operator()(const DualLike auto &x) const noexcept {
-    using std::abs;
-    const auto &[v, d] = x;
-    using DT = std::remove_cvref_t<decltype(x)>;
-    return DT{abs(v), detail::sign(v) * d};
   }
 };
 // One chain-rule overload per unary math function, from the registry.
@@ -203,7 +206,12 @@ struct abs_combine {
 DDX_UNARY_MATH_TABLE(DDX_DUAL_UNARY)
 #undef DDX_DUAL_UNARY
 
-constexpr auto abs(DualLike auto &&a) noexcept { return abs_combine{}(a); }
+constexpr auto abs(DualLike auto &&x) noexcept {
+  using std::abs;
+  const auto &[v, d] = x;
+  using DT = std::remove_cvref_t<decltype(x)>;
+  return DT{abs(v), detail::sign(v) * d};
+}
 
 // ---- comparisons (operate on materialized values) -------------------------
 template <typename A, typename B>

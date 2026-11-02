@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <concepts> // std::same_as
 #include <cstdint>
 #include <functional> // std::invoke
@@ -119,6 +120,7 @@ public:
   // constant, or the row of `shape` it meets -- or a fold `op=` is still
   // accumulating.
   [[nodiscard]] constexpr NodeId id(Arena<T> &b, Shape shape = {0, 0}) const {
+    assert(!why_ && "a refusal has no identity: it would read as a constant");
     if (arena_ == nullptr) {
       return shape.size() ? b.filled(shape, lit_) : b.constant(lit_);
     }
@@ -168,6 +170,10 @@ public:
     ((b = b ? b : xs.arena()), ...);
     if (b == nullptr) {
       return Expression{apply<T>(op, xs.literal()...)};
+    }
+    // Ids mean nothing outside their own arena.
+    if (((xs.arena() != nullptr && xs.arena() != b) || ...)) {
+      return poison(errc::tensor_shape);
     }
     if ((xs.is_matrix() || ...)) {
       return form(op, xs.row()...);
@@ -276,12 +282,13 @@ public:
 private:
   constexpr Expression &accumulate(OpCode fold, const Expression &o) {
     if (why_ || o.why_ || pending() || size() || o.size() || is_matrix() ||
-        o.is_matrix()) {
+        o.is_matrix() || (!o.pending() && o.arena_ != arena_)) {
       return *this = form(fold_op(fold), *this, o);
     }
     const T identity = fold == OpCode::SumN ? T{0} : T{1};
     if constexpr (std::equality_comparable<T>) {
-      if (o.pending() && o.lit_ == identity) {
+      using impl::same_value;
+      if (o.pending() && same_value(o.lit_, identity)) {
         return *this;
       }
     }
@@ -480,7 +487,8 @@ private:
 // partials: `fn(in, out)` writes the value, then the first partials, then --
 // at order 2 -- the upper triangle of the second, row-major.  ddx calls it
 // from any thread that sweeps, as often as it needs, so it must be re-entrant
-// and must not throw.
+// and must not throw.  It may sweep another equation; not the one calling it,
+// whose lock this thread already holds.
 template <impl::Numeric T>
 [[nodiscard]] ExternFunction<T>
 extern_fn(Arena<T> &b, ExternRecord record,
@@ -504,7 +512,7 @@ template <std::size_t, impl::Numeric T> using Repeat = Expression<T>;
 template <impl::Numeric T>
 inline thread_local Arena<T> *current_arena = nullptr;
 
-// The runtime counterpart of scoped_seed; the arena is not a constant, so it
+// A scoped_value over the current arena; the arena is not a constant, so it
 // comes in as an argument.
 template <impl::Numeric T>
 [[nodiscard]] auto scoped_arena(Arena<T> &b) noexcept {

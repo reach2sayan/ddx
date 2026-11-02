@@ -27,9 +27,8 @@
 // partial trees.  Every number comes from the runtime graph the expressions
 // lower to -- one arena per call, swept at whatever scalar the point is
 // spelled in: a dual for a derivative tensor, a truncated polynomial for the
-// univariate derivative.  A model swept in a loop goes through
-// rt::equation(eq), which lowers once and keeps lanes, kernels and the
-// compiled code.
+// univariate derivative.  A model swept in a loop is written against rt::
+// directly, whose equation lowers once and keeps its kernels.
 namespace ddx::impl {
 
 namespace detail {
@@ -95,15 +94,6 @@ constexpr nth_dual_t<S, Depth> make_mixed_seed(S value,
     auto outer_tangent = embed_constant<S, Depth - 1>(k == idx[0] ? S{1} : S{});
     return nth_dual_t<S, Depth>{std::move(inner), std::move(outer_tangent)};
   }
-}
-
-// The cartesian product of Order copies of [0, N), in layout_right order.
-template <std::size_t N, std::size_t Order>
-[[nodiscard]] constexpr auto index_grid() noexcept {
-  return index_apply<Order>([]<std::size_t... D>() {
-    return std::views::cartesian_product(
-        ((void)D, std::views::iota(std::size_t{0}, N))...);
-  });
 }
 
 // One representative per permutation class: by Schwarz only C(N+Order-1, Order)

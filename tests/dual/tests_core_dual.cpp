@@ -934,10 +934,9 @@ TEST(TutorialReverseHigherOrder, ForwardReverseHessianAgree) {
     for (const auto j : {0uz, 1uz})
       EXPECT_NEAR((H_fwd[i, j]), (H_rev[i, j]), 1e-12);
 }
-TEST(DualScalarContract, ValAndToDouble) {
+TEST(DualScalarContract, Val) {
   const dual2nd a = embed_constant<double, 2>(3.5);
   EXPECT_DOUBLE_EQ(val(a), 3.5);
-  EXPECT_DOUBLE_EQ(to_double(a), 3.5);
   EXPECT_DOUBLE_EQ(val(2.0), 2.0); // identity on a plain scalar
 }
 TEST(DualScalarContract, ScalarMixingAtDepth) {
@@ -977,9 +976,9 @@ TEST(ScopedValue, NestedGuardsOverSiblingScalarsOfOneDual) {
   // Two independently scoped guards over the SAME dual2nd's seeds.
   dual2nd d{Dual<double>{2.0, 0.0}, Dual<double>{0.0, 0.0}};
   {
-    const auto inner = scoped_seed<1.0>(d.value().deriv());
+    const scoped_value inner{d.value().deriv(), 1.0};
     {
-      const auto outer = scoped_seed<1.0>(d.deriv().value());
+      const scoped_value outer{d.deriv().value(), 1.0};
       EXPECT_DOUBLE_EQ(d.value().deriv(), 1.0); // both live at once
       EXPECT_DOUBLE_EQ(d.deriv().value(), 1.0);
     }
@@ -997,7 +996,7 @@ TEST(ScopedValue, UsableDuringConstantEvaluation) {
     double slot = 3.0;
     double seen = 0.0;
     {
-      const auto seed = scoped_seed<1.0>(slot);
+      const scoped_value seed{slot, 1.0};
       seen = slot;
     }
     return std::array<double, 2>{seen, slot};
@@ -1005,4 +1004,17 @@ TEST(ScopedValue, UsableDuringConstantEvaluation) {
   static_assert(probe[0] == 1.0);
   static_assert(probe[1] == 3.0);
   SUCCEED();
+}
+
+// sqrt and log have no finite derivative at 0, but x does not move along y: its
+// tangent there is a zero, not inf * 0.
+TEST(EquationForward, AZeroTangentNeverMeetsAnInfinitePartial) {
+  Variable<double, FixedString{"x"}> x;
+  Variable<double, FixedString{"y"}> y;
+  auto ve = Equation(sqrt(x) + y, log(x) + y);
+  auto J = ve.derivative_tensor<1>(std::array{0.0, 1.0});
+  EXPECT_DOUBLE_EQ((J[0, 1]), 1.0);
+  EXPECT_DOUBLE_EQ((J[1, 1]), 1.0);
+  EXPECT_TRUE(std::isinf((J[0, 0])));
+  EXPECT_TRUE(std::isinf((J[1, 0])));
 }

@@ -174,6 +174,13 @@ template <COperation Op, CExpression A, CExpression B>
   }
 }
 
+// A select has no identities and no operand order.
+template <COperation Op, CExpression C, CExpression A, CExpression B>
+[[nodiscard]] constexpr auto ordered_node(const C &c, const A &a,
+                                          const B &b) noexcept {
+  return Expression<Op, C, A, B>{c, a, b};
+}
+
 // Bottom-up, one pass: no rule leaves a fresh redex behind.
 template <CExpression E>
 [[nodiscard]] constexpr auto canonicalise(const E &e) noexcept {

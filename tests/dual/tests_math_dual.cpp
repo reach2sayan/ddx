@@ -357,8 +357,8 @@ TEST(ForwardTangentSweep, IsConstexpr) {
 // A frozen symbol is a constant: same value lookup, zero derivative.  A tree
 // holding one is a partial's row, not a model: Equation refuses to lower it.
 TEST(FrozenVariable, EvaluatesAndSeesZeroDerivative) {
-  auto e =
-      make_const_variable<ddx::impl::FixedString{"x"}>(var<"x"> * var<"y">);
+  auto e = make_all_constant_except<ddx::impl::FixedString{"y"}>(var<"x"> *
+                                                                 var<"y">);
 
   EXPECT_DOUBLE_EQ(e.eval(2.0, 3.0), 6.0);
   EXPECT_DOUBLE_EQ(e.eval_with_tangent<"x">(2.0, 3.0).deriv(), 0.0);

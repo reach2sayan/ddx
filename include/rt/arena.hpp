@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ops/algebra.hpp"
+#include "ops/scalar.hpp"
 #include "rt/apply.hpp"
 #include "rt/kernels.hpp"
 #include "rt/opcode.hpp"
@@ -10,7 +11,6 @@
 #include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>
-#include <boost/describe/class.hpp>
 
 #include <algorithm>
 #include <array>
@@ -99,13 +99,11 @@ struct ExternRecord {
     }
     return std::nullopt;
   }
-  BOOST_DESCRIBE_CLASS(ExternRecord, (), (name, arity, order), (), ())
 };
 
 // The record and the function itself.
 template <impl::Numeric T> struct ExternEntry : ExternRecord {
   std::shared_ptr<const ExternFn<T>> fn;
-  BOOST_DESCRIBE_CLASS(ExternEntry, (ExternRecord), (), (), ())
 };
 
 template <impl::Numeric T> class ExternFunction;
@@ -203,7 +201,6 @@ template <impl::Numeric T> struct Node {
   std::array<NodeId, 3> in{no_node, no_node, no_node};
   T value{}; // Const
   std::uint32_t payload = 0;
-  BOOST_DESCRIBE_CLASS(Node, (), (op, in, value, payload), (), ())
 };
 
 // Pinned rather than assumed: a member above `value` would silently widen
@@ -220,7 +217,6 @@ template <impl::Numeric T> struct TensorConst {
   [[nodiscard]] constexpr bool valid() const noexcept {
     return rows >= 1 && cols >= 1 && data.size() == std::size_t{rows} * cols;
   }
-  BOOST_DESCRIBE_CLASS(TensorConst, (), (rows, cols, data), (), ())
 };
 
 // Everything a model is: what the Arena holds, as one described list.
@@ -232,9 +228,6 @@ template <impl::Numeric T> struct Model {
   std::vector<TensorConst<T>> tensors;
   std::vector<NodeId> lists; // every has_list node's ids, end to end
   std::vector<Node<T>> nodes;
-  BOOST_DESCRIBE_CLASS(Model, (),
-                       (names, closures, externs, tensors, lists, nodes), (),
-                       ())
 
   // The CNodeSource half, which the Arena lends and the frozen Graph
   // answers as well.
@@ -661,13 +654,14 @@ public:
   [[nodiscard]] constexpr bool is_constant(NodeId id, const T &v) const {
     const Node<T> &n = model_.nodes[id];
     if constexpr (std::equality_comparable<T>) {
+      using impl::same_value;
       if (n.op == OpCode::Const) {
-        return n.value == v;
+        return same_value(n.value, v);
       }
       return n.op == OpCode::VecConst &&
              std::ranges::all_of(
                  model_.tensors[detail::get<TensorRef>(n).value].data,
-                 [&v](const T &x) { return x == v; });
+                 [&v](const T &x) { return same_value(x, v); });
     } else {
       return false;
     }
@@ -811,6 +805,8 @@ private:
     // `same` below.
     if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 8) {
       return std::bit_cast<std::uint64_t>(n.value);
+    } else if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 4) {
+      return std::bit_cast<std::uint32_t>(n.value);
     } else {
       return 0;
     }
@@ -829,8 +825,11 @@ private:
   static constexpr bool identical(const T &l, const T &r) {
     if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 8) {
       return std::bit_cast<std::uint64_t>(l) == std::bit_cast<std::uint64_t>(r);
+    } else if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 4) {
+      return std::bit_cast<std::uint32_t>(l) == std::bit_cast<std::uint32_t>(r);
     } else if constexpr (std::equality_comparable<T>) {
-      return l == r;
+      using impl::same_value;
+      return same_value(l, r);
     } else {
       return false;
     }

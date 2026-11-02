@@ -567,7 +567,9 @@ TEST(RtTensor, StaysSmallAtAThousandSpecies) {
   constexpr std::size_t n = 1000;
   const auto start = std::chrono::steady_clock::now();
   ddx::rt::Arena<> b;
+  const auto scope = ddx::rt::detail::scoped_arena(b);
   const RE f = mse_tensor(ddx::rt::vec(b, "x", n));
+  ASSERT_FALSE(f.poisoned());
   const auto g = ddx::rt::build_reverse_jacobian(b, f.id(b));
   const auto gradient_nodes = b.size();
   const auto along = ddx::rt::detail::seeded_sum(b, g.partial);
@@ -1768,4 +1770,101 @@ TEST(RtTensorGraph, AQuadraticFormsTwoProductsAreAPair) {
   EXPECT_EQ(products[1], products[0] + 1);
   EXPECT_EQ(g.pairs()[steps[products[0]].node], steps[products[1]].node);
   EXPECT_EQ(g.pairs()[steps[products[1]].node], steps[products[0]].node);
+}
+
+// The chosen arm's tangent through a table that is not square: the block is
+// 2 M^T M, whichever way it is swept.
+TEST(RtTensorDense, ASelectOverANonSquareTableKeepsItsTangent) {
+  const std::array<double, 6> m{1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
+  const auto eq = ddx::rt::equation([&] {
+    const RV x = ddx::rt::vec("x", 2);
+    const RE s = ddx::rt::param("s");
+    const auto table = ddx::rt::mat_constant(3, 2, m);
+    const RV u = select(s > 0.0, gemv(table, x), RE{0.0});
+    return dot(u, u);
+  });
+  ASSERT_FALSE(eq.poisoned());
+  const std::array<double, 3> at{0.5, -0.25, 1.0};
+  const auto dense = eq.dense_hessian(std::span<const double>{at});
+  ASSERT_TRUE(dense.has_value()) << dense.error().code;
+  expect_close(std::vector{28.0, 64.0, 64.0, 154.0}, *dense, 1e-12,
+               "2 M^T M");
+}
+
+// A matrix chosen by a select and moved by a symbol has no dense form: refused
+// is an answer and a matching block is an answer; a zero is neither.
+TEST(RtTensorDense, ASelectOverAComputedMatrixRefusesOrAgrees) {
+  const std::array<double, 4> m{1.0, 2.0, 3.0, 4.0};
+  const auto check = [&](auto arm) {
+    const auto eq = ddx::rt::equation([&] {
+      const RV x = ddx::rt::vec("x", 2);
+      const RE t = ddx::rt::var("T");
+      const RE c = ddx::rt::param("c");
+      const auto b = ddx::rt::mat_constant(2, 2, m);
+      const auto u = select(c > 0.0, t * b, arm(t, b));
+      return dot(u, u) + sum(x * x);
+    });
+    ASSERT_FALSE(eq.poisoned()) << eq.status()->code;
+    const std::array<double, 4> at{0.5, 0.25, 1.5, 1.0};
+    const auto dense = eq.dense_hessian(std::span<const double>{at});
+    if (dense) {
+      expect_close(*eq.hessian(std::span<const double>{at}), *dense, 1e-10,
+                   "dense vs coloured");
+    } else {
+      EXPECT_EQ(dense.error().code, ddx::errc::tensor_shape);
+    }
+  };
+  check([](const RE &, const RE &) { return RE{0.0}; });
+  check([](const RE &t, const RE &b) { return t * t * b; });
+}
+
+// A symbol read through a vector of one: the row it is scaled into has the
+// shape of a scalar, and is still not one.
+TEST(RtTensor, AScalarFactorOfAVectorOfOneKeepsItsPartial) {
+  const auto eq = ddx::rt::equation([] {
+    const RV x = ddx::rt::vec("x", 1);
+    const RE s = ddx::rt::var("s");
+    return select(x < 0.0, s * x, x)[0] + s;
+  });
+  ASSERT_FALSE(eq.poisoned());
+  const std::array<double, 2> right{1.0, 2.0};
+  EXPECT_EQ(*eq.jacobian(std::span<const double>{right}),
+            (std::vector{1.0, 1.0}));
+  const std::array<double, 2> left{-1.0, 2.0};
+  EXPECT_EQ(*eq.jacobian(std::span<const double>{left}),
+            (std::vector{2.0, 0.0}));
+}
+
+TEST(RtTensor, DotRefusesHandlesOfTwoArenas) {
+  ddx::rt::Arena<> a;
+  ddx::rt::Arena<> b;
+  EXPECT_TRUE(dot(ddx::rt::vec(a, "u", 2), ddx::rt::vec(b, "w", 2)).poisoned());
+}
+
+// No symbols, so nothing to differentiate by: an empty block, not a read
+// through an empty list of partials.
+TEST(RtTensorDense, AnEquationOfParamsHasAnEmptyDenseBlock) {
+  const auto eq = ddx::rt::equation([] {
+    const RE p = ddx::rt::param("p");
+    return p * p;
+  });
+  ASSERT_FALSE(eq.poisoned());
+  const std::array<double, 1> at{2.0};
+  const auto dense = eq.dense_hessian(std::span<const double>{at});
+  ASSERT_TRUE(dense.has_value()) << dense.error().code;
+  EXPECT_TRUE(dense->empty());
+  ASSERT_TRUE(eq.dense_hessian_cost().has_value());
+}
+
+// rows * cols wraps long before a table that size could be supplied.
+TEST(RtTensor, ATableWhoseSizeOverflowsIsRefused) {
+  ddx::rt::Arena<> b;
+  const auto refused = [&](std::size_t rows, std::size_t cols,
+                           std::span<const double> data) {
+    return ddx::rt::mat_constant(b, rows, cols, data).poisoned();
+  };
+  EXPECT_TRUE(refused(1uz << 32, 1uz << 32, {}));
+  const std::array<double, 4> four{1.0, 2.0, 3.0, 4.0};
+  EXPECT_TRUE(refused((1uz << 63) + 2, 2, four));
+  EXPECT_FALSE(refused(2, 2, four));
 }

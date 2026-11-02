@@ -110,17 +110,16 @@ operation rather than one per element:
 @ddx.equation
 def quad():
     x = ddx.vec("x", 3)                         # symbols x[0], x[1], x[2]
-    C = ddx.mat_constant(3, 3, coefficients)       # column-major
+    C = ddx.mat_constant(coefficients)          # a 2-D array
     return x @ (C @ x) + ddx.sum(x * ddx.log(x))
 ```
 
 | Function | Is |
 |---|---|
 | `vec(name, n)` | `n` symbols `name[0]` … `name[n-1]`, packed |
-| `pack(scalars)`, `vec_constant(data)`, `mat_constant(rows, cols, data)` | a vector of expressions, a constant vector, a constant matrix |
-| `sum(v)`, `dot(u, v)` | the reductions to a scalar |
-| `gemv(M, v)`, `gemv(M, v, transposed=True)` | `M·v` and `Mᵀ·v` |
-| `u @ v`, `M @ v`, `transpose(M) @ v` | `dot(u, v)`, `gemv(M, v)`, `gemv(M, v, transposed=True)` |
+| `pack(scalars)`, `vec_constant(data)`, `mat_constant(M)` | a vector of expressions, a constant vector, a constant matrix from a 2-D array |
+| `sum(v)`, `u @ v` | the reductions to a scalar |
+| `M @ v`, `transpose(M) @ v` | `M·v` and `Mᵀ·v` |
 
 Arithmetic and the unary functions apply elementwise, and a scalar or a bare
 number broadcasts. `select` takes a whole vector under a scalar condition and
@@ -199,7 +198,7 @@ a sequence, a dict, or a `(symbols, points)` batch alongside a batched point.
 single-output model, and raises `errc.not_single_output` on a system.
 
 `dense_hessian(x)` is for a Hessian whose coupling is dense, such as
-`dot(x, gemv(C, x))`, where colouring needs one sweep per symbol: it carries
+`x @ (C @ x)`, where colouring needs one sweep per symbol: it carries
 matrix-valued derivatives forward in one pass instead, and also needs a
 single-output model.
 
@@ -281,7 +280,7 @@ kernel, and returns the equation, so a configure-and-use reads in one line:
 
 ```python
 f.compile(points=batch.shape[1]).jacobian(batch)
-f.uses_kernel                               # True
+f.uses_kernel()                             # True
 f.options = ddx.Options(backend=ddx.Backend.INTERPRET)   # discards the kernel
 ```
 
@@ -316,7 +315,7 @@ by the kernel that number would have built.
 | `residual(x)` | each implicit's residual `F` at one point |
 | `options` | property — read or assign an `Options` |
 | `compile(**fields)` | set `Options`, block for the kernel, return self |
-| `uses_kernel`, `wait_for_kernel(*, want)` | whether a call runs compiled code, and building it now — for the Jacobian lane unless `want` names another |
+| `uses_kernel(*, want)` | whether a call runs compiled code, building it now — for the Jacobian lane unless `want` names another |
 | `hessian_colours` | groups in the Hessian's compression; raises on a system |
 | `buffer(x, *, want)` | a `Call` bound to its buffers, for a loop |
 | `nodes(*, want)` | how many nodes a call for `want` evaluates |

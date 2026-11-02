@@ -2,7 +2,6 @@
 
 #include "jit/options.hpp"
 #include "util/export.hpp"
-#include "util/pinned.hpp"
 #include "util/ranges.hpp"
 
 #include <cassert>
@@ -84,23 +83,29 @@ private:
 };
 
 // The LLJIT itself, shared by every Kernel it made.
-class Compiler : private impl::noncopyable {
+class Compiler {
 public:
-  [[nodiscard]] static DDX_JIT_API compile_result<Compiler> create();
+  Compiler(const Compiler &) = delete;
+  Compiler &operator=(const Compiler &) = delete;
+  Compiler(Compiler &&) = default;
+  Compiler &operator=(Compiler &&) = default;
+  ~Compiler() = default;
+
+  [[nodiscard]] static DDX_API compile_result<Compiler> create();
 
   // Instantiated in the library for each CKernelScalar.
   template <CKernelScalar T>
-  [[nodiscard]] DDX_JIT_API compile_result<Kernel<T>>
+  [[nodiscard]] DDX_API compile_result<Kernel<T>>
   compile(const rt::Graph<T> &g, const Options &opt = {});
 
   // The module compile() would hand the backend, as text.
   template <CKernelScalar T>
-  [[nodiscard]] DDX_JIT_API compile_result<std::string>
+  [[nodiscard]] DDX_API compile_result<std::string>
   ir(const rt::Graph<T> &g, const Options &opt = {}) const;
 
 private:
   struct Impl;
-  DDX_JIT_API explicit Compiler(std::shared_ptr<Impl> impl) noexcept;
+  DDX_API explicit Compiler(std::shared_ptr<Impl> impl) noexcept;
   std::shared_ptr<Impl> impl_;
 };
 

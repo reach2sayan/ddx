@@ -182,75 +182,34 @@ TEST(ValueMapTest, SubscriptIsConstexpr) {
   static_assert(folded == 10.0, "read and write both fold at compile time");
   EXPECT_DOUBLE_EQ(folded, 10.0);
 }
-TEST(BoundTest, EvalMatchesLeafStorageBitForBit) {
+TEST(NamedEvalTest, MatchesPositionalBitForBit) {
   // A storage change, not a numerics change: the two paths agree exactly.
   auto x = var<"x">;
   auto y = var<"y">;
   const auto e = sin(x * y) * exp(x + y) + log(y * y + 1.0) / (x + 2.0) -
                  hypot(x, y) * tanh(x);
 
-  const auto b = bind(e, named<"x">(0.8), named<"y">(1.3));
-  EXPECT_EQ(b.eval(), e.eval(0.8, 1.3)); // bitwise, not EXPECT_DOUBLE_EQ
+  EXPECT_EQ(eval(e, named<"x">(0.8), named<"y">(1.3)), e.eval(0.8, 1.3));
 }
-TEST(BoundTest, ArgumentOrderIsIrrelevantAndSupersetsAreAllowed) {
+TEST(NamedEvalTest, ArgumentOrderIsIrrelevantAndSupersetsAreAllowed) {
   auto x = var<"x">;
   auto y = var<"y">;
   const auto e = (x + y) * x; // symbols {x,y}
 
-  EXPECT_DOUBLE_EQ(bind(e, named<"x">(2.0), named<"y">(3.0)).eval(), 10.0);
-  EXPECT_DOUBLE_EQ(bind(e, named<"y">(3.0), named<"x">(2.0)).eval(), 10.0);
+  EXPECT_DOUBLE_EQ(eval(e, named<"x">(2.0), named<"y">(3.0)), 10.0);
+  EXPECT_DOUBLE_EQ(eval(e, named<"y">(3.0), named<"x">(2.0)), 10.0);
 
-  // Extra symbols still bind: the permutation picks the ones in use.
+  // Extra symbols are read past: only the ones in use are looked up.
   const auto wide = values(named<"z">(9.0), named<"x">(2.0), named<"y">(3.0),
                            named<"a">(9.0));
-  EXPECT_DOUBLE_EQ(bind(e, wide).eval(), 10.0);
+  EXPECT_DOUBLE_EQ(eval(e, wide), 10.0);
 }
-TEST(BoundTest, SetChangesTheResult) {
-  auto x = var<"x">;
-  auto y = var<"y">;
-  auto b = bind((x + y) * x, named<"x">(2.0), named<"y">(3.0));
-  EXPECT_DOUBLE_EQ(b.eval(), 10.0);
-  b.set<"x">(4.0);
-  EXPECT_DOUBLE_EQ(b.eval(), 28.0); // (4+3)*4
-}
-TEST(BoundTest, SubscriptForwardsToTheMap) {
-  auto x = var<"x">;
-  auto y = var<"y">;
-  auto b = bind((x + y) * x, named<"x">(2.0), named<"y">(3.0));
-  EXPECT_DOUBLE_EQ(b["x"_s], 2.0);
-
-  b["x"_s] = 4.0; // must move the same slot set<"x"> does
-  EXPECT_DOUBLE_EQ(b.eval(), 28.0);
-  EXPECT_DOUBLE_EQ(b.get<"x">(), 4.0);
-  EXPECT_DOUBLE_EQ(b.map.get<"x">(), 4.0);
-
-  const auto &cb = b;
-  static_assert(std::is_same_v<decltype(cb["x"_s]), const double &>,
-                "subscript on a const lvalue Bound borrows");
-  static_assert(std::is_same_v<decltype(bind(x * y, named<"x">(1.0),
-                                             named<"y">(1.0))["x"_s]),
-                               double>,
-                "subscript on a temporary Bound must return by value");
-  EXPECT_DOUBLE_EQ(bind(x * y, named<"x">(6.0), named<"y">(1.0))["x"_s], 6.0);
-
-  // Same body, other spelling - see the note in ValueMapTest.
-  static_assert(std::is_same_v<decltype(cb.get<"x">()), const double &>);
-  static_assert(std::is_same_v<decltype(b.get<"x">()), double &>);
-  static_assert(
-      std::is_same_v<
-          decltype(bind(x * y, named<"x">(1.0), named<"y">(1.0)).get<"x">()),
-          double>,
-      "get on a temporary Bound must return by value");
-  EXPECT_DOUBLE_EQ(bind(x * y, named<"x">(6.0), named<"y">(1.0)).get<"x">(),
-                   6.0);
-}
-TEST(BoundTest, IsConstexpr) {
-  // constexpr constrains the function, not the caller.
+TEST(NamedEvalTest, IsConstexpr) {
   constexpr auto x = var<"x">;
   constexpr auto y = var<"y">;
-  constexpr auto b = bind(x * x + y, named<"x">(3.0), named<"y">(4.0));
-  static_assert(b.eval() == 13.0, "x*x + y at (3,4)");
-  EXPECT_DOUBLE_EQ(b.eval(), 13.0);
+  static_assert(eval(x * x + y, named<"x">(3.0), named<"y">(4.0)) == 13.0,
+                "x*x + y at (3,4)");
+  SUCCEED();
 }
 TEST(PositionalEvalTest, SymbolOrderIsAlphabeticalNotSourceOrder) {
   auto y = var<"y">;
@@ -270,7 +229,7 @@ TEST(PositionalEvalTest, VariadicAndRangeAgreeWithNamed) {
   EXPECT_DOUBLE_EQ(eval(e, 2.0, 3.0), expected);
   EXPECT_DOUBLE_EQ(eval(e, std::array{2.0, 3.0}), expected);
   EXPECT_DOUBLE_EQ(*eval(e, std::vector{2.0, 3.0}), expected);
-  EXPECT_DOUBLE_EQ(bind(e, named<"x">(2.0), named<"y">(3.0)).eval(), expected);
+  EXPECT_DOUBLE_EQ(eval(e, named<"x">(2.0), named<"y">(3.0)), expected);
 }
 TEST(PositionalEvalTest, AcceptsALazyNonSizedInputRange) {
   auto x = var<"x">;
@@ -300,4 +259,18 @@ TEST(PositionalEvalTest, IsConstexpr) {
   static_assert(eval(e, 2.0, 3.0) == 10.0, "variadic positional eval");
   static_assert(eval(e, std::array{2.0, 3.0}) == 10.0, "range positional eval");
   EXPECT_DOUBLE_EQ(eval(e, 2.0, 3.0), 10.0);
+}
+
+// Too long is as wrong as too short: the values past the last symbol name
+// nothing, and dropping them answers a question nobody asked.
+TEST(PositionalEvalTest, ALongRangeIsAnError) {
+  auto x = var<"x">;
+  auto y = var<"y">;
+  const auto e = (x + y) * x;
+  const std::vector<double> too_many{2.0, 3.0, 4.0};
+  const auto v = eval(e, too_many);
+  ASSERT_FALSE(v.has_value());
+  EXPECT_EQ(v.error().code, ddx::errc::wrong_arity);
+  const std::vector<double> exact{2.0, 3.0};
+  EXPECT_DOUBLE_EQ(*eval(e, exact), 10.0);
 }

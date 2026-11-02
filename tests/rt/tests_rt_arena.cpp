@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cmath>
 #include <limits>
 #include <string>
@@ -241,6 +242,38 @@ TEST(RtArena, ComparisonOperatorsAreTheTwoNodes) {
   EXPECT_EQ((x < 1).id(b), (x < 1.0).id(b));
   EXPECT_EQ(b[(x < y).id(b)].op, ddx::rt::OpCode::Lt);
   EXPECT_EQ(b[(x >= y).id(b)].op, ddx::rt::OpCode::Le);
+}
+
+// The same at float, whose bits are not a word: its two zeros stay apart too,
+// in a table as in a constant.
+TEST(RtArena, FloatConstantsInternByTheirBits) {
+  Arena<float> b;
+  const auto plus = lit(b, 0.0f).id(b);
+  const auto minus = lit(b, -0.0f).id(b);
+  EXPECT_NE(plus, minus);
+  EXPECT_TRUE(std::signbit(b[minus].value));
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_EQ(lit(b, nan).id(b), lit(b, nan).id(b));
+
+  const std::array<float, 2> zeros{0.0f, 0.0f};
+  const std::array<float, 2> negative_zeros{-0.0f, -0.0f};
+  EXPECT_NE(ddx::rt::vec_constant<float>(b, zeros).id(b),
+            ddx::rt::vec_constant<float>(b, negative_zeros).id(b));
+}
+
+// Handles of two arenas name two id spaces: a node built from both would read
+// one of them against the wrong table.
+TEST(RtArena, HandlesOfTwoArenasDoNotCompose) {
+  Arena<> a;
+  Arena<> b;
+  const auto x = var(a, "x");
+  const auto y = var(b, "y");
+  EXPECT_TRUE((x * y).poisoned());
+  EXPECT_TRUE(select(x, x, y).poisoned());
+  auto accumulated = x;
+  accumulated += y;
+  EXPECT_TRUE(accumulated.poisoned());
+  EXPECT_FALSE((x * 2.0).poisoned());
 }
 
 } // namespace

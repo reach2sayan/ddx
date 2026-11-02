@@ -50,14 +50,12 @@ template <impl::Numeric T> struct Compiled {
 // caller after it runs what that one built.
 template <impl::Numeric T> class DDX_TEMPLATE_API Pipeline {
 public:
-  using Held = Compiled<T>;
-
   // Ownership, not a reference: a reader holds its share for the whole call.
   // No options is a pipeline that never compiles.  A reader that finds the
   // lock taken lets `Yield` go before it waits, so a compile never holds it;
   // `freeze` is called at most once, under the write lock.
   template <std::default_initializable Yield>
-  [[nodiscard]] std::shared_ptr<const Held>
+  [[nodiscard]] std::shared_ptr<const Compiled<T>>
   snapshot(const std::optional<jit::Options> &compiling, auto &&freeze) {
     if (const std::shared_lock read{mutex_, std::try_to_lock}; read && ready_) {
       return ready_;
@@ -65,17 +63,17 @@ public:
     [[maybe_unused]] const Yield yielded{};
     const std::unique_lock fill{mutex_}; // another thread may have won
     if (!ready_) {
-      ready_ =
-          std::make_shared<const Held>(compiled(compiling, DDX_FWD(freeze)()));
+      ready_ = std::make_shared<const Compiled<T>>(
+          compiled(compiling, DDX_FWD(freeze)()));
     }
     return ready_;
   }
 
 private:
   // A refused compile leaves the kernel empty, and the sweep stays.
-  [[nodiscard]] static Held
+  [[nodiscard]] static Compiled<T>
   compiled([[maybe_unused]] const std::optional<jit::Options> &compiling,
-           Held held) {
+           Compiled<T> held) {
 #ifdef DDX_HAS_JIT
     if constexpr (jit::CKernelScalar<T>) {
       if (jit::Compiler *const c = shared_compiler(); compiling && c) {
@@ -89,7 +87,7 @@ private:
   }
 
   std::shared_mutex mutex_;
-  std::shared_ptr<const Held> ready_;
+  std::shared_ptr<const Compiled<T>> ready_;
 };
 
 } // namespace ddx::rt::detail
