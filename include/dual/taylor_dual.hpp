@@ -154,6 +154,11 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
     return a.c[0] == b.c[0];
   }
 
+  [[nodiscard]] friend constexpr bool same_value(const TaylorDual &a,
+                                                 const TaylorDual &b) noexcept {
+    return a.c == b.c;
+  }
+
   // Coefficient k-1 of a·b': Σ_{j=j0}^{k-1} a[j]·(k-j)·b[k-j].  j0 = 1 drops
   // the a[0] term a recurrence has already moved to the left.
   [[nodiscard]] static constexpr S dconv(const std::array<S, N + 1> &a,

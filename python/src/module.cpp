@@ -109,7 +109,7 @@ pyb::handle error_class;
            // constant.
            const auto e = pyb::cast<PyExpression>(item);
            if (e.poisoned()) {
-             fail_with(errc::outside_equation);
+             fail_with(*rt::detail::Router::why(e.base()));
            }
            return e.root_in(arena);
          }) |
@@ -245,6 +245,17 @@ PYBIND11_MODULE(_ddx, m) {
       // A vector: its length, one element as a scalar, and its shape.
       .def("__len__", &PyExpression::size)
       .def("__getitem__", &PyExpression::at, pyb::arg("i"))
+      .def("__iter__",
+           [](const PyExpression &e) {
+             if (e.size() == 0) {
+               ddx::py::fail_with(ddx::errc::tensor_shape);
+             }
+             pyb::list elements;
+             for (const std::size_t i : std::views::iota(0uz, e.size())) {
+               elements.append(e.at(i));
+             }
+             return pyb::iter(elements);
+           })
       .def_property_readonly("shape", [](const PyExpression &e) {
         return pyb::tuple(pyb::cast(e.shape()));
       });
@@ -487,6 +498,9 @@ PYBIND11_MODULE(_ddx, m) {
 
   // Derivatives as expressions to build on, in the model running now.
   const auto rooted = [](const PyExpression &f) {
+    if (f.poisoned()) {
+      ddx::py::fail_with(*rt::detail::Router::why(f.base()));
+    }
     const auto arena = f.arena() ? f.arena() : ddx::py::arena_now();
     return std::pair{PyExpression::Base{*arena, f.base().id(*arena)}, arena};
   };

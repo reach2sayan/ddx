@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ops/algebra.hpp"
+#include "ops/scalar.hpp"
 #include "rt/apply.hpp"
 #include "rt/kernels.hpp"
 #include "rt/opcode.hpp"
@@ -661,13 +662,14 @@ public:
   [[nodiscard]] constexpr bool is_constant(NodeId id, const T &v) const {
     const Node<T> &n = model_.nodes[id];
     if constexpr (std::equality_comparable<T>) {
+      using impl::same_value;
       if (n.op == OpCode::Const) {
-        return n.value == v;
+        return same_value(n.value, v);
       }
       return n.op == OpCode::VecConst &&
              std::ranges::all_of(
                  model_.tensors[detail::get<TensorRef>(n).value].data,
-                 [&v](const T &x) { return x == v; });
+                 [&v](const T &x) { return same_value(x, v); });
     } else {
       return false;
     }
@@ -811,6 +813,8 @@ private:
     // `same` below.
     if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 8) {
       return std::bit_cast<std::uint64_t>(n.value);
+    } else if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 4) {
+      return std::bit_cast<std::uint32_t>(n.value);
     } else {
       return 0;
     }
@@ -829,8 +833,11 @@ private:
   static constexpr bool identical(const T &l, const T &r) {
     if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 8) {
       return std::bit_cast<std::uint64_t>(l) == std::bit_cast<std::uint64_t>(r);
+    } else if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 4) {
+      return std::bit_cast<std::uint32_t>(l) == std::bit_cast<std::uint32_t>(r);
     } else if constexpr (std::equality_comparable<T>) {
-      return l == r;
+      using impl::same_value;
+      return same_value(l, r);
     } else {
       return false;
     }

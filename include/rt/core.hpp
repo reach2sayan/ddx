@@ -270,6 +270,33 @@ template <impl::Numeric T>
   return kept;
 }
 
+// A sweep's tapes for the length of the sweep.  An extern may sweep another
+// equation on this thread, which keeps its tapes in the same place, so a sweep
+// that can call one takes the thread's set away and puts it back after: the
+// inner sweep finds none and grows its own.
+template <impl::Numeric T> class TapeLease {
+public:
+  explicit TapeLease(bool calls_out) : thread_(thread_tapes<T>()) {
+    if (calls_out) {
+      taken_.emplace(std::move(thread_));
+    }
+  }
+  ~TapeLease() {
+    if (taken_) {
+      thread_ = std::move(*taken_);
+    }
+  }
+  TapeLease(const TapeLease &) = delete;
+  TapeLease &operator=(const TapeLease &) = delete;
+  [[nodiscard]] ThreadTapes<T> &tapes() noexcept {
+    return taken_ ? *taken_ : thread_;
+  }
+
+private:
+  ThreadTapes<T> &thread_;
+  std::optional<ThreadTapes<T>> taken_;
+};
+
 // An equation: an arena of its own, its roots, the Jacobian swept up front and
 // every other sweep on first ask, a pipeline per Want.  Equation, System and
 // the Python Equation are this plus the spellings their callers want.  `Yield`
@@ -680,12 +707,26 @@ protected:
                  return !detail::is_scalar((*arena_)[r]);
                })) {
       poison(error{errc::tensor_shape});
+    } else if (no_kernel_for_tensors()) {
+      poison(error{errc::unsupported_scalar});
     } else {
       // One reverse sweep per output is cheap, and it is what the column
       // counts, the pattern and constant evaluation read.
       jacobian_ = derive_jacobian(*arena_, roots_);
     }
     settle();
+  }
+
+  // A tensor row is computed by a table of kernels, at floating point only.
+  [[nodiscard]] constexpr bool no_kernel_for_tensors() const {
+    if constexpr (std::floating_point<T>) {
+      return false;
+    } else {
+      const auto live = detail::reachable(*arena_, roots_);
+      return std::ranges::any_of(detail::live_ids(live), [this](NodeId v) {
+        return detail::on_tensors((*arena_)[v]);
+      });
+    }
   }
 
   // Refused: by the code it carries, with nothing left to read.  poisoned()
@@ -702,6 +743,7 @@ protected:
       return;
     }
     first_order_ = first_order_only(*arena_, roots_);
+    calls_out_ = !arena_->externs().empty();
     if !consteval {
       pipelines_ = std::make_unique<Pipelines>();
       sweeps_ = std::make_unique<Sweeps>();
@@ -844,7 +886,8 @@ protected:
     const std::size_t n = symbol_count();
     // The tape is thread-kept; every id read below is scheduled, so it is
     // written this call.
-    ThreadTapes<T> &kept = thread_tapes<T>();
+    TapeLease<T> lease{calls_out_};
+    ThreadTapes<T> &kept = lease.tapes();
     std::vector<T> &values = kept.values.tape;
     [[maybe_unused]] const auto held = sweeping();
     values.resize(arena_->size());
@@ -967,7 +1010,8 @@ protected:
                : result<void>{};
   }
   [[nodiscard]] constexpr result<void> blocked(Want want) const {
-    return want == Want::DenseHessian && dense_sweep().block == no_node
+    return want == Want::DenseHessian && symbol_count() != 0 &&
+                   dense_sweep().block == no_node
                ? fail(errc::tensor_shape)
                : result<void>{};
   }
@@ -1206,7 +1250,10 @@ private:
       break;
     }
     case Want::DenseHessian:
-      added.hessian = {dense_sweep().block};
+      // No symbols, no block.
+      if (dense_sweep().block != no_node) {
+        added.hessian = {dense_sweep().block};
+      }
       break;
     case Want::Value:
     case Want::Jacobian:
@@ -1243,8 +1290,15 @@ private:
     if (rebalance || (swept->has_tensors() && compiling())) {
       const Rebalanced *over =
           rebalance ? &sweeps_->rebalanced.peek() : nullptr;
-      compiled = freeze(over ? over->roots : roots_,
+      auto own = freeze(over ? over->roots : roots_,
                         over ? over->derivative : cells.jacobian, true);
+      // Calls are checked against the swept graph, and a rebalanced sum can
+      // fold where the swept one did not.  Same layout, or no second graph.
+      if (in_order(own->layout()) == in_order(swept->layout()) &&
+          own->jacobian_pattern().rowptr == swept->jacobian_pattern().rowptr &&
+          own->jacobian_pattern().col == swept->jacobian_pattern().col) {
+        compiled = std::move(own);
+      }
     }
 #endif
     return {.graph = std::move(swept),
@@ -1302,28 +1356,29 @@ private:
   void run(const Compiled &c, std::span<const T *const> xs,
            const Columns<T> &out, std::size_t n) const {
     [[maybe_unused]] const auto held = sweeping();
+    TapeLease<T> lease{calls_out_};
     if constexpr (jit::CKernelScalar<T>) {
       if (c.kernel) {
         const detail::TensorCall<T> call{.arena = arena_.get(),
                                          .graph = c.compile_graph.get(),
                                          .kernels = c.kernels};
-        std::vector<T> &tapes = thread_tapes<T>().kernel_tapes;
+        std::vector<T> &tapes = lease.tapes().kernel_tapes;
         tapes.resize(c.kernel.shape().tapes);
         c.kernel(xs, out.values, out.jacobian, out.hessian, n,
                  {.call = &call, .tapes = tapes});
         return;
       }
     }
-    interpret(*c.graph, *c.kernels, xs, out, n);
+    interpret(lease.tapes(), *c.graph, *c.kernels, xs, out, n);
   }
 
   // The block sweep: within ~1.4x of a kernel on a large graph at a batch of
   // block_lanes or more, several times off it on a small one.  A short batch
   // sweeps one point at a time rather than padding out to block_lanes.
-  void interpret(const Graph<T> &graph, const TensorKernelTable<T> &kernels,
+  void interpret(ThreadTapes<T> &kept, const Graph<T> &graph,
+                 const TensorKernelTable<T> &kernels,
                  std::span<const T *const> xs, const Columns<T> &out,
                  std::size_t n) const {
-    ThreadTapes<T> &kept = thread_tapes<T>();
     n < block_lanes
         ? sweep_points<1>(graph, kernels, kept.one, xs, out, n)
         : sweep_points<block_lanes>(graph, kernels, kept.block, xs, out, n);
@@ -1384,6 +1439,7 @@ private:
   std::optional<error> bad_{};
   // A reachable extern supplies first partials only; see orders().
   bool first_order_ = false;
+  bool calls_out_ = false; // an extern in the arena: see TapeLease
 };
 
 // restrict()'s answer: the equation's Jacobian narrowed to some symbols'

@@ -204,10 +204,11 @@ private:
     }
     // The block is an output row; a table's MatRow has none (interpret.hpp
     // reads it in place), so a block that would be one alone gets a diagonal
-    // to add it to.
+    // to add it to.  One that is not square is a select's arm, w x n, and a
+    // diagonal would not fit it.
     if (d != no_node || matrices.empty() ||
-        (matrices.size() == 1 &&
-         b_.op_of(matrices.front()) == OpCode::MatRow)) {
+        (matrices.size() == 1 && b_.op_of(matrices.front()) == OpCode::MatRow &&
+         shape_of(b_, matrices.front()).rows == n_)) {
       matrices.push_back(b_.make(OpCode::Diag, d == no_node ? zeros() : d));
     }
     return std::ranges::fold_left(
@@ -611,6 +612,9 @@ private:
 template <impl::Numeric T>
 [[nodiscard]] DenseHessian derive_dense_hessian(Arena<T> &b, NodeId root) {
   const auto g = build_reverse_jacobian(b, root);
+  if (g.partial.empty()) {
+    return {.value = g.value, .partial = g.partial};
+  }
   detail::DenseSweep<T> sweep{b, g.partial, detail::swept_of(b, root)};
   return {.value = g.value,
           .partial = g.partial,

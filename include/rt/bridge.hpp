@@ -17,7 +17,7 @@ namespace ddx::rt {
 namespace detail {
 
 // Sum and Multiply are n-ary in the type but binary in the graph, so a wide
-// node folds left into a chain.
+// node folds left into a chain.  A select is the one node of three.
 template <impl::Numeric T, impl::CExpression U>
 [[nodiscard]] constexpr Expression<T> lower(Arena<T> &b, const U &e) {
   // A dual-valued tree's literals and constants are duals; the graph is over
@@ -39,6 +39,10 @@ template <impl::Numeric T, impl::CExpression U>
         [&](const auto &first, const auto &...rest) {
           if constexpr (sizeof...(rest) == 0) {
             return Expression<T>::form(*code, lower(b, first));
+          } else if constexpr (*code == OpCode::Select) {
+            // Braces, so the arms are lowered in order on every compiler.
+            const std::array arms{lower(b, first), lower(b, rest)...};
+            return Expression<T>::form(*code, arms[0], arms[1], arms[2]);
           } else {
             Expression acc = lower(b, first);
             ((acc = Expression<T>::form(*code, acc, lower(b, rest))), ...);

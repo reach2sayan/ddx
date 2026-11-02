@@ -325,7 +325,7 @@ Equation{x * y}.derivative_tensor<3>(1.0, 2.0);   // rank 3
 Equation{sin(x)}.univariate_derivative<4>(0.5);
 
 std::format("{}", x * y + sin(x));                // "x * y + sin(x)"
-std::format("{}", Equation{x * y});               // "f0: x * y\n  jac: y_c, x_c\n"
+std::format("{}", Equation{x * y});               // "f0: x * y\n  jac: y, x\n"
 ```
 
 ## License

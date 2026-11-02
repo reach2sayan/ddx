@@ -268,6 +268,33 @@ struct AbsOp : UnaryOp<T, detail::abs_impl, FixedString{"abs"}> {
 };
 
 // pow(a, b) = a^b.  d(a^b) = b' ln(a) a^b + b a^(b-1) a'.
+// What the partials of pow are guarded by, which the graph has opcodes for.  No
+// derivative of a comparison: it is constant where it is defined.
+template <Numeric T>
+struct LeOp
+    : BinaryOp<T, detail::le_impl, FixedString{"<="}, Notation::Infix, 5> {
+  [[nodiscard]] static constexpr auto
+  derivative(const CExpression auto &, const CExpression auto &) noexcept {
+    return Lit<T, 0>{};
+  }
+};
+template <Numeric T>
+struct SelectOp : OpDescriptor<T, detail::select_impl, FixedString{"select"},
+                               Notation::Function, precedence_atom> {
+  template <CExpression C, CExpression A, CExpression B>
+  [[nodiscard]] static constexpr auto eval(const C &c, const A &a,
+                                           const B &b) noexcept {
+    return detail::select_impl{}(static_cast<typename C::value_type>(c),
+                                 static_cast<typename A::value_type>(a),
+                                 static_cast<typename B::value_type>(b));
+  }
+  [[nodiscard]] static constexpr auto
+  derivative(const CExpression auto &c, const CExpression auto &a,
+             const CExpression auto &b) noexcept {
+    return selected(c, a.derivative(), b.derivative());
+  }
+};
+
 template <Numeric T>
 struct PowOp : BinaryOp<T, detail::pow_impl, FixedString{"pow"}> {
   static constexpr std::optional rule_op = algebra::RuleOp::Pow;
@@ -276,8 +303,13 @@ struct PowOp : BinaryOp<T, detail::pow_impl, FixedString{"pow"}> {
              const CExpression auto &rhs) noexcept {
     // Split form, not a^b * (b' ln a + b a'/a): that quotient is 0/0 at a == 0
     // where a^(b-1) is exact, and a constant exponent folds away with no log.
-    return rhs.derivative() * log(lhs) * pow(lhs, rhs) +
-           rhs * pow(lhs, rhs - Lit<T, 1>{}) * lhs.derivative();
+    // Each term, like the reverse rule, is the zero its vanishing factor says
+    // at a == 0: a^0 is the constant 1 and 0^b the constant 0.
+    return unless_vanishing(lhs, pow(lhs, rhs),
+                            rhs.derivative() * log(lhs) * pow(lhs, rhs)) +
+           unless_vanishing(lhs, rhs,
+                            rhs * pow(lhs, rhs - Lit<T, 1>{}) *
+                                lhs.derivative());
   }
 };
 

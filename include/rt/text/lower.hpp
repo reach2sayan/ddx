@@ -33,6 +33,28 @@ namespace detail {
 // at all -- a trailing character is a literal the grammar should not have
 // matched.  Past the range is the infinity or the zero it rounds to, as a
 // number in source would be.
+//
+// Too small or too large, from_chars says only that; 0.d x 10^k is below one
+// exactly when k <= 0, k being the exponent plus the leading digit's place.
+[[nodiscard]] inline bool below_one(const std::string_view text) noexcept {
+  const auto e = text.find_first_of("eE");
+  const std::string_view mantissa = text.substr(0, e);
+  std::int32_t exponent = 0;
+  if (e != text.npos) {
+    const char *first = text.data() + e + 1;
+    first += *first == '+' ? 1 : 0;
+    const auto [_, ec] =
+        std::from_chars(first, text.data() + text.size(), exponent);
+    if (ec == std::errc::result_out_of_range) {
+      return *first == '-';
+    }
+  }
+  const auto point =
+      static_cast<std::int64_t>(std::min(mantissa.find('.'), mantissa.size()));
+  const auto lead = static_cast<std::int64_t>(mantissa.find_first_not_of("0."));
+  return exponent + (lead < point ? point - lead : point + 1 - lead) <= 0;
+}
+
 template <std::floating_point T>
 [[nodiscard]] result<T> scalar_of(const std::string_view text) noexcept {
   T v{};
@@ -41,9 +63,7 @@ template <std::floating_point T>
   if (stopped != end) {
     return fail(errc::bad_syntax);
   } else if (ec == std::errc::result_out_of_range) {
-    const auto e = text.find_first_of("eE");
-    const bool tiny = e != text.npos && text.find('-', e) != text.npos;
-    return tiny ? T{0} : std::numeric_limits<T>::infinity();
+    return below_one(text) ? T{0} : std::numeric_limits<T>::infinity();
   }
   return ec == std::errc{} ? result<T>{v} : fail(errc::bad_syntax);
 }

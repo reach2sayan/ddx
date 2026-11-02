@@ -103,6 +103,7 @@ class Expression:
     def __init__(self, value: typing.SupportsFloat | typing.SupportsIndex) -> None: pass
     def __len__(self) -> int: pass
     def __getitem__(self, i: typing.SupportsInt | typing.SupportsIndex) -> Expression: pass
+    def __iter__(self) -> typing.Iterator[Expression]: pass
     @typing.overload
     def __le__(self, arg0: Expression) -> Expression: pass
     @typing.overload

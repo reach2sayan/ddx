@@ -55,6 +55,5 @@ TEST(ExpressionPrinting, StreamInserterMatchesFormat) {
 TEST(ExpressionPrinting, EquationPrintsFunctionsAndJacobianRows) {
   auto eq = ddx::Equation{px * py};
   const auto text = std::format("{}", eq);
-  EXPECT_TRUE(text.starts_with("f0: x * y\n"));
-  EXPECT_NE(text.find("jac: "), std::string::npos);
+  EXPECT_EQ(text, "f0: x * y\n  jac: y, x\n");
 }

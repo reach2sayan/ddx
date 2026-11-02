@@ -199,8 +199,13 @@ template <Numeric U, std::size_t N>
 take_point(const std::ranges::input_range auto &r) noexcept {
   std::array<U, N> vals{};
   std::size_t i = 0;
-  std::ranges::for_each(r | std::views::take(N),
-                        [&](const auto &v) { vals[i++] = static_cast<U>(v); });
+  // One past N, to tell a range that was too long; that value is not kept.
+  std::ranges::for_each(r | std::views::take(N + 1), [&](const auto &v) {
+    if (i < N) {
+      vals[i] = static_cast<U>(v);
+    }
+    ++i;
+  });
   return {vals, i};
 }
 
@@ -256,7 +261,7 @@ make_point(const Args &...args) noexcept {
   //clang-format on
 }
 
-// point(range) -- the length arrives with the range, so a short one is the one
+// point(range) -- the length arrives with the range, so a wrong one is the one
 // wrong point that cannot be caught at compile time.
 template <CSymbolList Syms, Numeric U, std::size_t N, CEvalArg... Args>
   requires(CDynamicPoint<Args...>)
@@ -264,8 +269,11 @@ template <CSymbolList Syms, Numeric U, std::size_t N, CEvalArg... Args>
 make_point(const Args &...args) noexcept {
   return [&](const auto &r) -> result<std::array<U, N>> {
     const auto [vals, got] = take_point<U, N>(r);
-    if (got != N) {
+    if (got < N) {
       return fail(errc::short_point);
+    }
+    if (got > N) {
+      return fail(errc::wrong_arity);
     }
     return vals;
   }(args...);

@@ -159,3 +159,10 @@ def test_a_want_the_buffer_cannot_bind_is_refused_up_front(
     with pytest.raises(ddx.Error) as caught:
         scalar.buffer(np.array([2.0, 3.0]), want=want)
     assert caught.value.code is ddx.errc.wrong_column_count
+
+def test_a_jacobian_of_no_nonzero_cells_is_a_block_of_zeros() -> None:
+    eq = ddx.equation("x < 1")
+    call = eq.buffer(np.array([0.0]))
+    call()
+    _, partials = eq.jacobian(np.array([0.0]))
+    assert np.array_equal(call.jacobian, partials)

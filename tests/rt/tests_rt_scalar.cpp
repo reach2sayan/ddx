@@ -135,4 +135,40 @@ TEST(RtScalar, ADualPointCarriesDerivativesThroughTheSameWalk) {
   EXPECT_NEAR(plain[g.partial[0]], v.deriv(), 1e-14);
 }
 
+// A constant is its whole value: a dual that is 1 or 2 at its value part is
+// still not the dual 1, nor the same constant as another 2.
+TEST(RtScalar, ADualConstantKeepsItsDerivativePart) {
+  using D = ddx::dual;
+  const auto scaled = ddx::rt::equation<D>([] {
+    const auto a = ddx::rt::var<D>("a");
+    return a * D{1.0, 1.0};
+  });
+  const D f = *scaled.evaluate(D{2.0, 0.0});
+  EXPECT_DOUBLE_EQ(f.value(), 2.0);
+  EXPECT_DOUBLE_EQ(f.deriv(), 2.0);
+
+  const auto two = ddx::rt::equation<D>([] {
+    const auto a = ddx::rt::var<D>("a");
+    const auto b = ddx::rt::var<D>("b");
+    return a * D{2.0, 1.0} + b * D{2.0, 0.0};
+  });
+  const D g = *two.evaluate(D{1.0, 0.0}, D{1.0, 0.0});
+  EXPECT_DOUBLE_EQ(g.value(), 4.0);
+  EXPECT_DOUBLE_EQ(g.deriv(), 1.0);
+}
+
+// A tensor row has no kernel at a scalar that is not floating point, and a
+// zero row is not an answer.
+TEST(RtScalar, TensorsAtADualArenaAreRefused) {
+  using D = ddx::dual;
+  const auto eq = ddx::rt::equation<D>([] {
+    const auto x = ddx::rt::vec<D>("x", 3);
+    return sum(x * x);
+  });
+  const std::array<D, 3> at{D{1.0, 0.0}, D{2.0, 0.0}, D{3.0, 0.0}};
+  const auto f = eq.evaluate(std::span<const D>{at});
+  ASSERT_FALSE(f.has_value());
+  EXPECT_EQ(f.error().code, ddx::errc::unsupported_scalar);
+}
+
 } // namespace

@@ -283,7 +283,8 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
   };
   const auto fits = [&b](NodeId g, NodeId child) {
     return g == no_node || !detail::is_tensor(b[g]) ||
-           shape_of(b, g) == shape_of(b, child);
+           (detail::is_tensor(b[child]) &&
+            shape_of(b, g) == shape_of(b, child));
   };
 
   // `g` is the edge's guard; a child reached by an unguarded edge is always
@@ -321,7 +322,8 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
   const auto contracted = [&](this const auto &self, NodeId id,
                               const Expression<T> &m)
       -> std::optional<Expression<T>> {
-    const Node<T> &at = b[id];
+    // By value: building below may reallocate.
+    const Node<T> at = b[id];
     if (at.op == OpCode::Outer && shape_of(b, id).cols > 1) {
       return dot(expr(at.in[0]), gemv(m, expr(at.in[1])));
     }

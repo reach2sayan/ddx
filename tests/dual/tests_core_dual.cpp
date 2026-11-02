@@ -1006,3 +1006,16 @@ TEST(ScopedValue, UsableDuringConstantEvaluation) {
   static_assert(probe[1] == 3.0);
   SUCCEED();
 }
+
+// sqrt and log have no finite derivative at 0, but x does not move along y: its
+// tangent there is a zero, not inf * 0.
+TEST(EquationForward, AZeroTangentNeverMeetsAnInfinitePartial) {
+  Variable<double, FixedString{"x"}> x;
+  Variable<double, FixedString{"y"}> y;
+  auto ve = Equation(sqrt(x) + y, log(x) + y);
+  auto J = ve.derivative_tensor<1>(std::array{0.0, 1.0});
+  EXPECT_DOUBLE_EQ((J[0, 1]), 1.0);
+  EXPECT_DOUBLE_EQ((J[1, 1]), 1.0);
+  EXPECT_TRUE(std::isinf((J[0, 0])));
+  EXPECT_TRUE(std::isinf((J[1, 0])));
+}

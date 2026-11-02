@@ -928,3 +928,23 @@ TEST(Ownership, EquationSubtreeAccessorsWorkOnTemporaries) {
   EXPECT_DOUBLE_EQ(Equation(x * y).get<1>().eval(2.0), 2.0);
   EXPECT_DOUBLE_EQ(Equation(x * y)[idx<2>()].eval(4.0), 4.0);
 }
+
+// The stored partial trees answer as the sweep does at pow's zeros: a^0 is the
+// constant 1 and 0^b the constant 0.
+TEST(EquationTest, SymbolicPowAtAZeroBaseOrExponent) {
+  auto x = var<"x">;
+  auto y = var<"y">;
+  const Equation eq{pow(x, y)};
+  const auto at_zero_base = eq.jacobian<DiffMode::Symbolic>(0.0, 2.0);
+  EXPECT_DOUBLE_EQ(at_zero_base[0], 0.0);
+  EXPECT_DOUBLE_EQ(at_zero_base[1], 0.0);
+  const auto origin = eq.jacobian<DiffMode::Symbolic>(0.0, 0.0);
+  EXPECT_DOUBLE_EQ(origin[0], 0.0);
+  const auto stored =
+      Equation{pow(x, 0.0)}.jacobian<DiffMode::Symbolic>(0.0);
+  EXPECT_DOUBLE_EQ(stored[0], 0.0);
+  // Away from zero nothing changes.
+  const auto plain = eq.jacobian<DiffMode::Symbolic>(2.0, 3.0);
+  EXPECT_DOUBLE_EQ(plain[0], 12.0);
+  EXPECT_DOUBLE_EQ(plain[1], 8.0 * std::log(2.0));
+}

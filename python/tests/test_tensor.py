@@ -205,3 +205,90 @@ def test_a_matrix_constant_takes_a_two_dimensional_array() -> None:
         assert whole.evaluate(x) == flat.evaluate(x)
     with pytest.raises(ddx.Error):
         ddx.equation(lambda: ddx.sum(ddx.mat_constant(np.ones(3)) @ ddx.vec("x", 3)))
+
+def test_a_zero_partial_has_no_shape() -> None:
+    seen = {}
+
+    def model() -> ddx.Expression:
+        x = ddx.var("x")
+        y = ddx.var("y")
+        seen["shape"] = ddx.derivative(x, "y").shape
+        seen["cell"] = ddx.gradient(x)[1].shape
+        return x * y
+
+    ddx.equation(model)
+    assert seen == {"shape": (), "cell": ()}
+
+
+def test_a_shape_error_has_no_shape_either() -> None:
+    seen = {}
+
+    def model() -> ddx.Expression:
+        x = ddx.var("x")
+        try:
+            seen["shape"] = (ddx.vec("a", 2) + ddx.vec("b", 3)).shape
+        except ddx.Error as refused:
+            seen["code"] = refused.code
+        return x
+
+    ddx.equation(model)
+    assert seen.get("shape") == () or seen.get("code") == ddx.errc.tensor_shape
+
+
+def test_a_shape_error_at_the_root_names_the_shape() -> None:
+    with pytest.raises(ddx.Error) as refused:
+        ddx.equation(lambda: ddx.vec("a", 2) + ddx.vec("b", 3))
+    assert refused.value.code == ddx.errc.tensor_shape
+
+
+def test_a_derivative_of_a_shape_error_is_not_zero() -> None:
+    def model() -> ddx.Expression:
+        return ddx.derivative(ddx.vec("a", 2) + ddx.vec("b", 3), "a[0]")
+
+    with pytest.raises(ddx.Error) as refused:
+        ddx.equation(model)
+    assert refused.value.code == ddx.errc.tensor_shape
+
+
+def test_expressions_of_two_equations_do_not_compose() -> None:
+    saved = {}
+
+    def first() -> ddx.Expression:
+        saved["u"] = ddx.var("u")
+        return saved["u"]
+
+    ddx.equation(first)
+    with pytest.raises(ddx.Error) as refused:
+        ddx.equation(lambda: ddx.var("x") * saved["u"])
+    assert refused.value.code == ddx.errc.tensor_shape
+
+
+def test_a_vector_iterates_its_elements() -> None:
+    seen = {}
+
+    def model() -> ddx.Expression:
+        v = ddx.vec("v", 3)
+        seen["count"] = len(list(v))
+        total = ddx.Expression(0.0)
+        for element in v:
+            total = total + element
+        return total
+
+    eq = ddx.equation(model)
+    assert seen["count"] == 3
+    assert eq([1.0, 2.0, 3.0]) == pytest.approx(6.0)
+
+
+def test_nodes_refuses_what_the_call_refuses() -> None:
+    def model() -> ddx.Expression:
+        x = ddx.vec("x", 2)
+        # An outer product a symbol moves has no dense form.
+        return ddx.dot(x, ddx.gemv(ddx.outer(x * x, x), x))
+
+    eq = ddx.equation(model)
+    with pytest.raises(ddx.Error) as refused:
+        eq.dense_hessian([0.5, 0.25])
+    assert refused.value.code == ddx.errc.tensor_shape
+    with pytest.raises(ddx.Error) as also:
+        eq.nodes(want=ddx.Want.DENSE_HESSIAN)
+    assert also.value.code == ddx.errc.tensor_shape

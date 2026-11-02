@@ -275,4 +275,55 @@ TEST(RtText, RefusesAModelThatNamesNoSymbol) {
   EXPECT_EQ(eq->status()->code, errc::no_graph);
 }
 
+// An out-of-range literal rounds by its magnitude, however it is spelled.
+TEST(RtText, AnOutOfRangeLiteralRoundsByItsMagnitude) {
+  const std::string zeros(400, '0');
+  const auto inf = std::numeric_limits<double>::infinity();
+  EXPECT_EQ(value_of("x + 0." + zeros + "1", 1.0), 1.0);
+  EXPECT_EQ(value_of("x + 0." + zeros + "1e5", 1.0), 1.0);
+  EXPECT_EQ(value_of("x + 1e-999", 1.0), 1.0);
+  EXPECT_EQ(value_of("x + 1e-99999999999999999999", 1.0), 1.0);
+  EXPECT_EQ(value_of("x + 1" + zeros + "e-1", 1.0), inf);
+  EXPECT_EQ(value_of("x + 1" + zeros, 1.0), inf);
+  EXPECT_EQ(value_of("x + 1e999", 1.0), inf);
+  EXPECT_EQ(value_of("x + 1e99999999999999999999", 1.0), inf);
+}
+
+[[nodiscard]] std::string repeated(std::string_view word, std::size_t n) {
+  std::string out;
+  out.reserve(word.size() * n);
+  for (std::size_t i = 0; i < n; ++i) {
+    out += word;
+  }
+  return out;
+}
+
+// Parentheses, calls and ** are what recurse, and a stack overflow cannot be
+// refused: too deep is a syntax error before it is that.
+TEST(RtText, TextNestedTooDeepIsRefused) {
+  constexpr std::size_t deep = 200'000;
+  const auto refused = [](const std::string &source) {
+    const auto ast = parse(source);
+    return !ast.has_value() && ast.error().code == errc::bad_syntax;
+  };
+  EXPECT_TRUE(refused(repeated("(", deep) + "x" + repeated(")", deep)));
+  EXPECT_TRUE(refused(repeated("sin(", deep) + "x" + repeated(")", deep)));
+  EXPECT_TRUE(refused("x" + repeated("**x", deep)));
+  EXPECT_TRUE(refused("x" + repeated("**-x", deep)));
+  EXPECT_TRUE(refused(repeated("(x**", deep) + "x" + repeated(")", deep)));
+}
+
+// Long is not deep: a flat sum or a run of signs recurses no further for its
+// length, and a model nested as far as anyone writes one still reads.
+TEST(RtText, LongTextThatIsNotDeepIsRead) {
+  constexpr std::size_t shallow = 100;
+  const std::string nested =
+      repeated("(", shallow) + "x" + repeated(")", shallow);
+  EXPECT_DOUBLE_EQ(value_of(nested, 2.0), 2.0);
+  EXPECT_TRUE(parse("x" + repeated("+x", 10'000)).has_value());
+  EXPECT_TRUE(parse("x**2" + repeated("+x**2", 10'000)).has_value());
+  EXPECT_TRUE(parse(repeated("-", 10'000) + "x").has_value());
+  EXPECT_TRUE(parse(repeated("(x)+", 10'000) + "x").has_value());
+}
+
 } // namespace

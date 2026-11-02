@@ -80,3 +80,9 @@ def test_refuses_with_the_code_that_says_why(source: str, code: str) -> None:
     with pytest.raises(ddx.Error) as caught:
         ddx.equation(source)
     assert caught.value.code is getattr(ddx.errc, code)
+
+def test_text_nested_too_deep_is_refused_not_a_crash() -> None:
+    deep = 200_000
+    with pytest.raises(ddx.Error) as refused:
+        ddx.equation("(" * deep + "x" + ")" * deep)
+    assert refused.value.code == ddx.errc.bad_syntax

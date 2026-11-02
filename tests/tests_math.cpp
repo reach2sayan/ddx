@@ -301,3 +301,17 @@ TEST(PositionalEvalTest, IsConstexpr) {
   static_assert(eval(e, std::array{2.0, 3.0}) == 10.0, "range positional eval");
   EXPECT_DOUBLE_EQ(eval(e, 2.0, 3.0), 10.0);
 }
+
+// Too long is as wrong as too short: the values past the last symbol name
+// nothing, and dropping them answers a question nobody asked.
+TEST(PositionalEvalTest, ALongRangeIsAnError) {
+  auto x = var<"x">;
+  auto y = var<"y">;
+  const auto e = (x + y) * x;
+  const std::vector<double> too_many{2.0, 3.0, 4.0};
+  const auto v = eval(e, too_many);
+  ASSERT_FALSE(v.has_value());
+  EXPECT_EQ(v.error().code, ddx::errc::wrong_arity);
+  const std::vector<double> exact{2.0, 3.0};
+  EXPECT_DOUBLE_EQ(*eval(e, exact), 10.0);
+}
