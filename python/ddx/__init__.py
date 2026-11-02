@@ -29,16 +29,14 @@ from typing import TYPE_CHECKING, Any
 
 from ._ddx import (Backend, Call, Expression, OptLevel, Restricted, VecLib, Want,
                    abs,  # noqa: A004  -- the opcode is spelled `abs`, as it is in C++
-                   acos, acosh, add, asin, asinh, atan, atan2, atanh,
-                   cbrt, cos, cosh, div, erf, errc, exp,
-                   has_jit, hypot, le, lt,
-                   log, log10, max,  # noqa: A004
+                   acos, acosh, asin, asinh, atan, atan2, atanh,
+                   cbrt, cos, cosh, erf, errc, exp,
+                   has_jit, hypot, log, log10, max,  # noqa: A004
                    min,  # noqa: A004
-                   mul, neg,
                    pow,  # noqa: A004
                    implicit, param, select, sign, sin, sinh, sqrt, tan, tanh,
                    var,
-                   derivative, dot, gemv, gradient, mat_constant, outer, pack, release_tapes,
+                   derivative, gradient, mat_constant, outer, pack, release_tapes,
                    sum,  # noqa: A004
                    Transposed, transpose, vec, vec_constant, vec_param, )
 from ._options import Options
@@ -98,7 +96,7 @@ def _compile(self: Equation, **kwargs: Any) -> Equation:  # noqa: ANN401
 	"""
 	kwargs.setdefault("backend", Backend.COMPILE)
 	self.options = Options(**kwargs)
-	self.wait_for_kernel()
+	self.uses_kernel()
 	return self
 
 
@@ -106,12 +104,12 @@ Equation.options = property(_get_options, _set_options)  # type: ignore[assignme
 Equation.compile = _compile  # type: ignore[method-assign]
 
 __all__ = ["Backend", "Call", "Equation", "Error", "Expression", "OptLevel", "Restricted",
-           "Options", "VecLib", "Want", "__version__", "abs", "acos", "acosh", "add",
+           "Options", "VecLib", "Want", "__version__", "abs", "acos", "acosh",
            "asin", "asinh", "atan", "atan2", "atanh", "cbrt", "cos",
-           "cosh", "div", "equation", "erf", "errc", "exp",
-           "has_jit", "hypot", "le", "log", "log10", "lt", "max",
-           "min", "mul", "neg", "param", "pow", "select", "sign", "sin", "sinh", "sqrt",
+           "cosh", "equation", "erf", "errc", "exp",
+           "has_jit", "hypot", "log", "log10", "max",
+           "min", "param", "pow", "select", "sign", "sin", "sinh", "sqrt",
            "implicit",
            "tan", "tanh", "var",
-           "derivative", "dot", "gemv", "gradient", "mat_constant", "outer", "pack", "release_tapes",
+           "derivative", "gradient", "mat_constant", "outer", "pack", "release_tapes",
            "sum", "Transposed", "transpose", "vec", "vec_constant", "vec_param", ]

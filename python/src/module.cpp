@@ -360,6 +360,13 @@ PYBIND11_MODULE(_ddx, m) {
   // is below.
   for (const auto i : std::views::iota(0uz, rt::op_count)) {
     const auto op = static_cast<rt::OpCode>(i);
+    // An operator already spells these.
+    if (std::ranges::contains(std::array{rt::OpCode::Neg, rt::OpCode::Add,
+                                         rt::OpCode::Mul, rt::OpCode::Div,
+                                         rt::OpCode::Lt, rt::OpCode::Le},
+                              op)) {
+      continue;
+    }
     const std::string name{rt::name_of(op)};
     switch (rt::kind_of(op)) {
     case rt::Kind::Unary:
@@ -428,13 +435,6 @@ PYBIND11_MODULE(_ddx, m) {
       pyb::arg("data"));
   m.def(
       "mat_constant",
-      [in_arena, data_of](std::size_t rows, std::size_t cols, const Columns &data) {
-        return in_arena(
-            [&](auto &b) { return rt::mat_constant(b, rows, cols, data_of(data)); });
-      },
-      pyb::arg("rows"), pyb::arg("cols"), pyb::arg("data"));
-  m.def(
-      "mat_constant",
       [in_arena, data_of](const Columns &m) {
         if (m.ndim() != 2) {
           ddx::py::fail_with(errc::tensor_shape);
@@ -452,21 +452,6 @@ PYBIND11_MODULE(_ddx, m) {
         return reduce(v, [](const auto &a) { return sum(a); });
       },
       pyb::arg("v"));
-  m.def(
-      "dot",
-      [](const PyExpression &u, const PyExpression &v) {
-        return reduce(u, v,
-                      [](const auto &a, const auto &b) { return dot(a, b); });
-      },
-      pyb::arg("u"), pyb::arg("v"));
-  m.def(
-      "gemv",
-      [](const PyExpression &M, const PyExpression &v, bool transposed) {
-        return reduce(M, v, [transposed](const auto &a, const auto &b) {
-          return gemv(a, b, transposed);
-        });
-      },
-      pyb::arg("matrix"), pyb::arg("v"), pyb::arg("transposed") = false);
   pyb::class_<PyTransposed>(m, "Transposed")
       .def(
           "__matmul__",
@@ -478,8 +463,7 @@ PYBIND11_MODULE(_ddx, m) {
           pyb::is_operator());
   m.def(
       "transpose", [](const PyExpression &M) { return PyTransposed{M}; },
-      pyb::arg("matrix"),
-      "M^T, as the left side of @: transpose(M) @ v is gemv(M, v, True).");
+      pyb::arg("matrix"), "M^T, as the left side of @.");
   m.def("release_tapes", &rt::release_tapes<double>,
         "Free this thread's sweep tapes; the next sweep grows them again.");
   m.def(
@@ -586,12 +570,10 @@ PYBIND11_MODULE(_ddx, m) {
             }
             o.codegen.lanes = *lanes;
           })
-      .def_readwrite("time_passes", &jit::Options::time_passes)
       .def(pyb::self == pyb::self);
   codegen("opt_level", &jit::Codegen::opt_level);
   codegen("codegen_level", &jit::Codegen::codegen_level);
   codegen("slp_vectorize", &jit::Codegen::slp_vectorize);
-  codegen("loop_vectorize", &jit::Codegen::loop_vectorize);
   codegen("veclib", &jit::Codegen::veclib);
   codegen("contract", &jit::Codegen::contract);
 
@@ -605,7 +587,6 @@ PYBIND11_MODULE(_ddx, m) {
 
   pyb::class_<PyEquation>(m, "Equation", pyb::dynamic_attr())
       .def("__repr__", &PyEquation::repr)
-      .def("__call__", &PyEquation::evaluate, pyb::arg("x"))
       .def("evaluate", &PyEquation::evaluate, pyb::arg("x"))
       .def("jacobian", &PyEquation::jacobian, pyb::arg("x"))
       .def("gradient", &PyEquation::gradient, pyb::arg("x"))
@@ -641,9 +622,6 @@ PYBIND11_MODULE(_ddx, m) {
       .def_property_readonly("inputs", &PyEquation::inputs_list)
       .def_property_readonly("arity", &PyEquation::width)
       .def_property_readonly("outputs", &PyEquation::height)
-      .def_property_readonly(
-          "uses_kernel",
-          [](const PyEquation &self) { return self.uses_kernel(); })
       // Colours, not n: the Hessian is stored compressed and scattered on
       // read, so this is what the compiled kernel actually computes per point.
       .def_property_readonly("hessian_colours",
@@ -654,7 +632,7 @@ PYBIND11_MODULE(_ddx, m) {
                                }
                                return *colours;
                              })
-      .def("wait_for_kernel", &PyEquation::uses_kernel, pyb::kw_only(),
+      .def("uses_kernel", &PyEquation::uses_kernel, pyb::kw_only(),
            pyb::arg("want") = PyEquation::Want::Jacobian)
       .def_property(
           "_options", [](const PyEquation &self) { return self.options(); },

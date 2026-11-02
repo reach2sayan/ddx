@@ -386,8 +386,7 @@ public:
   // The j-th Hessian column, named and not indexed: the symbol list exists
   // only at run time.
   [[nodiscard]] result<std::vector<T>>
-  hvp(std::string_view along,
-      const rt::detail::CPointArg auto &...args) const {
+  hvp(std::string_view along, const rt::detail::CPointArg auto &...args) const {
     return unit(along).and_then(
         [&](const auto &e) { return hvp(std::span<const T>{e}, args...); });
   }

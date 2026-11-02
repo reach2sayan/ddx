@@ -188,10 +188,10 @@ TEST(Simplify, ReciprocalsCancelOnTheSideDivisionPutsThem) {
 // time -- the Hessian -- would see held symbols and answer zero.  A hold the
 // caller asked for outlives every rewrite.
 TEST(Simplify, JacobianRowsDifferentiateAgain) {
+  using ddx::impl::FixedString;
   using ddx::impl::Freeze;
   using ddx::impl::make_all_constant_except;
   using ddx::impl::thaw_partials;
-  using ddx::impl::FixedString;
   using Syms = ddx::impl::mp::mp_list<ddx::impl::symbol_type<FixedString{"x"}>,
                                 ddx::impl::symbol_type<FixedString{"y"}>>;
 

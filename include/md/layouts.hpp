@@ -85,9 +85,7 @@ template <std::size_t Lead> struct layout_leading_simplex {
     [[nodiscard]] constexpr index_type required_span_size() const noexcept {
       const index_type lead = std::ranges::fold_left(
           std::views::iota(std::size_t{0}, Lead), index_type{1},
-          [&](index_type acc, std::size_t r) {
-            return acc * Ext{}.extent(r);
-          });
+          [&](index_type acc, std::size_t r) { return acc * Ext{}.extent(r); });
       return lead * block_size();
     }
 

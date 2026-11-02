@@ -45,8 +45,7 @@ template <Numeric T, typename func, CFixedString auto symbol,
   requires std::regular_invocable<func, const T &> &&
            std::convertible_to<std::invoke_result_t<func, const T &>, T>
 struct UnaryOp : OpDescriptor<T, func, symbol, note, prec> {
-  [[nodiscard]] static constexpr auto
-  eval(const Numeric auto &lhs) noexcept {
+  [[nodiscard]] static constexpr auto eval(const Numeric auto &lhs) noexcept {
     return std::invoke(func{}, lhs);
   }
 };

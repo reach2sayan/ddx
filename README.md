@@ -275,10 +275,9 @@ eq.jacobian(xs, f, g, n);      // compiled
 | `points` | `1` | the batch size one call will carry |
 | `codegen.lanes` | `Lanes::derived()` | points per iteration |
 | `codegen.opt_level`, `codegen.codegen_level` | build type, `O1` | LLVM levels; `codegen_level` moves compile time |
-| `codegen.slp_vectorize`, `codegen.loop_vectorize` | `false` | extra vectorisation |
+| `codegen.slp_vectorize` | `false` | extra vectorisation |
 | `codegen.veclib` | `None` | `Libmvec` for vector transcendentals |
 | `codegen.contract` | `DDX_FP_FLAGS` | fuse multiply-add |
-| `time_passes` | `false` | per-pass timing to stderr |
 
 A model with vectors compiles too. Each vector operation is a loop in the
 kernel, vectorised by LLVM, and an elementwise operation read once is computed

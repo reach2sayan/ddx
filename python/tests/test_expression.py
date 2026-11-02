@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import operator
 from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import pytest
@@ -32,7 +33,6 @@ UNARY = {
     "cbrt": math.cbrt,
     "erf": math.erf,
     "abs": abs,
-    "neg": lambda v: -v,
     "sign": lambda v: math.copysign(1.0, v),
 }
 
@@ -48,15 +48,14 @@ def test_every_exported_unary_is_covered() -> None:
         for name in ddx.__all__
         if callable(getattr(ddx, name)) and not isinstance(getattr(ddx, name), type)
     }
-    binary = {"add", "mul", "div", "pow", "atan2", "hypot", "max", "min",
-              "lt", "le"}
+    binary = {"pow", "atan2", "hypot", "max", "min"}
     # `select` is the one ternary.
     ternary = {"select"}
     # Not operations at all: these build, read or run an equation.
     not_an_op = {"derivative", "equation", "gradient", "implicit", "param",
                  "release_tapes", "var"}
     # Vectors and matrices: factories and reductions, not scalar operations.
-    vectors = {"dot", "gemv", "mat_constant", "outer", "pack", "sum",
+    vectors = {"mat_constant", "outer", "pack", "sum",
                "transpose", "vec", "vec_constant", "vec_param"}
     assert functions - binary - ternary - not_an_op - vectors == set(UNARY)
 
@@ -81,9 +80,6 @@ def test_unary_matches_math(name: str) -> None:
         ("hypot", math.hypot),
         ("max", max),
         ("min", min),
-        ("add", lambda a, b: a + b),
-        ("mul", lambda a, b: a * b),
-        ("div", lambda a, b: a / b),
     ],
 )
 def test_binary_matches_math(
@@ -92,6 +88,16 @@ def test_binary_matches_math(
     fn = getattr(ddx, name)
     eq = ddx.equation(lambda: fn(ddx.var("x"), ddx.var("y")))
     assert eq.evaluate([1.7, 2.3]) == pytest.approx(reference(1.7, 2.3))
+
+
+@pytest.mark.parametrize("op", [operator.add, operator.mul, operator.truediv])
+def test_binary_operators_match_math(op: Callable[[Any, Any], Any]) -> None:
+    eq = ddx.equation(lambda: op(ddx.var("x"), ddx.var("y")))
+    assert eq.evaluate([1.7, 2.3]) == pytest.approx(op(1.7, 2.3))
+
+
+def test_negation_matches_math() -> None:
+    assert ddx.equation(lambda: -ddx.var("x")).evaluate([0.4]) == -0.4
 
 
 def test_operators_and_reflection() -> None:

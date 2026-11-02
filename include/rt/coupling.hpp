@@ -164,7 +164,6 @@ struct Sparsity {
                                                     found - present.begin())}
                : std::nullopt;
   }
-
 };
 
 // Two columns share a colour only when no row couples them, so one sweep can

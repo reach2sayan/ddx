@@ -12,9 +12,8 @@
 expression graph. Native x64 package: headers plus ddx.dll/ddx.lib in Release
 and Debug, with the Boost header subset the public headers reach bundled in
 (Boost Software License, same as ddx). Consumers compile with /std:c++latest;
-the binaries require AVX2. The LLVM JIT backend is not part of the Windows
-build — expressions are interpreted, as ddx.has_jit reports in the Python
-wheels.</description>
+the binaries require AVX2. The LLVM JIT backend is not part of this
+package: expressions are interpreted.</description>
     <tags>native automatic-differentiation autodiff symbolic-differentiation derivatives gradient jacobian hessian math cpp cpp23</tags>
   </metadata>
   <files>

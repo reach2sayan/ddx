@@ -63,8 +63,8 @@ public:
     [[maybe_unused]] const Yield yielded{};
     const std::unique_lock fill{mutex_}; // another thread may have won
     if (!ready_) {
-      ready_ =
-          std::make_shared<const Compiled<T>>(compiled(compiling, DDX_FWD(freeze)()));
+      ready_ = std::make_shared<const Compiled<T>>(
+          compiled(compiling, DDX_FWD(freeze)()));
     }
     return ready_;
   }

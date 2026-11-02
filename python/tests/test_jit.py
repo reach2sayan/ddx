@@ -26,15 +26,15 @@ def batch() -> Batch:
 
 def test_interpret_is_the_default(scalar: ddx.Equation) -> None:
     assert scalar.options.backend is ddx.Backend.INTERPRET
-    assert scalar.uses_kernel is False
+    assert scalar.uses_kernel() is False
 
 
 def test_compile_lands_a_kernel_where_there_is_a_backend(
     scalar: ddx.Equation, batch: Batch
 ) -> None:
     scalar.compile(points=batch.shape[1])
-    assert scalar.wait_for_kernel() is ddx.has_jit
-    assert scalar.uses_kernel is ddx.has_jit
+    assert scalar.uses_kernel() is ddx.has_jit
+    assert scalar.uses_kernel() is ddx.has_jit
 
 
 def test_the_kernel_and_the_sweep_agree(scalar: ddx.Equation, batch: Batch) -> None:
@@ -68,7 +68,7 @@ def test_answers_do_not_depend_on_the_backend(
     compiled_value, _ = scalar.jacobian(batch)
 
     scalar.options = ddx.Options(backend=ddx.Backend.INTERPRET)
-    assert scalar.uses_kernel is False
+    assert scalar.uses_kernel() is False
     swept_value, _ = scalar.jacobian(batch)
     assert np.array_equal(compiled_value, swept_value)
 
@@ -76,7 +76,7 @@ def test_answers_do_not_depend_on_the_backend(
 def test_a_system_compiles_too(system: ddx.Equation, batch: Batch) -> None:
     swept = system.jacobian(batch)
     system.compile(points=batch.shape[1])
-    assert system.uses_kernel is ddx.has_jit
+    assert system.uses_kernel() is ddx.has_jit
     compiled = system.jacobian(batch)
     for a, b in zip(swept, compiled, strict=True):
         assert np.array_equal(a, b)
@@ -92,4 +92,4 @@ def test_a_scalar_kernel_answers_a_single_point(scalar: ddx.Equation) -> None:
 
 def test_hessian_colours_are_read_without_compiling(scalar: ddx.Equation) -> None:
     assert scalar.hessian_colours == 2
-    assert scalar.uses_kernel is False
+    assert scalar.uses_kernel() is False

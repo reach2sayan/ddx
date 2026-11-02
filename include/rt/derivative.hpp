@@ -6,7 +6,6 @@
 #include "rt/tensor.hpp"
 #include "util/ranges.hpp"
 
-
 #include <algorithm>
 #include <cstddef>
 #include <functional>

@@ -27,9 +27,8 @@
 // partial trees.  Every number comes from the runtime graph the expressions
 // lower to -- one arena per call, swept at whatever scalar the point is
 // spelled in: a dual for a derivative tensor, a truncated polynomial for the
-// univariate derivative.  A model swept in a loop goes through
-// rt::equation(eq), which lowers once and keeps lanes, kernels and the
-// compiled code.
+// univariate derivative.  A model swept in a loop is written against rt::
+// directly, whose equation lowers once and keeps its kernels.
 namespace ddx::impl {
 
 namespace detail {

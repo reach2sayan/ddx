@@ -475,10 +475,7 @@ TEST(JitValue, TheVectorisersDoNotMoveABit) {
     for (const auto &[what, o] :
          {std::pair{"slp_vectorize",
                     ddx::jit::Options{
-                        .codegen = {.lanes = lanes, .slp_vectorize = true}}},
-          std::pair{"loop_vectorize",
-                    ddx::jit::Options{.codegen = {.lanes = lanes,
-                                                  .loop_vectorize = true}}}}) {
+                        .codegen = {.lanes = lanes, .slp_vectorize = true}}}}) {
       const auto [v, dx, dy] = run(o);
       for (std::size_t i = 0; i < n; ++i) {
         EXPECT_EQ(std::bit_cast<std::uint64_t>(v[i]),

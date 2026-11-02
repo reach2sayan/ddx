@@ -54,7 +54,8 @@ namespace detail {
 static_assert(sizeof(FixedString<1>) == FixedString<1>::size() + 1,
               "FixedString has grown beyond its character array: check that "
               "nothing was added to the class and that it gained no base");
-static_assert(sizeof(FixedString<8>) == FixedString<8>::size() + 1, "see above");
+static_assert(sizeof(FixedString<8>) == FixedString<8>::size() + 1,
+              "see above");
 
 template <FixedString S> struct nttp_probe {
   static constexpr auto label = S;

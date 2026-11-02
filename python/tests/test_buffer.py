@@ -144,7 +144,7 @@ def test_a_kernel_landing_mid_loop_is_picked_up(scalar: ddx.Equation) -> None:
     for _ in range(16):
         call()
 
-    assert scalar.uses_kernel
+    assert scalar.uses_kernel()
     value, gradient = scalar.jacobian([2.0, 3.0])
     assert call.value == pytest.approx(value)
     assert call.jacobian == pytest.approx(gradient)

@@ -24,8 +24,8 @@ template <impl::Numeric T> struct TensorCall;
 namespace ddx::jit {
 
 // Off: glibc's vector routines are ~4 ULP where the scalar ones are ~0.5.
-enum class VecLib : std::uint8_t { None, Auto, Libmvec };
-BOOST_DESCRIBE_ENUM(VecLib, None, Auto, Libmvec)
+enum class VecLib : std::uint8_t { None, Libmvec };
+BOOST_DESCRIBE_ENUM(VecLib, None, Libmvec)
 
 struct compile_error {
   errc code;
@@ -86,9 +86,6 @@ struct Codegen {
   OptLevel codegen_level = OptLevel::O1;
   // Within one point; model-dependent, hence off.
   bool slp_vectorize = false;
-  // Off: the body is already `lanes` wide, and past ~19 columns the alias
-  // checks exceed their own budget.
-  bool loop_vectorize = false;
   // With one, a derived `lanes` is the widest width the library serves -- four
   // doubles for libmvec -- whatever the host's registers hold.
   VecLib veclib = VecLib::None;
@@ -106,7 +103,6 @@ struct Options {
   // before any call exists to read an `n` from.  Sets the lane width only.
   std::size_t points = 1;
   Codegen codegen{};
-  bool time_passes = false; // Per-pass timing to stderr
 
   friend bool operator==(const Options &, const Options &) = default;
 };

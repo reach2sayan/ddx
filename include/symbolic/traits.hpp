@@ -17,8 +17,8 @@ namespace ddx::impl {
 template <bool Hold, CFixedString auto symbol = FixedString{""}, CExpression T>
 constexpr auto refreeze(const T &e) noexcept {
   if constexpr (CVariable<T>) {
-    return typename T::template refrozen <
-           (Hold && T::label != symbol ? Freeze::partial : Freeze::none) > {};
+    return typename T::template refrozen<(
+        Hold && T::label != symbol ? Freeze::partial : Freeze::none)>{};
   } else if constexpr (CExpressionNode<T>) {
     return std::apply(
         [](const auto &...child) {
