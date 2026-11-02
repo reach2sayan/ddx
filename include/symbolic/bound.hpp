@@ -67,16 +67,6 @@ consteval std::array<std::size_t, N> arg_of_canonical() noexcept {
   return out;
 }
 
-// Canonical symbol order to the map's; the map may be a superset.
-template <CSymbolList ExprSyms, CSymbolList MapSyms, std::size_t N>
-consteval std::array<std::size_t, N> symbol_permutation() noexcept {
-  std::array<std::size_t, N> p{};
-  static_for<N>([&]<std::size_t I>() {
-    p[I] = symbol_index<mp::mp_at_c<ExprSyms, I>::value, MapSyms>();
-  });
-  return p;
-}
-
 } // namespace detail
 
 // values(named<"x">(1.0), named<"y">(0.5))
@@ -94,81 +84,6 @@ template <FixedString... Syms, Numeric... Vs>
     return ValueMap<Scalar, SymList>{
         std::array<Scalar, N>{static_cast<Scalar>(std::get<pos[I]>(args))...}};
   });
-}
-
-// An expression paired with a point; the expression is empty.
-template <CExpression Expr, CValueMap Map> struct Bound {
-  static_assert(!std::is_reference_v<Expr> && !std::is_reference_v<Map>,
-                "Bound stores the expression and the map by value");
-  using expr_type = std::remove_cvref_t<Expr>;
-  using map_type = std::remove_cvref_t<Map>;
-  using symbols = detail::expr_symbols_t<expr_type>;
-  using value_type = typename expr_type::value_type;
-
-  static constexpr std::size_t arity = mp::mp_size<symbols>::value;
-
-  static constexpr auto kPerm =
-      detail::symbol_permutation<symbols, typename map_type::symbols, arity>();
-
-  static_assert(std::ranges::all_of(kPerm,
-                                    [](std::size_t i) {
-                                      return i < map_type::arity;
-                                    }),
-                "bind: the map does not supply every symbol the expression "
-                "uses");
-
-  [[no_unique_address]] expr_type expr{};
-  map_type map{};
-
-  template <Numeric U = value_type>
-  [[nodiscard]] constexpr std::array<U, arity> point() const noexcept {
-    std::array<U, arity> out{};
-    std::ranges::transform(kPerm, out.begin(), [&](std::size_t i) {
-      return static_cast<U>(map.slots[i]);
-    });
-    return out;
-  }
-
-  [[nodiscard]] constexpr value_type eval() const noexcept {
-    return expr.template eval_seeded<symbols>(point());
-  }
-
-  template <Numeric U>
-  [[nodiscard]] constexpr U
-  eval_as(const std::array<U, arity> &seed) const noexcept {
-    return expr.template eval_seeded<symbols>(seed);
-  }
-
-  template <FixedString S>
-  constexpr void set(const typename map_type::value_type &v) noexcept {
-    map.template set<S>(v);
-  }
-
-  // Forwarded, so the map hands out a reference or a copy on the same rule the
-  // Bound was reached by.
-  template <FixedString S>
-  [[nodiscard]] constexpr decltype(auto) get(this auto &&self) noexcept {
-    return DDX_FWD(self).map.template get<S>();
-  }
-  template <CFixedString auto S>
-  [[nodiscard]] constexpr decltype(auto) operator[](this auto &&self,
-                                                    symbol_type<S>) noexcept {
-    return DDX_FWD(self).template get<S>();
-  }
-};
-
-template <CExpression Expr, CValueMap Map> Bound(Expr, Map) -> Bound<Expr, Map>;
-
-[[nodiscard]] constexpr auto bind(CExpression auto &&e,
-                                  CValueMap auto &&m) noexcept {
-  return Bound{DDX_FWD(e), DDX_FWD(m)};
-}
-
-// bind(expr, named<"x">(1.0), named<"y">(0.5))
-template <FixedString... Syms, Numeric... Vs>
-[[nodiscard]] constexpr auto bind(CExpression auto &&e,
-                                  Entry<Syms, Vs>... nv) noexcept {
-  return bind(DDX_FWD(e), values(nv...));
 }
 
 // The value-array APIs take CANONICAL (alphabetical) order.

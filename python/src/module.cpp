@@ -49,45 +49,39 @@ thread_local std::shared_ptr<rt::Arena<double>> current_arena;
 // pointer, so it cannot capture.
 pyb::handle error_class;
 
+// The model running now.
+[[nodiscard]] PyExpression::SharedArena arena_now() {
+  if (!current_arena) {
+    fail_with(errc::outside_equation);
+  }
+  return current_arena;
+}
+
 // A symbol or a parameter of the model running now.  C++ carries a poison
 // instead, unable to afford a branch per input; Python already pays more per
 // call than the branch costs.
 [[nodiscard]] PyExpression make_input(rt::OpCode kind, std::string_view name) {
-  if (!current_arena) {
-    fail_with(errc::outside_equation);
-  }
-  const auto e = rt::named(*current_arena, kind, name);
+  const auto arena = arena_now();
+  const auto e = rt::named(*arena, kind, name);
   if (e.poisoned()) {
     fail_with(errc::name_clash);
   }
-  return {e, current_arena};
+  return {e, arena};
 }
 
 // An implicit input and the residual `residual(z)` it is a root of; a
 // poisoned residual is kept on the arena for the equation.
 [[nodiscard]] PyExpression make_implicit(std::string_view name,
                                          const pyb::function &residual) {
-  if (!current_arena) {
-    fail_with(errc::outside_equation);
-  }
+  const auto arena = arena_now();
   const auto z =
-      rt::implicit(*current_arena, name, [&](const rt::Expression<double> &e) {
-        return residual(PyExpression{e, current_arena})
-            .cast<PyExpression>()
-            .base();
+      rt::implicit(*arena, name, [&](const rt::Expression<double> &e) {
+        return residual(PyExpression{e, arena}).cast<PyExpression>().base();
       });
   if (z.poisoned()) {
     fail_with(errc::name_clash);
   }
-  return {z, current_arena};
-}
-
-// The model running now, for a vector that names no scalar of it.
-[[nodiscard]] PyExpression::SharedArena arena_now() {
-  if (!current_arena) {
-    fail_with(errc::outside_equation);
-  }
-  return current_arena;
+  return {z, arena};
 }
 
 // One root, or m of them from a tuple or list.  The count is a runtime value

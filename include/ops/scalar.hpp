@@ -138,10 +138,6 @@ constexpr bool same_value(const T &a, const T &b) noexcept {
   return a == b;
 }
 
-constexpr double to_double(const Numeric auto &x) noexcept {
-  return static_cast<double>(val(x));
-}
-
 } // namespace ddx::impl
 
 namespace std {

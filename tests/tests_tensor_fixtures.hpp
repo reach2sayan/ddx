@@ -39,7 +39,12 @@ void ExpectPackedMatchesDense(const Expr &expr, const Values &values) {
   using S = double;
   using U = ddx::impl::nth_dual_t<S, Order>;
   using symbols = ddx::impl::extract_symbols_from_expr_t<Expr>;
-  for (const auto &multi : ddx::impl::detail::index_grid<N, Order>()) {
+  // Every multi-index, layout_right order.
+  const auto grid = ddx::impl::index_apply<Order>([&]<std::size_t... D>() {
+    return std::views::cartesian_product(
+        ((void)D, std::views::iota(std::size_t{0}, N))...);
+  });
+  for (const auto &multi : grid) {
     const auto idx = std::apply(
         [](auto... i) { return std::array<std::size_t, Order>{i...}; }, multi);
     std::array<U, N> seeds{};

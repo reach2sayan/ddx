@@ -6,7 +6,6 @@
 #include "rt/tensor.hpp"
 #include "util/ranges.hpp"
 
-#include <boost/describe/class.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -741,7 +740,6 @@ struct Jacobian {
         .transform([this](std::size_t k) { return partial[k]; })
         .value_or(zero);
   }
-  BOOST_DESCRIBE_CLASS(Jacobian, (), (value, partial, pattern, zero), (), ())
 };
 
 template <impl::Numeric T>
@@ -841,8 +839,6 @@ struct Hessian {
   [[nodiscard]] constexpr std::size_t colours() const {
     return colouring.count();
   }
-  BOOST_DESCRIBE_CLASS(Hessian, (),
-                       (value, partial, compressed, colouring, zero), (), ())
 };
 
 template <impl::Numeric T>
@@ -901,7 +897,6 @@ struct HessianVector {
   NodeId value = no_node;
   std::vector<NodeId> partial; // n -- the gradient, which comes free
   std::vector<NodeId> product; // n -- H v
-  BOOST_DESCRIBE_CLASS(HessianVector, (), (value, partial, product), (), ())
 };
 
 template <impl::Numeric T>

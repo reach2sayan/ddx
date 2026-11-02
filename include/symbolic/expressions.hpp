@@ -40,12 +40,10 @@ template <FixedString S> [[nodiscard]] consteval auto operator""_s() noexcept {
 
 } // namespace literals
 
-// Why a symbol differentiates to zero.  `held` is the caller's own
-// make_const_variable and survives every rewrite; `partial` is the Jacobian
-// machinery holding the other symbols while one column is differentiated, and
-// is lifted once that derivative exists -- otherwise a stored partial tree
-// would differentiate to zero a second time.
-enum class Freeze : std::uint8_t { none, held, partial };
+// `partial` is the Jacobian machinery holding the other symbols while one
+// column is differentiated, lifted once that derivative exists -- otherwise a
+// stored partial tree would differentiate to zero a second time.
+enum class Freeze : std::uint8_t { none, partial };
 
 template <Numeric T, CFixedString auto, Freeze = Freeze::none> class Variable;
 
@@ -89,15 +87,6 @@ concept CLit = is_lit_v<std::remove_cvref_t<T>>;
 template <typename T>
 concept CExpressionNode =
     requires { typename std::remove_cvref_t<T>::children_t; };
-
-template <Numeric T> struct EvalResult {
-  using value_type = T;
-  T value;
-  constexpr operator T() const noexcept { return value; }
-};
-
-template <Numeric T>
-inline constexpr bool is_expression_type_v<EvalResult<T>> = true;
 
 template <CExpression T> consteval std::size_t node_count_fn() {
   using U = std::remove_cvref_t<T>;
@@ -175,7 +164,7 @@ public:
   eval_seeded(const std::array<U, N> &vals) const noexcept {
     return std::apply(
         [&](const auto &...e) noexcept {
-          return Op::eval(EvalResult<U>{e.template eval_seeded<Syms>(vals)}...);
+          return Op::eval(e.template eval_seeded<Syms>(vals)...);
         },
         this->self().expressions());
   }

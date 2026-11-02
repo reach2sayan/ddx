@@ -5,7 +5,6 @@
 #include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>
-#include <boost/describe/class.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -47,8 +46,6 @@ struct DenseHessian {
   NodeId block = no_node;
   std::uint32_t n2_terms = 0; // matrix terms the algebra kept quadratic
   std::uint32_t n3_terms = 0; // MatMul fallbacks: right, and not O(n^2)
-  BOOST_DESCRIBE_CLASS(DenseHessian, (),
-                       (value, partial, block, n2_terms, n3_terms), (), ())
 };
 
 namespace detail {

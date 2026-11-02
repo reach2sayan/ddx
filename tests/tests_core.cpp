@@ -272,7 +272,7 @@ TEST(ExpressionTest, StaticTests) {
   auto y = 2_vi;
   auto c = 2_ci;
   auto res = x * y + c;
-  auto res2 = make_const_variable<ddx::impl::FixedString{"c"}>(res);
+  auto res2 = make_all_constant_except<ddx::impl::FixedString{"c"}>(res);
   // Freezing changes only the derivative, so the value is unchanged.
   ASSERT_EQ(res2.eval(4), res.eval(4));
 }
@@ -871,7 +871,7 @@ TEST(TutorialReverseParams, MultiVarWithParameter) {
 TEST(ScopedValue, SeedsOnEntryAndRestoresOnExit) {
   double slot = 7.5;
   {
-    const auto seed = scoped_seed<1.0>(slot);
+    const scoped_value seed{slot, 1.0};
     EXPECT_DOUBLE_EQ(slot, 1.0);
   }
   EXPECT_DOUBLE_EQ(slot, 7.5); // the previous value, not zero
@@ -881,17 +881,17 @@ TEST(ScopedValue, RestoreIsBitExactFromAnyBase) {
   // not the identity in floating point.
   double slot = 0.1;
   {
-    const auto seed = scoped_seed<1.0>(slot);
+    const scoped_value seed{slot, 1.0};
     EXPECT_DOUBLE_EQ(slot, 1.0);
   }
   EXPECT_EQ(slot, 0.1);            // exact, not merely close
   EXPECT_NE(0.1 + 1.0 - 1.0, 0.1); // what the arithmetic undo would have given
 }
 
-TEST(ScopedValue, IsPinnedByItsBase) {
+TEST(ScopedValue, IsPinned) {
   // Exactly one guard per slot: moving one would leave a second destructor
-  // writing back a value that has been carried off.  Hence `private pinned`.
-  using Guard = decltype(scoped_seed<1.0>(std::declval<double &>()));
+  // writing back a value that has been carried off.
+  using Guard = scoped_value<double>;
   static_assert(!std::is_copy_constructible_v<Guard>);
   static_assert(!std::is_move_constructible_v<Guard>);
   static_assert(!std::is_copy_assignable_v<Guard>);
@@ -900,7 +900,7 @@ TEST(ScopedValue, IsPinnedByItsBase) {
 }
 TEST(ScopedValue, CarriesNothingForTheNewValue) {
   // The reference plus the saved scalar, and nothing else.
-  static_assert(sizeof(decltype(scoped_seed<1.0>(std::declval<double &>()))) ==
+  static_assert(sizeof(scoped_value<double>) ==
                 sizeof(double *) + sizeof(double));
   SUCCEED();
 }

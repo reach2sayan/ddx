@@ -263,8 +263,7 @@ public:
 template <Numeric T> Lit(T) -> Lit<T>;
 
 // Frozen: still reads its slot from the seed array, but differentiates to
-// zero.  Which of the two reasons it is frozen for matters only to the
-// rewrites in traits.hpp; every engine here asks `frozen`.
+// zero.
 template <Numeric T, CFixedString auto symbol, Freeze Kind>
 class Variable : public EquationConvertible<Variable<T, symbol, Kind>> {
 public:
@@ -272,6 +271,7 @@ public:
   static constexpr Freeze freeze = Kind;
   static constexpr bool frozen = Kind != Freeze::none;
   using value_type = T;
+  template <Freeze K> using refrozen = Variable<T, symbol, K>;
 
   [[nodiscard]] constexpr auto derivative() const noexcept {
     return Lit<T, frozen ? 0 : 1>{};

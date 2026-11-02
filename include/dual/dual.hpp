@@ -198,14 +198,6 @@ template <template <Numeric> class Fn> struct unary_dual_combine {
     }
   }
 };
-struct abs_combine {
-  constexpr auto operator()(const DualLike auto &x) const noexcept {
-    using std::abs;
-    const auto &[v, d] = x;
-    using DT = std::remove_cvref_t<decltype(x)>;
-    return DT{abs(v), detail::sign(v) * d};
-  }
-};
 // One chain-rule overload per unary math function, from the registry.
 #define DDX_DUAL_UNARY(FN, OP, LABEL)                                          \
   constexpr auto FN(DualLike auto &&a) noexcept {                              \
@@ -214,7 +206,12 @@ struct abs_combine {
 DDX_UNARY_MATH_TABLE(DDX_DUAL_UNARY)
 #undef DDX_DUAL_UNARY
 
-constexpr auto abs(DualLike auto &&a) noexcept { return abs_combine{}(a); }
+constexpr auto abs(DualLike auto &&x) noexcept {
+  using std::abs;
+  const auto &[v, d] = x;
+  using DT = std::remove_cvref_t<decltype(x)>;
+  return DT{abs(v), detail::sign(v) * d};
+}
 
 // ---- comparisons (operate on materialized values) -------------------------
 template <typename A, typename B>

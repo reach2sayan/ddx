@@ -24,11 +24,6 @@ enum class Notation : std::uint8_t { Prefix, Infix, Function };
 // atomic.
 inline constexpr int precedence_atom = 100;
 
-// What an op contributes to the Hessian pattern: nothing, a coupling across
-// its two operands, that plus the denominator with itself, or its whole
-// support with itself.  Self is the conservative answer.
-enum class Curvature : std::uint8_t { None, Bilinear, Quotient, Self };
-
 // What every op descriptor states besides how it evaluates.
 template <Numeric T, typename func, CFixedString auto symbol, Notation note,
           int prec>
@@ -41,7 +36,6 @@ struct OpDescriptor {
                 "an op printed without its own parentheses must state a "
                 "precedence");
 
-  static constexpr Curvature curvature = Curvature::Self;
   // Which identities the simplifier may apply; none for most ops.
   static constexpr std::optional<algebra::RuleOp> rule_op = std::nullopt;
 };
@@ -52,9 +46,8 @@ template <Numeric T, typename func, CFixedString auto symbol,
            std::convertible_to<std::invoke_result_t<func, const T &>, T>
 struct UnaryOp : OpDescriptor<T, func, symbol, note, prec> {
   [[nodiscard]] static constexpr auto
-  eval(const CExpression auto &lhs) noexcept {
-    using VT = typename std::remove_cvref_t<decltype(lhs)>::value_type;
-    return std::invoke(func{}, static_cast<VT>(lhs));
+  eval(const Numeric auto &lhs) noexcept {
+    return std::invoke(func{}, lhs);
   }
 };
 
@@ -64,18 +57,15 @@ template <Numeric T, typename func, CFixedString auto symbol,
            std::convertible_to<std::invoke_result_t<func, const T &, const T &>,
                                T>
 struct BinaryOp : OpDescriptor<T, func, symbol, note, prec> {
-  template <CExpression LT, CExpression RT>
-  [[nodiscard]] static constexpr auto eval(const LT &lhs,
-                                           const RT &rhs) noexcept {
-    return std::invoke(func{}, static_cast<typename LT::value_type>(lhs),
-                       static_cast<typename RT::value_type>(rhs));
+  [[nodiscard]] static constexpr auto eval(const Numeric auto &lhs,
+                                           const Numeric auto &rhs) noexcept {
+    return std::invoke(func{}, lhs, rhs);
   }
 };
 
 template <Numeric T>
 struct SumOp
     : BinaryOp<T, std::plus<void>, FixedString{"+"}, Notation::Infix, 10> {
-  static constexpr Curvature curvature = Curvature::None;
   static constexpr std::optional rule_op = algebra::RuleOp::Add;
 
   [[nodiscard]] static constexpr auto
@@ -88,7 +78,6 @@ struct SumOp
 template <Numeric T>
 struct MultiplyOp : BinaryOp<T, std::multiplies<void>, FixedString{"*"},
                              Notation::Infix, 20> {
-  static constexpr Curvature curvature = Curvature::Bilinear;
   static constexpr std::optional rule_op = algebra::RuleOp::Mul;
   [[nodiscard]] static constexpr auto
   derivative(const CExpression auto &lhs,
@@ -102,7 +91,6 @@ struct MultiplyOp : BinaryOp<T, std::multiplies<void>, FixedString{"*"},
 template <Numeric T>
 struct NegateOp
     : UnaryOp<T, std::negate<void>, FixedString{"-"}, Notation::Prefix, 30> {
-  static constexpr Curvature curvature = Curvature::None;
   static constexpr std::optional rule_op = algebra::RuleOp::Neg;
 
   // Through operator-, so values.hpp's folding ladder sees it: -0 is a Lit.
@@ -123,7 +111,6 @@ inline constexpr bool is_negation_expr_v<Expression<NegateOp<T>, C>> = true;
 template <Numeric T>
 struct DivideOp
     : BinaryOp<T, std::divides<void>, FixedString{"/"}, Notation::Infix, 20> {
-  static constexpr Curvature curvature = Curvature::Quotient;
   static constexpr std::optional rule_op = algebra::RuleOp::Div;
   // `a / b` means a * b^-1 -- RIGHT division, which CFieldLike cannot state.
   // dc = (da - a*b^-1*db) * b^-1 holds under it whether or not the scalar
@@ -281,12 +268,10 @@ struct LeOp
 template <Numeric T>
 struct SelectOp : OpDescriptor<T, detail::select_impl, FixedString{"select"},
                                Notation::Function, precedence_atom> {
-  template <CExpression C, CExpression A, CExpression B>
-  [[nodiscard]] static constexpr auto eval(const C &c, const A &a,
-                                           const B &b) noexcept {
-    return detail::select_impl{}(static_cast<typename C::value_type>(c),
-                                 static_cast<typename A::value_type>(a),
-                                 static_cast<typename B::value_type>(b));
+  [[nodiscard]] static constexpr auto eval(const Numeric auto &c,
+                                           const Numeric auto &a,
+                                           const Numeric auto &b) noexcept {
+    return detail::select_impl{}(c, a, b);
   }
   [[nodiscard]] static constexpr auto
   derivative(const CExpression auto &c, const CExpression auto &a,

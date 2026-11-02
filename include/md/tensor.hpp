@@ -44,11 +44,7 @@ using stacked_extents_t = boost::mp11::mp_apply<
     boost::mp11::mp_push_front<detail::repeated<N, Order>,
                                boost::mp11::mp_size_t<Lead>>>;
 
-template <Numeric S, md::CStaticExtents Ext, md::CLayoutFor<Ext> Layout>
-class md_tensor;
-
-template <Numeric S, md::CStaticExtents Ext,
-          md::CLayoutFor<Ext> Layout = md::layout_right>
+template <Numeric S, md::CStaticExtents Ext, typename Layout = md::layout_right>
 class md_tensor {
 public:
   using value_type = S;

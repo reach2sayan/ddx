@@ -4,7 +4,6 @@
 #include "rt/bridge.hpp"
 #include "rt/graph.hpp"
 #include "rt/interpret.hpp"
-#include "scratch.hpp"
 
 #include <gtest/gtest.h>
 

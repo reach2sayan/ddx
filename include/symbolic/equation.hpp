@@ -97,15 +97,6 @@ constexpr nth_dual_t<S, Depth> make_mixed_seed(S value,
   }
 }
 
-// The cartesian product of Order copies of [0, N), in layout_right order.
-template <std::size_t N, std::size_t Order>
-[[nodiscard]] constexpr auto index_grid() noexcept {
-  return index_apply<Order>([]<std::size_t... D>() {
-    return std::views::cartesian_product(
-        ((void)D, std::views::iota(std::size_t{0}, N))...);
-  });
-}
-
 // One representative per permutation class: by Schwarz only C(N+Order-1, Order)
 // of the N^Order entries are distinct.  A consteval table, not a filtered view
 // or lazy iterator: both measured 4x slower.

@@ -71,7 +71,6 @@ public:
 private:
   constexpr explicit Lanes(unsigned width) noexcept : width_(width) {}
   unsigned width_ = 0;
-  BOOST_DESCRIBE_CLASS(Lanes, (), (), (), (width_))
 };
 
 // Compile builds each kernel on the first call that needs it, and that call
@@ -96,10 +95,6 @@ struct Codegen {
   bool contract = default_contract; // Follows DDX_FP_FLAGS
 
   friend bool operator==(const Codegen &, const Codegen &) = default;
-  BOOST_DESCRIBE_CLASS(Codegen, (),
-                       (lanes, opt_level, codegen_level, slp_vectorize,
-                        loop_vectorize, veclib, contract),
-                       (), ())
 };
 
 // The identity, and around it the policy: whether to compile, and for what

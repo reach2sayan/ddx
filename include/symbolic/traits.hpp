@@ -10,55 +10,21 @@
 
 namespace ddx::impl {
 
-// Same leaf, same value lookup, zero derivative.  A pure type transform, which
-// keeps the symbolic Jacobian made of empty types.
-template <Freeze K, CVariable T> struct refrozen_variable;
-template <Freeze K, Numeric T, CFixedString auto C, Freeze F>
-struct refrozen_variable<K, Variable<T, C, F>> {
-  using type = Variable<T, C, K>;
-};
-template <Freeze K, CVariable T>
-using refrozen_variable_t = typename refrozen_variable<K, T>::type;
-
-// The three leaf rewrites.  `hold_match` is the caller holding one symbol
-// constant, `hold_others` is one Jacobian column, `lift_partials` undoes the
-// second and never the first.
-enum class Rewrite : std::uint8_t { hold_match, hold_others, lift_partials };
-
-template <Rewrite R>
-consteval Freeze next_freeze(Freeze now, bool match) noexcept {
-  if constexpr (R == Rewrite::hold_match) {
-    return match ? Freeze::held : now;
-  } else if constexpr (R == Rewrite::hold_others) {
-    // A held symbol stays held either way: only the machinery's own hold is
-    // reversible.
-    if (match) {
-      return now == Freeze::partial ? Freeze::none : now;
-    }
-    return now == Freeze::none ? Freeze::partial : now;
-  } else {
-    return now == Freeze::partial ? Freeze::none : now;
-  }
-}
-
 // Rebuilding a node from rewritten children, leaving any other leaf alone, is
 // one walk, and a pure type transform, so the symbolic Jacobian stays made of
-// empty types.
-template <Rewrite R, CFixedString auto symbol = FixedString{""}, CExpression T>
+// empty types.  `Hold` is one Jacobian column: every symbol but `symbol` is
+// held.  Otherwise every hold is lifted.
+template <bool Hold, CFixedString auto symbol = FixedString{""}, CExpression T>
 constexpr auto refreeze(const T &e) noexcept {
   if constexpr (CVariable<T>) {
-    constexpr Freeze kind = next_freeze<R>(T::freeze, T::label == symbol);
-    if constexpr (kind == T::freeze) {
-      return e;
-    } else {
-      return refrozen_variable_t<kind, T>{};
-    }
+    return typename T::template refrozen <
+           (Hold && T::label != symbol ? Freeze::partial : Freeze::none) > {};
   } else if constexpr (CExpressionNode<T>) {
     return std::apply(
         [](const auto &...child) {
           return Expression<typename T::op_type,
-                            decltype(refreeze<R, symbol>(child))...>{
-              refreeze<R, symbol>(child)...};
+                            decltype(refreeze<Hold, symbol>(child))...>{
+              refreeze<Hold, symbol>(child)...};
         },
         e.expressions());
   } else {
@@ -67,19 +33,14 @@ constexpr auto refreeze(const T &e) noexcept {
 }
 
 template <CFixedString auto symbol, CExpression E>
-constexpr auto make_const_variable(const E &e) noexcept {
-  return refreeze<Rewrite::hold_match, symbol>(e);
-}
-
-template <CFixedString auto symbol, CExpression E>
 constexpr auto make_all_constant_except(const E &e) noexcept {
-  return refreeze<Rewrite::hold_others, symbol>(e);
+  return refreeze<true, symbol>(e);
 }
 
 // A partial tree is differentiable again: what held the other symbols while it
 // was formed is lifted, so d/dy of a stored d/dx is not zero.
 template <CExpression E> constexpr auto thaw_partials(const E &e) noexcept {
-  return refreeze<Rewrite::lift_partials>(e);
+  return refreeze<false>(e);
 }
 
 // Alphabetical by name; a metafunction because that is what mp_sort takes.

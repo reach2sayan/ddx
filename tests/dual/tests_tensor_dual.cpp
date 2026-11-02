@@ -87,15 +87,15 @@ TEST(ConstexprContract, DifferentiationEntryPointsAreConstantEvaluated) {
   EXPECT_EQ((Hr[0, 1]), 1.0);
   EXPECT_EQ((Hr[0, 0]), 0.0);
 }
-TEST(BoundTest, EvalAsCarriesDualsThroughTheGraph) {
-  // eval_as is the deeper-numeric-type entry point the drivers use.
+TEST(SeededEval, CarriesDualsThroughTheTree) {
   auto x = var<"x">;
   auto y = var<"y">;
-  const auto b = bind(x * x + y, named<"x">(3.0), named<"y">(4.0));
+  const auto e = x * x + y;
+  using Syms = ddx::impl::detail::expr_symbols_t<decltype(e)>;
 
   using D = Dual<double>;
   const std::array<D, 2> seed{D{3.0, 1.0}, D{4.0, 0.0}}; // seed d/dx
-  const auto r = b.eval_as<D>(seed);
+  const auto r = e.template eval_seeded<Syms>(seed);
   EXPECT_DOUBLE_EQ(r.get<0>(), 13.0);
   EXPECT_DOUBLE_EQ(r.get<1>(), 6.0); // d/dx (x² + y) = 2x = 6
 }

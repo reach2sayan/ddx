@@ -512,7 +512,7 @@ template <std::size_t, impl::Numeric T> using Repeat = Expression<T>;
 template <impl::Numeric T>
 inline thread_local Arena<T> *current_arena = nullptr;
 
-// The runtime counterpart of scoped_seed; the arena is not a constant, so it
+// A scoped_value over the current arena; the arena is not a constant, so it
 // comes in as an argument.
 template <impl::Numeric T>
 [[nodiscard]] auto scoped_arena(Arena<T> &b) noexcept {

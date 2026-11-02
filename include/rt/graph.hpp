@@ -8,7 +8,6 @@
 #include "util/export.hpp"
 #include "util/ranges.hpp"
 
-#include <boost/describe/class.hpp>
 
 #include <algorithm>
 #include <array>
@@ -110,11 +109,9 @@ template <std::semiregular Per> struct PerBlock {
   Per values{};
   Per jacobian{};
   Per hessian{};
-  BOOST_DESCRIBE_CLASS(PerBlock, (), (values, jacobian, hessian), (), ())
 };
 
 using OutputBlocks = PerBlock<std::vector<NodeId>>; // what a freeze is handed
-using OutputSpans = PerBlock<std::span<const NodeId>>; // frozen graph view
 // The column counts, read off the blocks so no column can be miscounted:
 // `values` is m, `jacobian` is the pattern's nonzeros row-major by function,
 // and `hessian` is colours * n, compressed.
@@ -181,7 +178,6 @@ public:
     OpCode op = OpCode::Const;
     T value{};
     std::uint32_t payload = 0; // read through detail::get
-    BOOST_DESCRIBE_CLASS(NodeRecord, (), (op, value, payload), (), ())
   };
 
   // `contract` is settled here, not per sweep: it decides the arithmetic, so
@@ -346,7 +342,7 @@ public:
   [[nodiscard]] std::span<const Step> schedule() const { return schedule_; }
 
   // Derived once, for codegen, the interpreter and the ABI size checks.
-  [[nodiscard]] OutputSpans output_blocks() const {
+  [[nodiscard]] PerBlock<std::span<const NodeId>> output_blocks() const {
     return blocks_of(std::span<const NodeId>{outputs_});
   }
   [[nodiscard]] OutputRows output_rows() const {

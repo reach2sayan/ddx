@@ -11,7 +11,6 @@
 #include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>
-#include <boost/describe/class.hpp>
 
 #include <algorithm>
 #include <array>
@@ -100,13 +99,11 @@ struct ExternRecord {
     }
     return std::nullopt;
   }
-  BOOST_DESCRIBE_CLASS(ExternRecord, (), (name, arity, order), (), ())
 };
 
 // The record and the function itself.
 template <impl::Numeric T> struct ExternEntry : ExternRecord {
   std::shared_ptr<const ExternFn<T>> fn;
-  BOOST_DESCRIBE_CLASS(ExternEntry, (ExternRecord), (), (), ())
 };
 
 template <impl::Numeric T> class ExternFunction;
@@ -204,7 +201,6 @@ template <impl::Numeric T> struct Node {
   std::array<NodeId, 3> in{no_node, no_node, no_node};
   T value{}; // Const
   std::uint32_t payload = 0;
-  BOOST_DESCRIBE_CLASS(Node, (), (op, in, value, payload), (), ())
 };
 
 // Pinned rather than assumed: a member above `value` would silently widen
@@ -221,7 +217,6 @@ template <impl::Numeric T> struct TensorConst {
   [[nodiscard]] constexpr bool valid() const noexcept {
     return rows >= 1 && cols >= 1 && data.size() == std::size_t{rows} * cols;
   }
-  BOOST_DESCRIBE_CLASS(TensorConst, (), (rows, cols, data), (), ())
 };
 
 // Everything a model is: what the Arena holds, as one described list.
@@ -233,9 +228,6 @@ template <impl::Numeric T> struct Model {
   std::vector<TensorConst<T>> tensors;
   std::vector<NodeId> lists; // every has_list node's ids, end to end
   std::vector<Node<T>> nodes;
-  BOOST_DESCRIBE_CLASS(Model, (),
-                       (names, closures, externs, tensors, lists, nodes), (),
-                       ())
 
   // The CNodeSource half, which the Arena lends and the frozen Graph
   // answers as well.

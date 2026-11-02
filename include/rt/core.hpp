@@ -42,7 +42,7 @@ namespace ddx::rt::detail {
 // A point keyed by name at run time: any range of (name, value), which is the
 // map spelling of the names rt::var(name) reads.  Entry keys off a FixedString
 // and so cannot say a name the program only learns while it runs.
-template <typename R, typename T>
+template <typename R>
 concept CNamedRange =
     std::ranges::input_range<R> &&
     requires(const std::ranges::range_value_t<R> &e) {
@@ -50,10 +50,10 @@ concept CNamedRange =
       requires impl::Numeric<std::remove_cvref_t<decltype(e.second)>>;
     };
 
-template <typename A, typename T>
+template <typename A>
 concept CPointArg =
     impl::Numeric<std::remove_cvref_t<A>> || impl::CEntry<A> ||
-    CNamedRange<A, T> ||
+    CNamedRange<A> ||
     (std::ranges::input_range<A> &&
      impl::Numeric<std::remove_cvref_t<std::ranges::range_value_t<A>>>);
 
@@ -81,7 +81,7 @@ public:
   // The graph holds only the cells the pattern names, so the zeros go back in
   // here and this spelling never meets the compression.
   [[nodiscard]] constexpr result<std::vector<T>>
-  jacobian(const rt::detail::CPointArg<T> auto &...args) const {
+  jacobian(const rt::detail::CPointArg auto &...args) const {
     return dense_at<Want::Jacobian, &Blocks::jacobian>({}, args...);
   }
 
@@ -89,7 +89,7 @@ public:
   // value needs is not swept, which on a model whose derivative is simpler
   // than its function is most of the graph.
   [[nodiscard]] constexpr result<std::vector<T>>
-  gradient(const rt::detail::CPointArg<T> auto &...args) const {
+  gradient(const rt::detail::CPointArg auto &...args) const {
     return dense_at<Want::Gradient, &Blocks::jacobian>({}, args...);
   }
 
@@ -97,13 +97,13 @@ public:
   // `direction`, one forward sweep however many functions there are.
   [[nodiscard]] result<std::vector<T>>
   jacobian_jvp(std::span<const T> direction,
-               const rt::detail::CPointArg<T> auto &...args) const {
+               const rt::detail::CPointArg auto &...args) const {
     return dense_at<Want::JacobianJvp, &Blocks::hessian>(direction, args...);
   }
   // Along one symbol's basis vector: d/dx_j of the whole Jacobian.
   [[nodiscard]] result<std::vector<T>>
   jacobian_jvp(std::string_view along,
-               const rt::detail::CPointArg<T> auto &...args) const {
+               const rt::detail::CPointArg auto &...args) const {
     return self().unit(along).and_then([&](const auto &e) {
       return jacobian_jvp(std::span<const T>{e}, args...);
     });
@@ -348,7 +348,7 @@ public:
   }
 
   // The input list exists only at run time, so every spelling can refuse.
-  template <rt::detail::CPointArg<T>... Args>
+  template <rt::detail::CPointArg... Args>
   [[nodiscard]] constexpr result<std::vector<T>>
   point(const Args &...args) const {
     if (bad_) {
@@ -361,7 +361,7 @@ public:
           at, std::array{std::pair{std::remove_cvref_t<Args>::symbol.view(),
                                    static_cast<T>(args.value)}...});
     } else if constexpr (sizeof...(Args) == 1 &&
-                         (rt::detail::CNamedRange<Args, T> && ...)) {
+                         (rt::detail::CNamedRange<Args> && ...)) {
       // Before the plain range: a map is an input_range too, and its elements
       // are pairs rather than the numbers assign_range would read.
       ok = assign_named(at, args...);
@@ -379,7 +379,7 @@ public:
   // a point value however the point itself is spelled.
   [[nodiscard]] result<std::vector<T>>
   hvp(std::span<const T> direction,
-      const rt::detail::CPointArg<T> auto &...args) const {
+      const rt::detail::CPointArg auto &...args) const {
     return block_at<Want::Hvp, &Blocks::hessian>(direction, args...);
   }
 
@@ -387,7 +387,7 @@ public:
   // only at run time.
   [[nodiscard]] result<std::vector<T>>
   hvp(std::string_view along,
-      const rt::detail::CPointArg<T> auto &...args) const {
+      const rt::detail::CPointArg auto &...args) const {
     return unit(along).and_then(
         [&](const auto &e) { return hvp(std::span<const T>{e}, args...); });
   }
@@ -395,14 +395,14 @@ public:
   // w'J, n long: one weight per function.
   [[nodiscard]] result<std::vector<T>>
   vjp(std::span<const T> weights,
-      const rt::detail::CPointArg<T> auto &...args) const {
+      const rt::detail::CPointArg auto &...args) const {
     return block_at<Want::Vjp, &Blocks::jacobian>(weights, args...);
   }
 
   // J v, m long: the mirror of vjp().
   [[nodiscard]] result<std::vector<T>>
   jvp(std::span<const T> direction,
-      const rt::detail::CPointArg<T> auto &...args) const {
+      const rt::detail::CPointArg auto &...args) const {
     return block_at<Want::Jvp, &Blocks::jacobian>(direction, args...);
   }
 
@@ -434,7 +434,7 @@ public:
   // F(z, x) for each implicit's closure, at a point: zero, to rounding, where
   // the caller's root is one.  ddx never solves for z; this is the check.
   [[nodiscard]] result<std::vector<T>>
-  residual(const rt::detail::CPointArg<T> auto &...args) const {
+  residual(const rt::detail::CPointArg auto &...args) const {
     return point(args...).transform([this](const auto &at) {
       [[maybe_unused]] const auto held = reading();
       const auto closures = arena_->closures();
@@ -448,7 +448,7 @@ public:
 
   // Dense row-major m x n x n; the graph holds it compressed by colour.
   [[nodiscard]] result<std::vector<T>>
-  hessian(const rt::detail::CPointArg<T> auto &...args) const {
+  hessian(const rt::detail::CPointArg auto &...args) const {
     if (!poisoned() && is_system()) {
       // Off the arena, one output's Hessian at a time: no pipeline holds m
       // colourings.  The gate is the pipeline's, asked without one.
@@ -481,7 +481,7 @@ public:
   // cone walked with matrix tangents, where hessian() colours and sweeps n + 1
   // times over a dense term.  One output only.
   [[nodiscard]] result<std::vector<T>>
-  dense_hessian(const rt::detail::CPointArg<T> auto &...args) const {
+  dense_hessian(const rt::detail::CPointArg auto &...args) const {
     return block_at<Want::DenseHessian, &Blocks::hessian>({}, args...);
   }
   // How many terms the sweep kept quadratic, and how many fell back to a dense
@@ -684,7 +684,6 @@ public:
 
 protected:
   using Surface::as_columns;
-  using Surface::dense;
   using Surface::widen;
   using Compiled = detail::Compiled<T>;
   using Pipeline = detail::Pipeline<T>;
@@ -924,7 +923,7 @@ protected:
 
   // m long, always a vector: what System answers and Equation narrows.
   [[nodiscard]] constexpr result<std::vector<T>>
-  values(const rt::detail::CPointArg<T> auto &...args) const {
+  values(const rt::detail::CPointArg auto &...args) const {
     return block_at<Want::Value, &Blocks::values>({}, args...);
   }
 
@@ -1099,7 +1098,7 @@ private:
   template <Want W>
   [[nodiscard]] constexpr result<PerBlock<std::vector<T>>>
   at_in(Pipelines *pipelines, const Cells &cells, std::span<const T> along,
-        const rt::detail::CPointArg<T> auto &...args) const {
+        const rt::detail::CPointArg auto &...args) const {
     return point(args...).and_then([&](const std::vector<T> &pt)
                                        -> result<PerBlock<std::vector<T>>> {
       constexpr Direction direction = want_info(W).direction;
@@ -1125,7 +1124,7 @@ private:
   template <Want W>
   [[nodiscard]] constexpr result<PerBlock<std::vector<T>>>
   at(std::span<const T> along,
-     const rt::detail::CPointArg<T> auto &...args) const {
+     const rt::detail::CPointArg auto &...args) const {
     return at_in<W>(pipelines_.get(), every_cell(), along, args...);
   }
 
@@ -1134,7 +1133,7 @@ private:
   // refusal.
   [[nodiscard]] constexpr result<void>
   assign_named(std::vector<T> &at,
-               const rt::detail::CNamedRange<T> auto &entries) const {
+               const rt::detail::CNamedRange auto &entries) const {
     std::vector<bool> seen(at.size(), false);
     for (const auto &[name, value] : entries) {
       const auto input = arena_->lookup(std::string_view{name});
@@ -1503,7 +1502,7 @@ private:
   template <Want W>
   [[nodiscard]] result<PerBlock<std::vector<T>>>
   at(std::span<const T> along,
-     const rt::detail::CPointArg<T> auto &...args) const {
+     const rt::detail::CPointArg auto &...args) const {
     return core_->template at_in<W>(pipelines_.get(), cells(), along, args...);
   }
   [[nodiscard]] auto unit(std::string_view along) const {

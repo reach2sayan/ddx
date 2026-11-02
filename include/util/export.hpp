@@ -10,7 +10,6 @@
 #define DDX_API BOOST_SYMBOL_EXPORT
 #endif
 
-#define DDX_JIT_API DDX_API
 
 // A template libddx instantiates explicitly (DDX_RT_INSTANCES).  GCC and Clang
 // take the visibility on the template, since an instantiation line refuses it

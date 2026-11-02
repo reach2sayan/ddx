@@ -18,15 +18,10 @@ template <typename T> struct is_output {
   template <typename U> using fn = std::is_same<U, Expression<T>>;
 };
 
-// Outputs, or Dynamic alone -- a count the type does not fix -- and nothing
-// else.
+// Dynamic alone: a count the type does not fix.
 template <typename T, typename... Rest>
 inline constexpr bool dynamic_outputs =
     std::same_as<boost::mp11::mp_list<Rest...>, boost::mp11::mp_list<Dynamic>>;
-template <typename T, typename... Rest>
-concept COutputPack = dynamic_outputs<T, Rest...> ||
-                      boost::mp11::mp_all_of_q<boost::mp11::mp_list<Rest...>,
-                                               is_output<T>>::value;
 
 // The count's policy: fixed by the pack, or Dynamic as written.
 template <typename T, typename... Rest>
@@ -54,7 +49,9 @@ namespace ddx::impl {
 // a vector, and the one-function members refusing with
 // errc::not_single_output.
 template <Numeric T, typename... Rest>
-  requires rt::detail::COutputPack<T, Rest...>
+  requires(rt::detail::dynamic_outputs<T, Rest...> ||
+           boost::mp11::mp_all_of_q<boost::mp11::mp_list<Rest...>,
+                                    rt::detail::is_output<T>>::value)
 class Equation<rt::Expression<T>, Rest...> : public rt::detail::Core<T> {
   using Outputs = rt::detail::policy_of<T, Rest...>;
   using Base = rt::detail::Core<T>;
@@ -91,7 +88,7 @@ public:
 
   // `Outputs` is the one place the count's policy acts.
   [[nodiscard]] constexpr auto
-  evaluate(const rt::detail::CPointArg<T> auto &...args) const {
+  evaluate(const rt::detail::CPointArg auto &...args) const {
     return this->values(args...).transform([](std::vector<T> f) {
       if constexpr (Outputs::scalar) {
         return f.front();

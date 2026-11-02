@@ -122,7 +122,7 @@ void print_infix(const printer<V> &p, const CExpression auto &e, int min_prec) {
     }
   } else if constexpr (CConstant<U>) {
     p.put_value(e.get());
-  } else { // EvalResult and anything else that is just a value
+  } else { // anything else that is just a value
     p.put_value(e.eval());
   }
 }
