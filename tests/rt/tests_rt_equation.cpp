@@ -1398,3 +1398,69 @@ TEST(RtEquation, EveryCodegenLevelAgreesToTheBit) {
 }
 
 #endif
+
+// A census counts without a point: every step a scalar's one value, the rows
+// summing to the totals, the heaviest first.
+TEST(RtEquation, CensusCountsTheFrozenScheduleWithoutSweeping) {
+  const auto eq = ddx::rt::equation([] {
+    const auto x = ddx::rt::var("x");
+    const auto y = ddx::rt::var("y");
+    return x * y + sin(x) * exp(y);
+  });
+  const auto c = eq.census(ddx::rt::Want::Gradient);
+  ASSERT_TRUE(c.has_value());
+  EXPECT_GT(c->steps, 0u);
+  EXPECT_EQ(c->values, c->steps);
+  EXPECT_EQ(std::ranges::fold_left(
+                c->by_op | std::views::transform(&ddx::rt::Census::Row::steps),
+                0uz, std::plus{}),
+            c->steps);
+  EXPECT_TRUE(std::ranges::is_sorted(c->by_op, std::ranges::greater{},
+                                     &ddx::rt::Census::Row::values));
+}
+
+// A tensor step writes its whole shape: an n x n matrix the model computes is
+// n^2 values for one step.
+TEST(RtEquation, CensusChargesATensorStepItsShape) {
+  constexpr std::size_t n = 6;
+  const std::vector<double> b(n * n, 0.25);
+  const auto eq = ddx::rt::equation([&] {
+    const auto x = ddx::rt::vec("x", n);
+    const auto t = ddx::rt::var("T");
+    const auto m = exp(t * ddx::rt::mat_constant(n, n, std::span<const double>{b}));
+    return x % (m % x);
+  });
+  const auto c = eq.census(ddx::rt::Want::Value);
+  ASSERT_TRUE(c.has_value());
+  EXPECT_GT(c->values, c->steps);
+  EXPECT_GE(c->by_op.front().values, n * n);
+  EXPECT_EQ(eq.census(ddx::rt::Want::DenseHessian).has_value(),
+            eq.dense_hessian_cost().has_value());
+}
+
+// A vector read element by element -- how a model writes sparse coupling --
+// costs each derivative what the reads do: an AddAt per read was a whole
+// vector each, n^2 values for n reads.
+TEST(RtEquation, ElementReadsCostTheirDerivativesLinearly) {
+  constexpr std::size_t n = 400;
+  const auto eq = ddx::rt::equation([] {
+    const auto x = ddx::rt::vec("x", n);
+    ddx::rt::Expression<double> acc{0.0};
+    for (std::size_t i = 0; i + 1 < n; ++i) {
+      acc = acc + x[i] * x[i + 1];
+    }
+    return acc;
+  });
+  const auto value = eq.census(ddx::rt::Want::Value)->values;
+  EXPECT_LE(eq.census(ddx::rt::Want::Gradient)->values, 2 * value);
+  EXPECT_LE(eq.census(ddx::rt::Want::Hvp)->values, 4 * value);
+  std::vector<double> at(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    at[i] = 0.01 * static_cast<double>(i);
+  }
+  const auto g = eq.gradient(std::span<const double>{at});
+  ASSERT_TRUE(g.has_value());
+  EXPECT_EQ((*g)[0], at[1]);
+  EXPECT_EQ((*g)[n - 1], at[n - 2]);
+  EXPECT_EQ((*g)[7], at[6] + at[8]);
+}

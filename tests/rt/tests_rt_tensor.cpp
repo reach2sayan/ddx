@@ -1372,8 +1372,10 @@ TEST(RtMatrix, DenseHessianRefusesACompositionDependentMatrix) {
   });
   const auto at = composition(n);
   EXPECT_EQ(got.dense_hessian(std::span<const double>{at}).error().code,
-            ddx::errc::tensor_shape);
-  EXPECT_EQ(got.dense_hessian_cost().error().code, ddx::errc::tensor_shape);
+            ddx::errc::dense_refused);
+  EXPECT_EQ(got.dense_hessian_cost().error().code, ddx::errc::dense_refused);
+  EXPECT_EQ(got.compile_status(ddx::rt::Want::DenseHessian).error().code,
+            ddx::errc::dense_refused);
   EXPECT_FALSE(got.uses_kernel(ddx::rt::Want::DenseHessian));
   expect_same_derivatives(want, got, at, 1e-11);
 }
@@ -1811,7 +1813,7 @@ TEST(RtTensorDense, ASelectOverAComputedMatrixRefusesOrAgrees) {
       expect_close(*eq.hessian(std::span<const double>{at}), *dense, 1e-10,
                    "dense vs coloured");
     } else {
-      EXPECT_EQ(dense.error().code, ddx::errc::tensor_shape);
+      EXPECT_EQ(dense.error().code, ddx::errc::dense_refused);
     }
   };
   check([](const RE &, const RE &) { return RE{0.0}; });

@@ -617,6 +617,8 @@ PYBIND11_MODULE(_ddx, m) {
           pyb::keep_alive<0, 1>())
       .def("nodes", &PyEquation::nodes, pyb::kw_only(),
            pyb::arg("want") = PyEquation::Want::Jacobian)
+      .def("census", &PyEquation::census_dict, pyb::kw_only(),
+           pyb::arg("want") = PyEquation::Want::Jacobian)
       .def_property_readonly("symbols", &PyEquation::symbols_list)
       .def_property_readonly("params", &PyEquation::params_list)
       .def_property_readonly("inputs", &PyEquation::inputs_list)
@@ -633,6 +635,8 @@ PYBIND11_MODULE(_ddx, m) {
                                return *colours;
                              })
       .def("uses_kernel", &PyEquation::uses_kernel, pyb::kw_only(),
+           pyb::arg("want") = PyEquation::Want::Jacobian)
+      .def("compile_status", &PyEquation::compile_status_of, pyb::kw_only(),
            pyb::arg("want") = PyEquation::Want::Jacobian)
       .def_property(
           "_options", [](const PyEquation &self) { return self.options(); },

@@ -292,7 +292,7 @@ void quiet_vectoriser(llvm::LLVMContext &ctx) {
                  << ": ";
     d->print(out);
     llvm::errs() << '\n';
-  });
+  }, nullptr, /*RespectFilters=*/true);
 }
 
 } // namespace

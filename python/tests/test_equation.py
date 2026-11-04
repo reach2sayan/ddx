@@ -33,6 +33,9 @@ def test_gradient_is_the_jacobian_without_the_value(
     assert gradient == pytest.approx([expected.dx, expected.dy])
     assert list(gradient) == list(from_jacobian)
     assert scalar.nodes(want=ddx.Want.GRADIENT) <= scalar.nodes()
+    census = scalar.census(want=ddx.Want.GRADIENT)
+    assert census["steps"] == scalar.nodes(want=ddx.Want.GRADIENT)
+    assert sum(steps for _, steps, _ in census["by_op"]) == census["steps"]
 
 
 def test_call_is_evaluate(scalar: ddx.Equation, expected: Derivatives) -> None:

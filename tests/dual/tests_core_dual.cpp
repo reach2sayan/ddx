@@ -1018,3 +1018,33 @@ TEST(EquationForward, AZeroTangentNeverMeetsAnInfinitePartial) {
   EXPECT_TRUE(std::isinf((J[0, 0])));
   EXPECT_TRUE(std::isinf((J[1, 0])));
 }
+
+// ddx::nth_dual through the public names only: three variables on three ε's
+// give every mixed partial of a depth-3 dual in one evaluation.
+TEST(PublicDual, DepthThreeMixedPartials) {
+  using D = ddx::nth_dual<double, 3>;
+  const D x = ddx::dual_seed<3>(0.5, 0b001);
+  const D y = ddx::dual_seed<3>(2.0, 0b010);
+  const D z = ddx::dual_seed<3>(3.0, 0b100);
+  const D f = x * y * z + sin(x) * y;
+  EXPECT_DOUBLE_EQ(ddx::dual_part<0b000>(f), 0.5 * 2.0 * 3.0 + std::sin(0.5) * 2.0);
+  EXPECT_DOUBLE_EQ(ddx::dual_part<0b001>(f), 2.0 * 3.0 + std::cos(0.5) * 2.0);
+  EXPECT_DOUBLE_EQ(ddx::dual_part<0b010>(f), 0.5 * 3.0 + std::sin(0.5));
+  EXPECT_DOUBLE_EQ(ddx::dual_part<0b100>(f), 0.5 * 2.0);
+  EXPECT_DOUBLE_EQ(ddx::dual_part<0b011>(f), 3.0 + std::cos(0.5));
+  EXPECT_DOUBLE_EQ(ddx::dual_part<0b101>(f), 2.0);
+  EXPECT_DOUBLE_EQ(ddx::dual_part<0b110>(f), 0.5);
+  EXPECT_DOUBLE_EQ(ddx::dual_part<0b111>(f), 1.0);
+}
+
+// One variable on every ε: the all-ones coefficient is its Nth derivative.
+TEST(PublicDual, OneVariableOnEveryLevel) {
+  constexpr auto third = [] {
+    const auto x = ddx::dual_seed<3>(2.0, 0b111);
+    return ddx::dual_part<0b111>(x * x * x * x);
+  }();
+  static_assert(third == 24.0 * 2.0);
+  const auto x = ddx::dual_seed<3>(0.3f, 0b111);
+  EXPECT_FLOAT_EQ(ddx::dual_part<0b111>(exp(x)), std::exp(0.3f));
+  EXPECT_FLOAT_EQ(ddx::dual_part<0b011>(exp(x)), std::exp(0.3f));
+}

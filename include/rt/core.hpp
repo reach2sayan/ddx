@@ -541,9 +541,25 @@ public:
   // pipeline now: false with no backend, on a refused compile, and under
   // Interpret.
   [[nodiscard]] bool uses_kernel(Want want = Want::Jacobian) const {
+    return compile_status(want).has_value();
+  }
+
+  // What one call for `want` steps through, counted on the graph its
+  // pipeline froze; builds that pipeline as prepare() does, and sweeps nothing.
+  [[nodiscard]] result<Census> census(Want want = Want::Jacobian) const {
+    return ready(want).transform(
+        [&] { return detail::census_of(*pipeline(want)->graph); });
+  }
+
+  // uses_kernel() with the reason when it is false: the equation's own error,
+  // not_compiling under Interpret, or the JIT's refusal and its detail.
+  [[nodiscard]] jit::compile_result<void>
+  compile_status(Want want = Want::Jacobian) const {
     return ready(want)
-        .transform([&] { return static_cast<bool>(pipeline(want)->kernel); })
-        .value_or(false);
+        .transform_error([](error e) {
+          return jit::compile_error{.code = e.code, .detail = {}};
+        })
+        .and_then([&] { return pipeline(want)->status; });
   }
 
   // One Taylor sweep: seed c[0] = x0, c[1] = 1, then un-normalise c[Order].
@@ -1010,7 +1026,7 @@ protected:
   [[nodiscard]] constexpr result<void> blocked(Want want) const {
     return want == Want::DenseHessian && symbol_count() != 0 &&
                    dense_sweep().block == no_node
-               ? fail(errc::tensor_shape)
+               ? fail(errc::dense_refused)
                : result<void>{};
   }
   [[nodiscard]] constexpr result<void> ready(Want want) const {

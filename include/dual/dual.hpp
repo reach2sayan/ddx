@@ -315,6 +315,34 @@ static_assert(Numeric<Dual<float>>);
 using dual = nth_dual_t<double, 1>;    // first-order forward dual
 using dual2nd = nth_dual_t<double, 2>; // second-order (Hessian-capable) dual
 
+// An N-deep dual has 2^N coefficients, one per subset of its ε's.  Bit l of a
+// mask is ε_l, l = 0 the outermost level.
+//
+// v with coefficient 1 on each ε_l in `mask`: a variable those ε's
+// differentiate by.
+template <std::size_t N, Numeric T>
+[[nodiscard]] constexpr nth_dual_t<T, N> dual_seed(T v,
+                                                   std::size_t mask) noexcept {
+  if constexpr (N == 0) {
+    return v;
+  } else {
+    return nth_dual_t<T, N>{dual_seed<N - 1>(v, mask >> 1),
+                            embed_constant<T, N - 1>((mask & 1) ? T{1} : T{})};
+  }
+}
+
+// The coefficient of the ε's in Mask: 0 is the value, 2^N - 1 the mixed Nth
+// derivative.
+template <std::size_t Mask, Numeric D>
+[[nodiscard]] constexpr auto dual_part(const D &x) noexcept {
+  if constexpr (dual_depth_v<D> == 0) {
+    static_assert(Mask == 0, "dual_part: the mask names a level D lacks");
+    return x;
+  } else {
+    return dual_part<(Mask >> 1)>(x.template get<Mask & 1>());
+  }
+}
+
 } // namespace ddx::impl
 
 // `v+de` -- the two-term case of the shared series renderer.

@@ -27,6 +27,8 @@ def batch() -> Batch:
 def test_interpret_is_the_default(scalar: ddx.Equation) -> None:
     assert scalar.options.backend is ddx.Backend.INTERPRET
     assert scalar.uses_kernel() is False
+    code, _ = scalar.compile_status()
+    assert code is ddx.errc.not_compiling
 
 
 def test_compile_lands_a_kernel_where_there_is_a_backend(
@@ -35,6 +37,7 @@ def test_compile_lands_a_kernel_where_there_is_a_backend(
     scalar.compile(points=batch.shape[1])
     assert scalar.uses_kernel() is ddx.has_jit
     assert scalar.uses_kernel() is ddx.has_jit
+    assert (scalar.compile_status() is None) is ddx.has_jit
 
 
 def test_the_kernel_and_the_sweep_agree(scalar: ddx.Equation, batch: Batch) -> None:

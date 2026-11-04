@@ -301,6 +301,14 @@ struct Shape {
 };
 [[nodiscard]] constexpr Shape shape_of(const auto &s, NodeId v) {
   for (;;) {
+    // An arena records each node's shape as it interns it, so the walk below
+    // is one step past the node asked about; without that a chain of
+    // elementwise ops is walked to its leaf on every ask.
+    if constexpr (requires { s.recorded_shape(v); }) {
+      if (const auto known = s.recorded_shape(v)) {
+        return *known;
+      }
+    }
     const auto [a, b, c] = s.operands(v);
     switch (s.op_of(v)) {
     case OpCode::VecConst:
@@ -477,6 +485,7 @@ public:
   // about to build asks for.
   constexpr void reserve(std::size_t nodes, std::size_t symbols = 0) {
     model_.nodes.reserve(nodes);
+    shapes_.reserve(nodes);
     if (2 * nodes > table_.size()) {
       rehash(nodes);
     }
@@ -580,6 +589,10 @@ public:
     return model_.operands(id);
   }
   [[nodiscard]] constexpr std::size_t size() const { return model_.size(); }
+  // What shape_of() reads before it walks.
+  [[nodiscard]] constexpr std::optional<Shape> recorded_shape(NodeId v) const {
+    return v < shapes_.size() ? std::optional{shapes_[v]} : std::nullopt;
+  }
   [[nodiscard]] constexpr std::span<const Node<T>> nodes() const {
     return model_.nodes;
   }
@@ -886,6 +899,7 @@ private:
     const auto id = static_cast<NodeId>(model_.nodes.size());
     model_.nodes.push_back(n);
     table_[i] = id;
+    shapes_.push_back(shape_of(*this, id));
     return id;
   }
 
@@ -1172,6 +1186,8 @@ private:
   // Open-addressed by hand: interning runs inside constant evaluation and no
   // library hash container is constexpr.
   std::vector<NodeId> table_; // power-of-two capacity; no_node == free slot
+  // By id, what shape_of() found when intern() appended the node.
+  std::vector<Shape> shapes_;
   // Per named kind, the leaf interning made for each slot.
   PerKind<std::vector<NodeId>> ids_;
   // Every named input, sorted by name: a flat map by hand, since interning runs

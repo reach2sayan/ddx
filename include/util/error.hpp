@@ -45,7 +45,9 @@ namespace ddx {
   X(wrong_argument_count, "the function takes a different number of arguments")      \
                                                                                               \
   /* Appended, so no earlier value moves. */                                                  \
-  X(unclosed_implicit, "an implicit input is named without the residual it is a root of")
+  X(unclosed_implicit, "an implicit input is named without the residual it is a root of") \
+  X(not_compiling,    "the equation interprets: its backend is Interpret, or its scalar has no compiled kernel") \
+  X(dense_refused,    "the dense Hessian sweep cannot carry an operation this graph holds")
 // clang-format on
 
 enum class errc : std::uint8_t {
