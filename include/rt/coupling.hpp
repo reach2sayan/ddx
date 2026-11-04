@@ -7,6 +7,7 @@
 #include "util/config.hpp" // DDX_FWD
 #include "util/export.hpp"
 
+#include <boost/container/small_vector.hpp>
 #include <boost/dynamic_bitset.hpp>
 #include <boost/stl_interfaces/iterator_interface.hpp>
 
@@ -244,6 +245,32 @@ inline void couple(CouplingRows &rows, const SymbolSet &a, const SymbolSet &b) {
   }
 }
 
+// One element's support, sorted: a vector built element by element has one
+// of these per element, a few symbols each, where a SymbolSet per element
+// would be n bits each.
+using Indices = boost::container::small_vector<std::uint32_t, 2>;
+
+inline void couple(CouplingRows &rows, const Indices &a, const Indices &b) {
+  for (const std::uint32_t i : a) {
+    for (const std::uint32_t j : b) {
+      rows[i].set(j);
+      rows[j].set(i);
+    }
+  }
+}
+[[nodiscard]] inline Indices indices_of(const SymbolSet &s) {
+  Indices out;
+  for (const std::size_t i : set_bits(s)) {
+    out.push_back(static_cast<std::uint32_t>(i));
+  }
+  return out;
+}
+[[nodiscard]] inline Indices united(const Indices &a, const Indices &b) {
+  Indices out;
+  std::ranges::set_union(a, b, std::back_inserter(out));
+  return out;
+}
+
 } // namespace detail
 
 // rows[i][j] is true when d2f/dxi dxj may be nonzero.  Conservative and
@@ -265,6 +292,100 @@ template <impl::Numeric T>
   const auto of = [&](NodeId u) -> const SymbolSet & {
     return support[rank[u]];
   };
+  // By rank, a vector's support element by element where its elements are
+  // built one by one -- a Pack, a constant, an elementwise Map or Zip of
+  // such -- and empty where only the union is known.  A Gather reads one
+  // element, so x[i] * x[j] couples i and j, not all of x.
+  using Elements = std::vector<detail::Indices>;
+  std::vector<Elements> elements;
+  elements.reserve(support.capacity());
+  const auto each = [&](NodeId u) -> const Elements & {
+    return elements[rank[u]];
+  };
+  // Element by element, or nullopt to take the arms below.
+  const auto elementwise = [&](NodeId v, const Node<T> &node,
+                               OpCode op) -> std::optional<Elements> {
+    switch (node.op) {
+    case OpCode::Pack:
+      return arguments(b, v) |
+             std::views::transform([&](NodeId u) {
+               return detail::indices_of(of(u));
+             }) |
+             std::ranges::to<Elements>();
+    case OpCode::VecConst:
+      return Elements(shape_of(b, v).rows);
+    case OpCode::Map: {
+      if (each(node.in[0]).empty()) {
+        return std::nullopt;
+      }
+      if (op != OpCode::Neg) {
+        for (const auto &e : each(node.in[0])) {
+          detail::couple(rows, e, e);
+        }
+      }
+      return each(node.in[0]);
+    }
+    case OpCode::Zip: {
+      const Elements &l = each(node.in[0]);
+      const Elements &r = each(node.in[1]);
+      if (l.empty() || r.size() != l.size()) {
+        return std::nullopt;
+      }
+      if (op == OpCode::Lt || op == OpCode::Le) {
+        return Elements(l.size());
+      }
+      Elements out(l.size());
+      for (const auto k : std::views::iota(0uz, l.size())) {
+        out[k] = detail::united(l[k], r[k]);
+        if (op == OpCode::Mul) {
+          detail::couple(rows, l[k], r[k]);
+        } else if (op == OpCode::Div) {
+          detail::couple(rows, l[k], r[k]);
+          detail::couple(rows, r[k], r[k]);
+        } else if (op != OpCode::Add) {
+          detail::couple(rows, out[k], out[k]);
+        }
+      }
+      return out;
+    }
+    case OpCode::Scale: { // s * v: s against each element
+      const Elements &w = each(node.in[1]);
+      if (w.empty()) {
+        return std::nullopt;
+      }
+      const detail::Indices s = detail::indices_of(of(node.in[0]));
+      Elements out(w.size());
+      for (const auto k : std::views::iota(0uz, w.size())) {
+        detail::couple(rows, s, w[k]);
+        out[k] = detail::united(s, w[k]);
+      }
+      return out;
+    }
+    case OpCode::AddAt: { // linear: v with element i plus a scalar
+      if (each(node.in[0]).empty()) {
+        return std::nullopt;
+      }
+      Elements out = each(node.in[0]);
+      auto &e = out[detail::get<Element>(node).value];
+      e = detail::united(e, detail::indices_of(of(node.in[1])));
+      return out;
+    }
+    case OpCode::VSelect: { // chooses, as linear as an Add
+      const Elements &t = each(node.in[1]);
+      const Elements &f = each(node.in[2]);
+      if (t.empty() || f.size() != t.size()) {
+        return std::nullopt;
+      }
+      Elements out(t.size());
+      for (const auto k : std::views::iota(0uz, t.size())) {
+        out[k] = detail::united(t[k], f[k]);
+      }
+      return out;
+    }
+    default:
+      return std::nullopt;
+    }
+  };
   // What a field op couples between the supports of its operands; false
   // for any other op, which couples their union with itself.
   const auto step = [&rows](OpCode op, const SymbolSet &l, const SymbolSet &r) {
@@ -279,12 +400,40 @@ template <impl::Numeric T>
   for (const NodeId v : detail::live_ids(live)) {
     rank[v] = static_cast<NodeId>(support.size());
     SymbolSet &here = support.emplace_back(n);
+    Elements &mine = elements.emplace_back();
     const auto unite = [&](const auto &ids) {
       std::ranges::for_each(ids, [&](NodeId u) { here |= of(u); });
     };
     const auto &node = b[v];
-    // A Map or Zip couples as its inner op does, over the whole vector.
+    // A Map or Zip couples as its inner op does, element by element where
+    // its operands' elements are known, else over the whole vector.
     const OpCode op = detail::effective_op(node);
+    // u . w couples each element of u with the same element of w only.
+    if (node.op == OpCode::Dot && !each(node.in[0]).empty() &&
+        each(node.in[0]).size() == each(node.in[1]).size()) {
+      for (const auto k : std::views::iota(0uz, each(node.in[0]).size())) {
+        detail::couple(rows, each(node.in[0])[k], each(node.in[1])[k]);
+      }
+      here = of(node.in[0]);
+      here |= of(node.in[1]);
+      continue;
+    }
+    if (node.op == OpCode::Gather && !each(node.in[0]).empty()) {
+      for (const std::uint32_t s :
+           each(node.in[0])[detail::get<Element>(node).value]) {
+        here.set(s);
+      }
+      continue;
+    }
+    if (auto known = elementwise(v, node, op)) {
+      mine = *std::move(known);
+      for (const auto &e : mine) {
+        for (const std::uint32_t s : e) {
+          here.set(s);
+        }
+      }
+      continue;
+    }
     switch (kind_of(op)) {
     case Kind::Const:
       break;

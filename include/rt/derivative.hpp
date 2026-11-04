@@ -295,9 +295,25 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
   // anything else reaches the vector, or the sweep does, where an AddAt per
   // read was a whole vector per element -- n^2 for a model that indexes its
   // vector element by element.  The same additions, in the same order.
+  // The guard the reads leave the vector with is add_to's OR of theirs, kept
+  // as a scalar while they arrive and joined to the vector's own once, at the
+  // flush: an n-wide OR per read was n^2 again.
   struct Gathered {
     NodeId base = no_node;
+    NodeId guard = no_node; // the vector's when the reads began
+    NodeId reads = no_node; // the reads' guards, ORed
+    bool open = true;       // no read, and no base, has dropped the guard
     std::vector<NodeId> element;
+  };
+  // The guard add_to would have left: the vector's own, if it had an
+  // adjoint, ORed with every read's.
+  const auto guard_of = [&](const Gathered &row) {
+    if (!row.open) {
+      return no_node;
+    }
+    return row.base == no_node
+               ? row.reads
+               : select(expr(row.guard), one, expr(row.reads)).id(b);
   };
   std::vector<Gathered> gathered(n);
   const auto flush = [&](NodeId v) {
@@ -312,20 +328,30 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
       }
     }
     adj[v] = b.pack(row.element);
-    guard[v] = no_node;
+    guard[v] = guard_of(row);
     row = {};
   };
+  // A read under a scalar guard is the guarded element, and the guard joins
+  // the vector's as add_to's would.
   const auto gather = [&](NodeId from, std::size_t k, const Expression<T> &a,
-                          std::size_t rows) {
+                          std::size_t rows, NodeId g) {
     Gathered &row = gathered[from];
-    if (row.element.empty()) {
+    const bool first = row.element.empty();
+    if (first) {
       row.base = adj[from];
+      row.guard = guard[from];
+      row.open = row.base == no_node || row.guard != no_node;
       row.element.assign(rows, no_node);
     }
+    const Expression<T> c = g == no_node ? a : select(expr(g), a, zero);
     NodeId &e = row.element[k];
-    e = e != no_node        ? (expr(e) + a).id(b)
-        : row.base != no_node ? (expr(row.base)[k] + a).id(b)
-                              : a.id(b);
+    e = e != no_node        ? (expr(e) + c).id(b)
+        : row.base != no_node ? (expr(row.base)[k] + c).id(b)
+                              : c.id(b);
+    row.open = row.open && g != no_node;
+    if (row.open) {
+      row.reads = first ? g : select(expr(row.reads), one, expr(g)).id(b);
+    }
   };
 
   const auto add_to = [&](NodeId child, NodeId g, auto &&contribution) {
@@ -394,6 +420,21 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
   };
 
   for (const NodeId v : detail::live_ids(live) | std::views::reverse) {
+    // A Pack whose adjoint is element reads alone hands each read to its own
+    // argument, as the Pack rule below would through a[k]: building the
+    // vector only to take it apart was n per sweep, n^2 over a system's.
+    if (v < gathered.size() && !gathered[v].element.empty() &&
+        gathered[v].base == no_node && b.op_of(v) == OpCode::Pack) {
+      const auto row = std::move(gathered[v].element);
+      const NodeId g = guard_of(gathered[v]);
+      gathered[v] = {};
+      for (const auto [k, s] : arguments(b, v) | std::views::enumerate) {
+        if (const NodeId e = row[static_cast<std::size_t>(k)]; e != no_node) {
+          add_to(s, g, [&] { return expr(e); });
+        }
+      }
+      continue;
+    }
     flush(v);
     // no_node is "nothing reached it", a folded Const 0 is "what reached it
     // cancelled"; neither contributes below.
@@ -487,14 +528,15 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
       case OpCode::Gather: {
         const NodeId from = node.in[0];
         const Shape shape = shape_of(b, from);
-        if (g != no_node || shape.cols != 1 || !moves(from)) {
+        if ((g != no_node && detail::is_tensor(b[g])) || shape.cols != 1 ||
+            !moves(from)) {
           add_to(from, g, [&] {
             return detail::add_at(expr(b.zeros(shape)), a,
                                   detail::get<Element>(node).value);
           });
           break;
         }
-        gather(from, detail::get<Element>(node).value, a, shape.rows);
+        gather(from, detail::get<Element>(node).value, a, shape.rows, g);
         break;
       }
       case OpCode::Scale:

@@ -1464,3 +1464,46 @@ TEST(RtEquation, ElementReadsCostTheirDerivativesLinearly) {
   EXPECT_EQ((*g)[n - 1], at[n - 2]);
   EXPECT_EQ((*g)[7], at[6] + at[8]);
 }
+
+// Every call over the shapes that each once cost n^2: element reads of a
+// symbol vector, of a vector select (whose reads carry guards), a dot, and a
+// system's rows over one vector.  Counted against the value at two sizes, so
+// a ratio that grows with n fails.
+TEST(RtEquation, NoCallCostsMoreThanItsValueTimesAConstant) {
+  using RE = ddx::rt::Expression<double>;
+  using W = ddx::rt::Want;
+  const auto chain = [](std::size_t n) {
+    return ddx::rt::equation([n] {
+      const auto x = ddx::rt::vec("x", n);
+      const auto y = select(x - 0.5, x * x, sin(x));
+      RE acc = dot(exp(x), x) + sum(y);
+      for (std::size_t i = 0; i + 1 < n; ++i) {
+        acc = acc + y[i] * x[i + 1] + sin(x[i]);
+      }
+      return acc;
+    });
+  };
+  const auto rows = [](std::size_t n) {
+    return ddx::rt::equation([n] {
+      const auto x = ddx::rt::vec("x", n);
+      std::vector<RE> f;
+      for (std::size_t i = 0; i + 1 < n; ++i) {
+        f.push_back(sin(x[i]) * x[i + 1]);
+      }
+      return f;
+    });
+  };
+  const auto ratio = [](const auto &eq, W w) {
+    return static_cast<double>(eq.census(w)->values) /
+           static_cast<double>(eq.census(W::Value)->values);
+  };
+  for (const W w : {W::Jacobian, W::Gradient, W::Hessian, W::Hvp, W::Vjp,
+                    W::Jvp, W::JacobianJvp}) {
+    const double small = ratio(chain(50), w);
+    EXPECT_LE(ratio(chain(400), w), 1.1 * small) << int(w);
+  }
+  for (const W w : {W::Jacobian, W::Gradient, W::Vjp, W::Jvp, W::JacobianJvp}) {
+    const double small = ratio(rows(50), w);
+    EXPECT_LE(ratio(rows(400), w), 1.1 * small) << int(w);
+  }
+}
