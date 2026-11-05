@@ -13,28 +13,27 @@
 #endif
 
 #include <cstddef>
-#include <functional>
 #include <string>
 #include <vector>
 
 namespace {
 
-void on_small_stack(const std::function<void()> &body) {
+// Runs `body` on a thread with a 1 MiB stack; std::thread cannot size one.
+void on_small_stack([[maybe_unused]] auto body) {
 #ifndef DDX_TEST_SMALL_STACK
   GTEST_SKIP() << "no pthreads to size a stack with";
 #else
   pthread_attr_t attr;
   ASSERT_EQ(pthread_attr_init(&attr), 0);
-  ASSERT_EQ(pthread_attr_setstacksize(&attr, std::size_t{1} << 20), 0);
+  ASSERT_EQ(pthread_attr_setstacksize(&attr, 1uz << 20), 0);
   pthread_t thread;
-  auto *f = const_cast<std::function<void()> *>(&body);
   ASSERT_EQ(pthread_create(
                 &thread, &attr,
                 [](void *p) -> void * {
-                  (*static_cast<std::function<void()> *>(p))();
+                  (*static_cast<decltype(body) *>(p))();
                   return nullptr;
                 },
-                f),
+                &body),
             0);
   pthread_join(thread, nullptr);
   pthread_attr_destroy(&attr);

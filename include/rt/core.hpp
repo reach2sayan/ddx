@@ -412,18 +412,13 @@ public:
     requires std::convertible_to<std::ranges::range_reference_t<R>,
                                  std::string_view>
   [[nodiscard]] result<Restricted<Core>> restrict(const R &names) const {
-    return alive().and_then([&]() -> result<Restricted<Core>> {
-      std::vector<bool> chosen(symbol_count(), false);
-      return std::ranges::fold_left(
-                 names, result<void>{},
-                 [&](result<void> ok, std::string_view name) {
-                   return ok.and_then([&] {
-                     return symbol(name).transform(
-                         [&](std::uint32_t slot) { chosen[slot] = true; });
-                   });
-                 })
-          .transform([&] { return Restricted<Core>{*this, chosen}; });
-    });
+    DDX_CHECK(alive());
+    std::vector<bool> chosen(symbol_count(), false);
+    for (const std::string_view name : names) {
+      DDX_TRY(slot, symbol(name));
+      chosen[*slot] = true;
+    }
+    return Restricted<Core>{*this, chosen};
   }
   [[nodiscard]] result<Restricted<Core>> restrict(
       std::initializer_list<std::string_view> names) const {
@@ -451,17 +446,15 @@ public:
     if (!poisoned() && is_system()) {
       // Off the arena, one output's Hessian at a time: no pipeline holds m
       // colourings.  The gate is the pipeline's, asked without one.
-      return point(args...).and_then([this](const auto &at) {
-        return orders(Want::Hessian).transform([&] {
-          const std::size_t m = roots_.size();
-          const std::size_t n = symbol_count();
-          std::vector<T> f(m);
-          std::vector<T> g(m * n);
-          std::vector<T> out(m * n * n);
-          walk(at, f, g, out);
-          return out;
-        });
-      });
+      DDX_TRY(at, point(args...));
+      DDX_CHECK(orders(Want::Hessian));
+      const std::size_t m = roots_.size();
+      const std::size_t n = symbol_count();
+      std::vector<T> f(m);
+      std::vector<T> g(m * n);
+      std::vector<T> out(m * n * n);
+      walk(*at, f, g, out);
+      return out;
     }
     return at<Want::Hessian>({}, args...).transform([this](const auto &b) {
       // Only the cells the colouring stores; `out` is already zero, which is
@@ -529,12 +522,11 @@ public:
   // Sweep and freeze `wants` now, so the calls that follow -- from any number
   // of threads -- find their pipelines built and never take a write lock.
   [[nodiscard]] result<void> prepare(std::initializer_list<Want> wants) const {
-    return std::ranges::fold_left(
-        wants, result<void>{}, [this](result<void> ok, Want want) {
-          return ok.and_then([&] { return ready(want); }).transform([&] {
-            (void)pipeline(want);
-          });
-        });
+    for (const Want want : wants) {
+      DDX_CHECK(ready(want));
+      (void)pipeline(want);
+    }
+    return {};
   }
 
   // Whether a batch call for `want` goes through compiled code, building its
@@ -566,25 +558,24 @@ public:
   template <std::size_t Order>
     requires(Order > 0)
   [[nodiscard]] result<T> univariate_derivative(T x0) const {
-    return single().and_then([&]() -> result<T> {
-      if (arena_->inputs().named() != 1 || symbol_count() != 1) {
-        return fail(errc::not_univariate);
-      }
-      using Taylor = impl::TaylorDual<T, Order>;
-      const std::span<const NodeId> root{roots_.data(), 1};
-      [[maybe_unused]] const auto held = reading();
-      // Refuse rather than sweep: an op the Taylor scalar lacks evaluates to
-      // a zero node, which is a wrong number with nothing to say so.
-      if (!computes_at<Taylor>(*arena_, root)) {
-        return fail(errc::unsupported_scalar);
-      }
-      const std::array<Taylor, 1> at{Taylor::variable(x0)};
-      // One root out of an arena that may hold a gradient and a Hessian too,
-      // and a Taylor node costs (Order + 1) coefficients.
-      const auto values = evaluate_reachable(*arena_, root, at);
-      return values[roots_[0]].c[Order] *
-             static_cast<T>(impl::detail::compile_time_factorial(Order));
-    });
+    DDX_CHECK(single());
+    if (arena_->inputs().named() != 1 || symbol_count() != 1) {
+      return fail(errc::not_univariate);
+    }
+    using Taylor = impl::TaylorDual<T, Order>;
+    const std::span<const NodeId> root{roots_.data(), 1};
+    [[maybe_unused]] const auto held = reading();
+    // Refuse rather than sweep: an op the Taylor scalar lacks evaluates to
+    // a zero node, which is a wrong number with nothing to say so.
+    if (!computes_at<Taylor>(*arena_, root)) {
+      return fail(errc::unsupported_scalar);
+    }
+    const std::array<Taylor, 1> at{Taylor::variable(x0)};
+    // One root out of an arena that may hold a gradient and a Hessian too,
+    // and a Taylor node costs (Order + 1) coefficients.
+    const auto values = evaluate_reachable(*arena_, root, at);
+    return values[roots_[0]].c[Order] *
+           static_cast<T>(impl::detail::compile_time_factorial(Order));
   }
 
   // --- batch ---------------------------------------------------------------
@@ -860,20 +851,20 @@ protected:
   [[nodiscard]] result<std::shared_ptr<const Compiled>>
   checked(Pipelines &pipelines, const Cells &cells, Want want,
           std::span<const T *const> xs, const Columns<T> &out) const {
-    return ready(want).and_then(
-        [&]() -> result<std::shared_ptr<const Compiled>> {
-          auto c = pipeline_in(pipelines, cells, want);
-          // Columns, not nodes: a vector output is one column per element.
-          const bool fits =
-              xs.size() == c->graph->arity() &&
-              std::ranges::none_of(zip_blocks(out, c->graph->layout()),
-                                   [](const auto &pair) {
-                                     const auto &[columns, count] = pair;
-                                     return columns.size() != count;
-                                   });
-          return fits ? result<std::shared_ptr<const Compiled>>{std::move(c)}
-                      : fail(errc::wrong_column_count);
-        });
+    DDX_CHECK(ready(want));
+    auto c = pipeline_in(pipelines, cells, want);
+    // Columns, not nodes: a vector output is one column per element.
+    const bool fits =
+        xs.size() == c->graph->arity() &&
+        std::ranges::none_of(zip_blocks(out, c->graph->layout()),
+                             [](const auto &pair) {
+                               const auto &[columns, count] = pair;
+                               return columns.size() != count;
+                             });
+    if (!fits) {
+      return fail(errc::wrong_column_count);
+    }
+    return c;
   }
 
   // A system's Hessians, read off the arena a point at a time: a frozen graph
@@ -1114,27 +1105,23 @@ private:
   [[nodiscard]] constexpr result<PerBlock<std::vector<T>>>
   at_in(Pipelines *pipelines, const Cells &cells, std::span<const T> along,
         const rt::detail::CPointArg auto &...args) const {
-    return point(args...).and_then([&](const std::vector<T> &pt)
-                                       -> result<PerBlock<std::vector<T>>> {
-      constexpr Direction direction = want_info(W).direction;
-      if (direction != Direction::None && along.size() != extent(direction)) {
-        return fail(errc::wrong_direction);
-      }
-      const Layout size = sizes(W, cells);
-      PerBlock<std::vector<T>> out{.values = std::vector<T>(size.values),
-                                   .jacobian = std::vector<T>(size.jacobian),
-                                   .hessian = std::vector<T>(size.hessian)};
-      const auto swept = [&] {
-        if constexpr (direction == Direction::None) {
-          return gather(pipelines, cells, W, pt, out.values, out.jacobian,
-                        out.hessian);
-        } else {
-          return gather(pipelines, cells, W, widen(pt, along), out.values,
-                        out.jacobian, out.hessian);
-        }
-      }();
-      return swept.transform([&] { return std::move(out); });
-    });
+    DDX_TRY(pt, point(args...));
+    constexpr Direction direction = want_info(W).direction;
+    if (direction != Direction::None && along.size() != extent(direction)) {
+      return fail(errc::wrong_direction);
+    }
+    const Layout size = sizes(W, cells);
+    PerBlock<std::vector<T>> out{.values = std::vector<T>(size.values),
+                                 .jacobian = std::vector<T>(size.jacobian),
+                                 .hessian = std::vector<T>(size.hessian)};
+    if constexpr (direction == Direction::None) {
+      DDX_CHECK(gather(pipelines, cells, W, *pt, out.values, out.jacobian,
+                       out.hessian));
+    } else {
+      DDX_CHECK(gather(pipelines, cells, W, widen(*pt, along), out.values,
+                       out.jacobian, out.hessian));
+    }
+    return out;
   }
   template <Want W>
   [[nodiscard]] constexpr result<PerBlock<std::vector<T>>>

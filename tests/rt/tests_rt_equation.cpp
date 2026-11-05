@@ -1439,9 +1439,9 @@ TEST(RtEquation, CensusChargesATensorStepItsShape) {
 }
 
 // A vector read element by element -- how a model writes sparse coupling --
-// costs each derivative what the reads do: an AddAt per read was a whole
-// vector each, n^2 values for n reads.
-TEST(RtEquation, ElementReadsCostTheirDerivativesLinearly) {
+// sums each element's reads into that element alone.  What the reads cost is
+// NoCallCostsMoreThanItsValueTimesAConstant's.
+TEST(RtEquation, ElementReadsSumIntoTheirOwnElements) {
   constexpr std::size_t n = 400;
   const auto eq = ddx::rt::equation([] {
     const auto x = ddx::rt::vec("x", n);
@@ -1451,9 +1451,6 @@ TEST(RtEquation, ElementReadsCostTheirDerivativesLinearly) {
     }
     return acc;
   });
-  const auto value = eq.census(ddx::rt::Want::Value)->values;
-  EXPECT_LE(eq.census(ddx::rt::Want::Gradient)->values, 2 * value);
-  EXPECT_LE(eq.census(ddx::rt::Want::Hvp)->values, 4 * value);
   std::vector<double> at(n);
   for (std::size_t i = 0; i < n; ++i) {
     at[i] = 0.01 * static_cast<double>(i);

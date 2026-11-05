@@ -119,12 +119,9 @@ pyb::handle error_class;
   auto arena = std::make_shared<rt::Arena<double>>();
   pyb::list built;
   for (const std::string &source : sources) {
-    built.append(pyb::cast(PyExpression{unwrap(rt::text::parse(source).and_then(
-                                            [&arena](const rt::text::Ast &ast) {
-                                              return rt::text::lower(*arena,
-                                                                     ast);
-                                            })),
-                                        arena}));
+    const rt::text::Ast ast = unwrap(rt::text::parse(source));
+    built.append(
+        pyb::cast(PyExpression{unwrap(rt::text::lower(*arena, ast)), arena}));
   }
   auto roots = roots_of(built, *arena);
   return pyb::cast(PyEquation{std::move(arena), std::move(roots)});
