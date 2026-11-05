@@ -290,6 +290,11 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
   // handle's `+` is the sum: a Zip(add) where the child is a vector.  The
   // contribution is built only for a child `moves` names: a param's, a seed's
   // or a table's adjoint is read by nothing.
+  const auto joined = [&](NodeId held, NodeId g) {
+    return held == no_node || g == no_node
+               ? no_node
+               : select(expr(held), one, expr(g)).id(b);
+  };
   // By vector, the adjoint each element's reads have summed to so far, each
   // sum started from the element of the adjoint the vector had: one Pack when
   // anything else reaches the vector, or the sweep does, where an AddAt per
@@ -311,9 +316,7 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
     if (!row.open) {
       return no_node;
     }
-    return row.base == no_node
-               ? row.reads
-               : select(expr(row.guard), one, expr(row.reads)).id(b);
+    return row.base == no_node ? row.reads : joined(row.guard, row.reads);
   };
   std::vector<Gathered> gathered(n);
   const auto flush = [&](NodeId v) {
@@ -350,7 +353,7 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
                               : c.id(b);
     row.open = row.open && g != no_node;
     if (row.open) {
-      row.reads = first ? g : select(expr(row.reads), one, expr(g)).id(b);
+      row.reads = first ? g : joined(row.reads, g);
     }
   };
 
@@ -372,11 +375,7 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
       return;
     }
     adj[child] = (expr(adj[child]) + expr(c)).id(b);
-    if (guard[child] != no_node) {
-      guard[child] = g == no_node
-                         ? no_node
-                         : select(expr(guard[child]), one, expr(g)).id(b);
-    }
+    guard[child] = joined(guard[child], g);
   };
 
   // dot(A, M) where A is N (.) u w^T, a matrix adjoint as MatVec and the

@@ -236,34 +236,26 @@ namespace detail {
 // box, the product view costs 7-21% over 64 to 1024 symbols at every density,
 // where the nested walk is a wash against the callback it replaced.  The
 // composed spelling reads better and this is `coupling_pattern`'s hot loop.
-inline void couple(CouplingRows &rows, const SymbolSet &a, const SymbolSet &b) {
-  for (const std::size_t i : set_bits(a)) {
-    for (const std::size_t j : set_bits(b)) {
+inline void couple(CouplingRows &rows, std::ranges::forward_range auto &&a,
+                   std::ranges::forward_range auto &&b) {
+  for (const std::size_t i : a) {
+    for (const std::size_t j : b) {
       rows[i].set(j);
       rows[j].set(i);
     }
   }
+}
+inline void couple(CouplingRows &rows, const SymbolSet &a, const SymbolSet &b) {
+  couple(rows, set_bits(a), set_bits(b));
 }
 
 // One element's support, sorted: a vector built element by element has one
 // of these per element, a few symbols each, where a SymbolSet per element
 // would be n bits each.
-using Indices = boost::container::small_vector<std::uint32_t, 2>;
+using Indices = boost::container::small_vector<std::size_t, 2>;
 
-inline void couple(CouplingRows &rows, const Indices &a, const Indices &b) {
-  for (const std::uint32_t i : a) {
-    for (const std::uint32_t j : b) {
-      rows[i].set(j);
-      rows[j].set(i);
-    }
-  }
-}
 [[nodiscard]] inline Indices indices_of(const SymbolSet &s) {
-  Indices out;
-  for (const std::size_t i : set_bits(s)) {
-    out.push_back(static_cast<std::uint32_t>(i));
-  }
-  return out;
+  return std::ranges::to<Indices>(set_bits(s));
 }
 [[nodiscard]] inline Indices united(const Indices &a, const Indices &b) {
   Indices out;
@@ -302,65 +294,63 @@ template <impl::Numeric T>
   const auto each = [&](NodeId u) -> const Elements & {
     return elements[rank[u]];
   };
+  // What a field op couples between the supports of its operands; false
+  // for any other op, which couples their union with itself.
+  const auto step = [&rows](OpCode op, const auto &l, const auto &r) {
+    if (op == OpCode::Mul) {
+      detail::couple(rows, l, r);
+    } else if (op == OpCode::Div) {
+      detail::couple(rows, l, r);
+      detail::couple(rows, r, r);
+    }
+    return op == OpCode::Add || op == OpCode::Mul || op == OpCode::Div;
+  };
+  // A binary op element by element, coupling as the Binary arm below does.
+  const auto zipped = [&](OpCode op, const Elements &l,
+                          const Elements &r) -> std::optional<Elements> {
+    if (l.empty() || r.size() != l.size()) {
+      return std::nullopt;
+    }
+    if (op == OpCode::Lt || op == OpCode::Le) {
+      return Elements(l.size());
+    }
+    Elements out(l.size());
+    for (const auto k : std::views::iota(0uz, l.size())) {
+      out[k] = detail::united(l[k], r[k]);
+      if (!step(op, l[k], r[k])) {
+        detail::couple(rows, out[k], out[k]);
+      }
+    }
+    return out;
+  };
   // Element by element, or nullopt to take the arms below.
   const auto elementwise = [&](NodeId v, const Node<T> &node,
                                OpCode op) -> std::optional<Elements> {
     switch (node.op) {
     case OpCode::Pack:
-      return arguments(b, v) |
-             std::views::transform([&](NodeId u) {
+      return arguments(b, v) | std::views::transform([&](NodeId u) {
                return detail::indices_of(of(u));
              }) |
              std::ranges::to<Elements>();
     case OpCode::VecConst:
       return Elements(shape_of(b, v).rows);
-    case OpCode::Map: {
-      if (each(node.in[0]).empty()) {
-        return std::nullopt;
-      }
+    case OpCode::Map:
       if (op != OpCode::Neg) {
-        for (const auto &e : each(node.in[0])) {
+        std::ranges::for_each(each(node.in[0]), [&](const auto &e) {
           detail::couple(rows, e, e);
-        }
+        });
       }
-      return each(node.in[0]);
-    }
-    case OpCode::Zip: {
-      const Elements &l = each(node.in[0]);
-      const Elements &r = each(node.in[1]);
-      if (l.empty() || r.size() != l.size()) {
-        return std::nullopt;
-      }
-      if (op == OpCode::Lt || op == OpCode::Le) {
-        return Elements(l.size());
-      }
-      Elements out(l.size());
-      for (const auto k : std::views::iota(0uz, l.size())) {
-        out[k] = detail::united(l[k], r[k]);
-        if (op == OpCode::Mul) {
-          detail::couple(rows, l[k], r[k]);
-        } else if (op == OpCode::Div) {
-          detail::couple(rows, l[k], r[k]);
-          detail::couple(rows, r[k], r[k]);
-        } else if (op != OpCode::Add) {
-          detail::couple(rows, out[k], out[k]);
-        }
-      }
-      return out;
-    }
-    case OpCode::Scale: { // s * v: s against each element
-      const Elements &w = each(node.in[1]);
-      if (w.empty()) {
-        return std::nullopt;
-      }
-      const detail::Indices s = detail::indices_of(of(node.in[0]));
-      Elements out(w.size());
-      for (const auto k : std::views::iota(0uz, w.size())) {
-        detail::couple(rows, s, w[k]);
-        out[k] = detail::united(s, w[k]);
-      }
-      return out;
-    }
+      return each(node.in[0]).empty() ? std::nullopt
+                                      : std::optional{each(node.in[0])};
+    case OpCode::Zip:
+      return zipped(op, each(node.in[0]), each(node.in[1]));
+    case OpCode::Scale: // s * v: s against each element
+      return zipped(OpCode::Mul,
+                    Elements(each(node.in[1]).size(),
+                             detail::indices_of(of(node.in[0]))),
+                    each(node.in[1]));
+    case OpCode::VSelect: // chooses, as linear as an Add
+      return zipped(OpCode::Add, each(node.in[1]), each(node.in[2]));
     case OpCode::AddAt: { // linear: v with element i plus a scalar
       if (each(node.in[0]).empty()) {
         return std::nullopt;
@@ -370,32 +360,12 @@ template <impl::Numeric T>
       e = detail::united(e, detail::indices_of(of(node.in[1])));
       return out;
     }
-    case OpCode::VSelect: { // chooses, as linear as an Add
-      const Elements &t = each(node.in[1]);
-      const Elements &f = each(node.in[2]);
-      if (t.empty() || f.size() != t.size()) {
-        return std::nullopt;
-      }
-      Elements out(t.size());
-      for (const auto k : std::views::iota(0uz, t.size())) {
-        out[k] = detail::united(t[k], f[k]);
-      }
-      return out;
-    }
     default:
       return std::nullopt;
     }
   };
-  // What a field op couples between the supports of its operands; false
-  // for any other op, which couples their union with itself.
-  const auto step = [&rows](OpCode op, const SymbolSet &l, const SymbolSet &r) {
-    if (op == OpCode::Mul) {
-      detail::couple(rows, l, r);
-    } else if (op == OpCode::Div) {
-      detail::couple(rows, l, r);
-      detail::couple(rows, r, r);
-    }
-    return op == OpCode::Add || op == OpCode::Mul || op == OpCode::Div;
+  const auto mark = [](SymbolSet &s, auto &&indices) {
+    std::ranges::for_each(indices, [&s](std::size_t i) { s.set(i); });
   };
   for (const NodeId v : detail::live_ids(live)) {
     rank[v] = static_cast<NodeId>(support.size());
@@ -419,19 +389,12 @@ template <impl::Numeric T>
       continue;
     }
     if (node.op == OpCode::Gather && !each(node.in[0]).empty()) {
-      for (const std::uint32_t s :
-           each(node.in[0])[detail::get<Element>(node).value]) {
-        here.set(s);
-      }
+      mark(here, each(node.in[0])[detail::get<Element>(node).value]);
       continue;
     }
     if (auto known = elementwise(v, node, op)) {
       mine = *std::move(known);
-      for (const auto &e : mine) {
-        for (const std::uint32_t s : e) {
-          here.set(s);
-        }
-      }
+      mark(here, mine | std::views::join);
       continue;
     }
     switch (kind_of(op)) {

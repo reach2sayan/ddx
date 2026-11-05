@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <array>
-#include <functional>
 #include <initializer_list>
 #include <iterator>
 #include <ranges>
@@ -569,21 +568,20 @@ struct Census {
 namespace detail {
 template <impl::Numeric T> [[nodiscard]] Census census_of(const Graph<T> &g) {
   std::array<Census::Row, op_count> rows{};
+  Census out{.steps = g.schedule().size(), .values = 0, .by_op = {}};
   for (const Step &s : g.schedule()) {
     Census::Row &r = rows[std::to_underlying(s.op)];
+    const std::size_t values = g.has_tensors() ? g.shape(s.node).size() : 1;
     r.op = s.op;
     ++r.steps;
-    r.values += g.has_tensors() ? g.shape(s.node).size() : 1;
+    r.values += values;
+    out.values += values;
   }
-  Census out{.steps = g.schedule().size(), .values = 0, .by_op = {}};
   out.by_op = rows |
               std::views::filter([](const Census::Row &r) { return r.steps; }) |
               std::ranges::to<std::vector>();
   std::ranges::stable_sort(out.by_op, std::ranges::greater{},
                            &Census::Row::values);
-  out.values = std::ranges::fold_left(
-      out.by_op | std::views::transform(&Census::Row::values), 0uz,
-      std::plus{});
   return out;
 }
 } // namespace detail
