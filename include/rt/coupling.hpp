@@ -236,13 +236,14 @@ namespace detail {
 // box, the product view costs 7-21% over 64 to 1024 symbols at every density,
 // where the nested walk is a wash against the callback it replaced.  The
 // composed spelling reads better and this is `coupling_pattern`'s hot loop.
-// Over symbol indices.  Not any forward range: Boost 1.92's dynamic_bitset is
-// one, of bools, and a non-const SymbolSet binds here better than to the
-// overload below -- every bit position read as symbol 0 or 1.
+//
+// Ranges of symbol indices only: Boost 1.92's dynamic_bitset is a range too,
+// of bools, and a non-const SymbolSet would bind here over the overload below
+// and read every bit as symbol 0 or 1.
 template <std::ranges::forward_range A, std::ranges::forward_range B>
   requires std::same_as<std::ranges::range_value_t<A>, std::size_t> &&
            std::same_as<std::ranges::range_value_t<B>, std::size_t>
-inline void couple(CouplingRows &rows, A &&a, B &&b) {
+void couple(CouplingRows &rows, A &&a, B &&b) {
   for (const std::size_t i : a) {
     for (const std::size_t j : b) {
       rows[i].set(j);
