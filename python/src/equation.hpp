@@ -140,8 +140,29 @@ public:
   // What one call for `want` evaluates: the contracted live order, which is
   // the sweep and what the kernel is lowered from.
   [[nodiscard]] std::size_t nodes(Want want) const {
-    unwrap(ready(want));
-    return pipeline(want)->graph->schedule().size();
+    return unwrap(census(want)).steps;
+  }
+
+  // census() as a dict, each row (label, steps, values).
+  [[nodiscard]] pyb::dict census_dict(Want want) const {
+    const rt::Census c = unwrap(census(want));
+    pyb::list rows;
+    for (const auto &r : c.by_op) {
+      rows.append(pyb::make_tuple(std::string{rt::label_of(r.op)}, r.steps,
+                                  r.values));
+    }
+    pyb::dict out;
+    out["steps"] = c.steps;
+    out["values"] = c.values;
+    out["by_op"] = rows;
+    return out;
+  }
+
+  // None when calls for `want` run compiled code, else (errc, detail).
+  [[nodiscard]] pyb::object compile_status_of(Want want) const {
+    const auto s = compile_status(want);
+    return s ? pyb::none()
+             : pyb::object{pyb::make_tuple(s.error().code, s.error().detail)};
   }
 
   // Only what is free to answer: uses_kernel() would freeze a pipeline, and a

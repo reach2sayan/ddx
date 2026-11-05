@@ -15,6 +15,12 @@ using impl::Equation;
 using impl::dual;
 using impl::dual2nd;
 
+// A forward dual N levels deep, on the stack: dual_seed<N>(v, mask) makes a
+// variable, dual_part<Mask>(f) reads one of f's 2^N coefficients.
+template <typename T, std::size_t N> using nth_dual = impl::nth_dual_t<T, N>;
+using impl::dual_part;
+using impl::dual_seed;
+
 // var_of<"x">(v) / dual_var_of<"x">(v) take the scalar from an exemplar.
 using impl::dual_var_of;
 using impl::sym;

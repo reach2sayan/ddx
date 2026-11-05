@@ -58,8 +58,10 @@ class Equation:
     def restrict(self, names: list[str]) -> Restricted: pass
     def jvp(self, v: typing.Any, x: typing.Any) -> tuple: pass
     def nodes(self, *, want: Want = ...) -> int: pass
+    def census(self, *, want: Want = ...) -> dict[str, typing.Any]: pass
     def vjp(self, w: typing.Any, x: typing.Any) -> tuple: pass
     def uses_kernel(self, *, want: Want = ...) -> bool: pass
+    def compile_status(self, *, want: Want = ...) -> tuple[errc, str] | None: pass
     @property
     def arity(self) -> int: pass
     @property
@@ -271,6 +273,8 @@ class errc(enum.IntEnum):
     unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 23>
     wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 24>
     unclosed_implicit: typing.ClassVar[errc]  # value = <errc.unclosed_implicit: 25>
+    not_compiling: typing.ClassVar[errc]  # value = <errc.not_compiling: 26>
+    dense_refused: typing.ClassVar[errc]  # value = <errc.dense_refused: 27>
     @classmethod
     def __new__(cls, value):
         ...

@@ -7,6 +7,7 @@
 #include "util/config.hpp" // DDX_FWD
 #include "util/export.hpp"
 
+#include <boost/container/small_vector.hpp>
 #include <boost/dynamic_bitset.hpp>
 #include <boost/stl_interfaces/iterator_interface.hpp>
 
@@ -235,13 +236,40 @@ namespace detail {
 // box, the product view costs 7-21% over 64 to 1024 symbols at every density,
 // where the nested walk is a wash against the callback it replaced.  The
 // composed spelling reads better and this is `coupling_pattern`'s hot loop.
-inline void couple(CouplingRows &rows, const SymbolSet &a, const SymbolSet &b) {
-  for (const std::size_t i : set_bits(a)) {
-    for (const std::size_t j : set_bits(b)) {
+//
+// Ranges of symbol indices only: Boost 1.92's dynamic_bitset is a range too,
+// of bools, and a non-const SymbolSet would bind here over the overload below
+// and read every bit as symbol 0 or 1.
+template <std::ranges::forward_range A, std::ranges::forward_range B>
+  requires std::same_as<std::ranges::range_value_t<A>, std::size_t> &&
+           std::same_as<std::ranges::range_value_t<B>, std::size_t>
+void couple(CouplingRows &rows, A &&a, B &&b) {
+  for (const std::size_t i : a) {
+    for (const std::size_t j : b) {
       rows[i].set(j);
       rows[j].set(i);
     }
   }
+}
+inline void couple(CouplingRows &rows, const SymbolSet &a, const SymbolSet &b) {
+  couple(rows, set_bits(a), set_bits(b));
+}
+static_assert(![]<typename S = SymbolSet>() {
+  return requires(CouplingRows &r, S &s) { couple<S &, S &>(r, s, s); };
+}());
+
+// One element's support, sorted: a vector built element by element has one
+// of these per element, a few symbols each, where a SymbolSet per element
+// would be n bits each.
+using Indices = boost::container::small_vector<std::size_t, 2>;
+
+[[nodiscard]] inline Indices indices_of(const SymbolSet &s) {
+  return std::ranges::to<Indices>(set_bits(s));
+}
+[[nodiscard]] inline Indices united(const Indices &a, const Indices &b) {
+  Indices out;
+  std::ranges::set_union(a, b, std::back_inserter(out));
+  return out;
 }
 
 } // namespace detail
@@ -265,9 +293,19 @@ template <impl::Numeric T>
   const auto of = [&](NodeId u) -> const SymbolSet & {
     return support[rank[u]];
   };
+  // By rank, a vector's support element by element where its elements are
+  // built one by one -- a Pack, a constant, an elementwise Map or Zip of
+  // such -- and empty where only the union is known.  A Gather reads one
+  // element, so x[i] * x[j] couples i and j, not all of x.
+  using Elements = std::vector<detail::Indices>;
+  std::vector<Elements> elements;
+  elements.reserve(support.capacity());
+  const auto each = [&](NodeId u) -> const Elements & {
+    return elements[rank[u]];
+  };
   // What a field op couples between the supports of its operands; false
   // for any other op, which couples their union with itself.
-  const auto step = [&rows](OpCode op, const SymbolSet &l, const SymbolSet &r) {
+  const auto step = [&rows](OpCode op, const auto &l, const auto &r) {
     if (op == OpCode::Mul) {
       detail::couple(rows, l, r);
     } else if (op == OpCode::Div) {
@@ -276,15 +314,98 @@ template <impl::Numeric T>
     }
     return op == OpCode::Add || op == OpCode::Mul || op == OpCode::Div;
   };
+  // A binary op element by element, coupling as the Binary arm below does.
+  const auto zipped = [&](OpCode op, const Elements &l,
+                          const Elements &r) -> std::optional<Elements> {
+    if (l.empty() || r.size() != l.size()) {
+      return std::nullopt;
+    }
+    if (op == OpCode::Lt || op == OpCode::Le) {
+      return Elements(l.size());
+    }
+    Elements out(l.size());
+    for (const auto k : std::views::iota(0uz, l.size())) {
+      out[k] = detail::united(l[k], r[k]);
+      if (!step(op, l[k], r[k])) {
+        detail::couple(rows, out[k], out[k]);
+      }
+    }
+    return out;
+  };
+  // Element by element, or nullopt to take the arms below.
+  const auto elementwise = [&](NodeId v, const Node<T> &node,
+                               OpCode op) -> std::optional<Elements> {
+    switch (node.op) {
+    case OpCode::Pack:
+      return arguments(b, v) | std::views::transform([&](NodeId u) {
+               return detail::indices_of(of(u));
+             }) |
+             std::ranges::to<Elements>();
+    case OpCode::VecConst:
+      return Elements(shape_of(b, v).rows);
+    case OpCode::Map:
+      if (op != OpCode::Neg) {
+        std::ranges::for_each(each(node.in[0]), [&](const auto &e) {
+          detail::couple(rows, e, e);
+        });
+      }
+      return each(node.in[0]).empty() ? std::nullopt
+                                      : std::optional{each(node.in[0])};
+    case OpCode::Zip:
+      return zipped(op, each(node.in[0]), each(node.in[1]));
+    case OpCode::Scale: // s * v: s against each element
+      return zipped(OpCode::Mul,
+                    Elements(each(node.in[1]).size(),
+                             detail::indices_of(of(node.in[0]))),
+                    each(node.in[1]));
+    case OpCode::VSelect: // chooses, as linear as an Add
+      return zipped(OpCode::Add, each(node.in[1]), each(node.in[2]));
+    case OpCode::AddAt: { // linear: v with element i plus a scalar
+      if (each(node.in[0]).empty()) {
+        return std::nullopt;
+      }
+      Elements out = each(node.in[0]);
+      auto &e = out[detail::get<Element>(node).value];
+      e = detail::united(e, detail::indices_of(of(node.in[1])));
+      return out;
+    }
+    default:
+      return std::nullopt;
+    }
+  };
+  const auto mark = [](SymbolSet &s, auto &&indices) {
+    std::ranges::for_each(indices, [&s](std::size_t i) { s.set(i); });
+  };
   for (const NodeId v : detail::live_ids(live)) {
     rank[v] = static_cast<NodeId>(support.size());
     SymbolSet &here = support.emplace_back(n);
+    Elements &mine = elements.emplace_back();
     const auto unite = [&](const auto &ids) {
       std::ranges::for_each(ids, [&](NodeId u) { here |= of(u); });
     };
     const auto &node = b[v];
-    // A Map or Zip couples as its inner op does, over the whole vector.
+    // A Map or Zip couples as its inner op does, element by element where
+    // its operands' elements are known, else over the whole vector.
     const OpCode op = detail::effective_op(node);
+    // u . w couples each element of u with the same element of w only.
+    if (node.op == OpCode::Dot && !each(node.in[0]).empty() &&
+        each(node.in[0]).size() == each(node.in[1]).size()) {
+      for (const auto k : std::views::iota(0uz, each(node.in[0]).size())) {
+        detail::couple(rows, each(node.in[0])[k], each(node.in[1])[k]);
+      }
+      here = of(node.in[0]);
+      here |= of(node.in[1]);
+      continue;
+    }
+    if (node.op == OpCode::Gather && !each(node.in[0]).empty()) {
+      mark(here, each(node.in[0])[detail::get<Element>(node).value]);
+      continue;
+    }
+    if (auto known = elementwise(v, node, op)) {
+      mine = *std::move(known);
+      mark(here, mine | std::views::join);
+      continue;
+    }
     switch (kind_of(op)) {
     case Kind::Const:
       break;

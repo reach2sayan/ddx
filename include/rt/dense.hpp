@@ -319,6 +319,36 @@ private:
     }
     std::unreachable();
   }
+  // Like terms summed into one: the diagonals, the dense blocks, and the
+  // outer products sharing a right factor.  A Zip whose operands share a
+  // tangent -- y = f(x) + g(x) -- otherwise doubles the list at every level.
+  [[nodiscard]] Terms merged(const Terms &ts) {
+    const auto diagonal = [](const Term &d) {
+      return d.kind == Term::Kind::Identity || d.kind == Term::Kind::Diag;
+    };
+    const auto diag = [this](const Term &d) {
+      return d.kind == Term::Kind::Identity ? ones() : d.a;
+    };
+    Terms out;
+    for (const Term &t : ts) {
+      const auto like = std::ranges::find_if(out, [&](const Term &o) {
+        return diagonal(o) ? diagonal(t)
+                           : t.kind == o.kind &&
+                                 (t.kind != Term::Kind::Outer || t.b == o.b) &&
+                                 shape_of(b_, t.a) == shape_of(b_, o.a);
+      });
+      if (like == out.end()) {
+        out.push_back(t);
+        continue;
+      }
+      if (diagonal(t)) {
+        *like = {.kind = Term::Kind::Diag, .a = add(diag(*like), diag(t))};
+      } else { // a dense block's matrix, or an outer product's left factor
+        like->a = (expr(like->a) + expr(t.a)).id(b_, shape_of(b_, t.a));
+      }
+    }
+    return out;
+  }
   [[nodiscard]] Terms scale(const E &m, const Terms &ts) {
     return ts |
            std::views::transform([&](const Term &t) { return scale(m, t); }) |
@@ -534,6 +564,7 @@ private:
                                           !mat_[node.in[1]].empty(), E{0});
       out = scale(pu, mat_[node.in[0]]);
       impl::append(out, scale(pw, mat_[node.in[1]]));
+      out = merged(out);
       break;
     }
     case OpCode::Scale: {

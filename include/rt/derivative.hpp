@@ -290,10 +290,78 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
   // handle's `+` is the sum: a Zip(add) where the child is a vector.  The
   // contribution is built only for a child `moves` names: a param's, a seed's
   // or a table's adjoint is read by nothing.
+  const auto joined = [&](NodeId held, NodeId g) {
+    return held == no_node || g == no_node
+               ? no_node
+               : select(expr(held), one, expr(g)).id(b);
+  };
+  // By vector, the adjoint each element's reads have summed to so far, each
+  // sum started from the element of the adjoint the vector had: one Pack when
+  // anything else reaches the vector, or the sweep does, where an AddAt per
+  // read was a whole vector per element -- n^2 for a model that indexes its
+  // vector element by element.  The same additions, in the same order.
+  // The guard the reads leave the vector with is add_to's OR of theirs, kept
+  // as a scalar while they arrive and joined to the vector's own once, at the
+  // flush: an n-wide OR per read was n^2 again.
+  struct Gathered {
+    NodeId base = no_node;
+    NodeId guard = no_node; // the vector's when the reads began
+    NodeId reads = no_node; // the reads' guards, ORed
+    bool open = true;       // no read, and no base, has dropped the guard
+    std::vector<NodeId> element;
+  };
+  // The guard add_to would have left: the vector's own, if it had an
+  // adjoint, ORed with every read's.
+  const auto guard_of = [&](const Gathered &row) {
+    if (!row.open) {
+      return no_node;
+    }
+    return row.base == no_node ? row.reads : joined(row.guard, row.reads);
+  };
+  std::vector<Gathered> gathered(n);
+  const auto flush = [&](NodeId v) {
+    if (v >= gathered.size() || gathered[v].element.empty()) {
+      return;
+    }
+    Gathered &row = gathered[v];
+    for (const auto [k, e] : row.element | std::views::enumerate) {
+      if (e == no_node) {
+        e = row.base == no_node ? b.constant(T{0})
+                                : expr(row.base)[static_cast<std::size_t>(k)].id(b);
+      }
+    }
+    adj[v] = b.pack(row.element);
+    guard[v] = guard_of(row);
+    row = {};
+  };
+  // A read under a scalar guard is the guarded element, and the guard joins
+  // the vector's as add_to's would.
+  const auto gather = [&](NodeId from, std::size_t k, const Expression<T> &a,
+                          std::size_t rows, NodeId g) {
+    Gathered &row = gathered[from];
+    const bool first = row.element.empty();
+    if (first) {
+      row.base = adj[from];
+      row.guard = guard[from];
+      row.open = row.base == no_node || row.guard != no_node;
+      row.element.assign(rows, no_node);
+    }
+    const Expression<T> c = g == no_node ? a : select(expr(g), a, zero);
+    NodeId &e = row.element[k];
+    e = e != no_node        ? (expr(e) + c).id(b)
+        : row.base != no_node ? (expr(row.base)[k] + c).id(b)
+                              : c.id(b);
+    row.open = row.open && g != no_node;
+    if (row.open) {
+      row.reads = first ? g : joined(row.reads, g);
+    }
+  };
+
   const auto add_to = [&](NodeId child, NodeId g, auto &&contribution) {
     if (!moves(child)) {
       return;
     }
+    flush(child);
     g = fits(g, child) ? g : no_node;
     const NodeId c = guarded(child, g, contribution());
     // What sign(), and so abs(), hands back.  Storing it would mark the child
@@ -307,41 +375,66 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
       return;
     }
     adj[child] = (expr(adj[child]) + expr(c)).id(b);
-    if (guard[child] != no_node) {
-      guard[child] = g == no_node
-                         ? no_node
-                         : select(expr(guard[child]), one, expr(g)).id(b);
-    }
+    guard[child] = joined(guard[child], g);
   };
 
   // dot(A, M) where A is N (.) u w^T, a matrix adjoint as MatVec and the
   // elementwise rules built it: u . (M (.) N) w, never forming A, which then
   // nothing reads.  A sum of such contracts term by term.
+  //
+  // Whether it contracts is decided first, off the ids alone: trying and
+  // failing built the products down a whole adjoint chain, per Scale, and
+  // left them in the arena.  Ids are topological, so the answer fills
+  // forward, each node's from its operands', and nothing recurses.
+  std::vector<bool> contracts;
+  const auto contractible = [&](NodeId id) {
+    for (auto u = static_cast<NodeId>(contracts.size()); u <= id; ++u) {
+      const Node<T> &at = b[u];
+      const OpCode op = at.op == OpCode::Zip ? detail::get<OpCode>(at)
+                                             : OpCode::Const;
+      contracts.push_back(
+          (at.op == OpCode::Outer && shape_of(b, u).cols > 1) ||
+          (op == OpCode::Add && contracts[at.in[0]] && contracts[at.in[1]]) ||
+          (op == OpCode::Mul && (contracts[at.in[0]] || contracts[at.in[1]])));
+    }
+    return contracts[id];
+  };
   const auto contracted = [&](this const auto &self, NodeId id,
                               const Expression<T> &m)
       -> std::optional<Expression<T>> {
+    if (!contractible(id)) {
+      return std::nullopt;
+    }
     // By value: building below may reallocate.
     const Node<T> at = b[id];
-    if (at.op == OpCode::Outer && shape_of(b, id).cols > 1) {
+    if (at.op == OpCode::Outer) {
       return dot(expr(at.in[0]), gemv(m, expr(at.in[1])));
     }
-    if (at.op != OpCode::Zip) {
-      return std::nullopt;
+    if (detail::get<OpCode>(at) == OpCode::Add) {
+      const auto l = *self(at.in[0], m); // left first: build order is bits
+      return l + *self(at.in[1], m);
     }
-    const OpCode op = detail::get<OpCode>(at);
-    if (op == OpCode::Add) {
-      const auto l = self(at.in[0], m);
-      const auto r = l ? self(at.in[1], m) : std::nullopt;
-      return r ? std::optional{*l + *r} : std::nullopt;
-    }
-    if (op != OpCode::Mul) {
-      return std::nullopt;
-    }
-    const auto l = self(at.in[1], m * expr(at.in[0]));
-    return l ? l : self(at.in[0], m * expr(at.in[1]));
+    return contractible(at.in[1]) ? self(at.in[1], m * expr(at.in[0]))
+                                  : self(at.in[0], m * expr(at.in[1]));
   };
 
   for (const NodeId v : detail::live_ids(live) | std::views::reverse) {
+    // A Pack whose adjoint is element reads alone hands each read to its own
+    // argument, as the Pack rule below would through a[k]: building the
+    // vector only to take it apart was n per sweep, n^2 over a system's.
+    if (v < gathered.size() && !gathered[v].element.empty() &&
+        gathered[v].base == no_node && b.op_of(v) == OpCode::Pack) {
+      const auto row = std::move(gathered[v].element);
+      const NodeId g = guard_of(gathered[v]);
+      gathered[v] = {};
+      for (const auto [k, s] : arguments(b, v) | std::views::enumerate) {
+        if (const NodeId e = row[static_cast<std::size_t>(k)]; e != no_node) {
+          add_to(s, g, [&] { return expr(e); });
+        }
+      }
+      continue;
+    }
+    flush(v);
     // no_node is "nothing reached it", a folded Const 0 is "what reached it
     // cancelled"; neither contributes below.
     if (adj[v] == no_node || b.is_constant(adj[v], T{0})) {
@@ -431,12 +524,20 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
         }
         break;
       }
-      case OpCode::Gather:
-        add_to(node.in[0], g, [&] {
-          return detail::add_at(expr(b.zeros(shape_of(b, node.in[0]))), a,
-                                detail::get<Element>(node).value);
-        });
+      case OpCode::Gather: {
+        const NodeId from = node.in[0];
+        const Shape shape = shape_of(b, from);
+        if ((g != no_node && detail::is_tensor(b[g])) || shape.cols != 1 ||
+            !moves(from)) {
+          add_to(from, g, [&] {
+            return detail::add_at(expr(b.zeros(shape)), a,
+                                  detail::get<Element>(node).value);
+          });
+          break;
+        }
+        gather(from, detail::get<Element>(node).value, a, shape.rows, g);
         break;
+      }
       case OpCode::Scale:
         add_to(node.in[0], g, [&] {
           return contracted(adj[v], expr(node.in[1])).value_or(dot(a, expr(node.in[1])));

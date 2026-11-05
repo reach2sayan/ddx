@@ -111,6 +111,11 @@ using jit::Backend;
 using jit::Lanes;
 using jit::OptLevel;
 
+// One function: what equation() returns for a callback returning one
+// expression, spelled for a member or a parameter.
+template <impl::Numeric T = double>
+using Equation = impl::Equation<Expression<T>>;
+
 // An equation whose output count is a run-time number.
 template <impl::Numeric T = double>
 using System = impl::Equation<Expression<T>, detail::Dynamic>;

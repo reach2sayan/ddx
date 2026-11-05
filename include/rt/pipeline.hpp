@@ -44,6 +44,9 @@ template <impl::Numeric T> struct Compiled {
   // What the sweep computes tensor rows with: resolved when the pipeline froze,
   // so a table the equation is handed later means a new pipeline.
   const TensorKernelTable<T> *kernels = nullptr;
+  // Why `kernel` is empty, or nothing when it is not.
+  jit::compile_result<void> status = std::unexpected{
+      jit::compile_error{.code = errc::not_compiling, .detail = {}}};
 };
 
 // Frozen and compiled on first ask, by whichever caller asks first; every
@@ -70,18 +73,27 @@ public:
   }
 
 private:
-  // A refused compile leaves the kernel empty, and the sweep stays.
+  // A refused compile leaves the kernel empty, the sweep in its place, and the
+  // refusal in `status`.
   [[nodiscard]] static Compiled<T>
-  compiled([[maybe_unused]] const std::optional<jit::Options> &compiling,
-           Compiled<T> held) {
+  compiled(const std::optional<jit::Options> &compiling, Compiled<T> held) {
+    if (!compiling) {
+      return held;
+    }
 #ifdef DDX_HAS_JIT
     if constexpr (jit::CKernelScalar<T>) {
-      if (jit::Compiler *const c = shared_compiler(); compiling && c) {
-        if (auto kernel = c->compile(*held.compile_graph, *compiling)) {
-          held.kernel = *std::move(kernel);
-        }
-      }
+      jit::Compiler *const c = shared_compiler();
+      held.status =
+          c ? c->compile(*held.compile_graph, *compiling)
+                  .transform([&held](jit::Kernel<T> k) {
+                    held.kernel = std::move(k);
+                  })
+            : std::unexpected{jit::compile_error{
+                  .code = errc::jit_target, .detail = "no JIT on this host"}};
     }
+#else
+    held.status = std::unexpected{jit::compile_error{
+        .code = errc::jit_target, .detail = "this build has no JIT"}};
 #endif
     return held;
   }

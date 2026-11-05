@@ -66,7 +66,9 @@ TEST(JitParam, AnEquationWithAParamCompilesAndAgreesWithTheSweep) {
   auto compiled = build();
   compiled.options({.backend = ddx::jit::Backend::Compile, .points = 1});
   ASSERT_TRUE(compiled.uses_kernel());
-  ASSERT_TRUE(compiled.uses_kernel());
+  ASSERT_TRUE(compiled.compile_status().has_value())
+      << compiled.compile_status().error().detail;
+  EXPECT_EQ(swept.compile_status().error().code, ddx::errc::not_compiling);
 
   for (const double k : {0.5, 2.0}) {
     const std::array at{0.7, 1.3, k};

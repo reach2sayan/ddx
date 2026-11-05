@@ -1398,3 +1398,109 @@ TEST(RtEquation, EveryCodegenLevelAgreesToTheBit) {
 }
 
 #endif
+
+// A census counts without a point: every step a scalar's one value, the rows
+// summing to the totals, the heaviest first.
+TEST(RtEquation, CensusCountsTheFrozenScheduleWithoutSweeping) {
+  const auto eq = ddx::rt::equation([] {
+    const auto x = ddx::rt::var("x");
+    const auto y = ddx::rt::var("y");
+    return x * y + sin(x) * exp(y);
+  });
+  const auto c = eq.census(ddx::rt::Want::Gradient);
+  ASSERT_TRUE(c.has_value());
+  EXPECT_GT(c->steps, 0u);
+  EXPECT_EQ(c->values, c->steps);
+  EXPECT_EQ(std::ranges::fold_left(
+                c->by_op | std::views::transform(&ddx::rt::Census::Row::steps),
+                0uz, std::plus{}),
+            c->steps);
+  EXPECT_TRUE(std::ranges::is_sorted(c->by_op, std::ranges::greater{},
+                                     &ddx::rt::Census::Row::values));
+}
+
+// A tensor step writes its whole shape: an n x n matrix the model computes is
+// n^2 values for one step.
+TEST(RtEquation, CensusChargesATensorStepItsShape) {
+  constexpr std::size_t n = 6;
+  const std::vector<double> b(n * n, 0.25);
+  const auto eq = ddx::rt::equation([&] {
+    const auto x = ddx::rt::vec("x", n);
+    const auto t = ddx::rt::var("T");
+    const auto m = exp(t * ddx::rt::mat_constant(n, n, std::span<const double>{b}));
+    return x % (m % x);
+  });
+  const auto c = eq.census(ddx::rt::Want::Value);
+  ASSERT_TRUE(c.has_value());
+  EXPECT_GT(c->values, c->steps);
+  EXPECT_GE(c->by_op.front().values, n * n);
+  EXPECT_EQ(eq.census(ddx::rt::Want::DenseHessian).has_value(),
+            eq.dense_hessian_cost().has_value());
+}
+
+// A vector read element by element -- how a model writes sparse coupling --
+// sums each element's reads into that element alone.  What the reads cost is
+// NoCallCostsMoreThanItsValueTimesAConstant's.
+TEST(RtEquation, ElementReadsSumIntoTheirOwnElements) {
+  constexpr std::size_t n = 400;
+  const auto eq = ddx::rt::equation([] {
+    const auto x = ddx::rt::vec("x", n);
+    ddx::rt::Expression<double> acc{0.0};
+    for (std::size_t i = 0; i + 1 < n; ++i) {
+      acc = acc + x[i] * x[i + 1];
+    }
+    return acc;
+  });
+  std::vector<double> at(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    at[i] = 0.01 * static_cast<double>(i);
+  }
+  const auto g = eq.gradient(std::span<const double>{at});
+  ASSERT_TRUE(g.has_value());
+  EXPECT_EQ((*g)[0], at[1]);
+  EXPECT_EQ((*g)[n - 1], at[n - 2]);
+  EXPECT_EQ((*g)[7], at[6] + at[8]);
+}
+
+// Every call over the shapes that each once cost n^2: element reads of a
+// symbol vector, of a vector select (whose reads carry guards), a dot, and a
+// system's rows over one vector.  Counted against the value at two sizes, so
+// a ratio that grows with n fails.
+TEST(RtEquation, NoCallCostsMoreThanItsValueTimesAConstant) {
+  using RE = ddx::rt::Expression<double>;
+  using W = ddx::rt::Want;
+  const auto chain = [](std::size_t n) {
+    return ddx::rt::equation([n] {
+      const auto x = ddx::rt::vec("x", n);
+      const auto y = select(x - 0.5, x * x, sin(x));
+      RE acc = dot(exp(x), x) + sum(y);
+      for (std::size_t i = 0; i + 1 < n; ++i) {
+        acc = acc + y[i] * x[i + 1] + sin(x[i]);
+      }
+      return acc;
+    });
+  };
+  const auto rows = [](std::size_t n) {
+    return ddx::rt::equation([n] {
+      const auto x = ddx::rt::vec("x", n);
+      std::vector<RE> f;
+      for (std::size_t i = 0; i + 1 < n; ++i) {
+        f.push_back(sin(x[i]) * x[i + 1]);
+      }
+      return f;
+    });
+  };
+  const auto ratio = [](const auto &eq, W w) {
+    return static_cast<double>(eq.census(w)->values) /
+           static_cast<double>(eq.census(W::Value)->values);
+  };
+  for (const W w : {W::Jacobian, W::Gradient, W::Hessian, W::Hvp, W::Vjp,
+                    W::Jvp, W::JacobianJvp}) {
+    const double small = ratio(chain(50), w);
+    EXPECT_LE(ratio(chain(400), w), 1.1 * small) << int(w);
+  }
+  for (const W w : {W::Jacobian, W::Gradient, W::Vjp, W::Jvp, W::JacobianJvp}) {
+    const double small = ratio(rows(50), w);
+    EXPECT_LE(ratio(rows(400), w), 1.1 * small) << int(w);
+  }
+}

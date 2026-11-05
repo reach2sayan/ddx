@@ -4,6 +4,7 @@
 #include "rt/expressions.hpp"
 #include "rt/opcode.hpp"
 #include "rt/text/ast.hpp"
+#include "util/config.hpp" // DDX_TRY
 #include "util/error.hpp"
 
 #include <algorithm>
@@ -146,17 +147,14 @@ template <std::floating_point T>
   // the pass never looks forward.
   std::vector<Expr> built;
   built.reserve(ast.terms.size());
-  result<void> ok{};
   for (const Term &t : ast.terms) {
-    ok = ok.and_then([&] {
-      return detail::form<T>(ast, symbols, built, t)
-          .transform([&built](Expr e) { built.push_back(std::move(e)); });
-    });
+    DDX_TRY(e, detail::form<T>(ast, symbols, built, t));
+    built.push_back(*std::move(e));
   }
-  return ok.and_then([&]() -> result<Expr> {
-    return ast.root < built.size() ? result<Expr>{built[ast.root]}
-                                   : fail(errc::bad_syntax);
-  });
+  if (ast.root >= built.size()) {
+    return fail(errc::bad_syntax);
+  }
+  return built[ast.root];
 }
 
 } // namespace ddx::rt::text

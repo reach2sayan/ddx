@@ -59,6 +59,24 @@ void init_native_target_once() {
                            (what + ": " + llvm::toString(std::move(e))).str()};
 }
 
+// An llvm::Expected or llvm::Error as a compile_result, its failure described
+// by `what`: what DDX_TRY and DDX_CHECK read LLVM's answers through.
+template <typename X>
+[[nodiscard]] compile_result<X> lifted(llvm::Expected<X> x, const errc code,
+                                       const llvm::Twine &what) {
+  if (!x) {
+    return std::unexpected{as_error(code, what, x.takeError())};
+  }
+  return std::move(*x);
+}
+[[nodiscard]] compile_result<void> lifted(llvm::Error e, const errc code,
+                                          const llvm::Twine &what) {
+  if (e) {
+    return std::unexpected{as_error(code, what, std::move(e))};
+  }
+  return {};
+}
+
 // A Call row of the opcode tables as the runtime symbol its spelling names at
 // T, through the functor the row carries; a row spelled any other way defines
 // nothing.  A template, so the other arity's lambda is never formed.
@@ -282,17 +300,19 @@ void optimize(llvm::Module &m, llvm::TargetMachine &tm, const Options &opt,
 // A tensor loop is marked for the vectoriser, which says so on stderr when it
 // declines one; that is the loop running scalar, not an error.
 void quiet_vectoriser(llvm::LLVMContext &ctx) {
-  ctx.setDiagnosticHandlerCallBack([](const llvm::DiagnosticInfo *d, void *) {
-    if (d->getKind() == llvm::DK_OptimizationFailure) {
-      return;
-    }
-    llvm::DiagnosticPrinterRawOStream out(llvm::errs());
-    llvm::errs() << llvm::LLVMContext::getDiagnosticMessagePrefix(
-                        d->getSeverity())
-                 << ": ";
-    d->print(out);
-    llvm::errs() << '\n';
-  });
+  ctx.setDiagnosticHandlerCallBack(
+      [](const llvm::DiagnosticInfo *d, void *) {
+        if (d->getKind() == llvm::DK_OptimizationFailure) {
+          return;
+        }
+        llvm::DiagnosticPrinterRawOStream out(llvm::errs());
+        llvm::errs() << llvm::LLVMContext::getDiagnosticMessagePrefix(
+                            d->getSeverity())
+                     << ": ";
+        d->print(out);
+        llvm::errs() << '\n';
+      },
+      nullptr, /*RespectFilters=*/true);
 }
 
 } // namespace
@@ -317,11 +337,8 @@ struct Compiler::Impl {
     auto impl = std::make_shared<Impl>();
 
     // Parity with the project's -march=native.
-    auto jtmb = llvm::orc::JITTargetMachineBuilder::detectHost();
-    if (!jtmb) {
-      return std::unexpected{
-          as_error(errc::jit_target, "detecting the host", jtmb.takeError())};
-    }
+    DDX_TRY(jtmb, lifted(llvm::orc::JITTargetMachineBuilder::detectHost(),
+                         errc::jit_target, "detecting the host"));
     impl->bits = vector_bits(*jtmb);
     impl->veclib_lanes = {library_lanes<double>(jtmb->getTargetTriple()),
                           library_lanes<float>(jtmb->getTargetTriple())};
@@ -332,37 +349,27 @@ struct Compiler::Impl {
     // default is the large model, a 64-bit load per constant.
     llvm::orc::LLJITBuilder builder;
     builder.setJITTargetMachineBuilder(std::move(*jtmb));
-    if (auto e = builder.prepareForConstruction()) {
-      return std::unexpected{
-          as_error(errc::jit_target, "preparing the JIT", std::move(e))};
-    }
+    DDX_CHECK(lifted(builder.prepareForConstruction(), errc::jit_target,
+                     "preparing the JIT"));
     impl->machine = *builder.JTMB;
-    if (auto jit = builder.create(); !jit) {
-      return std::unexpected{
-          as_error(errc::jit_target, "creating the JIT", jit.takeError())};
-    } else {
-      impl->jit = std::move(*jit);
-    }
+    DDX_TRY(jit,
+            lifted(builder.create(), errc::jit_target, "creating the JIT"));
+    impl->jit = std::move(*jit);
 
     llvm::orc::JITDylib &jd = impl->jit->getMainJITDylib();
     const llvm::DataLayout &dl = impl->jit->getDataLayout();
     const char prefix = dl.getGlobalPrefix();
 
     // Before the generators: a definition here beats anything they would find.
-    if (auto e = define_runtime(impl->jit->getExecutionSession(), jd, dl)) {
-      return std::unexpected{
-          as_error(errc::jit_target, "defining libm", std::move(e))};
-    }
+    DDX_CHECK(lifted(define_runtime(impl->jit->getExecutionSession(), jd, dl),
+                     errc::jit_target, "defining libm"));
 
-    if (auto procs =
-            llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-                prefix);
-        !procs) {
-      return std::unexpected{as_error(
-          errc::jit_target, "opening the process symbols", procs.takeError())};
-    } else {
-      jd.addGenerator(std::move(*procs));
-    }
+    DDX_TRY(
+        procs,
+        lifted(llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
+                   prefix),
+               errc::jit_target, "opening the process symbols"));
+    jd.addGenerator(std::move(*procs));
 
     // Not loaded in a program that never called it, so the generator above
     // cannot see it -- and loaded even where the default declines to use it.
@@ -396,21 +403,19 @@ struct Compiler::Impl {
   [[nodiscard]] compile_result<std::unique_ptr<llvm::Module>>
   module(llvm::LLVMContext &ctx, const rt::Graph<T> &g, const Options &opt,
          const std::string &name) const {
-    return target().and_then(
-        [&](std::unique_ptr<llvm::TargetMachine> tm)
-            -> compile_result<std::unique_ptr<llvm::Module>> {
-          quiet_vectoriser(ctx);
-          auto m = detail::emit_module(
-              ctx, g, name, lanes<T>(opt, g.has_tensors()),
-              jit->getDataLayout(), tm->getTargetTriple().str());
-          if (!m) {
-            // The emitter has already written the verifier's own diagnosis.
-            return std::unexpected{compile_error{
-                errc::jit_verify, "the emitted module failed verification"}};
-          }
-          optimize(*m, *tm, opt, libmvec);
-          return m;
-        });
+    DDX_TRY(tm, target());
+    quiet_vectoriser(ctx);
+    auto m = detail::emit_module(ctx, g, name, lanes<T>(opt, g.has_tensors()),
+                                 jit->getDataLayout(),
+                                 (*tm)->getTargetTriple().str());
+    if (!m) {
+      // The emitter has already written the verifier's own diagnosis.
+      return std::unexpected{
+          compile_error{.code = errc::jit_verify,
+                        .detail = "the emitted module failed verification"}};
+    }
+    optimize(*m, **tm, opt, libmvec);
+    return m;
   }
 
   // At the codegen level for the backend, and at the default for the IR
@@ -424,12 +429,8 @@ struct Compiler::Impl {
           llvm::CodeGenOpt::getLevel(std::to_underlying(*codegen))
               .value_or(llvm::CodeGenOptLevel::Default));
     }
-    auto tm = recipe.createTargetMachine();
-    if (!tm) {
-      return std::unexpected{as_error(
-          errc::jit_target, "creating a target machine", tm.takeError())};
-    }
-    return std::move(*tm);
+    return lifted(recipe.createTargetMachine(), errc::jit_target,
+                  "creating a target machine");
   }
 
   template <CKernelScalar T>
@@ -438,37 +439,17 @@ struct Compiler::Impl {
           const Options &opt) {
     const std::string name = "ddx_kernel_" + std::to_string(self->counter++);
     llvm::LLVMContext ctx;
-    return self->module(ctx, g, opt, name)
-        .and_then([&](std::unique_ptr<llvm::Module> m) {
-          return self->target(opt.codegen.codegen_level)
-              .and_then(
-                  [&](std::unique_ptr<llvm::TargetMachine> tm)
-                      -> compile_result<std::unique_ptr<llvm::MemoryBuffer>> {
-                    auto object = llvm::orc::SimpleCompiler{*tm}(*m);
-                    if (!object) {
-                      return std::unexpected{as_error(
-                          errc::jit_module, "compiling", object.takeError())};
-                    }
-                    return std::move(*object);
-                  });
-        })
-        .and_then([&](std::unique_ptr<llvm::MemoryBuffer> object)
-                      -> compile_result<Kernel<T>> {
-          if (auto e = self->jit->addObjectFile(std::move(object))) {
-            return std::unexpected{
-                as_error(errc::jit_module, "adding the object", std::move(e))};
-          }
-          auto sym = self->jit->lookup(name);
-          if (!sym) {
-            return std::unexpected{as_error(errc::jit_lookup,
-                                            llvm::Twine{"looking up "} + name,
-                                            sym.takeError())};
-          }
-          return Kernel<T>{
-              sym->toPtr<typename Kernel<T>::function_type>(),
-              KernelShape::of(g, self->lanes<T>(opt, g.has_tensors())),
-              externs_of(g), self};
-        });
+    DDX_TRY(module, self->module(ctx, g, opt, name));
+    DDX_TRY(tm, self->target(opt.codegen.codegen_level));
+    DDX_TRY(object, lifted(llvm::orc::SimpleCompiler{**tm}(**module),
+                           errc::jit_module, "compiling"));
+    DDX_CHECK(lifted(self->jit->addObjectFile(std::move(*object)),
+                     errc::jit_module, "adding the object"));
+    DDX_TRY(sym, lifted(self->jit->lookup(name), errc::jit_lookup,
+                        llvm::Twine{"looking up "} + name));
+    return Kernel<T>{sym->toPtr<typename Kernel<T>::function_type>(),
+                     KernelShape::of(g, self->lanes<T>(opt, g.has_tensors())),
+                     externs_of(g), self};
   }
 };
 

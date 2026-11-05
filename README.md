@@ -145,7 +145,7 @@ parameters and scalar symbols: beside a vector `x`, each scalar `var` (T, P)
 costs one more reverse sweep, and the block covers every symbol. A
 matrix that moves with a symbol and is then multiplied (`gemv(exp(outer(x, x)),
 x)`) has no O(n²) form, and `dense_hessian` refuses it with
-`errc::tensor_shape`; `hessian`, `hvp` and `jacobian_jvp` answer it.
+`errc::dense_refused`; `hessian`, `hvp` and `jacobian_jvp` answer it.
 
 An equation can also be a string, in Python's arithmetic grammar
 (`rt/text/equation.hpp`), answering `result<Equation>`:
@@ -241,6 +241,7 @@ columns.
 | `arity()`, `outputs()` | symbol count n, function count m |
 | `symbols()`, `params()`, `inputs()`, `input_count()` | names in declaration order |
 | `prepare({rt::Want::Jacobian, …})` | build those lanes up front |
+| `census(want)` | the steps one call takes and the values they write, per opcode, counted before any point |
 
 A poisoned equation answers every call with its error. `errc` and `error`
 format and stream as text. Nothing throws.
@@ -261,6 +262,7 @@ Nothing compiles unless asked. Under `Compile`, the first call to each lane
 ```cpp
 eq.options({.backend = rt::Backend::Compile, .points = 4096});
 eq.uses_kernel();              // optional: build the Jacobian kernel now; true
+eq.compile_status();           // the same, with the JIT's error when it refused
 eq.jacobian(xs, f, g, n);      // compiled
 ```
 
@@ -326,6 +328,29 @@ Equation{sin(x)}.univariate_derivative<4>(0.5);
 std::format("{}", x * y + sin(x));                // "x * y + sin(x)"
 std::format("{}", Equation{x * y});               // "f0: x * y\n  jac: y, x\n"
 ```
+
+## Forward duals
+
+`ddx::nth_dual<T, N>` is a number with N nested ε's: 2^N coefficients on the
+stack, no allocation, every math function by ADL. `dual_seed<N>(v, mask)`
+makes a variable that the ε's in `mask` differentiate by (bit 0 is the
+outermost ε). `dual_part<Mask>(f)` reads the coefficient of those ε's.
+
+```cpp
+using D = ddx::nth_dual<double, 3>;
+const D T = ddx::dual_seed<3>(300.0, 0b001);
+const D V = ddx::dual_seed<3>(1e-3, 0b010);
+const D n = ddx::dual_seed<3>(2.0, 0b100);
+const D A = helmholtz(T, V, n);       // any function templated on its scalar
+
+ddx::dual_part<0b000>(A);             // A
+ddx::dual_part<0b011>(A);             // ∂²A/∂T∂V
+ddx::dual_part<0b111>(A);             // ∂³A/∂T∂V∂n
+```
+
+Seeding one variable on every ε (`mask = 0b111`) gives its third derivative in
+`dual_part<0b111>`. `ddx::dual` and `ddx::dual2nd` are `nth_dual<double, 1>`
+and `nth_dual<double, 2>`.
 
 ## License
 

@@ -4,6 +4,7 @@
 #include "rt/expressions.hpp"
 #include "rt/text/ast.hpp"
 #include "rt/text/lower.hpp"
+#include "util/config.hpp" // DDX_TRY
 #include "util/error.hpp"
 
 #include <array>
@@ -29,7 +30,8 @@ namespace ddx::rt {
 template <impl::Numeric T = double, std::convertible_to<std::string_view>... Ss>
   requires std::floating_point<T>
 [[nodiscard]] auto equation(const std::string_view first, const Ss &...rest) {
-  return impl::index_apply<sizeof...(Ss)>([&]<std::size_t... I>() {
+  return impl::index_apply<sizeof...(Ss)>([&]<std::size_t... I>()
+      -> result<impl::Equation<Expression<T>, detail::Repeat<I, T>...>> {
     using Eq = impl::Equation<Expression<T>, detail::Repeat<I, T>...>;
     const std::array sources{first, std::string_view{rest}...};
 
@@ -40,21 +42,13 @@ template <impl::Numeric T = double, std::convertible_to<std::string_view>... Ss>
     // Every source read before any of them is an equation: create() seals the
     // arena, and a symbol first named by the second function still wants a
     // slot.
-    result<void> ok{};
     for (const std::string_view source : sources) {
-      ok = ok.and_then([&] {
-        return text::parse(source)
-            .and_then([&arena](const text::Ast &ast) {
-              return text::lower(*arena, ast);
-            })
-            .transform(
-                [&roots](Expression<T> e) { roots.push_back(std::move(e)); });
-      });
+      DDX_TRY(ast, text::parse(source));
+      DDX_TRY(root, text::lower(*arena, *ast));
+      roots.push_back(*std::move(root));
     }
-    return ok.transform([&] {
-      return detail::Creating::create<Eq>(std::move(arena), roots[0],
+    return detail::Creating::create<Eq>(std::move(arena), roots[0],
                                         roots[I + 1]...);
-    });
   });
 }
 

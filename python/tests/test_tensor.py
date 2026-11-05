@@ -270,7 +270,7 @@ def test_nodes_refuses_what_the_call_refuses() -> None:
     eq = ddx.equation(model)
     with pytest.raises(ddx.Error) as refused:
         eq.dense_hessian([0.5, 0.25])
-    assert refused.value.code == ddx.errc.tensor_shape
+    assert refused.value.code == ddx.errc.dense_refused
     with pytest.raises(ddx.Error) as also:
         eq.nodes(want=ddx.Want.DENSE_HESSIAN)
-    assert also.value.code == ddx.errc.tensor_shape
+    assert also.value.code == ddx.errc.dense_refused
