@@ -254,6 +254,9 @@ void couple(CouplingRows &rows, A &&a, B &&b) {
 inline void couple(CouplingRows &rows, const SymbolSet &a, const SymbolSet &b) {
   couple(rows, set_bits(a), set_bits(b));
 }
+static_assert(![]<typename S = SymbolSet>() {
+  return requires(CouplingRows &r, S &s) { couple<S &, S &>(r, s, s); };
+}());
 
 // One element's support, sorted: a vector built element by element has one
 // of these per element, a few symbols each, where a SymbolSet per element
