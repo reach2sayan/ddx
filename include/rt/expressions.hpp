@@ -20,6 +20,7 @@
 #include <string_view>
 #include <type_traits> // std::remove_cvref_t
 #include <utility>     // std::move
+#include <variant>
 
 namespace ddx::rt {
 
@@ -96,8 +97,9 @@ public:
   constexpr Expression(V v) : lit_{static_cast<T>(std::move(v))} {}
 
   constexpr Expression(Arena<T> &b, NodeId id) noexcept
-      : arena_{&b}, id_{id},
-        shape_{detail::is_tensor(b[id]) ? shape_of(b, id) : Shape{0, 0}} {}
+      : arena_{&b}, at_{id},
+        shape_{.rows =
+                   detail::is_tensor(b[id]) ? shape_of(b, id) : Shape{.rows = 0, .cols = 0}} {}
 
   [[nodiscard]] constexpr bool pending() const noexcept {
     return arena_ == nullptr;
@@ -119,13 +121,22 @@ public:
   // Give the node an identity in `b`, materialising a pending literal -- a
   // constant, or the row of `shape` it meets -- or a fold `op=` is still
   // accumulating.
-  [[nodiscard]] constexpr NodeId id(Arena<T> &b, Shape shape = {0, 0}) const {
+  [[nodiscard]] constexpr NodeId
+  id(Arena<T> &b, Shape shape = {.rows = 0, .cols = 0}) const {
     assert(!why_ && "a refusal has no identity: it would read as a constant");
     if (arena_ == nullptr) {
       return shape.size() ? b.filled(shape, lit_) : b.constant(lit_);
     }
     // b may be a copy of arena_
-    return fold_ == OpCode::Const ? id_ : b.fold_of(fold_, id_);
+    return std::visit(
+        [&b]<typename H>(const H &at) {
+          if constexpr (std::same_as<H, NodeId>) {
+            return at;
+          } else {
+            return b.fold_of(at);
+          }
+        },
+        at_);
   }
   // The identity it has in its own arena; no_node for a pending literal.
   [[nodiscard]] constexpr NodeId id() const {
@@ -200,17 +211,21 @@ private:
     const Expression &other = l.size() ? r : l;
     if (other.size() == 0) {
       if (op == OpCode::Mul) {
-        return {b, b.make(OpCode::Scale, other.id(b), vec.id(b))};
+        return {b, b.make(opcode<OpCode::Scale>,
+                          {.scalar = other.id(b), .vec = vec.id(b)})};
       }
       if (op == OpCode::Div && &other == &r) {
-        return {b, b.make(OpCode::Scale, (Expression{1} / r).id(b), vec.id(b))};
+        return {
+            b, b.make(opcode<OpCode::Scale>,
+                      {.scalar = (Expression{1} / r).id(b), .vec = vec.id(b)})};
       }
       if (!other.pending()) {
         return poison(errc::tensor_shape);
       }
     }
-    return {b, b.make(opcode<OpCode::Zip>, op, l.id(b, vec.shape_),
-                      r.id(b, vec.shape_))};
+    return {
+        b, b.make(opcode<OpCode::Zip>, op,
+                  {.left = l.id(b, vec.shape_), .right = r.id(b, vec.shape_)})};
   }
   [[nodiscard]] static constexpr Expression picked(Arena<T> &b,
                                                    const Expression &c,
@@ -229,9 +244,11 @@ private:
     const auto arm = [&](const Expression &e) {
       return e.size() || e.pending()
                  ? e.id(b, shape)
-                 : b.make(OpCode::Scale, e.id(b), b.ones(shape));
+                 : b.make(opcode<OpCode::Scale>,
+                          {.scalar = e.id(b), .vec = b.ones(shape)});
     };
-    return {b, b.make(OpCode::VSelect, c.id(b), arm(t), arm(f))};
+    return {b, b.make(opcode<OpCode::VSelect>,
+                      {.cond = c.id(b), .then = arm(t), .otherwise = arm(f)})};
   }
 
 public:
@@ -269,23 +286,23 @@ public:
   // answer instead of refusing.  The parameter is the class type rather than
   // a Numeric auto, so `op=` accepts exactly what the operator accepts.
   constexpr Expression &operator+=(const Expression &o) {
-    return accumulate(OpCode::SumN, o);
+    return accumulate<OpCode::SumN>(o);
   }
   constexpr Expression &operator-=(const Expression &o) { return *this += -o; }
   constexpr Expression &operator*=(const Expression &o) {
-    return accumulate(OpCode::ProdN, o);
+    return accumulate<OpCode::ProdN>(o);
   }
   constexpr Expression &operator/=(const Expression &o) {
-    return accumulate(OpCode::QuotN, o);
+    return accumulate<OpCode::QuotN>(o);
   }
 
 private:
-  constexpr Expression &accumulate(OpCode fold, const Expression &o) {
+  template <OpCode Fold> constexpr Expression &accumulate(const Expression &o) {
     if (why_ || o.why_ || pending() || size() || o.size() || is_matrix() ||
         o.is_matrix() || (!o.pending() && o.arena_ != arena_)) {
-      return *this = form(fold_op(fold), *this, o);
+      return *this = form(fold_op(Fold), *this, o);
     }
-    const T identity = fold == OpCode::SumN ? T{0} : T{1};
+    const T identity = Fold == OpCode::SumN ? T{0} : T{1};
     if constexpr (std::equality_comparable<T>) {
       using impl::same_value;
       if (o.pending() && same_value(o.lit_, identity)) {
@@ -296,11 +313,12 @@ private:
     if (arena_->is_constant(t, identity)) {
       return *this;
     }
-    if (fold_ != fold) {
-      id_ = arena_->push_term(no_node, id(*arena_));
-      fold_ = fold;
-    }
-    id_ = arena_->push_term(id_, t);
+    using Folding = detail::Folding<Fold>;
+    const auto *folding = std::get_if<Folding>(&at_);
+    const detail::PendingEntry last =
+        folding ? folding->entry
+                : arena_->push_term(detail::no_entry, id(*arena_));
+    at_ = Folding{arena_->push_term(last, t)};
     return *this;
   }
 
@@ -386,20 +404,24 @@ private:
   // A mat_constant table, which is no row: arithmetic reads it as its
   // MatRow, gemv() in place.
   [[nodiscard]] constexpr bool is_matrix() const noexcept {
-    return arena_ != nullptr && fold_ == OpCode::Const &&
-           arena_->op_of(id_) == OpCode::MatConst;
+    const auto *node = std::get_if<NodeId>(&at_);
+    return arena_ != nullptr && node &&
+           arena_->op_of(*node) == OpCode::MatConst;
   }
   [[nodiscard]] constexpr Expression row() const {
     return is_matrix()
                ? Expression{*arena_, arena_->make(opcode<OpCode::MatRow>,
-                                                  Orientation::plain, id_)}
+                                                  Orientation::plain,
+                                                  std::get<NodeId>(at_))}
                : *this;
   }
 
   Arena<T> *arena_ = nullptr;
-  NodeId id_ = no_node; // a node, or while folding the arena's pending entry
+  // A node, or while `op=` accumulates the fold it is building.
+#define DDX_RT_FOLDING(fn, Op, ...) , detail::Folding<OpCode::Op>
+  std::variant<NodeId DDX_RT_NARY_TABLE(DDX_RT_FOLDING)> at_{no_node};
+#undef DDX_RT_FOLDING
   Shape shape_{0, 0};
-  OpCode fold_ = OpCode::Const; // the Nary op `op=` is accumulating, if any
   T lit_{};
   std::optional<errc> why_;
 };
@@ -412,9 +434,8 @@ private:
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> named(Arena<T> &b, OpCode op,
                                             std::string_view name) {
-  const NodeId id = b.input(op, name);
-  return id == no_node ? Expression<T>::poison(errc::name_clash)
-                       : Expression<T>{b, id};
+  const auto id = b.input(op, name);
+  return id ? Expression<T>{b, *id} : Expression<T>::poison(errc::name_clash);
 }
 // The implicit input `name` and the residual `residual(z)` it is a root of:
 // F(z, x) = 0 at every point the caller supplies.  ddx never solves it; it
@@ -426,14 +447,15 @@ implicit(Arena<T> &b, std::string_view name, F &&residual) {
   if (!detail::Router::why(z)) {
     const Expression<T> f = std::invoke(DDX_FWD(residual), z);
     const auto why = detail::Router::why(f);
-    b.close(z.id(b), why ? no_node : f.id(b), why);
+    b.close(z.id(b), why ? std::expected<NodeId, errc>{std::unexpect, *why}
+                         : std::expected<NodeId, errc>{f.id(b)});
   }
   return z;
 }
 // The direction a seeded product is taken along
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> seed(Arena<T> &b, std::uint32_t slot) {
-  return Expression<T>{b, b.seed_node(slot)};
+  return Expression<T>{b, b.seed_node(Slot{slot})};
 }
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> lit(Arena<T> &b, const T &v) {

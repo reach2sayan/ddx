@@ -30,13 +30,6 @@ inline constexpr std::size_t no_column = static_cast<std::size_t>(-1);
 using SymbolSet = boost::dynamic_bitset<>;
 using CouplingRows = std::vector<SymbolSet>;
 
-// `find_first`/`find_next`/`npos` is `begin`/`++`/`end` and dynamic_bitset
-// ships no iterator for it, so this is the one walk in the tree that has to be
-// written out.  Not `iota | filter`: that tests every clear bit the word skip
-// exists to skip, which is what SymbolSet was chosen over vector<bool> for.
-// Forward only -- there is no find_prev, and nothing walks backwards.
-//
-// `v2` -- the CRTP flavour -- and never the unqualified name or `v3`
 class SetBits : public boost::stl_interfaces::v2::proxy_iterator_interface<
                     SetBits, std::forward_iterator_tag, std::size_t> {
   using Interface = boost::stl_interfaces::v2::proxy_iterator_interface<
@@ -351,22 +344,29 @@ template <impl::Numeric T>
       }
       return each(node.in[0]).empty() ? std::nullopt
                                       : std::optional{each(node.in[0])};
-    case OpCode::Zip:
-      return zipped(op, each(node.in[0]), each(node.in[1]));
-    case OpCode::Scale: // s * v: s against each element
+    case OpCode::Zip: {
+      const auto [left, right] = detail::operands<OpCode::Zip>(node);
+      return zipped(op, each(left), each(right));
+    }
+    case OpCode::Scale: { // s * v: s against each element
+      const auto [scalar, vec] = detail::operands<OpCode::Scale>(node);
       return zipped(OpCode::Mul,
-                    Elements(each(node.in[1]).size(),
-                             detail::indices_of(of(node.in[0]))),
-                    each(node.in[1]));
-    case OpCode::VSelect: // chooses, as linear as an Add
-      return zipped(OpCode::Add, each(node.in[1]), each(node.in[2]));
+                    Elements(each(vec).size(), detail::indices_of(of(scalar))),
+                    each(vec));
+    }
+    case OpCode::VSelect: { // chooses, as linear as an Add
+      const auto [cond, then, otherwise] =
+          detail::operands<OpCode::VSelect>(node);
+      return zipped(OpCode::Add, each(then), each(otherwise));
+    }
     case OpCode::AddAt: { // linear: v with element i plus a scalar
-      if (each(node.in[0]).empty()) {
+      const auto [vec, scalar] = detail::operands<OpCode::AddAt>(node);
+      if (each(vec).empty()) {
         return std::nullopt;
       }
-      Elements out = each(node.in[0]);
+      Elements out = each(vec);
       auto &e = out[detail::get<Element>(node).value];
-      e = detail::united(e, detail::indices_of(of(node.in[1])));
+      e = detail::united(e, detail::indices_of(of(scalar)));
       return out;
     }
     default:
@@ -451,8 +451,12 @@ template <impl::Numeric T>
     case Kind::Ternary:
       // As linear as an Add: it chooses between two derivatives rather than
       // combining them.
-      here = of(node.in[1]);
-      here |= of(node.in[2]);
+      {
+        const auto [cond, then, otherwise] =
+            detail::operands<OpCode::Select>(node.in);
+        here = of(then);
+        here |= of(otherwise);
+      }
       break;
     case Kind::Binary:
       // Zero derivative everywhere it exists, so no support and no coupling --

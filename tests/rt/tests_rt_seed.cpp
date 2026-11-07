@@ -1,3 +1,4 @@
+#include "graph_builder.hpp"
 #include "ddx.hpp"
 #include "rt/equation.hpp"
 #include "rt/graph.hpp"
@@ -44,7 +45,7 @@ TEST(RtSeed, WidensTheGraphArity) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto f = x + seed(b, 0);
-  const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
+  const auto graph = ddx::test::freeze_values(b, std::array{f.id(b)});
 
   EXPECT_EQ(graph.inputs().count(ddx::rt::OpCode::Var), 1u);
   EXPECT_EQ(graph.arity(), 2u);
@@ -56,7 +57,7 @@ TEST(RtSeed, AGraphWithoutSeedsIsUnchanged) {
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * y;
-  const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
+  const auto graph = ddx::test::freeze_values(b, std::array{f.id(b)});
 
   EXPECT_EQ(graph.arity(), graph.inputs().count(ddx::rt::OpCode::Var));
 }
@@ -66,7 +67,7 @@ TEST(RtSeed, ADeadSeedDoesNotWiden) {
   const auto x = var(b, "x");
   [[maybe_unused]] const auto unused = seed(b, 0);
   const auto f = x * x;
-  const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
+  const auto graph = ddx::test::freeze_values(b, std::array{f.id(b)});
 
   EXPECT_EQ(graph.arity(), 1u);
 }

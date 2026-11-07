@@ -1,3 +1,4 @@
+#include "graph_builder.hpp"
 #include "ddx.hpp"
 #include "jit/kernel.hpp"
 #include "jit/tests_jit_common.hpp"
@@ -34,7 +35,7 @@ void expect_jacobian_matches_interpreter(auto build, std::size_t nvars,
   // The sweep is repeated for the reference values; the arena runs its own.
   const auto reference_jacobian = ddx::rt::derive_jacobian(b, root.id(b));
   const auto kernel = must_compile(
-      ddx::rt::GraphBuilder{b}.value(root).build_jacobian().finish());
+      ddx::test::GraphBuilder{b}.value(root).build_jacobian().finish());
   ASSERT_EQ(kernel.shape().outputs(), nvars + 1);
 
   std::vector<std::vector<double>> columns(nvars, std::vector<double>(n));
@@ -103,7 +104,7 @@ TEST(JitJacobian, MatchesDdxThroughTheBridge) {
   Arena<> b;
   const auto root = ddx::rt::to_graph(b, f);
   const auto kernel = must_compile(
-      ddx::rt::GraphBuilder{b}.value(root).build_jacobian().finish());
+      ddx::test::GraphBuilder{b}.value(root).build_jacobian().finish());
 
   const std::array cx{1.0, 0.25, 2.5};
   const std::array cy{2.0, 1.75, 0.5};
@@ -135,7 +136,7 @@ TEST(JitHessian, ThirdBlockCarriesTheColouredHessian) {
   const auto y = var(b, "y");
   const auto f = exp(x) * sin(y) + x * x * y;
 
-  const auto graph = ddx::rt::GraphBuilder{b}
+  const auto graph = ddx::test::GraphBuilder{b}
                          .value(f)
                          .build_jacobian()
                          .build_hessian()

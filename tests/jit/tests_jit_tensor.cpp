@@ -97,6 +97,16 @@ template <typename T> auto dense(std::size_t n) {
   return ddx::rt::equation<T>([n] { return dense_block<T>(n); });
 }
 
+// x^T A x over a table: the dense block folds to a table, an output with no
+// node computed over it.
+template <typename T> auto quadratic(std::size_t n) {
+  return ddx::rt::equation<T>([n] {
+    using E = ddx::rt::Expression<T>;
+    const E x = ddx::rt::vec<T>("x", n);
+    return dot(x, gemv(ddx::rt::mat_constant<T>(n, n, table<T>(n * n, 11, -0.5, 1.5)), x));
+  });
+}
+
 // A scalar condition and a vector one.
 template <typename T> auto vselect(std::size_t n) {
   return ddx::rt::equation<T>([n] {
@@ -326,6 +336,11 @@ TEST(JitTensor, DenseBlockEveryWantEveryWidth) {
   }
   expect_kernel_is_the_sweep<double>([] { return dense<double>(n); });
   expect_kernel_is_the_sweep<float>([] { return dense<float>(n); });
+}
+
+TEST(JitTensor, ATableAloneAsTheDenseBlockEveryWantEveryWidth) {
+  expect_kernel_is_the_sweep<double>([] { return quadratic<double>(5); });
+  expect_kernel_is_the_sweep<float>([] { return quadratic<float>(5); });
 }
 
 TEST(JitTensor, VectorSelectEveryWantEveryWidth) {

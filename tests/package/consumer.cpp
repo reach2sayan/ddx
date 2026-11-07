@@ -60,8 +60,10 @@ int main() {
   if (!compiler) {
     return fail(compiler.error().detail.c_str());
   }
-  auto kernel = compiler->compile(
-      rt::GraphBuilder{b}.value(root).build_jacobian().finish());
+  const auto jacobian = rt::derive_jacobian(b, std::array{root.id(b)});
+  auto kernel = compiler->compile(rt::Graph<>::freeze(
+      b, {.values = {root.id(b)}, .jacobian = jacobian.partial},
+      {}, jacobian.pattern));
   if (!kernel) {
     return fail(kernel.error().detail.c_str());
   }

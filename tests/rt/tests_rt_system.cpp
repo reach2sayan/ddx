@@ -138,6 +138,29 @@ TEST(RtSystem, HessianStacksTheScalarHessians) {
   }
 }
 
+// A system's hessian() at a point walks the arena rather than a frozen graph,
+// and contracts as the equation says: with contraction off, no product is
+// fused there either, so each output's block is the one-output batch path's
+// to the bit.
+TEST(RtSystem, AHessianAtAPointContractsAsTheEquationSays) {
+  for (const bool contract : {true, false}) {
+    ddx::jit::Options opt;
+    opt.codegen.contract = contract;
+    auto sys = five_system();
+    sys.options(opt);
+    const auto H = *sys.hessian(system_point);
+    for (const std::size_t k : std::views::iota(0uz, 5uz)) {
+      auto one = one_of_five(k);
+      one.options(opt);
+      const auto h = *one.hessian(system_point);
+      for (const std::size_t c : std::views::iota(0uz, 9uz)) {
+        EXPECT_EQ(H[k * 9 + c], h[c])
+            << "contract " << contract << " output " << k << " cell " << c;
+      }
+    }
+  }
+}
+
 // A literal output is a constant function wherever it stands: the arena is
 // the first output's that names one.
 TEST(RtSystem, ALiteralFirstOutputTakesTheArenaOfTheNext) {

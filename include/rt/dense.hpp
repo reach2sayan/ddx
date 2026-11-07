@@ -12,6 +12,7 @@
 #include <ranges>
 #include <span>
 #include <utility>
+#include <variant>
 #include <vector>
 
 // The dense Hessian of one function in O(n^2), as one matrix-valued node.
@@ -51,13 +52,33 @@ struct DenseHessian {
 namespace detail {
 
 // One term of a vector node's tangent, w x n over the n symbols.
-struct Term {
-  enum class Kind : std::uint8_t { Identity, Diag, Outer, Dense };
-  Kind kind = Kind::Identity;
-  NodeId a = no_node; // Diag: d (n); Outer: u (w); Dense: the w x n row
-  NodeId b = no_node; // Outer: g (n)
+namespace term {
+struct Identity {};
+struct Diag {
+  NodeId d; // n long: diag(d)
 };
+struct Outer {
+  NodeId u; // w long
+  NodeId g; // n long: u g^T
+};
+struct Dense {
+  NodeId block; // the w x n row
+};
+} // namespace term
+using Term = std::variant<term::Identity, term::Diag, term::Outer, term::Dense>;
+static_assert(sizeof(Term) <= 12);
 using Terms = boost::container::small_vector<Term, 4>;
+
+// The left factor of an outer product or a dense block's matrix: what two
+// like terms add.
+[[nodiscard]] constexpr NodeId &primary(Term &t) {
+  return std::holds_alternative<term::Outer>(t) ? std::get<term::Outer>(t).u
+                                                : std::get<term::Dense>(t).block;
+}
+[[nodiscard]] constexpr bool diagonal(const Term &t) {
+  return std::holds_alternative<term::Identity>(t) ||
+         std::holds_alternative<term::Diag>(t);
+}
 
 // The symbols the sweep differentiates by: `width` of them, `at` first.
 struct Swept {
@@ -136,8 +157,8 @@ private:
   // e_i, interned once per i and width.
   [[nodiscard]] NodeId unit(std::uint32_t i) { return unit(i, n_); }
   [[nodiscard]] NodeId unit(std::uint32_t i, std::uint32_t width) {
-    return b_.make(opcode<OpCode::AddAt>, Element{i}, b_.zeros({width}),
-                   b_.constant(T{1}));
+    return b_.make(opcode<OpCode::AddAt>, Element{i},
+                   {.vec = b_.zeros({width}), .scalar = b_.constant(T{1})});
   }
   // The rows of `ids` as a matrix, a zero row for an id nothing moves.
   [[nodiscard]] NodeId stacked(const auto &ids) {
@@ -169,43 +190,47 @@ private:
   // once, contiguously, where reading a term back by rows is a strided pass
   // per row.
   [[nodiscard]] NodeId summed(const Terms &ts) {
-    const auto of = [&ts](auto... kinds) {
-      return ts | std::views::filter([=](const Term &t) {
-               return ((t.kind == kinds) || ...);
-             });
+    const auto of = [&ts]<typename K>(std::type_identity<K>) {
+      return ts | std::views::filter([](const Term &t) {
+               return std::holds_alternative<K>(t);
+             }) |
+             std::views::transform(
+                 [](const Term &t) -> const K & { return std::get<K>(t); });
     };
     const NodeId d = std::ranges::fold_left(
-        of(Term::Kind::Identity, Term::Kind::Diag), no_node,
+        ts | std::views::filter(diagonal), no_node,
         [this](NodeId r, const Term &t) {
-          return add(r, t.kind == Term::Kind::Identity ? ones() : t.a);
+          const auto *g = std::get_if<term::Diag>(&t);
+          return add(r, g ? g->d : ones());
         });
     using Ids = boost::container::small_vector<NodeId, 4>;
-    auto matrices = of(Term::Kind::Dense) | std::views::transform(&Term::a) |
+    auto matrices = of(std::type_identity<term::Dense>{}) |
+                    std::views::transform(&term::Dense::block) |
                     impl::to<Ids>();
     // sum_k u_k g_k^T is U G^T: an n x K by K x n product, written once, where
     // K outer products would each be written and then added.
-    const auto outers = of(Term::Kind::Outer) | impl::to<Terms>();
+    const auto outers =
+        of(std::type_identity<term::Outer>{}) |
+        impl::to<boost::container::small_vector<term::Outer, 4>>();
     if (outers.size() == 1) {
       matrices.push_back(
-          b_.make(OpCode::Outer, outers.front().a, outers.front().b));
+          b_.make(opcode<OpCode::Outer>,
+                  {.left = outers.front().u, .right = outers.front().g}));
     } else if (outers.size() > 1) {
-      const auto rows = [&](NodeId Term::*side) {
+      const auto rows = [&](NodeId term::Outer::*side) {
         return b_.pack(outers | std::views::transform(side) | impl::to<Ids>(),
                        OpCode::StackRows);
       };
       matrices.push_back(
-          b_.make(OpCode::MatMul,
-                  b_.make(opcode<OpCode::MatRow>, Orientation::transposed,
-                          rows(&Term::a)),
-                  rows(&Term::b)));
+          b_.make(opcode<OpCode::MatMul>,
+                  {.left = b_.make(opcode<OpCode::MatRow>,
+                                   Orientation::transposed,
+                                   rows(&term::Outer::u)),
+                   .right = rows(&term::Outer::g)}));
     }
-    // The block is an output row; a table's MatRow has none (interpret.hpp
-    // reads it in place), so a block that would be one alone gets a diagonal
-    // to add it to.  One that is not square is a select's arm, w x n, and a
-    // diagonal would not fit it.
-    if (d != no_node || matrices.empty() ||
-        (matrices.size() == 1 && b_.op_of(matrices.front()) == OpCode::MatRow &&
-         shape_of(b_, matrices.front()).rows == n_)) {
+    // A block with no terms is the zero diagonal.  A table alone needs no
+    // node over it: an output table gets a row of its own (tensor_layout).
+    if (d != no_node || matrices.empty()) {
       matrices.push_back(b_.make(OpCode::Diag, d == no_node ? zeros() : d));
     }
     return std::ranges::fold_left(
@@ -242,19 +267,19 @@ private:
     const auto placed = [&](NodeId m) {
       return spread_rows(transposed(spread_rows(transposed(m))));
     };
-    Terms ts{{.kind = Term::Kind::Dense, .a = placed(swept)}};
+    Terms ts{term::Dense{placed(swept)}};
     // A held symbol's reverse sweep is its row; its column is the same less
     // the cells on held symbols, which the rows already hold.
     for (const std::uint32_t s :
          std::views::iota(0u, all) | std::views::filter(held)) {
       auto row = build_reverse_jacobian(b_, partials[s]).partial;
       const NodeId e = unit(s, all);
-      ts.push_back({.kind = Term::Kind::Outer, .a = e, .b = b_.pack(row)});
+      ts.push_back(term::Outer{.u = e, .g = b_.pack(row)});
       for (const std::uint32_t t :
            std::views::iota(0u, all) | std::views::filter(held)) {
         row[t] = b_.constant(T{0});
       }
-      ts.push_back({.kind = Term::Kind::Outer, .a = b_.pack(row), .b = e});
+      ts.push_back(term::Outer{.u = b_.pack(row), .g = e});
     }
     return summed(ts);
   }
@@ -286,65 +311,72 @@ private:
   // one: a vector scaled where the matrix would be copied.
   [[nodiscard]] Term scale(const E &m, const Term &t) {
     const bool vector = m.size() != 0 || m.pending();
-    switch (t.kind) {
-    case Term::Kind::Identity:
-      ++n2_;
-      return {.kind = Term::Kind::Diag,
-              .a = (vector ? m : m * expr(ones())).id(b_, {n_})};
-    case Term::Kind::Diag:
-      return {.kind = Term::Kind::Diag, .a = (m * expr(t.a)).id(b_, {n_})};
-    case Term::Kind::Outer:
-      return {.kind = Term::Kind::Outer,
-              .a = (m * expr(t.a)).id(b_, shape_of(b_, t.a)),
-              .b = t.b};
-    case Term::Kind::Dense: {
-      const Node<T> inner = b_[t.a];
-      const std::uint32_t rows = shape_of(b_, t.a).rows;
-      const auto rescaled = [&](NodeId e) {
-        return (m * expr(e)).id(b_, {width_of(b_, e)});
-      };
-      NodeId a = no_node;
-      if (inner.op == OpCode::RowScale) {
-        a = b_.make(OpCode::RowScale, rescaled(inner.in[0]), inner.in[1]);
-      } else if (!vector && inner.op == OpCode::ColScale) {
-        a = b_.make(OpCode::ColScale, inner.in[0], rescaled(inner.in[1]));
-      } else { // a RowScale, so the next diagonal folds into it
-        a = b_.make(OpCode::RowScale,
-                    vector ? m.id(b_, {rows})
-                           : (m * expr(b_.ones({rows}))).id(b_),
-                    t.a);
+    return std::visit([&]<typename K>(const K &k) -> Term {
+      if constexpr (std::same_as<K, term::Identity>) {
+        ++n2_;
+        return term::Diag{(vector ? m : m * expr(ones())).id(b_, {n_})};
+      } else if constexpr (std::same_as<K, term::Diag>) {
+        return term::Diag{(m * expr(k.d)).id(b_, {n_})};
+      } else if constexpr (std::same_as<K, term::Outer>) {
+        return term::Outer{.u = (m * expr(k.u)).id(b_, shape_of(b_, k.u)),
+                           .g = k.g};
+      } else {
+        return dense_scale(m, vector, k.block);
       }
-      return {.kind = Term::Kind::Dense, .a = a};
+    }, t);
+  }
+  [[nodiscard]] Term dense_scale(const E &m, bool vector, NodeId block) {
+    const Node<T> inner = b_[block];
+    const std::uint32_t rows = shape_of(b_, block).rows;
+    const auto rescaled = [&](NodeId e) {
+      return (m * expr(e)).id(b_, {width_of(b_, e)});
+    };
+    NodeId a = no_node;
+    if (inner.op == OpCode::RowScale) {
+      const auto [scale, matrix] = operands<OpCode::RowScale>(inner);
+      a = b_.make(opcode<OpCode::RowScale>,
+                  {.scale = rescaled(scale), .matrix = matrix});
+    } else if (!vector && inner.op == OpCode::ColScale) {
+      const auto [matrix, scale] = operands<OpCode::ColScale>(inner);
+      a = b_.make(opcode<OpCode::ColScale>,
+                  {.matrix = matrix, .scale = rescaled(scale)});
+    } else { // a RowScale, so the next diagonal folds into it
+      a = b_.make(opcode<OpCode::RowScale>,
+                  {.scale = vector ? m.id(b_, {rows})
+                                   : (m * expr(b_.ones({rows}))).id(b_),
+                   .matrix = block});
     }
-    }
-    std::unreachable();
+    return term::Dense{a};
   }
   // Like terms summed into one: the diagonals, the dense blocks, and the
   // outer products sharing a right factor.  A Zip whose operands share a
   // tangent -- y = f(x) + g(x) -- otherwise doubles the list at every level.
   [[nodiscard]] Terms merged(const Terms &ts) {
-    const auto diagonal = [](const Term &d) {
-      return d.kind == Term::Kind::Identity || d.kind == Term::Kind::Diag;
-    };
     const auto diag = [this](const Term &d) {
-      return d.kind == Term::Kind::Identity ? ones() : d.a;
+      const auto *g = std::get_if<term::Diag>(&d);
+      return g ? g->d : ones();
+    };
+    const auto right = [](const Term &d) {
+      const auto *o = std::get_if<term::Outer>(&d);
+      return o ? o->g : no_node;
     };
     Terms out;
-    for (const Term &t : ts) {
-      const auto like = std::ranges::find_if(out, [&](const Term &o) {
+    for (Term t : ts) {
+      const auto like = std::ranges::find_if(out, [&](Term &o) {
         return diagonal(o) ? diagonal(t)
-                           : t.kind == o.kind &&
-                                 (t.kind != Term::Kind::Outer || t.b == o.b) &&
-                                 shape_of(b_, t.a) == shape_of(b_, o.a);
+                           : t.index() == o.index() && right(t) == right(o) &&
+                                 shape_of(b_, primary(t)) ==
+                                     shape_of(b_, primary(o));
       });
       if (like == out.end()) {
         out.push_back(t);
         continue;
       }
       if (diagonal(t)) {
-        *like = {.kind = Term::Kind::Diag, .a = add(diag(*like), diag(t))};
-      } else { // a dense block's matrix, or an outer product's left factor
-        like->a = (expr(like->a) + expr(t.a)).id(b_, shape_of(b_, t.a));
+        *like = term::Diag{add(diag(*like), diag(t))};
+      } else {
+        primary(*like) = (expr(primary(*like)) + expr(primary(t)))
+                             .id(b_, shape_of(b_, primary(t)));
       }
     }
     return out;
@@ -356,33 +388,35 @@ private:
   }
   // Row i of a term: a vector of width n.
   [[nodiscard]] NodeId row_of(const Term &t, std::uint32_t i) {
-    switch (t.kind) {
-    case Term::Kind::Identity:
-      return unit(i);
-    case Term::Kind::Diag:
-      return b_.make(opcode<OpCode::AddAt>, Element{i}, zeros(),
-                     expr(t.a)[i].id(b_));
-    case Term::Kind::Outer:
-      return scaled(expr(t.a)[i], t.b);
-    case Term::Kind::Dense:
-      return b_.make(opcode<OpCode::RowOf>, Element{i}, t.a);
-    }
-    std::unreachable();
+    return std::visit([&]<typename K>(const K &k) {
+      if constexpr (std::same_as<K, term::Identity>) {
+        return unit(i);
+      } else if constexpr (std::same_as<K, term::Diag>) {
+        return b_.make(opcode<OpCode::AddAt>, Element{i},
+                       {.vec = zeros(), .scalar = expr(k.d)[i].id(b_)});
+      } else if constexpr (std::same_as<K, term::Outer>) {
+        return scaled(expr(k.u)[i], k.g);
+      } else {
+        return b_.make(opcode<OpCode::RowOf>, Element{i}, k.block);
+      }
+    }, t);
   }
   // u^T applied to a term: a row.
   [[nodiscard]] NodeId left(const E &u, const Term &t) {
-    switch (t.kind) {
-    case Term::Kind::Identity:
-      return u.id(b_, {n_});
-    case Term::Kind::Diag:
-      return (u * expr(t.a)).id(b_, {n_});
-    case Term::Kind::Outer:
-      return scaled(dot(u, expr(t.a)), t.b);
-    case Term::Kind::Dense:
-      return b_.make(opcode<OpCode::MatVec>, Orientation::transposed, t.a,
-                     u.id(b_, {shape_of(b_, t.a).rows}));
-    }
-    std::unreachable();
+    return std::visit([&]<typename K>(const K &k) {
+      if constexpr (std::same_as<K, term::Identity>) {
+        return u.id(b_, {n_});
+      } else if constexpr (std::same_as<K, term::Diag>) {
+        return (u * expr(k.d)).id(b_, {n_});
+      } else if constexpr (std::same_as<K, term::Outer>) {
+        return scaled(dot(u, expr(k.u)), k.g);
+      } else {
+        return b_.make(
+            opcode<OpCode::MatVec>, Orientation::transposed,
+            {.matrix = k.block,
+             .vec = u.id(b_, {shape_of(b_, k.block).rows})});
+      }
+    }, t);
   }
   [[nodiscard]] NodeId left(const E &u, const Terms &ts) {
     return std::ranges::fold_left(ts, no_node, [&](NodeId r, const Term &t) {
@@ -396,25 +430,28 @@ private:
     const bool table = is_table(b_, matrix);
     const NodeId c = table || orientation == Orientation::transposed
                          ? b_.make(opcode<OpCode::MatRow>, orientation,
-                                   table ? b_[matrix].in[0] : matrix)
+                                   table ? operands<OpCode::MatRow>(b_[matrix]).source
+                                         : matrix)
                          : matrix;
-    switch (t.kind) {
-    case Term::Kind::Identity:
-      ++n2_;
-      return {.kind = Term::Kind::Dense, .a = c};
-    case Term::Kind::Diag:
-      ++n2_;
-      return {.kind = Term::Kind::Dense,
-              .a = b_.make(OpCode::ColScale, c, t.a)};
-    case Term::Kind::Outer:
-      return {.kind = Term::Kind::Outer,
-              .a = b_.make(opcode<OpCode::MatVec>, orientation, matrix, t.a),
-              .b = t.b};
-    case Term::Kind::Dense:
-      ++n3_;
-      return {.kind = Term::Kind::Dense, .a = b_.make(OpCode::MatMul, c, t.a)};
-    }
-    std::unreachable();
+    return std::visit([&]<typename K>(const K &k) -> Term {
+      if constexpr (std::same_as<K, term::Identity>) {
+        ++n2_;
+        return term::Dense{c};
+      } else if constexpr (std::same_as<K, term::Diag>) {
+        ++n2_;
+        return term::Dense{
+            b_.make(opcode<OpCode::ColScale>, {.matrix = c, .scale = k.d})};
+      } else if constexpr (std::same_as<K, term::Outer>) {
+        return term::Outer{
+            .u = b_.make(opcode<OpCode::MatVec>, orientation,
+                         {.matrix = matrix, .vec = k.u}),
+            .g = k.g};
+      } else {
+        ++n3_;
+        return term::Dense{
+            b_.make(opcode<OpCode::MatMul>, {.left = c, .right = k.block})};
+      }
+    }, t);
   }
 
   // Whether a Pack is the symbol vector itself, in order: the identity.
@@ -422,7 +459,7 @@ private:
     const auto args = arguments(b_, v);
     return args.size() == n_ &&
            std::ranges::all_of(std::views::iota(0u, n_), [&](std::uint32_t j) {
-             return args[j] == b_.leaf(OpCode::Var, at_ + j);
+             return args[j] == b_.leaf(OpCode::Var, Slot{at_ + j});
            });
   }
 
@@ -454,8 +491,7 @@ private:
     case Kind::Input:
       if (node.op == OpCode::Implicit) {
         return b_.pack(
-            std::span{Implicits::row(b_, get<Slot>(node).value)}.subspan(at_,
-                                                                         n_));
+            std::span{Implicits::row(b_, get<Slot>(node))}.subspan(at_, n_));
       }
       return no_node;
     case Kind::Nary: {
@@ -471,8 +507,9 @@ private:
       for (const auto &[left, term] : steps) {
         const E l = expr(left);
         const E t = expr(term);
-        const auto [pl, pr] = contributions(step, E{1}, l, t, r != no_node,
-                                            row(term) != no_node, E{0});
+        const auto [pl, pr] = contributions(
+            step, E{1}, l, t,
+            {.left = r != no_node, .right = row(term) != no_node}, E{0});
         r = add(scaled(pl, r), scaled(pr, row(term)));
       }
       return r;
@@ -496,19 +533,21 @@ private:
       const E l = expr(node.in[0]);
       const E r = expr(node.in[1]);
       const auto [pl, pr] =
-          contributions(node.op, E{1}, l, r, row(node.in[0]) != no_node,
-                        row(node.in[1]) != no_node, E{0});
+          contributions(node.op, E{1}, l, r,
+                        {.left = row(node.in[0]) != no_node,
+                         .right = row(node.in[1]) != no_node},
+                        E{0});
       return add(scaled(pl, row(node.in[0])), scaled(pr, row(node.in[1])));
     }
     case Kind::Ternary: { // picked, so the row not taken is never scaled by 0
-      if (row(node.in[1]) == no_node && row(node.in[2]) == no_node) {
+      const auto [cond, then, otherwise] = operands<OpCode::Select>(node.in);
+      if (row(then) == no_node && row(otherwise) == no_node) {
         return no_node;
       }
       const auto or_zeros = [this](NodeId r) {
         return expr(r == no_node ? zeros() : r);
       };
-      return select(expr(node.in[0]), or_zeros(row(node.in[1])),
-                    or_zeros(row(node.in[2])))
+      return select(expr(cond), or_zeros(row(then)), or_zeros(row(otherwise)))
           .id(b_, {n_});
     }
     case Kind::Tensor:
@@ -523,9 +562,10 @@ private:
             });
       case OpCode::Sum:
         return left(expr(b_.ones(shape_of(b_, node.in[0]))), mat_[node.in[0]]);
-      case OpCode::Dot:
-        return add(left(expr(node.in[0]), mat_[node.in[1]]),
-                   left(expr(node.in[1]), mat_[node.in[0]]));
+      case OpCode::Dot: {
+        const auto [l, r] = operands<OpCode::Dot>(node);
+        return add(left(expr(l), mat_[r]), left(expr(r), mat_[l]));
+      }
       default:
         std::unreachable();
       }
@@ -540,13 +580,12 @@ private:
       break;
     case OpCode::Pack:
       if (is_symbols(v)) {
-        out.push_back({.kind = Term::Kind::Identity});
+        out.push_back(term::Identity{});
       } else if (std::ranges::any_of(arguments(b_, v), [this](NodeId g) {
                    return row(g) != no_node;
                  })) {
         ++n2_;
-        out.push_back(
-            {.kind = Term::Kind::Dense, .a = stacked(arguments(b_, v))});
+        out.push_back(term::Dense{stacked(arguments(b_, v))});
       }
       break;
     // A partial is built only to scale terms there are.
@@ -557,33 +596,33 @@ private:
       }
       break;
     case OpCode::Zip: {
-      const E u = expr(node.in[0]);
-      const E w = expr(node.in[1]);
-      const auto [pu, pw] = contributions(get<OpCode>(node), E{1}, u, w,
-                                          !mat_[node.in[0]].empty(),
-                                          !mat_[node.in[1]].empty(), E{0});
-      out = scale(pu, mat_[node.in[0]]);
-      impl::append(out, scale(pw, mat_[node.in[1]]));
+      const auto [l, r] = operands<OpCode::Zip>(node);
+      const auto [pu, pw] = contributions(
+          get<OpCode>(node), E{1}, expr(l), expr(r),
+          {.left = !mat_[l].empty(), .right = !mat_[r].empty()}, E{0});
+      out = scale(pu, mat_[l]);
+      impl::append(out, scale(pw, mat_[r]));
       out = merged(out);
       break;
     }
     case OpCode::Scale: {
-      const E s = expr(node.in[0]);
-      out = scale(s, mat_[node.in[1]]);
-      if (row(node.in[0]) != no_node) {
+      const auto [scalar, vec] = operands<OpCode::Scale>(node);
+      out = scale(expr(scalar), mat_[vec]);
+      if (row(scalar) != no_node) {
         ++n2_;
-        out.push_back(
-            {.kind = Term::Kind::Outer, .a = node.in[1], .b = row(node.in[0])});
+        out.push_back(term::Outer{.u = vec, .g = row(scalar)});
       }
       break;
     }
-    case OpCode::MatVec:
-      refused_ = refused_ || !mat_[node.in[0]].empty();
-      out = mat_[node.in[1]] | std::views::transform([&](const Term &t) {
-              return gemv(node.in[0], get<Orientation>(node), t);
+    case OpCode::MatVec: {
+      const auto [matrix, vec] = operands<OpCode::MatVec>(node);
+      refused_ = refused_ || !mat_[matrix].empty();
+      out = mat_[vec] | std::views::transform([&](const Term &t) {
+              return gemv(matrix, get<Orientation>(node), t);
             }) |
             impl::to<Terms>();
       break;
+    }
     case OpCode::MatRow: // a table
       break;
     case OpCode::Outer:
@@ -591,7 +630,8 @@ private:
           refused_ || !mat_[node.in[0]].empty() || !mat_[node.in[1]].empty();
       break;
     case OpCode::VSelect: {
-      if (mat_[node.in[1]].empty() && mat_[node.in[2]].empty()) {
+      const auto [cond_of, then, otherwise] = operands<OpCode::VSelect>(node);
+      if (mat_[then].empty() && mat_[otherwise].empty()) {
         break;
       }
       // A vector condition spread along each row of the w x n terms.
@@ -599,26 +639,27 @@ private:
       const auto block = [&](const Terms &ts) {
         return expr(ts.empty() ? b_.zeros({w, n_}) : summed(ts));
       };
-      const E c = expr(node.in[0]);
-      const E cond =
-          c.size() ? expr(b_.make(OpCode::Outer, node.in[0], ones())) : c;
+      const E c = expr(cond_of);
+      const E cond = c.size() ? expr(b_.make(opcode<OpCode::Outer>,
+                                             {.left = cond_of, .right = ones()}))
+                              : c;
       ++n2_;
-      out.push_back(
-          {.kind = Term::Kind::Dense,
-           .a = select(cond, block(mat_[node.in[1]]), block(mat_[node.in[2]]))
-                    .id(b_, {w, n_})});
+      out.push_back(term::Dense{
+          select(cond, block(mat_[then]), block(mat_[otherwise]))
+              .id(b_, {w, n_})});
       break;
     }
-    case OpCode::AddAt:
-      out = mat_[node.in[0]];
-      if (row(node.in[1]) != no_node) {
+    case OpCode::AddAt: {
+      const auto [vec, scalar] = operands<OpCode::AddAt>(node);
+      out = mat_[vec];
+      if (row(scalar) != no_node) {
         ++n2_;
-        out.push_back(
-            {.kind = Term::Kind::Outer,
-             .a = unit(get<Element>(node).value, width_of(b_, node.in[0])),
-             .b = row(node.in[1])});
+        out.push_back(term::Outer{
+            .u = unit(get<Element>(node).value, width_of(b_, vec)),
+            .g = row(scalar)});
       }
       break;
+    }
     default:
       std::unreachable(); // a matrix row: formed here, never read here
     }

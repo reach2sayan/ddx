@@ -1,3 +1,4 @@
+#include "graph_builder.hpp"
 #include "dual/dual.hpp"
 #include "energy_models.hpp"
 #include "rt/coupling.hpp"
@@ -72,17 +73,25 @@ struct Fold {
   void (*assign)(RE &, const RE &);
   RE (*chain)(const RE &, const RE &);
   RE (*term)(const std::vector<RE> &, std::size_t);
+  double (*step)(double, double);
 };
 RE near_one(const std::vector<RE> &x, std::size_t t) {
   return 1.0 + 0.05 * sin(term(x, t));
 }
 const Fold kFolds[]{
     {"Sum", OpCode::SumN, OpCode::Add, [](RE &a, const RE &t) { a += t; },
-     [](const RE &a, const RE &t) { return a + t; }, term},
+     [](const RE &a, const RE &t) { return a + t; }, term,
+     [](double a, double t) { return a + t; }},
     {"Prod", OpCode::ProdN, OpCode::Mul, [](RE &a, const RE &t) { a *= t; },
-     [](const RE &a, const RE &t) { return a * t; }, near_one},
+     [](const RE &a, const RE &t) { return a * t; }, near_one,
+     [](double a, double t) { return a * t; }},
     {"Quot", OpCode::QuotN, OpCode::Div, [](RE &a, const RE &t) { a /= t; },
-     [](const RE &a, const RE &t) { return a / t; }, near_one},
+     [](const RE &a, const RE &t) { return a / t; }, near_one,
+     [](double a, double t) { return a / t; }},
+    // `-=` is the sum of the negated term, as `-` is the add of it.
+    {"Diff", OpCode::SumN, OpCode::Add, [](RE &a, const RE &t) { a -= t; },
+     [](const RE &a, const RE &t) { return a - t; }, term,
+     [](double a, double t) { return a - t; }},
 };
 
 class RtFold : public ::testing::TestWithParam<Fold> {
@@ -128,8 +137,15 @@ TEST_P(RtFold, TwoTermsAreTheChainsBinaryNode) {
   GetParam().assign(acc, x[1]);
   EXPECT_EQ(acc.id(b), GetParam().chain(x[0], x[1]).id(b));
   EXPECT_EQ(b[acc.id(b)].op, GetParam().binary);
+  // Read, so the next term resumes from it: the binary op over what was read.
+  const auto read = acc.id(b);
   GetParam().assign(acc, x[0] * x[1]);
-  EXPECT_EQ(b[acc.id(b)].op, GetParam().op);
+  EXPECT_EQ(acc.id(b), GetParam().chain(RE{b, read}, x[0] * x[1]).id(b));
+  // Unread, a third term makes the fold.
+  auto fresh = x[0];
+  GetParam().assign(fresh, x[1]);
+  GetParam().assign(fresh, x[0] * x[1]);
+  EXPECT_EQ(b[fresh.id(b)].op, GetParam().op);
 }
 
 TEST_P(RtFold, TheIdentityOnTheRightIsDropped) {
@@ -160,9 +176,7 @@ TEST_P(RtFold, ACopyOfAnAccumulatorKeepsItsValue) {
   EXPECT_EQ(b.size(), n);
   const auto p = ramp(3);
   const auto values = ddx::rt::evaluate_all(b, p);
-  const auto step = [&](double l, double r) {
-    return f.op == OpCode::SumN ? l + r : f.op == OpCode::ProdN ? l * r : l / r;
-  };
+  const auto step = f.step;
   const double three = step(step(p[0], p[1]), p[2]);
   EXPECT_DOUBLE_EQ(values[kept], three);
   EXPECT_DOUBLE_EQ(values[grown],
@@ -194,6 +208,38 @@ TEST_P(RtFold, ValueGradientHvpAndHessianMatchTheChain) {
     for (std::size_t j = 0; j < n; ++j) {
       expect_close(vs[hs.at(i, j)], vc[hc.at(i, j)], 1e-12);
     }
+  }
+}
+
+// A loop that reads its accumulator every step: each read resumes from the
+// last one's node, so the pool holds each term once rather than k^2 / 2 of
+// them, and the last read is the read-once fold to the bit.
+TEST_P(RtFold, ReadingEveryStepListsEachTermOnce) {
+  constexpr std::size_t n = 6;
+  constexpr std::size_t k = 2000;
+  const Fold &f = GetParam();
+  Arena<> read, once;
+  const auto x = fold_symbols(read, n);
+  RE acc = x[0] + 1.0;
+  for (std::size_t t = 0; t < k; ++t) {
+    f.assign(acc, f.term(x, t));
+    (void)acc.id(read);
+  }
+  const auto fr = acc.id(read);
+  const auto fo = folded(fold_symbols(once, n), k).id(once);
+  EXPECT_LE(read.lists().size(), 2 * k);
+  EXPECT_LE(read.size(), once.size() + 2 * k);
+
+  const auto at = ramp(n);
+  const auto vr = ddx::rt::evaluate_all(read, at);
+  const auto vo = ddx::rt::evaluate_all(once, at);
+  EXPECT_EQ(vr[fr], vo[fo]);
+  const auto gr = ddx::rt::derive_jacobian(read, fr);
+  const auto go = ddx::rt::derive_jacobian(once, fo);
+  const auto wr = ddx::rt::evaluate_all(read, at);
+  const auto wo = ddx::rt::evaluate_all(once, at);
+  for (std::size_t i = 0; i < n; ++i) {
+    expect_close(wr[gr.partial[i]], wo[go.partial[i]], 1e-12);
   }
 }
 
@@ -325,6 +371,28 @@ RE summed(const std::vector<RE> &x) {
   return acc;
 }
 
+// Lists intern by content, whole: the same terms are one list and one node,
+// a list that only starts another's is its own.
+TEST(RtSumN, ListsInternByContent) {
+  Arena<> b;
+  const auto x = fold_symbols(b, 4);
+  const auto sum = [&](std::size_t terms) {
+    RE acc = x[0];
+    for (std::size_t t = 1; t < terms; ++t) {
+      acc += x[t];
+    }
+    return acc.id(b);
+  };
+  const auto four = sum(4);
+  const std::size_t pool = b.lists().size();
+  EXPECT_EQ(sum(4), four);
+  EXPECT_EQ(b.lists().size(), pool);
+  const auto three = sum(3);
+  EXPECT_NE(three, four);
+  EXPECT_EQ(ddx::rt::arguments(b, three).size(), 3u);
+  EXPECT_EQ(ddx::rt::arguments(b, four).size(), 4u);
+}
+
 TEST(RtSumN, ZeroTermsAreDroppedAndMinusNegates) {
   Arena<> b;
   const auto x = fold_symbols(b, 2);
@@ -346,8 +414,8 @@ TEST(RtSumN, FusedAndUnfusedSchedulesAgree) {
   Arena<> b;
   const auto x = fold_symbols(b, 6);
   const auto f = summed(x).id(b);
-  const auto fused = ddx::rt::Graph<>::freeze(b, std::array{f}, true);
-  const auto plain = ddx::rt::Graph<>::freeze(b, std::array{f}, false);
+  const auto fused = ddx::test::freeze_values(b, std::array{f}, true);
+  const auto plain = ddx::test::freeze_values(b, std::array{f}, false);
   // Fused, the product terms' multiplies are nobody's to compute.
   EXPECT_LT(fused.schedule().size(), plain.schedule().size());
 

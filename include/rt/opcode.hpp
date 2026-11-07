@@ -29,19 +29,20 @@ namespace ddx::rt {
 // out of symbols(), out of the reverse sweep's harvest and out of the coupling
 // pattern, with no slot-range convention for any of them to agree on.  A Param
 // is a named input present in every Want's graph; an Implicit, one the caller
-// solved for; a Seed, a seeded product's direction.  The last cell is what the
-// index is: nothing, a place among the named inputs of that kind, or a
-// position. The named kinds are their own table, in the order a point passes
-// them: it is what the Arena keeps one name list per and what var()'s
-// spellings, the Python factories and the column layout are generated from.
+// solved for; a Seed, a seeded product's direction.  The last cell is the
+// payload: none for a literal, else the Slot -- a place among the named inputs
+// of that kind, or a seed's position. The named kinds are their own table, in
+// the order a point passes them: it is what the Arena keeps one name list per
+// and what var()'s spellings, the Python factories and the column layout are
+// generated from.
 #define DDX_RT_NAMED_TABLE(X)                                                  \
-  X(var, Var, "var", Named)                                                    \
-  X(param, Param, "param", Named)                                              \
-  X(implicit, Implicit, "implicit", Named)
+  X(var, Var, "var", Slot)                                                     \
+  X(param, Param, "param", Slot)                                               \
+  X(implicit, Implicit, "implicit", Slot)
 #define DDX_RT_LEAF_TABLE(X)                                                   \
-  X(constant, Const, "const", Literal)                                         \
+  X(constant, Const, "const", NoPayload)                                       \
   DDX_RT_NAMED_TABLE(X)                                                        \
-  X(seed, Seed, "seed", Positional)
+  X(seed, Seed, "seed", Slot)
 
 // The last cell is the ops/adjoints.hpp descriptor carrying the reverse-mode
 // rule, which the compile-time ops call too -- the rule is written once, there.
@@ -66,31 +67,33 @@ namespace ddx::rt {
 
 // `c != 0 ? t : f`, both arms evaluated.  VSelect is the one over tensor arms
 // of one shape, the condition a scalar or of theirs, where the arm taken is
-// copied, never scaled by 1 or 0.  The last cell is what the node yields.
+// copied, never scaled by 1 or 0.  The last cells are what the node yields and
+// its operands' names (detail::Operands in rt/arena.hpp).
 #define DDX_RT_TERNARY_TABLE(X)                                                \
-  X(select, Select, "select", impl::detail::select_impl, Scalar)               \
-  X(vselect, VSelect, "vselect", impl::detail::select_impl, Row)
+  X(select, Select, "select", impl::detail::select_impl, Scalar,               \
+    (cond, then, otherwise))                                                   \
+  X(vselect, VSelect, "vselect", impl::detail::select_impl, Row,               \
+    (cond, then, otherwise))
 
-// A node over a list of ids rather than over operands: `a` is where the list
-// starts in Model::lists (has_list below), its length the function's arity
-// for an extern, else the Count it carries.  The last cells are the arity and
-// the Kind.
+// A node over a list of ids rather than over operands: the list sits in
+// Model::lists (has_list below), its length the function's arity for an
+// extern, else the Count it carries.  The last cells are the arity -- none,
+// the list being no operand -- and the Kind.
 //
 // A function the caller supplies with its own partials, of any number of
-// arguments: Extern is the value, ExternD one partial -- which, and of which
-// function, its ExternRef.
+// arguments: which function, and which component of its answer -- the value
+// or one partial -- is the node's ExternRef.
 #define DDX_RT_EXTERN_TABLE(X)                                                 \
-  X(extern_call, Extern, "extern", 1, Extern)                                  \
-  X(extern_partial, ExternD, "extern_d", 1, Extern)
+  X(extern_call, Extern, "extern", 0, Extern)
 // A left fold of `Count` terms in list order, ((t0 op t1) op t2) ..., the op
 // the last cell: what a chain of +=, *= or /= builds, one node where a chain
 // of the binary op would be one per term.  In a sum every product term is
 // fused into the running sum as an Add fuses its one (contraction_at), so a
 // sum of products is a loop of fma.
 #define DDX_RT_NARY_TABLE(X)                                                   \
-  X(sum_n, SumN, "sum_n", 1, Nary, Add)                                        \
-  X(prod_n, ProdN, "prod_n", 1, Nary, Mul)                                     \
-  X(quot_n, QuotN, "quot_n", 1, Nary, Div)
+  X(sum_n, SumN, "sum_n", 0, Nary, Add)                                        \
+  X(prod_n, ProdN, "prod_n", 0, Nary, Mul)                                     \
+  X(quot_n, QuotN, "quot_n", 0, Nary, Div)
 
 // A node whose value is a vector of `width` scalars per point, or a scalar
 // read off one.  Operands are ids like any other; no node carries data, and a
@@ -98,43 +101,43 @@ namespace ddx::rt {
 // node alone.  A matrix is a row too, column-major.  Map, Zip, Scale, Sum and
 // Dot read one as the vector of its elements.
 //   VecConst, MatConst  the data lives in Model::tensors
-//   Pack                a = list of scalars
-//   Gather              a = vec; the element, a scalar
-//   Map, Zip            a (, b) = vecs; the elementwise opcode
-//   Scale               a = scalar, b = vec
-//   Sum, Dot            a (, b) = vecs; a scalar
-//   AddAt               a = vec, b = scalar: a + b e_element
-//   MatRow              a = MatConst, the table as a row; in the dense sweep
-//                       also a = matrix
-//   Outer               a = vec r, b = vec c: a b^T
-//   MatVec              a = matrix, b = vec
-//   Diag                a = vec w: the w x w diagonal
-//   RowScale            a = vec r, b = matrix r x c: diag(a) M
-//   ColScale            a = matrix r x c, b = vec c: M diag(b)
-//   MatMul              a = matrix r x k, b = matrix k x c
-//   StackRows           a = list of vectors, each a row
-//   RowOf               a = matrix; that row, as a vector
-// The last cells are the arity, the Kind, the payload and what it yields.
+//   Pack                a list of scalars
+//   Gather              the element, a scalar
+//   Map, Zip            the elementwise opcode
+//   Sum, Dot            a scalar
+//   AddAt               vec + scalar e_element
+//   MatRow              a MatConst, the table as a row; in the dense sweep
+//                       also a matrix
+//   Outer               left right^T
+//   Diag                the w x w diagonal of vec
+//   RowScale            diag(scale) matrix
+//   ColScale            matrix diag(scale)
+//   StackRows           a list of vectors, each a row
+//   RowOf               that row of matrix, as a vector
+// The last cells are the arity, the Kind, the payload, what it yields and its
+// operands' names (detail::Operands in rt/arena.hpp).
 #define DDX_RT_TENSOR_TABLE(X)                                                 \
-  X(vec_const, VecConst, "vconst", 0, Tensor, TensorRef, Row)                  \
-  X(mat_const, MatConst, "mconst", 0, Tensor, TensorRef, Table)                \
-  X(pack, Pack, "pack", 1, Tensor, Count, Row)                                 \
-  X(gather, Gather, "gather", 1, Tensor, Element, Scalar)                      \
-  X(vmap, Map, "vmap", 1, Tensor, OpCode, Row)                                 \
-  X(vzip, Zip, "vzip", 2, Tensor, OpCode, Row)                                 \
-  X(vscale, Scale, "vscale", 2, Tensor, NoPayload, Row)                        \
-  X(vsum, Sum, "vsum", 1, Tensor, NoPayload, Scalar)                           \
-  X(vdot, Dot, "vdot", 2, Tensor, NoPayload, Scalar)                           \
-  X(add_at, AddAt, "add_at", 2, Tensor, Element, Row)                          \
-  X(mat_row, MatRow, "mrow", 1, Tensor, Orientation, Row)                      \
-  X(diag, Diag, "diag", 1, Tensor, NoPayload, Row)                             \
-  X(outer, Outer, "outer", 2, Tensor, NoPayload, Row)                          \
-  X(row_scale, RowScale, "row_scale", 2, Tensor, NoPayload, Row)               \
-  X(col_scale, ColScale, "col_scale", 2, Tensor, NoPayload, Row)               \
-  X(matvec, MatVec, "matvec", 2, Tensor, Orientation, Row)                     \
-  X(matmul, MatMul, "matmul", 2, Tensor, NoPayload, Row)                       \
-  X(stack_rows, StackRows, "stack_rows", 1, Tensor, Count, Row)                \
-  X(row_of, RowOf, "row_of", 1, Tensor, Element, Row)
+  X(vec_const, VecConst, "vconst", 0, Tensor, TensorRef, Row, ())              \
+  X(mat_const, MatConst, "mconst", 0, Tensor, TensorRef, Table, ())            \
+  X(pack, Pack, "pack", 0, Tensor, Count, Row, ())                             \
+  X(gather, Gather, "gather", 1, Tensor, Element, Scalar, (vec))               \
+  X(vmap, Map, "vmap", 1, Tensor, OpCode, Row, (vec))                          \
+  X(vzip, Zip, "vzip", 2, Tensor, OpCode, Row, (left, right))                  \
+  X(vscale, Scale, "vscale", 2, Tensor, NoPayload, Row, (scalar, vec))         \
+  X(vsum, Sum, "vsum", 1, Tensor, NoPayload, Scalar, (vec))                    \
+  X(vdot, Dot, "vdot", 2, Tensor, NoPayload, Scalar, (left, right))            \
+  X(add_at, AddAt, "add_at", 2, Tensor, Element, Row, (vec, scalar))           \
+  X(mat_row, MatRow, "mrow", 1, Tensor, Orientation, Row, (source))            \
+  X(diag, Diag, "diag", 1, Tensor, NoPayload, Row, (vec))                      \
+  X(outer, Outer, "outer", 2, Tensor, NoPayload, Row, (left, right))           \
+  X(row_scale, RowScale, "row_scale", 2, Tensor, NoPayload, Row,               \
+    (scale, matrix))                                                           \
+  X(col_scale, ColScale, "col_scale", 2, Tensor, NoPayload, Row,               \
+    (matrix, scale))                                                           \
+  X(matvec, MatVec, "matvec", 2, Tensor, Orientation, Row, (matrix, vec))      \
+  X(matmul, MatMul, "matmul", 2, Tensor, NoPayload, Row, (left, right))        \
+  X(stack_rows, StackRows, "stack_rows", 0, Tensor, Count, Row, ())            \
+  X(row_of, RowOf, "row_of", 1, Tensor, Element, Row, (matrix))
 
 #define DDX_RT_OP_TABLE(X)                                                     \
   DDX_RT_LEAF_TABLE(X)                                                         \
@@ -260,8 +263,6 @@ enum class Kind : std::uint8_t {
 
 namespace detail {
 
-enum class Role : std::uint8_t { Literal, Named, Positional };
-
 struct OpInfo {
   std::string_view name; // the factory spelling, and the Python name
   std::string_view label;
@@ -276,11 +277,11 @@ struct OpInfo {
 // depends on the table order matching the enum's.
 inline constexpr std::array op_info = [] {
   std::array<OpInfo, op_count> t{};
-#define DDX_RT_ROW(fn, Op, label, role, ...)                                   \
+#define DDX_RT_ROW(fn, Op, label, payload)                                     \
   t[static_cast<std::size_t>(OpCode::Op)] = {                                  \
-      #fn, label, 0, Role::role == Role::Literal ? Kind::Const : Kind::Input,  \
-      Role::role == Role::Literal ? payload_index<NoPayload>                   \
-                                  : payload_index<Slot>};
+      #fn, label, 0,                                                           \
+      std::same_as<payload, NoPayload> ? Kind::Const : Kind::Input,            \
+      payload_index<payload>};
   DDX_RT_LEAF_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
 #define DDX_RT_ROW(fn, Op, label, ...)                                         \
@@ -293,7 +294,7 @@ inline constexpr std::array op_info = [] {
   DDX_RT_BINARY_TABLE(DDX_RT_ROW)
   DDX_RT_COMPARE_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
-#define DDX_RT_ROW(fn, Op, label, functor, yields)                             \
+#define DDX_RT_ROW(fn, Op, label, functor, yields, names)                      \
   t[static_cast<std::size_t>(OpCode::Op)] = {                                  \
       #fn, label, 3, Kind::Ternary, payload_index<NoPayload>, Yields::yields};
   DDX_RT_TERNARY_TABLE(DDX_RT_ROW)
@@ -308,7 +309,7 @@ inline constexpr std::array op_info = [] {
                                              payload_index<Count>};
   DDX_RT_NARY_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
-#define DDX_RT_ROW(fn, Op, label, arity, kind, payload, yields)                \
+#define DDX_RT_ROW(fn, Op, label, arity, kind, payload, yields, names)         \
   t[static_cast<std::size_t>(OpCode::Op)] = {                                  \
       #fn, label, arity, Kind::kind, payload_index<payload>, Yields::yields};
   DDX_RT_TENSOR_TABLE(DDX_RT_ROW)
@@ -347,6 +348,14 @@ static_assert([] {
 }
 [[nodiscard]] constexpr Yields yields_of(OpCode op) noexcept {
   return detail::info(op).yields;
+}
+// Whether an op's operands are built and read by name: two or more of a
+// tensor op's, or a VSelect's, where swapping them is a different node of
+// the same type.  A scalar op's stay positional -- its factory's order is
+// the table's, written once.
+[[nodiscard]] constexpr bool named_operands(OpCode op) noexcept {
+  return arity_of(op) >= 2 &&
+         (kind_of(op) == Kind::Tensor || yields_of(op) == Yields::Row);
 }
 // The type of what an `Op` node carries: what make() takes and get() hands
 // back for it.
@@ -415,9 +424,9 @@ static_assert(std::ranges::all_of(std::views::iota(0uz, op_count), [](auto i) {
 #undef DDX_RT_FOLD
   return std::nullopt;
 }
-// Whether `a` is where the node's list starts in Model::lists rather than an
-// operand: an extern's arguments, a Pack's or StackRows' items, a sum's terms
-// -- every node whose payload says how long the list is.
+// Whether the node is over a list in Model::lists rather than operands: an
+// extern's arguments, a Pack's or StackRows' items, a sum's terms -- every
+// node whose payload says how long the list is.
 [[nodiscard]] constexpr bool has_list(OpCode op) noexcept {
   const auto payload = detail::info(op).payload;
   return payload == payload_index<Count> || payload == payload_index<ExternRef>;
@@ -530,12 +539,12 @@ struct Inputs {
 // kind before it.  Written once, because the interpreter, codegen and the ABI
 // have to agree.
 [[nodiscard]] constexpr std::size_t input_column(const Inputs &in, OpCode op,
-                                                 std::uint32_t slot) noexcept {
+                                                 Slot slot) noexcept {
   // A scan of fixed length: a fold over a prefix of variable length
   // vectorises, and the sweep's leaf step pays for the loop.
   std::array<std::size_t, named_count + 1> start{};
   std::inclusive_scan(in.by_kind.begin(), in.by_kind.end(), start.begin() + 1);
-  return start[named_index(op).value_or(named_count)] + slot;
+  return start[named_index(op).value_or(named_count)] + slot.value;
 }
 
 } // namespace ddx::rt

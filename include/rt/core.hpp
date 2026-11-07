@@ -212,21 +212,17 @@ public:
     std::call_once(flag_, [&] { value_ = build(); });
     return value_;
   }
-  // Read only after get(): what a freeze reads of the sweeps.
-  [[nodiscard]] const V &peek() const noexcept { return value_; }
 
 private:
   std::once_flag flag_;
   V value_;
 };
 
-#ifdef DDX_HAS_JIT
 // The roots and Jacobian a kernel is lowered from; see rt/rebalance.hpp.
 struct Rebalanced {
   std::vector<NodeId> roots;
   Jacobian derivative;
 };
-#endif
 
 // The arena's lock and every sweep built on first ask.  On the heap: neither
 // moves, and constant evaluation never reaches them.
@@ -432,8 +428,8 @@ public:
     return point(args...).transform([this](const auto &at) {
       [[maybe_unused]] const auto held = reading();
       const auto closures = arena_->closures();
-      const auto values =
-          evaluate_reachable(*arena_, closures, at, tensor_kernels());
+      const auto values = evaluate_reachable(*arena_, closures, at,
+                                             tensor_kernels(), contraction());
       return closures |
              std::views::transform([&values](NodeId f) { return values[f]; }) |
              impl::to<std::vector<T>>();
@@ -479,7 +475,8 @@ public:
   // How many terms the sweep kept quadratic, and how many fell back to a dense
   // product: a model's structure defeated the algebra where the second is not
   // zero -- still right, not O(n^2).  Refused as dense_hessian() would be:
-  // tensor_shape for a block the sweep refused, not_single_output for a system.
+  // dense_refused for a block the sweep refused, not_single_output for a
+  // system.
   struct DenseCost {
     std::size_t n2_terms = 0;
     std::size_t n3_terms = 0;
@@ -573,7 +570,8 @@ public:
     const std::array<Taylor, 1> at{Taylor::variable(x0)};
     // One root out of an arena that may hold a gradient and a Hessian too,
     // and a Taylor node costs (Order + 1) coefficients.
-    const auto values = evaluate_reachable(*arena_, root, at);
+    const auto values = evaluate_reachable(*arena_, root, at,
+                                           reference_table<T>, contraction());
     return values[roots_[0]].c[Order] *
            static_cast<T>(impl::detail::compile_time_factorial(Order));
   }
@@ -854,13 +852,13 @@ protected:
     DDX_CHECK(ready(want));
     auto c = pipeline_in(pipelines, cells, want);
     // Columns, not nodes: a vector output is one column per element.
-    const bool fits =
-        xs.size() == c->graph->arity() &&
-        std::ranges::none_of(zip_blocks(out, c->graph->layout()),
-                             [](const auto &pair) {
-                               const auto &[columns, count] = pair;
-                               return columns.size() != count;
-                             });
+    const bool fits = xs.size() == c->graph->arity() &&
+                      std::ranges::none_of(zip_blocks(out, c->graph->layout()),
+                                           [](const auto &pair) {
+                                             const auto &[columns, count] =
+                                                 pair;
+                                             return columns.size() != count;
+                                           });
     if (!fits) {
       return fail(errc::wrong_column_count);
     }
@@ -886,7 +884,8 @@ protected:
         wanted.push_back(b.zero);
       });
       [[maybe_unused]] const auto held = reading();
-      return ArenaWalk{*arena_, live_ids(reachable(*arena_, wanted))};
+      return ArenaWalk{*arena_, live_ids(reachable(*arena_, wanted)),
+                       contraction()};
     });
     const std::size_t n = symbol_count();
     // The tape is thread-kept; every id read below is scheduled, so it is
@@ -1198,8 +1197,8 @@ private:
     }
     auto wanted = roots_;
     impl::append(wanted, jacobian_.partial);
-    const auto values =
-        evaluate_reachable(*arena_, wanted, at, tensor_kernels());
+    const auto values = evaluate_reachable(*arena_, wanted, at,
+                                           tensor_kernels(), contraction());
     const auto pick = [&values](std::span<T> out, const auto &nodes) {
       std::ranges::transform(nodes | std::views::take(out.size()), out.begin(),
                              [&values](NodeId v) { return values[v]; });
@@ -1281,16 +1280,15 @@ private:
                            pattern ? partials.pattern : Sparsity{}, contracts(),
                            extent(info.direction), for_kernel));
     };
-    [[maybe_unused]] const bool rebalance = !cells.kept && rebalances(want);
+    [[maybe_unused]] const Rebalanced *over =
+        cells.kept ? nullptr : rebalanced(want);
     [[maybe_unused]] const auto held = reading();
     auto swept = freeze(roots_, cells.jacobian, false);
     auto compiled = swept;
 #ifdef DDX_HAS_JIT
     // The kernel's own graph where it differs: over rebalanced roots, or with
     // a tensor's elementwise rows fused into their readers.
-    if (rebalance || (swept->has_tensors() && compiling())) {
-      const Rebalanced *over =
-          rebalance ? &sweeps_->rebalanced.peek() : nullptr;
+    if (over || (swept->has_tensors() && compiling())) {
       auto own = freeze(over ? over->roots : roots_,
                         over ? over->derivative : cells.jacobian, true);
       // Calls are checked against the swept graph, and a rebalanced sum can
@@ -1307,9 +1305,9 @@ private:
             .kernels = &tensor_kernels()};
   }
 
-  // Whether the kernel for `want` is lowered from rebalanced roots, which are
-  // swept here on first ask.
-  [[nodiscard]] bool rebalances([[maybe_unused]] Want want) const {
+  // The rebalanced roots the kernel for `want` is lowered from, swept here on
+  // first ask; null where it is lowered from the equation's own.
+  [[nodiscard]] const Rebalanced *rebalanced([[maybe_unused]] Want want) const {
 #ifdef DDX_HAS_JIT
     if constexpr (jit::CKernelScalar<T>) {
       // A tensor step is the sweep's own, so its graph is never rebalanced.
@@ -1325,18 +1323,17 @@ private:
       };
       if (!rebalanceable(want) || !compiling() ||
           detail::shared_compiler() == nullptr || tensors()) {
-        return false;
+        return nullptr;
       }
-      (void)sweep(sweeps_->rebalanced, [this] {
+      return &sweep(sweeps_->rebalanced, [this] {
         Rebalanced over{.roots = detail::rebalance(*arena_, roots_),
                         .derivative = {}};
         over.derivative = derive_jacobian(*arena_, over.roots);
         return over;
       });
-      return true;
     }
 #endif
-    return false;
+    return nullptr;
   }
 
   // How wide to emit, from the batch the caller stated: a wide kernel computes
@@ -1349,8 +1346,11 @@ private:
   // Decided in the *graph*, so every backend folds the same products.  On by
   // default in a JIT-less build as well -- DDX_JIT_DEFAULT_CONTRACT is the
   // JIT's -- so an answer does not depend on how the library was configured.
-  [[nodiscard]] bool contracts() const noexcept {
+  [[nodiscard]] constexpr bool contracts() const noexcept {
     return options_.codegen.contract;
+  }
+  [[nodiscard]] constexpr Contract contraction() const noexcept {
+    return contracts() ? Contract::on : Contract::off;
   }
 
   // The kernel where one compiled, else the sweep.
@@ -1405,9 +1405,9 @@ private:
       const std::size_t width = std::min(W, n - base);
       // One point is a gather, which on a small graph is a fair part of it.
       if constexpr (W == 1) {
-        std::ranges::transform(
-            xs, point.begin(),
-            [base](const T *column) { return column[base]; });
+        std::ranges::transform(xs, point.begin(), [base](const T *column) {
+          return column[base];
+        });
       } else {
         for (const auto [dst, column] :
              std::views::zip(point | std::views::chunk(W), xs)) {

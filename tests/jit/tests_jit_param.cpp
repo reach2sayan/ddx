@@ -1,3 +1,4 @@
+#include "graph_builder.hpp"
 #include "ddx.hpp"
 #include "jit/kernel.hpp"
 #include "rt/equation.hpp"
@@ -20,7 +21,7 @@ TEST(JitParam, ColumnsAreSymbolsThenParamsThenSeeds) {
   const auto x = var(b, "x");
   const auto a = ddx::rt::param(b, "a");
   const auto f = a * x * x + exp(x) * seed(b, 0);
-  const auto graph = ddx::rt::GraphBuilder{b}.value(f).finish();
+  const auto graph = ddx::test::GraphBuilder{b}.value(f).finish();
   ASSERT_EQ(graph.arity(), 3u);
 
   auto compiler = ddx::jit::Compiler::create();

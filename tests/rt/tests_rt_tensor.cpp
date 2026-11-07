@@ -1,3 +1,4 @@
+#include "graph_builder.hpp"
 #include "energy_models.hpp"
 #include "rt/equation.hpp"
 #include "rt/kernels.hpp"
@@ -1598,7 +1599,8 @@ TEST(RtMatrix, NodesDoNotGrowWithTheSquare) {
     const auto row = ddx::rt::build_reverse_jacobian(b, f.id(b));
     // dT reads the table through gemvs: no n x n adjoint is formed for it.
     const auto live = ddx::rt::detail::reachable(b, std::span{&row.partial[0], 1});
-    for (const auto v : std::views::iota(0u, static_cast<ddx::rt::NodeId>(b.size()))) {
+    for (const auto v : std::views::iota(ddx::rt::NodeId{0},
+                                         static_cast<ddx::rt::NodeId>(b.size()))) {
       EXPECT_FALSE(live[v] && b[v].op == ddx::rt::OpCode::Outer) << "node " << v;
     }
     return std::pair{model, b.size()};
@@ -1760,7 +1762,7 @@ TEST(RtTensorGraph, AQuadraticFormsTwoProductsAreAPair) {
   const RV x = ddx::rt::vec(b, "x", n);
   const RE f = dot(x, gemv(ddx::rt::mat_constant(n, n, matrix(n, n)), x));
   const auto g =
-      ddx::rt::GraphBuilder{b}.value(f).build_jacobian().finish();
+      ddx::test::GraphBuilder{b}.value(f).build_jacobian().finish();
   const auto steps = g.schedule();
   const auto products = std::views::iota(0uz, steps.size()) |
                         std::views::filter([&](std::size_t p) {
@@ -1841,6 +1843,35 @@ TEST(RtTensor, DotRefusesHandlesOfTwoArenas) {
   ddx::rt::Arena<> a;
   ddx::rt::Arena<> b;
   EXPECT_TRUE(dot(ddx::rt::vec(a, "u", 2), ddx::rt::vec(b, "w", 2)).poisoned());
+}
+
+// x^T A x: the block is A + A^T, a table, and the table is the block -- no
+// node over it -- yet it still leaves through a row of its own.
+TEST(RtTensorDense, ATableAloneIsTheBlock) {
+  constexpr std::size_t n = 5;
+  const auto a = pair_table(n, 12, -0.5, 1.5);
+  ddx::rt::Arena<> b;
+  const auto arena = ddx::rt::detail::scoped_arena(b);
+  const RV x = ddx::rt::vec(b, "x", n);
+  const RE f = dot(x, gemv(ddx::rt::mat_constant(n, n, a), x));
+  ASSERT_FALSE(f.poisoned());
+  const auto h = ddx::rt::derive_dense_hessian(b, f.id(b));
+  EXPECT_TRUE(ddx::rt::is_table(b, h.block));
+
+  const auto eq = ddx::rt::equation([&] {
+    const RV y = ddx::rt::vec("x", n);
+    return dot(y, gemv(ddx::rt::mat_constant(n, n, a), y));
+  });
+  ASSERT_FALSE(eq.poisoned());
+  const auto at = composition(n);
+  const auto got = eq.dense_hessian(std::span<const double>{at});
+  ASSERT_TRUE(got.has_value()) << got.error().code;
+  ASSERT_EQ(got->size(), n * n);
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, n), std::views::iota(0uz, n))) {
+    EXPECT_DOUBLE_EQ((*got)[i * n + j], a[i + j * n] + a[j + i * n]);
+  }
+  expect_dense_matches(eq, at);
 }
 
 // No symbols, so nothing to differentiate by: an empty block, not a read

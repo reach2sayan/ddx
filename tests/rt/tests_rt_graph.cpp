@@ -1,3 +1,4 @@
+#include "graph_builder.hpp"
 #include "ddx.hpp"
 #include "energy_models.hpp"
 #include "rt/bridge.hpp"
@@ -23,7 +24,7 @@ TEST(RtGraph, OperandOrderSurvivesCompression) {
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x / y; // not commutative: the slots must not be swapped
-  const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
+  const auto graph = ddx::test::freeze_values(b, std::array{f.id(b)});
 
   const auto [lhs, rhs, absent] = graph.operands(f.id(b));
   EXPECT_EQ(lhs, x.id(b));
@@ -34,7 +35,7 @@ TEST(RtGraph, UnaryNodeHasOneOperand) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto f = sin(x);
-  const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
+  const auto graph = ddx::test::freeze_values(b, std::array{f.id(b)});
   const auto [lhs, rhs, absent] = graph.operands(f.id(b));
   EXPECT_EQ(lhs, x.id(b));
   EXPECT_EQ(rhs, ddx::rt::no_node);
@@ -49,11 +50,11 @@ TEST(RtGraph, RootsAloneLeaveTheValueOut) {
   const auto y = var(b, "y");
   const auto f = x * log(x) + 0.3 * (x * y);
   const NodeId root = f.id(b);
-  const auto both = ddx::rt::GraphBuilder{b}
+  const auto both = ddx::test::GraphBuilder{b}
                         .values_from(std::span<const NodeId>{&root, 1})
                         .build_jacobian()
                         .finish();
-  const auto alone = ddx::rt::GraphBuilder{b}
+  const auto alone = ddx::test::GraphBuilder{b}
                          .values_from(std::span<const NodeId>{&root, 1}, false)
                          .build_jacobian()
                          .finish();
@@ -71,7 +72,7 @@ TEST(RtGraph, EverythingTheOutputsReachIsLive) {
   const auto y = var(b, "y");
   const auto f = exp(x) * sin(y);
   const auto dead = cos(x) + y; // built, never an output
-  const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
+  const auto graph = ddx::test::freeze_values(b, std::array{f.id(b)});
 
   EXPECT_TRUE(graph.live(f.id(b)));
   EXPECT_TRUE(graph.live(x.id(b)));
@@ -84,7 +85,7 @@ TEST(RtGraph, CarriesSymbolsAndOutputs) {
   ddx::rt::Arena<> b;
   const auto root = ddx::rt::to_graph(b, ddx::var<"x"> * ddx::var<"y">);
   const auto graph =
-      ddx::rt::GraphBuilder{b}.value(root).build_jacobian().finish();
+      ddx::test::GraphBuilder{b}.value(root).build_jacobian().finish();
 
   EXPECT_EQ(graph.inputs().count(ddx::rt::OpCode::Var), 2u);
   EXPECT_EQ(graph.outputs().size(), 3u); // value plus two partials
@@ -95,11 +96,11 @@ TEST(RtGraph, IdOrderIsTopological) {
   const auto root = ddx::rt::to_graph(b, sin(ddx::var<"x"> * ddx::var<"y">) +
                                              exp(ddx::var<"x">));
   const auto graph =
-      ddx::rt::GraphBuilder{b}.value(root).build_jacobian().finish();
+      ddx::test::GraphBuilder{b}.value(root).build_jacobian().finish();
 
   // Codegen emits in id order in one pass, which is only correct if every
   // child precedes its parent.
-  for (NodeId v = 0; v < graph.size(); ++v) {
+  for (NodeId v{0}; v < graph.size(); ++v) {
     for (const NodeId child : graph.operands(v)) {
       if (child != ddx::rt::no_node) {
         EXPECT_LT(child, v) << "node " << v << " has a forward reference";
@@ -121,7 +122,7 @@ TEST(RtGraph, PacksTheTapeByLiveness) {
     x.push_back(var(b, std::format("x{:02}", i)));
   }
   const NodeId root = models::mse(x).id(b);
-  const auto g = ddx::rt::GraphBuilder{b}
+  const auto g = ddx::test::GraphBuilder{b}
                      .values_from(std::span<const NodeId>{&root, 1})
                      .build_jacobian()
                      .finish();

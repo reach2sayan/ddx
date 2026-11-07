@@ -551,30 +551,48 @@ private:
   // What an elementwise node is at (i, j), in the operand order the
   // interpreter multiplies in.
   llvm::Value *expr(rt::NodeId v, llvm::Value *i, llvm::Value *j) {
-    const auto [a, b, c] = g_.operands(v);
+    const auto in = g_.operands(v);
+    using rt::detail::operands;
+    using enum rt::OpCode;
     switch (g_.op_of(v)) {
-    case rt::OpCode::Map:
-      return elem_.unary(rt::detail::get<rt::OpCode>(g_[v]), at(a, i, j));
-    case rt::OpCode::Zip:
-      return elem_.binary(rt::detail::get<rt::OpCode>(g_[v]), at(a, i, j),
-                          at(b, i, j));
-    case rt::OpCode::Scale:
-      return b_.CreateFMul(scalar(a), at(b, i, j));
-    case rt::OpCode::Outer:
-      return b_.CreateFMul(at(b, j), at(a, i));
-    case rt::OpCode::RowScale:
-      return b_.CreateFMul(at(a, i), at(b, i, j));
-    case rt::OpCode::ColScale:
-      return b_.CreateFMul(at(b, j), at(a, i, j));
-    case rt::OpCode::VSelect:
-      return elem_.ternary(rt::detail::is_tensor(g_[a]) ? at(a, i, j)
-                                                        : scalar(a),
-                           at(b, i, j), at(c, i, j));
-    case rt::OpCode::Diag:
-      return b_.CreateSelect(b_.CreateICmpEQ(i, j), at(a, i),
+    case Map:
+      return elem_.unary(rt::detail::get<rt::OpCode>(g_[v]),
+                         at(operands<Map>(in).vec, i, j));
+    case Zip: {
+      const auto [left, right] = operands<Zip>(in);
+      return elem_.binary(rt::detail::get<rt::OpCode>(g_[v]), at(left, i, j),
+                          at(right, i, j));
+    }
+    case Scale: {
+      const auto [s, vec] = operands<Scale>(in);
+      return b_.CreateFMul(scalar(s), at(vec, i, j));
+    }
+    case Outer: {
+      const auto [left, right] = operands<Outer>(in);
+      return b_.CreateFMul(at(right, j), at(left, i));
+    }
+    case RowScale: {
+      const auto [scale, matrix] = operands<RowScale>(in);
+      return b_.CreateFMul(at(scale, i), at(matrix, i, j));
+    }
+    case ColScale: {
+      const auto [matrix, scale] = operands<ColScale>(in);
+      return b_.CreateFMul(at(scale, j), at(matrix, i, j));
+    }
+    case VSelect: {
+      const auto [cond, then, otherwise] = operands<VSelect>(in);
+      return elem_.ternary(rt::detail::is_tensor(g_[cond]) ? at(cond, i, j)
+                                                           : scalar(cond),
+                           at(then, i, j), at(otherwise, i, j));
+    }
+    case Diag:
+      return b_.CreateSelect(b_.CreateICmpEQ(i, j),
+                             at(operands<Diag>(in).vec, i),
                              elem_.constant(0.0));
-    case rt::OpCode::MatRow: // a transpose, of a table or a computed matrix
-      return g_.op_of(a) == rt::OpCode::MatConst ? at(v, i, j) : at(a, j, i);
+    case MatRow: { // a transpose, of a table or a computed matrix
+      const rt::NodeId source = operands<MatRow>(in).source;
+      return g_.op_of(source) == MatConst ? at(v, i, j) : at(source, j, i);
+    }
     default:
       std::unreachable();
     }
@@ -679,26 +697,32 @@ private:
       return;
     }
     case rt::OpCode::AddAt: {
+      const auto [vec, add] = rt::detail::operands<rt::OpCode::AddAt>(g_.operands(v));
       llvm::Value *const out = row(v);
       each(s, {}, [&](llvm::Value *i, llvm::Value *j, auto) {
-        b_.CreateStore(at(a, i, j), element(out, flat(i, j, s.rows)));
+        b_.CreateStore(at(vec, i, j), element(out, flat(i, j, s.rows)));
         return Carried{};
       });
       llvm::Value *const to =
           element(out, i64(rt::detail::get<rt::Element>(p).value));
-      b_.CreateStore(b_.CreateFAdd(b_.CreateLoad(lanes_.scalar, to), scalar(b)),
-                     to);
+      b_.CreateStore(
+          b_.CreateFAdd(b_.CreateLoad(lanes_.scalar, to), scalar(add)), to);
       return;
     }
     case rt::OpCode::Sum:
-    case rt::OpCode::Dot:
       scalar_out(
           v, each(g_.shape(a), {zero}, [&](auto i, auto j, const auto &acc) {
-            return Carried{p.op == rt::OpCode::Sum
-                               ? b_.CreateFAdd(acc[0], at(a, i, j))
-                               : fmuladd(at(a, i, j), at(b, i, j), acc[0])};
+            return Carried{b_.CreateFAdd(acc[0], at(a, i, j))};
           })[0]);
       return;
+    case rt::OpCode::Dot: {
+      const auto [left, right] = rt::detail::operands<rt::OpCode::Dot>(g_.operands(v));
+      scalar_out(
+          v, each(g_.shape(left), {zero}, [&](auto i, auto j, const auto &acc) {
+            return Carried{fmuladd(at(left, i, j), at(right, i, j), acc[0])};
+          })[0]);
+      return;
+    }
     case rt::OpCode::MatVec: {
       // A pair is one nest, at whichever of the two comes first.
       const rt::NodeId mate = g_.pairs()[v];
@@ -710,7 +734,8 @@ private:
       if (mate != rt::no_node) {
         done_[mate] = true;
       }
-      products(a, b, transposed ? mate : v, transposed ? v : mate);
+      const auto [matrix, vec] = rt::detail::operands<rt::OpCode::MatVec>(g_.operands(v));
+      products(matrix, vec, transposed ? mate : v, transposed ? v : mate);
       return;
     }
     case rt::OpCode::RowOf: {
@@ -836,7 +861,7 @@ template <CKernelScalar T>
 emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops, const rt::Graph<T> &g,
            const HoistedColumns &cols, llvm::Value *index, llvm::Value *mask) {
   std::vector<llvm::Value *> value(g.size(), nullptr);
-  std::map<std::pair<std::uint32_t, rt::NodeId>, typename Emitter<T>::Answers>
+  std::map<std::pair<std::uint32_t, rt::ListOffset>, typename Emitter<T>::Answers>
       called;
   for (const rt::Step &s : g.schedule()) {
     const auto &[v, c] = std::pair{s.node, s.fma};
@@ -853,7 +878,7 @@ emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops, const rt::Graph<T> &g,
     case rt::Kind::Input:
       value[v] =
           emit.load(cols.inputs[rt::input_column(
-                        g.inputs(), p.op, rt::detail::get<rt::Slot>(p).value)],
+                        g.inputs(), p.op, rt::detail::get<rt::Slot>(p))],
                     index, mask, "");
       break;
     case rt::Kind::Nary: {
@@ -879,9 +904,10 @@ emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops, const rt::Graph<T> &g,
     }
     case rt::Kind::Extern: {
       // One call per (function, argument list), whichever component asked
-      // first; the rest are loads off the same answer.
+      // first; the rest are loads off the same answer.  Lists are interned,
+      // so the offset is the list.
       const auto [fn, component] = rt::detail::get<rt::ExternRef>(p);
-      auto [answers, fresh] = called.try_emplace({fn, operands[0]});
+      auto [answers, fresh] = called.try_emplace({fn, g.list_of(v)});
       if (fresh) {
         const auto args =
             rt::arguments(g, v) |

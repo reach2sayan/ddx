@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <array>
-#include <initializer_list>
 #include <iterator>
 #include <ranges>
 #include <span>
@@ -177,6 +176,7 @@ public:
     OpCode op = OpCode::Const;
     T value{};
     std::uint32_t payload = 0; // read through detail::get
+    ListOffset list = no_list;
   };
 
   // `contract` is settled here, not per sweep: it decides the arithmetic, so
@@ -221,11 +221,11 @@ public:
     g.operands_.reserve(b.size());
     for (const Node<T> &n : b.nodes()) {
       g.properties_.push_back(
-          {.op = n.op, .value = n.value, .payload = n.payload});
+          {.op = n.op, .value = n.value, .payload = n.payload, .list = n.list});
       g.operands_.push_back(n.in);
     }
     g.mark_live();
-    g.contract(contract);
+    g.contract(contract ? Contract::on : Contract::off);
     // Read off what survived rather than taken from the arena, so a
     // pipeline that kept no seed keeps the kernel it had.
     for (const NodeId v : g.schedule_ | std::views::transform(&Step::node)) {
@@ -272,15 +272,6 @@ public:
     return g;
   }
 
-  // Every output a value.
-  [[nodiscard]] static Graph freeze(const Arena<T> &b,
-                                    std::span<const NodeId> values,
-                                    bool contract = true) {
-    OutputBlocks blocks;
-    blocks.values.assign(values.begin(), values.end());
-    return freeze(b, std::move(blocks), {}, {}, contract);
-  }
-
   [[nodiscard]] std::size_t size() const { return properties_.size(); }
   [[nodiscard]] const NodeRecord &operator[](NodeId v) const {
     return properties_[v];
@@ -313,7 +304,11 @@ public:
   }
   // By id, a tensor node's rows x cols, and a table's; what a kernel's loops
   // run over.
-  [[nodiscard]] Shape shape(NodeId v) const { return shapes_[v]; }
+  // A scalar's is the default, recorded or not: a graph with no tensor keeps
+  // no shapes.
+  [[nodiscard]] Shape shape(NodeId v) const {
+    return shapes_.empty() ? Shape{} : shapes_[v];
+  }
   // By id, the step a kernel computes a node inside, or no_node where the
   // node is a row of its own.  The tensor layout keeps such a node's operands
   // live until that step.
@@ -349,7 +344,7 @@ public:
   }
   // By id, the tape row each scheduled node's value sits in; how many rows the
   // tape has.  Packed by liveness, so the tape is a fraction of the arena.
-  [[nodiscard]] std::span<const std::uint32_t> rows() const noexcept {
+  [[nodiscard]] std::span<const TapeRow> rows() const noexcept {
     return rows_;
   }
   [[nodiscard]] std::size_t tape_rows() const noexcept { return tape_rows_; }
@@ -360,6 +355,9 @@ public:
   // that reaches it.
   [[nodiscard]] std::array<NodeId, 3> operands(NodeId v) const {
     return operands_[v];
+  }
+  [[nodiscard]] ListOffset list_of(NodeId v) const {
+    return properties_[v].list;
   }
 
 private:
@@ -427,9 +425,9 @@ private:
   // or a sum, reaches a multiply's operands rather than the multiply, so a
   // multiply nothing else reads drops out with the Neg of a subtraction
   // behind it.
-  void contract(bool on) {
-    if (!on) {
-      schedule_ = detail::schedule_of(*this, live_order_, false);
+  void contract(Contract contract) {
+    if (contract == Contract::off) {
+      schedule_ = detail::schedule_of(*this, live_order_, Contract::off);
       return;
     }
     const std::vector<bool> live = detail::reachable(
@@ -475,79 +473,12 @@ private:
   std::vector<Shape> shapes_;
   std::vector<NodeId> fused_;
   std::vector<NodeId> paired_;
-  std::vector<std::uint32_t> rows_;
+  std::vector<TapeRow> rows_;
   std::size_t tape_rows_ = 0;
   std::vector<bool> live_;
   std::vector<NodeId> live_order_;
   std::vector<Step> schedule_;
 };
-
-// Each step names one block of output columns; `finish` is the only thing that
-// produces a Graph.
-//
-//   GraphBuilder{b}.value(f).build_jacobian().finish()
-//   GraphBuilder{b}.values({f0, f1}).build_jacobian().finish()
-//   GraphBuilder{b}.value(f).build_jacobian().build_hessian().finish()
-//
-// The class template argument is deduced from the arena.
-template <impl::Numeric T = double> class GraphBuilder {
-public:
-  explicit constexpr GraphBuilder(Arena<T> &b) noexcept : arena_{&b} {}
-
-  // The function the kernel computes.
-  constexpr GraphBuilder &value(const Expression<T> &root) {
-    return values({root});
-  }
-
-  // A system: m functions over the same symbols.
-  constexpr GraphBuilder &values(std::initializer_list<Expression<T>> roots) {
-    return values_from(roots | std::views::transform([&](const auto &e) {
-                         return e.id(*arena_);
-                       }) |
-                       impl::to<std::vector<NodeId>>());
-  }
-
-  // Nodes a caller already has.  Not `output`: the functions to differentiate
-  // only, so the graph carries no value block and whatever only the value
-  // needs is not live.
-  constexpr GraphBuilder &values_from(std::span<const NodeId> roots,
-                                      bool output = true) {
-    roots_.assign(roots.begin(), roots.end());
-    blocks_.values = output ? roots_ : std::vector<NodeId>{};
-    return *this;
-  }
-
-  // Every partial, in symbol order, with the pattern that makes the block
-  // readable.  One reverse sweep per function.
-  constexpr GraphBuilder &build_jacobian() {
-    const Jacobian j = rt::derive_jacobian(*arena_, roots_);
-    jacobian_pattern_ = j.pattern;
-    blocks_.jacobian = j.partial;
-    return *this;
-  }
-
-  // Compressed by colour, not n x n: a handful of columns when banded.
-  GraphBuilder &build_hessian() {
-    const Hessian h = rt::derive_hessian(*arena_, roots_.front());
-    colouring_ = h.colouring;
-    blocks_.hessian = h.compressed;
-    return *this;
-  }
-
-  [[nodiscard]] Graph<T> finish(bool contract = true) const {
-    return Graph<T>::freeze(*arena_, blocks_, colouring_, jacobian_pattern_,
-                            contract);
-  }
-
-private:
-  Arena<T> *arena_;
-  std::vector<NodeId> roots_;
-  OutputBlocks blocks_;
-  Colouring colouring_;
-  Sparsity jacobian_pattern_;
-};
-
-template <impl::Numeric T> GraphBuilder(Arena<T> &) -> GraphBuilder<T>;
 
 // What one call steps through and the values those steps write, a tensor
 // step its rows x cols, counted off a frozen graph: no point and no sweep.  A
@@ -571,7 +502,7 @@ template <impl::Numeric T> [[nodiscard]] Census census_of(const Graph<T> &g) {
   Census out{.steps = g.schedule().size(), .values = 0, .by_op = {}};
   for (const Step &s : g.schedule()) {
     Census::Row &r = rows[std::to_underlying(s.op)];
-    const std::size_t values = g.has_tensors() ? g.shape(s.node).size() : 1;
+    const std::size_t values = g.shape(s.node).size();
     r.op = s.op;
     ++r.steps;
     r.values += values;

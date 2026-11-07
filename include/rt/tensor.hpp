@@ -217,14 +217,16 @@ template <impl::Numeric T>
       (!u.pending() && u.size() == 0) || (!v.pending() && v.size() == 0)) {
     return detail::refused<T>(errc::tensor_shape);
   }
-  return {*b, b->make(OpCode::Dot, u.id(*b, shape), v.id(*b, shape))};
+  return {*b, b->make(opcode<OpCode::Dot>,
+                      {.left = u.id(*b, shape), .right = v.id(*b, shape)})};
 }
 
 // M v, or M^T v: a mat_constant table read in place, or a matrix the model
 // computed, which the derivatives then reach too.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T>
-gemv(const Expression<T> &m, const Expression<T> &v, bool transposed = false) {
+gemv(const Expression<T> &m, const Expression<T> &v, Orientation orientation) {
+  const bool transposed = orientation == Orientation::transposed;
   if (const auto why = detail::poisoned(m, v)) {
     return detail::refused<T>(*why);
   }
@@ -240,9 +242,14 @@ gemv(const Expression<T> &m, const Expression<T> &v, bool transposed = false) {
       b->op_of(m.id()) == OpCode::MatConst
           ? b->make(opcode<OpCode::MatRow>, Orientation::plain, m.id())
           : m.id();
-  return {*b, b->make(opcode<OpCode::MatVec>,
-                      transposed ? Orientation::transposed : Orientation::plain,
-                      rows, v.id())};
+  return {*b, b->make(opcode<OpCode::MatVec>, orientation,
+                      {.matrix = rows, .vec = v.id()})};
+}
+template <impl::Numeric T>
+[[nodiscard]] constexpr Expression<T>
+gemv(const Expression<T> &m, const Expression<T> &v, bool transposed = false) {
+  return gemv(m, v,
+              transposed ? Orientation::transposed : Orientation::plain);
 }
 
 namespace detail {
@@ -253,7 +260,7 @@ template <impl::Numeric T> struct Transposed {
 
   [[nodiscard]] friend constexpr Expression<T>
   operator%(const Transposed &t, const Expression<T> &v) {
-    return gemv(t.m, v, true);
+    return gemv(t.m, v, Orientation::transposed);
   }
 };
 } // namespace detail
@@ -292,7 +299,7 @@ template <impl::Numeric T>
       w.shape().cols != 1) {
     return detail::refused<T>(errc::tensor_shape);
   }
-  return {*b, b->make(OpCode::Outer, u.id(), w.id())};
+  return {*b, b->make(opcode<OpCode::Outer>, {.left = u.id(), .right = w.id()})};
 }
 
 namespace detail {
@@ -312,7 +319,8 @@ add_at(const Expression<T> &v, const Expression<T> &s, std::size_t i) {
   }
   Arena<T> &b = *detail::Router::arena(v);
   return {b, b.make(opcode<OpCode::AddAt>,
-                    Element{static_cast<std::uint32_t>(i)}, v.id(), s.id(b))};
+                    Element{static_cast<std::uint32_t>(i)},
+                    {.vec = v.id(), .scalar = s.id(b)})};
 }
 } // namespace detail
 

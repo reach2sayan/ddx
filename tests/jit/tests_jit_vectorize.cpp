@@ -1,3 +1,4 @@
+#include "graph_builder.hpp"
 #include "jit/kernel.hpp"
 #include "jit/tests_jit_common.hpp"
 #include "rt/derivative.hpp"
@@ -43,7 +44,7 @@ std::string ir_for(auto build, std::size_t nvars, ddx::jit::Options opt = {}) {
     vars.push_back(var(b, names[i]));
   }
   const auto root = build(vars);
-  const auto graph = Graph<>::freeze(b, std::array{root.id(b)});
+  const auto graph = ddx::test::freeze_values(b, std::array{root.id(b)});
   return *compiler().ir(graph, opt);
 }
 
@@ -124,7 +125,7 @@ TEST(JitVectorize, JacobianLoopVectorises) {
   Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
-  const auto graph = ddx::rt::GraphBuilder{b}
+  const auto graph = ddx::test::GraphBuilder{b}
                          .value(x * y + x * x - y)
                          .build_jacobian()
                          .finish();
@@ -146,7 +147,7 @@ TEST(JitVectorize, WideTranscendentalJacobianIsVector) {
     f = f + v[i] * log(v[i]) + exp(v[i - 1] * v[i]);
   }
   const auto graph =
-      ddx::rt::GraphBuilder{b}.value(f).build_jacobian().finish();
+      ddx::test::GraphBuilder{b}.value(f).build_jacobian().finish();
   ASSERT_EQ(graph.layout().values + graph.layout().jacobian, 17u);
   const auto ir = *compiler().ir(graph);
   EXPECT_TRUE(has_vector_doubles(ir)) << "33 columns stayed scalar";
@@ -175,7 +176,7 @@ TEST(JitVectorize, EveryVectorSymbolResolves) {
   auto f = sin(x) + cos(x) + exp(x) + log(x) + tanh(x) + erf(x) + cbrt(x);
   f = f + atan(x) + asinh(x) + pow(x, ddx::rt::Expression<>{3});
 
-  const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
+  const auto graph = ddx::test::freeze_values(b, std::array{f.id(b)});
   ddx::jit::Options on;
   on.codegen.veclib = ddx::jit::VecLib::Libmvec;
   const auto kernel = must_compile(graph, on);

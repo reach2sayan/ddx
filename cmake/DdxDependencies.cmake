@@ -64,6 +64,15 @@ macro(ddx_use_boost)
                 unset(_ddx_boost_inc)
                 message(STATUS "Boost ${Boost_VERSION} (found: ${Boost_DIR})")
             else ()
+                # Unpacked once for every tree.  Populating again would delete
+                # and re-extract the shared directory under any build another
+                # tree has running; the hash was checked when it was unpacked,
+                # and a new DDX_BOOST_VERSION is a new directory.
+                set(_ddx_boost_unpacked "${DDX_DEPS_DIR}/boost-${DDX_BOOST_VERSION}")
+                if (EXISTS "${_ddx_boost_unpacked}/boost/version.hpp")
+                    set(FETCHCONTENT_SOURCE_DIR_BOOST "${_ddx_boost_unpacked}")
+                endif ()
+                unset(_ddx_boost_unpacked)
                 FetchContent_MakeAvailable(boost)
                 _ddx_adopt_boost("${boost_SOURCE_DIR}")
                 set(DDX_BOOST_VENDORED TRUE CACHE INTERNAL "ddx fetched Boost itself")

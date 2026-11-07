@@ -74,15 +74,21 @@ template <std::size_t I, impl::Numeric T>
   }
 }
 
+// Which operands of a binary node move, by name.
+struct Moving {
+  bool left = false;
+  bool right = false;
+};
+
 // Both operands' rules, `absent` for an operand that does not move; the left
 // built first, always: `make` orders a commutative node's operands by id, so
 // the order nodes are built in is part of the answer.
 template <impl::Numeric T>
 [[nodiscard]] constexpr std::pair<H<T>, H<T>>
 contributions(OpCode op, const H<T> &adj, const H<T> &l, const H<T> &r,
-              bool left, bool right, const H<T> &absent) {
-  H<T> cl = left ? contribution_to<0>(op, adj, l, r) : absent;
-  H<T> cr = right ? contribution_to<1>(op, adj, l, r) : absent;
+              Moving moving, const H<T> &absent) {
+  H<T> cl = moving.left ? contribution_to<0>(op, adj, l, r) : absent;
+  H<T> cr = moving.right ? contribution_to<1>(op, adj, l, r) : absent;
   return {std::move(cl), std::move(cr)};
 }
 
@@ -120,9 +126,20 @@ struct JacobianRow {
   std::vector<NodeId> implicit; // df/dz with every z held, one per implicit
 };
 
+namespace detail {
+// What a reverse sweep does at an implicit z: solve through it, folding
+// adj[z] * dz/dx into each symbol, or hold it and only harvest df/dz -- what
+// dz/dx itself is built from.
+enum class AtImplicits : bool { solved, held };
+template <AtImplicits At, impl::Numeric T>
+[[nodiscard]] constexpr JacobianRow reverse_sweep(Arena<T> &b, NodeId root);
+} // namespace detail
+
 template <impl::Numeric T>
-[[nodiscard]] constexpr JacobianRow
-build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift = true);
+[[nodiscard]] constexpr JacobianRow build_reverse_jacobian(Arena<T> &b,
+                                                           NodeId root) {
+  return detail::reverse_sweep<detail::AtImplicits::solved>(b, root);
+}
 
 namespace detail {
 // The implicit-function theorem's half of a sweep: for implicit z closed by
@@ -132,11 +149,12 @@ namespace detail {
 struct Implicits {
   template <impl::Numeric T>
   [[nodiscard]] static constexpr const std::vector<NodeId> &
-  row(Arena<T> &b, std::uint32_t slot) {
-    auto &row = b.closure_rows_[slot];
+  row(Arena<T> &b, Slot slot) {
+    auto &row = b.closure_rows_[slot.value];
     if (!row) {
-      const auto f = build_reverse_jacobian(b, b.closures()[slot], false);
-      const Expression<T> fz{b, f.implicit[slot]};
+      const auto f =
+          reverse_sweep<AtImplicits::held>(b, b.closures()[slot.value]);
+      const Expression<T> fz{b, f.implicit[slot.value]};
       row = f.partial | std::views::transform([&](NodeId fs) {
               return b.is_constant(fs, T{0})
                          ? fs
@@ -222,7 +240,8 @@ template <impl::Numeric T>
     }
     const auto live = reachable(b, std::span{&f, 1});
     if (std::ranges::any_of(implicits, [&](std::uint32_t other) {
-          return other != slot && live[b.leaf(OpCode::Implicit, other)];
+          return other != slot &&
+                 live[b.leaf(OpCode::Implicit, Slot{other})];
         })) {
       return errc::nested_implicit;
     }
@@ -244,13 +263,23 @@ template <impl::Numeric T>
 // its own shape and, through a Pack, each element its own; past an op that
 // mixes elements it guards nothing.
 //
-// `ift` false holds every implicit fixed and only harvests df/dz; true -- the
-// default -- folds dz/dx in at the end, adj[z] * dz/dx_s into each symbol.
+namespace detail {
+// The condition an adjoint holds under: a node, or none -- on every chosen
+// path.
+struct Guard {
+  NodeId cond = no_node;
+  [[nodiscard]] constexpr bool always() const noexcept {
+    return cond == no_node;
+  }
+};
+} // namespace detail
+
+// Solved, dz/dx is folded in at the end, adj[z] * dz/dx_s into each symbol.
 // Second order needs nothing more: the partial then contains z, and the next
 // sweep over it reaches z and applies the same rule.
-template <impl::Numeric T>
-[[nodiscard]] constexpr JacobianRow
-build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
+template <detail::AtImplicits At, impl::Numeric T>
+[[nodiscard]] constexpr JacobianRow detail::reverse_sweep(Arena<T> &b,
+                                                          NodeId root) {
   const auto n = static_cast<NodeId>(b.size());
   const auto live = detail::reachable(b, std::span{&root, 1});
   // Who a contribution is built for: a node a derivative moves, and a
@@ -264,25 +293,25 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
   // Two nodes per node of the cone is what a reverse pass comes to.
   b.reserve(n + 2 * static_cast<std::size_t>(std::ranges::count(live, true)));
   std::vector<NodeId> adj(n, no_node);
-  std::vector<NodeId> guard(n, no_node);
+  std::vector<Guard> guard(n);
   adj[root] = b.constant(T{1});
 
   const Expression<T> zero{0};
   const Expression<T> one{1};
   const auto expr = [&b](NodeId id) { return Expression<T>{b, id}; };
-  const auto both = [&](NodeId g, const Expression<T> &cond) {
-    return g == no_node ? cond : select(expr(g), cond, zero);
+  const auto both = [&](Guard g, const Expression<T> &cond) {
+    return g.always() ? cond : select(expr(g.cond), cond, zero);
   };
 
   // A contribution under its guard, as a node of the child's width: a
   // select, which over a tensor copies the chosen row.
-  const auto guarded = [&](NodeId child, NodeId g, const Expression<T> &c) {
+  const auto guarded = [&](NodeId child, Guard g, const Expression<T> &c) {
     return both(g, c).id(b, shape_of(b, child));
   };
-  const auto fits = [&b](NodeId g, NodeId child) {
-    return g == no_node || !detail::is_tensor(b[g]) ||
+  const auto fits = [&b](Guard g, NodeId child) {
+    return g.always() || !detail::is_tensor(b[g.cond]) ||
            (detail::is_tensor(b[child]) &&
-            shape_of(b, g) == shape_of(b, child));
+            shape_of(b, g.cond) == shape_of(b, child));
   };
 
   // `g` is the edge's guard; a child reached by an unguarded edge is always
@@ -290,10 +319,10 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
   // handle's `+` is the sum: a Zip(add) where the child is a vector.  The
   // contribution is built only for a child `moves` names: a param's, a seed's
   // or a table's adjoint is read by nothing.
-  const auto joined = [&](NodeId held, NodeId g) {
-    return held == no_node || g == no_node
-               ? no_node
-               : select(expr(held), one, expr(g)).id(b);
+  const auto joined = [&](Guard held, Guard g) {
+    return held.always() || g.always()
+               ? Guard{}
+               : Guard{select(expr(held.cond), one, expr(g.cond)).id(b)};
   };
   // By vector, the adjoint each element's reads have summed to so far, each
   // sum started from the element of the adjoint the vector had: one Pack when
@@ -305,8 +334,8 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
   // flush: an n-wide OR per read was n^2 again.
   struct Gathered {
     NodeId base = no_node;
-    NodeId guard = no_node; // the vector's when the reads began
-    NodeId reads = no_node; // the reads' guards, ORed
+    Guard guard{}; // the vector's when the reads began
+    Guard reads{}; // the reads' guards, ORed
     bool open = true;       // no read, and no base, has dropped the guard
     std::vector<NodeId> element;
   };
@@ -314,7 +343,7 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
   // adjoint, ORed with every read's.
   const auto guard_of = [&](const Gathered &row) {
     if (!row.open) {
-      return no_node;
+      return Guard{};
     }
     return row.base == no_node ? row.reads : joined(row.guard, row.reads);
   };
@@ -337,32 +366,32 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
   // A read under a scalar guard is the guarded element, and the guard joins
   // the vector's as add_to's would.
   const auto gather = [&](NodeId from, std::size_t k, const Expression<T> &a,
-                          std::size_t rows, NodeId g) {
+                          std::size_t rows, Guard g) {
     Gathered &row = gathered[from];
     const bool first = row.element.empty();
     if (first) {
       row.base = adj[from];
       row.guard = guard[from];
-      row.open = row.base == no_node || row.guard != no_node;
+      row.open = row.base == no_node || !row.guard.always();
       row.element.assign(rows, no_node);
     }
-    const Expression<T> c = g == no_node ? a : select(expr(g), a, zero);
+    const Expression<T> c = g.always() ? a : select(expr(g.cond), a, zero);
     NodeId &e = row.element[k];
     e = e != no_node        ? (expr(e) + c).id(b)
         : row.base != no_node ? (expr(row.base)[k] + c).id(b)
                               : c.id(b);
-    row.open = row.open && g != no_node;
+    row.open = row.open && !g.always();
     if (row.open) {
       row.reads = first ? g : joined(row.reads, g);
     }
   };
 
-  const auto add_to = [&](NodeId child, NodeId g, auto &&contribution) {
+  const auto add_to = [&](NodeId child, Guard g, auto &&contribution) {
     if (!moves(child)) {
       return;
     }
     flush(child);
-    g = fits(g, child) ? g : no_node;
+    g = fits(g, child) ? g : Guard{};
     const NodeId c = guarded(child, g, contribution());
     // What sign(), and so abs(), hands back.  Storing it would mark the child
     // live and carry a zero adjoint down its whole cone.
@@ -425,7 +454,7 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
     if (v < gathered.size() && !gathered[v].element.empty() &&
         gathered[v].base == no_node && b.op_of(v) == OpCode::Pack) {
       const auto row = std::move(gathered[v].element);
-      const NodeId g = guard_of(gathered[v]);
+      const Guard g = guard_of(gathered[v]);
       gathered[v] = {};
       for (const auto [k, s] : arguments(b, v) | std::views::enumerate) {
         if (const NodeId e = row[static_cast<std::size_t>(k)]; e != no_node) {
@@ -443,7 +472,7 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
     const auto node = b[v]; // by value: building below may reallocate
     // The adjoint has the node's shape: a vector's is a vector of its width.
     const Expression<T> a = expr(adj[v]);
-    const NodeId g = guard[v];
+    const Guard g = guard[v];
     const OpCode op = detail::effective_op(node);
     switch (kind_of(op)) {
     case Kind::Const:
@@ -485,12 +514,15 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
       // Here rather than in ops/adjoints.hpp: two arms of different types is
       // what a type-encoded tree cannot hold, so there is no compile-time rule
       // to share with.  Nothing reaches the condition -- it chooses.
-      const Expression<T> cond = expr(node.in[0]);
-      if (moves(node.in[1])) {
-        add_to(node.in[1], both(g, cond).id(b), [&] { return a; });
+      // Select's names are VSelect's.
+      const auto [c, then, otherwise] =
+          detail::operands<OpCode::Select>(node.in);
+      const Expression<T> cond = expr(c);
+      if (moves(then)) {
+        add_to(then, Guard{both(g, cond).id(b)}, [&] { return a; });
       }
-      if (moves(node.in[2])) {
-        add_to(node.in[2], both(g, select(cond, zero, one)).id(b),
+      if (moves(otherwise)) {
+        add_to(otherwise, Guard{both(g, select(cond, zero, one)).id(b)},
                [&] { return a; });
       }
       break;
@@ -501,8 +533,9 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
       const Expression<T> r = expr(node.in[1]);
       // A pair, not a structured binding: clang will not constant-evaluate a
       // binding captured by reference.
-      const auto c = detail::contributions(op, a, l, r, moves(node.in[0]),
-                                           moves(node.in[1]), zero);
+      const auto c = detail::contributions(
+          op, a, l, r,
+          {.left = moves(node.in[0]), .right = moves(node.in[1])}, zero);
       add_to(node.in[0], g, [&] { return c.first; });
       add_to(node.in[1], g, [&] { return c.second; });
       break;
@@ -515,11 +548,12 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
         break;
       case OpCode::Pack: {
         const auto args = arguments(b, v);
-        const bool each = g != no_node && detail::is_tensor(b[g]);
+        const bool each = !g.always() && detail::is_tensor(b[g.cond]);
         for (const auto [i, s] : args | std::views::enumerate) {
           const auto at = static_cast<std::size_t>(i);
           if (moves(s)) {
-            add_to(s, each ? expr(g)[at].id(b) : g, [&] { return a[at]; });
+            add_to(s, each ? Guard{expr(g.cond)[at].id(b)} : g,
+                   [&] { return a[at]; });
           }
         }
         break;
@@ -527,7 +561,7 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
       case OpCode::Gather: {
         const NodeId from = node.in[0];
         const Shape shape = shape_of(b, from);
-        if ((g != no_node && detail::is_tensor(b[g])) || shape.cols != 1 ||
+        if ((!g.always() && detail::is_tensor(b[g.cond])) || shape.cols != 1 ||
             !moves(from)) {
           add_to(from, g, [&] {
             return detail::add_at(expr(b.zeros(shape)), a,
@@ -538,12 +572,14 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
         gather(from, detail::get<Element>(node).value, a, shape.rows, g);
         break;
       }
-      case OpCode::Scale:
-        add_to(node.in[0], g, [&] {
-          return contracted(adj[v], expr(node.in[1])).value_or(dot(a, expr(node.in[1])));
+      case OpCode::Scale: {
+        const auto [scalar, vec] = detail::operands<OpCode::Scale>(node);
+        add_to(scalar, g, [&] {
+          return contracted(adj[v], expr(vec)).value_or(dot(a, expr(vec)));
         });
-        add_to(node.in[1], g, [&] { return expr(node.in[0]) * a; });
+        add_to(vec, g, [&] { return expr(scalar) * a; });
         break;
+      }
       case OpCode::Sum:
         add_to(node.in[0], g,
                [&] { return a * expr(b.ones(shape_of(b, node.in[0]))); });
@@ -552,38 +588,44 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
         add_to(node.in[0], g, [&] { return a * expr(node.in[1]); });
         add_to(node.in[1], g, [&] { return a * expr(node.in[0]); });
         break;
-      case OpCode::AddAt:
-        add_to(node.in[0], g, [&] { return a; });
-        add_to(node.in[1], g,
-               [&] { return a[detail::get<Element>(node).value]; });
+      case OpCode::AddAt: {
+        const auto [vec, scalar] = detail::operands<OpCode::AddAt>(node);
+        add_to(vec, g, [&] { return a; });
+        add_to(scalar, g, [&] { return a[detail::get<Element>(node).value]; });
         break;
+      }
       case OpCode::MatRow: // a table: nothing moves it
         break;
       case OpCode::MatVec: {
         // y = M v moves v by M^T a and M by a v^T; y = M^T v, by M a and v a^T.
         const bool t =
             detail::get<Orientation>(node) == Orientation::transposed;
-        add_to(node.in[1], g, [&] {
+        const auto [matrix, vec] = detail::operands<OpCode::MatVec>(node);
+        add_to(vec, g, [&] {
           return expr(b.make(opcode<OpCode::MatVec>,
                              t ? Orientation::plain : Orientation::transposed,
-                             node.in[0], adj[v]));
+                             {.matrix = matrix, .vec = adj[v]}));
         });
-        add_to(node.in[0], g, [&] {
-          return expr(t ? b.make(OpCode::Outer, node.in[1], adj[v])
-                        : b.make(OpCode::Outer, adj[v], node.in[1]));
+        add_to(matrix, g, [&] {
+          return expr(t ? b.make(opcode<OpCode::Outer>,
+                                 {.left = vec, .right = adj[v]})
+                        : b.make(opcode<OpCode::Outer>,
+                                 {.left = adj[v], .right = vec}));
         });
         break;
       }
-      case OpCode::Outer: // u w^T: u moves by A w, w by A^T u
-        add_to(node.in[0], g, [&] {
-          return expr(b.make(opcode<OpCode::MatVec>, Orientation::plain, adj[v],
-                             node.in[1]));
+      case OpCode::Outer: { // u w^T: u moves by A w, w by A^T u
+        const auto [u, w] = detail::operands<OpCode::Outer>(node);
+        add_to(u, g, [&] {
+          return expr(b.make(opcode<OpCode::MatVec>, Orientation::plain,
+                             {.matrix = adj[v], .vec = w}));
         });
-        add_to(node.in[1], g, [&] {
+        add_to(w, g, [&] {
           return expr(b.make(opcode<OpCode::MatVec>, Orientation::transposed,
-                             adj[v], node.in[0]));
+                             {.matrix = adj[v], .vec = u}));
         });
         break;
+      }
       default: // the dense sweep's own rows, built under no root
         std::unreachable();
       }
@@ -593,16 +635,17 @@ build_reverse_jacobian(Arena<T> &b, NodeId root, bool ift) {
   }
 
   const auto implicits = b.inputs().count(OpCode::Implicit);
-  if (ift) {
+  if constexpr (At == detail::AtImplicits::solved) {
     for (const auto slot :
          std::views::iota(0u, static_cast<std::uint32_t>(implicits))) {
-      const NodeId z = b.leaf(OpCode::Implicit, slot);
+      const NodeId z = b.leaf(OpCode::Implicit, Slot{slot});
       if (z >= n || adj[z] == no_node || b.is_constant(adj[z], T{0})) {
         continue;
       }
       for (const auto [s, dz] :
-           detail::Implicits::row(b, slot) | std::views::enumerate) {
-        add_to(b.leaf(OpCode::Var, static_cast<std::uint32_t>(s)), guard[z],
+           detail::Implicits::row(b, Slot{slot}) | std::views::enumerate) {
+        add_to(b.leaf(OpCode::Var, Slot{static_cast<std::uint32_t>(s)}),
+               guard[z],
                [&] { return expr(adj[z]) * expr(dz); });
       }
     }
@@ -656,8 +699,8 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
   const auto expr = [&b](NodeId id) { return Expression<T>{b, id}; };
   const auto dv = [&](NodeId u) { return Expression<T>{b, at(u)}; };
   // The terms of a product rule whose operand moves, and only those: a zero
-  // term is no node on a scalar, but a tensor op is never folded, so it would
-  // be computed at every point.  At least one moves, or `v` would not.
+  // term is no node on a scalar, but a tensor op folds only over constants, so
+  // it would be computed at every point.  At least one moves, or `v` would not.
   const auto moved = [&](NodeId v, NodeId l, auto &&dl, NodeId r, auto &&dr) {
     const Shape shape = shape_of(b, v);
     if (!moves[r]) {
@@ -716,7 +759,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       if (node.op == OpCode::Implicit) {
         // dz = sum_s dz/dx_s dx_s: z moves with every symbol its residual does.
         const auto dz =
-            detail::Implicits::row(b, detail::get<Slot>(node).value);
+            detail::Implicits::row(b, detail::get<Slot>(node));
         d[v] = std::ranges::fold_left(
                    std::views::zip(dz, tangent) |
                        std::views::transform([&b](const auto &pair) {
@@ -739,18 +782,22 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
     case Kind::Ternary:
       // select(c, dt, df): the condition picks the derivative as it picks
       // the value.
-      d[v] =
-          select(Expression<T>{b, node.in[0]}, Expression<T>{b, at(node.in[1])},
-                 Expression<T>{b, at(node.in[2])})
-              .id(b);
+      {
+        const auto [cond, then, otherwise] =
+            detail::operands<OpCode::Select>(node.in);
+        d[v] = select(Expression<T>{b, cond}, Expression<T>{b, at(then)},
+                      Expression<T>{b, at(otherwise)})
+                   .id(b);
+      }
       break;
     case Kind::Binary: {
       // Both partials before either product, as in the reverse sweep.
       const Expression<T> l{b, node.in[0]};
       const Expression<T> r{b, node.in[1]};
       const Expression<T> one{1};
-      const auto p = detail::contributions(op, one, l, r, moves[node.in[0]],
-                                           moves[node.in[1]], one);
+      const auto p = detail::contributions(
+          op, one, l, r,
+          {.left = moves[node.in[0]], .right = moves[node.in[1]]}, one);
       d[v] = moved(
           v, node.in[0], [&] { return p.first * dv(node.in[0]); }, node.in[1],
           [&] { return p.second * dv(node.in[1]); });
@@ -774,10 +821,12 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       case OpCode::Sum:
         d[v] = sum(dv(node.in[0])).id(b);
         break;
-      case OpCode::AddAt:
+      case OpCode::AddAt: {
+        const auto [vec, scalar] = detail::operands<OpCode::AddAt>(node);
         d[v] = b.make(opcode<OpCode::AddAt>, detail::get<Element>(node),
-                      at(node.in[0]), at(node.in[1]));
+                      {.vec = at(vec), .scalar = at(scalar)});
         break;
+      }
       case OpCode::Scale: // the bilinear ops: the node with one operand's
       case OpCode::Dot:   // tangent in that operand's slot
       case OpCode::MatVec:

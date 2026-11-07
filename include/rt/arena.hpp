@@ -16,8 +16,10 @@
 #include <array>
 #include <bit>
 #include <cassert>
+#include <compare>
 #include <concepts>
 #include <cstdint>
+#include <format>
 #include <functional>
 #include <iterator>
 #include <memory>
@@ -26,13 +28,118 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace ddx::rt {
 
-using NodeId = std::uint32_t;
-inline constexpr NodeId no_node = ~NodeId{0};
+// An index of one kind: read as the index it is wherever it indexes, but made
+// only on purpose, so one kind -- or a count -- never becomes another by
+// accident.
+template <typename Tag> struct Id {
+  using difference_type = std::int64_t;
+  std::uint32_t value = 0;
+
+  constexpr Id() = default;
+  constexpr explicit Id(std::uint32_t v) noexcept : value{v} {}
+  constexpr operator std::uint32_t() const noexcept { return value; }
+  constexpr Id &operator++() noexcept {
+    ++value;
+    return *this;
+  }
+  constexpr Id operator++(int) noexcept {
+    const Id was = *this;
+    ++value;
+    return was;
+  }
+  constexpr Id &operator--() noexcept {
+    --value;
+    return *this;
+  }
+  constexpr Id operator--(int) noexcept {
+    const Id was = *this;
+    --value;
+    return was;
+  }
+  friend constexpr bool operator==(Id, Id) = default;
+  friend constexpr auto operator<=>(Id, Id) = default;
+};
+// A node of the arena.
+using NodeId = Id<struct NodeTag>;
+// Where a sweep keeps a scalar value: an arena walk's tape is by id, a frozen
+// graph's packed by liveness.
+using TapeRow = Id<struct TapeRowTag>;
+// Where a node's list starts in Model::lists.
+using ListOffset = Id<struct ListTag>;
+static_assert(sizeof(NodeId) == 4 && std::is_trivially_copyable_v<NodeId>);
+static_assert(std::weakly_incrementable<NodeId>);
+inline constexpr NodeId no_node{~std::uint32_t{0}};
+inline constexpr TapeRow no_row{~std::uint32_t{0}};
+inline constexpr ListOffset no_list{~std::uint32_t{0}};
+
+} // namespace ddx::rt
+
+// An id prints as the index it is.
+template <typename Tag>
+struct std::formatter<ddx::rt::Id<Tag>> : std::formatter<std::uint32_t> {
+  auto format(ddx::rt::Id<Tag> id, auto &ctx) const {
+    return std::formatter<std::uint32_t>::format(id.value, ctx);
+  }
+};
+
+namespace ddx::rt {
+namespace detail {
+// A tensor op's or a select's operands by the names its table row gives them,
+// in slot order: what make() takes for an op whose operands are named
+// (named_operands), and what operands() hands back for any of them.
+// `NodeId row, matrix;` is one member declaration, so a row's cell is the
+// declarator list as it stands.
+template <OpCode Op> struct Operands;
+#define DDX_RT_MEMBERS(...) __VA_OPT__(NodeId __VA_ARGS__;)
+#define DDX_RT_OPERANDS(Op, arity, names)                                      \
+  template <> struct Operands<OpCode::Op> {                                    \
+    DDX_RT_MEMBERS names                                                       \
+  };                                                                           \
+  static_assert((arity) == 0 ||                                                \
+                sizeof(Operands<OpCode::Op>) == (arity) * sizeof(NodeId));
+#define DDX_RT_TENSOR_OPERANDS(fn, Op, label, arity, kind, payload, yields,    \
+                               names)                                          \
+  DDX_RT_OPERANDS(Op, arity, names)
+#define DDX_RT_TERNARY_OPERANDS(fn, Op, label, functor, yields, names)         \
+  DDX_RT_OPERANDS(Op, 3, names)
+DDX_RT_TENSOR_TABLE(DDX_RT_TENSOR_OPERANDS)
+DDX_RT_TERNARY_TABLE(DDX_RT_TERNARY_OPERANDS)
+#undef DDX_RT_TERNARY_OPERANDS
+#undef DDX_RT_TENSOR_OPERANDS
+#undef DDX_RT_OPERANDS
+#undef DDX_RT_MEMBERS
+
+template <OpCode Op>
+[[nodiscard]] constexpr Operands<Op>
+operands(const std::array<NodeId, 3> &in) noexcept {
+  return [&]<std::size_t... I>(std::index_sequence<I...>) {
+    return Operands<Op>{in[I]...};
+  }(std::make_index_sequence<arity_of(Op)>{});
+}
+// A node's, which must be an `Op`.
+template <OpCode Op>
+[[nodiscard]] constexpr Operands<Op> operands(const auto &node) noexcept
+  requires requires { node.in; }
+{
+  assert(node.op == Op);
+  return operands<Op>(node.in);
+}
+
+// A term an `op=` fold has taken, among the arena's pending ones.
+using PendingEntry = Id<struct PendingTag>;
+inline constexpr PendingEntry no_entry{~std::uint32_t{0}};
+// A handle's fold in progress: its last entry, under the Nary op that names
+// it -- the one op its entries are read under.
+template <OpCode Fold> struct Folding {
+  PendingEntry entry;
+};
+} // namespace detail
 
 template <impl::Numeric T> class Expression;
 template <impl::Numeric T = double> class DDX_TEMPLATE_API Arena;
@@ -51,9 +158,9 @@ struct Implicits;
 
 // A function the caller supplies: `fn(in, out)` reads the arguments and writes
 // the answer in ExternRecord's layout.  Shared, so a frozen graph and a
-// compiled kernel keep it alive as long as they can call it.  It must not
-// evaluate a ddx equation of the same T: the sweep's tapes are per thread, and
-// a nested sweep would resize them under the outer one.
+// compiled kernel keep it alive as long as they can call it.  It may evaluate
+// another ddx equation: a sweep that can call one leases the thread's tapes
+// (TapeLease, rt/core.hpp).
 template <impl::Numeric T>
 using ExternFn = std::function<void(std::span<const T>, std::span<T>)>;
 
@@ -118,7 +225,7 @@ constexpr void extern_partials(Arena<T> &b, NodeId v, Sink &&sink);
 // A named input: which kind of leaf, and its place among that kind.
 struct Input {
   OpCode op = OpCode::Var;
-  std::uint32_t index = 0;
+  Slot index{};
   constexpr bool operator==(const Input &) const = default;
 };
 
@@ -134,7 +241,6 @@ struct Contraction {
   NodeId y = no_node;
   NodeId z = no_node;
   bool negated = false;
-
   [[nodiscard]] constexpr explicit operator bool() const noexcept {
     return x != no_node;
   }
@@ -142,15 +248,15 @@ struct Contraction {
 
 // One node of a sweep and the fma it takes, if any.  Together, so a walker is
 // never handed an order without the contractions resolved over it.  `out` and
-// `in` are where the sweep writes and reads: tape rows, which an arena walk
-// leaves as the ids and a freeze packs by liveness -- the ids above stay what
-// codegen and the cone read.  `op` is the node's, in what was padding: the
-// sweep dispatches on it without first loading the node.
+// `in` are the rows the sweep writes and reads: the ids' own, as scheduled and
+// as an arena walk keeps them, until a freeze packs them by liveness -- the
+// ids above stay what codegen and the cone read.  `op` is the node's, in what
+// was padding: the sweep dispatches on it without first loading the node.
 struct Step {
   NodeId node = no_node;
   Contraction fma{};
-  std::uint32_t out = no_node;
-  std::array<std::uint32_t, 3> in{no_node, no_node, no_node};
+  TapeRow out = no_row;
+  std::array<TapeRow, 3> in{no_row, no_row, no_row};
   bool fused = false; // a SumN under contraction: its product terms are fma
   OpCode op = OpCode::Const;
 };
@@ -158,34 +264,28 @@ static_assert(sizeof(Step) == 40);
 
 namespace detail {
 
-// A node's payload, as the type its op's row names -- the one way the word is
-// read.  Only interning and copying handle the word itself.
 template <typename P> [[nodiscard]] constexpr P get(const auto &node) noexcept {
   assert(info(node.op).payload == payload_index<P>);
   return from_word<P>(node.payload);
 }
-// The opcode whose rule a node follows: a Map or Zip is its inner one.
+
 [[nodiscard]] constexpr OpCode effective_op(const auto &node) noexcept {
   return node.op == OpCode::Map || node.op == OpCode::Zip ? get<OpCode>(node)
                                                           : node.op;
 }
-// Whether a node's value is a vector row rather than a scalar or a table.
+
 [[nodiscard]] constexpr bool is_tensor(const auto &node) noexcept {
   return yields_of(node.op) == Yields::Row;
 }
-// Whether a node's value is one scalar: no row, and no table either.
+
 [[nodiscard]] constexpr bool is_scalar(const auto &node) noexcept {
   return yields_of(node.op) == Yields::Scalar;
 }
-// Whether a node runs on the tensor sweep: a tensor op, or a VSelect.
+
 [[nodiscard]] constexpr bool on_tensors(const auto &node) noexcept {
   return kind_of(node.op) == Kind::Tensor || is_tensor(node);
 }
 
-// The operands a node actually has.  Arity is at most three and the absent ones
-// are no_node, so every walker would otherwise repeat the same skip.  Not for
-// a node with a list (has_list), whose `a` is no operand: for_each_operand
-// below is what a walk over every node takes.
 [[nodiscard]] constexpr auto operands_of(const auto &nodes, NodeId v) {
   return nodes.operands(v) |
          std::views::filter([](NodeId u) { return u != no_node; });
@@ -193,23 +293,21 @@ template <typename P> [[nodiscard]] constexpr P get(const auto &node) noexcept {
 
 } // namespace detail
 
-// The operands arity_of(op) names, the rest no_node; for a node with a list
-// (has_list), in[0] is where the list starts.  The payload is the word
-// detail::get reads as the type the op's row names.
+// The operands arity_of(op) names, the rest no_node; a node with a list
+// (has_list) has none, and `list` is where its list starts.  The payload is
+// the word detail::get reads as the type the op's row names.
 template <impl::Numeric T> struct Node {
   OpCode op = OpCode::Const;
   std::array<NodeId, 3> in{no_node, no_node, no_node};
   T value{}; // Const
   std::uint32_t payload = 0;
+  ListOffset list = no_list;
 };
 
 // Pinned rather than assumed: a member above `value` would silently widen
 // every node in every arena.
 static_assert(sizeof(Node<double>) == 32);
 
-// The data behind a VecConst or MatConst leaf, column-major; a vector is one
-// column.  Owned by the model, so a table is read in place rather than copied
-// into nodes.
 template <impl::Numeric T> struct TensorConst {
   std::uint32_t rows = 0;
   std::uint32_t cols = 1;
@@ -238,6 +336,9 @@ template <impl::Numeric T> struct Model {
   [[nodiscard]] constexpr std::array<NodeId, 3> operands(NodeId v) const {
     return nodes[v].in;
   }
+  [[nodiscard]] constexpr ListOffset list_of(NodeId v) const {
+    return nodes[v].list;
+  }
   [[nodiscard]] constexpr std::size_t size() const { return nodes.size(); }
 };
 
@@ -250,7 +351,7 @@ template <impl::Numeric T> struct Model {
   const std::size_t count =
       is_extern(op) ? s.externs()[detail::get<ExternRef>(s[v]).function].arity
                     : detail::get<Count>(s[v]).value;
-  return s.lists().subspan(s.operands(v)[0], count); // `a` is the offset
+  return s.lists().subspan(s.list_of(v), count);
 }
 
 namespace detail {
@@ -269,13 +370,12 @@ inline constexpr auto every_operand = [](const auto &s, NodeId v, auto &&mark) {
 };
 
 // The roots' cone, which every walker asks for first; `reaches` marks what a
-// node reads.  Ids are topological, so one descending pass settles it.  Not a
-// filtered view: the body marks entries the pass has not reached.
+// node reads
 template <typename Reach = decltype(every_operand)>
 [[nodiscard]] constexpr std::vector<bool>
 reachable(const auto &nodes, std::span<const NodeId> roots,
           Reach reaches = every_operand) {
-  std::vector<bool> live(nodes.size(), false);
+  std::vector live(nodes.size(), false);
   std::ranges::for_each(roots, [&](NodeId r) { live[r] = true; });
   for (NodeId v = static_cast<NodeId>(nodes.size()); v-- > 0;) {
     if (live[v]) {
@@ -286,11 +386,7 @@ reachable(const auto &nodes, std::span<const NodeId> roots,
 }
 } // namespace detail
 
-// A row's shape: rows x cols, column-major, cols 1 for a vector.  No node
-// carries it; it is a function of the operands -- a walk down the first (or,
-// for a Scale, second) operand through the elementwise ops, and a step into
-// the matrix ops' own operands.  Asked of a sound source, whose ids are
-// topological, so the walk ends.
+// A row's shape: rows x cols, column-major, cols 1 for a vector.
 struct Shape {
   std::uint32_t rows = 1;
   std::uint32_t cols = 1;
@@ -299,71 +395,9 @@ struct Shape {
   }
   constexpr bool operator==(const Shape &) const = default;
 };
-[[nodiscard]] constexpr Shape shape_of(const auto &s, NodeId v) {
-  for (;;) {
-    // An arena records each node's shape as it interns it, so the walk below
-    // is one step past the node asked about; without that a chain of
-    // elementwise ops is walked to its leaf on every ask.
-    if constexpr (requires { s.recorded_shape(v); }) {
-      if (const auto known = s.recorded_shape(v)) {
-        return *known;
-      }
-    }
-    const auto [a, b, c] = s.operands(v);
-    switch (s.op_of(v)) {
-    case OpCode::VecConst:
-      return {.rows = s.tensors()[detail::get<TensorRef>(s[v]).value].rows,
-              .cols = 1};
-    case OpCode::MatConst:
-      return {.rows = 0, .cols = 0};
-    case OpCode::MatRow: {
-      // A table, or -- the dense sweep's transpose -- a computed matrix.
-      const auto table = [&] {
-        const auto &m = s.tensors()[detail::get<TensorRef>(s[a]).value];
-        return Shape{.rows = m.rows, .cols = m.cols};
-      };
-      const Shape m = s.op_of(a) == OpCode::MatConst ? table() : shape_of(s, a);
-      return detail::get<Orientation>(s[v]) == Orientation::transposed
-                 ? Shape{.rows = m.cols, .cols = m.rows}
-                 : m;
-    }
-    case OpCode::Pack:
-      return {.rows = detail::get<Count>(s[v]).value, .cols = 1};
-    case OpCode::Diag: {
-      const std::uint32_t w = shape_of(s, a).rows;
-      return {.rows = w, .cols = w};
-    }
-    case OpCode::Outer:
-      return {.rows = shape_of(s, a).rows, .cols = shape_of(s, b).rows};
-    case OpCode::MatVec: {
-      const Shape m = shape_of(s, a);
-      return {.rows = detail::get<Orientation>(s[v]) == Orientation::transposed
-                          ? m.cols
-                          : m.rows,
-              .cols = 1};
-    }
-    case OpCode::MatMul:
-      return {.rows = shape_of(s, a).rows, .cols = shape_of(s, b).cols};
-    case OpCode::StackRows:
-      return {.rows = detail::get<Count>(s[v]).value,
-              .cols = shape_of(s, arguments(s, v)[0]).rows};
-    case OpCode::RowOf:
-      return {.rows = shape_of(s, a).cols, .cols = 1};
-    case OpCode::Map:
-    case OpCode::Zip:
-    case OpCode::AddAt:
-    case OpCode::ColScale:
-      v = a;
-      break;
-    case OpCode::Scale:
-    case OpCode::RowScale:
-    case OpCode::VSelect:
-      v = b;
-      break;
-    default:
-      return {};
-    }
-  }
+template <impl::Numeric T>
+[[nodiscard]] constexpr Shape shape_of(const Arena<T> &b, NodeId v) {
+  return b.shape(v);
 }
 // A tensor node's arithmetic over its operands' elements, through a kernel
 // table: a row into `to`, a reduction into `reduced`.  What the sweep runs per
@@ -474,15 +508,11 @@ DDX_ALWAYS_INLINE constexpr bool tensor_row(const auto &s, NodeId v, auto in,
 template <impl::Numeric T> class DDX_TEMPLATE_API Arena {
 public:
   using value_type = T;
-
   [[nodiscard]] constexpr NodeId constant(const T &v) {
     return intern({.op = OpCode::Const, .value = v});
   }
 
-  // Room for `nodes` in all, arena and table at once, and for `symbols` in
-  // all with the indexes over their names, instead of growing each through
-  // every doubling on the way: what a pass that knows the size of what it is
-  // about to build asks for.
+  // Room for `nodes` in all, arena and table at once
   constexpr void reserve(std::size_t nodes, std::size_t symbols = 0) {
     model_.nodes.reserve(nodes);
     shapes_.reserve(nodes);
@@ -544,15 +574,42 @@ public:
   // An `Op` node and what it carries: the arity and the payload's type are
   // checked as it compiles.
   template <OpCode Op, std::same_as<NodeId>... Ids>
-    requires(sizeof...(Ids) == arity_of(Op))
+    requires(sizeof...(Ids) == arity_of(Op) && !named_operands(Op))
   [[nodiscard]] constexpr NodeId make(std::integral_constant<OpCode, Op>,
                                       payload_of_t<Op> payload, Ids... in) {
     return formed({.op = Op, .in = padded(in...), .payload = to_word(payload)});
+  }
+  // One whose operands are named, by name: `{.matrix = m, .vec = v}`, which
+  // will not compile in any other order.
+  template <OpCode Op>
+    requires(named_operands(Op))
+  [[nodiscard]] constexpr NodeId make(std::integral_constant<OpCode, Op>,
+                                      payload_of_t<Op> payload,
+                                      const detail::Operands<Op> &in) {
+    const auto ids = std::bit_cast<std::array<NodeId, arity_of(Op)>>(in);
+    std::array padded_in{no_node, no_node, no_node};
+    std::ranges::copy(ids, padded_in.begin());
+    return formed({.op = Op, .in = padded_in, .payload = to_word(payload)});
+  }
+  template <OpCode Op>
+    requires(named_operands(Op) && std::same_as<payload_of_t<Op>, NoPayload>)
+  [[nodiscard]] constexpr NodeId make(std::integral_constant<OpCode, Op> op,
+                                      const detail::Operands<Op> &in) {
+    return make(op, NoPayload{}, in);
+  }
+  // A list-carrying `Op` node over the list at `list`.
+  template <OpCode Op>
+    requires(has_list(Op))
+  [[nodiscard]] constexpr NodeId make(std::integral_constant<OpCode, Op>,
+                                      payload_of_t<Op> payload,
+                                      ListOffset list) {
+    return formed({.op = Op, .payload = to_word(payload), .list = list});
   }
   // An op chosen at run time, which carries nothing.
   [[nodiscard]] constexpr NodeId make(OpCode op, NodeId a, NodeId b = no_node,
                                       NodeId c = no_node) {
     assert(detail::info(op).payload == payload_index<NoPayload>);
+    assert(!named_operands(op) && "named operands are made by name");
     return formed({.op = op, .in = {a, b, c}});
   }
 
@@ -561,8 +618,8 @@ public:
   [[nodiscard]] constexpr NodeId rebuild(NodeId v, auto &&remap) {
     Node<T> n = model_[v]; // by value: list() and formed() may reallocate
     if (has_list(n.op)) {
-      n.in[0] = list(arguments(*this, v) | std::views::transform(remap) |
-                     impl::to<std::vector<NodeId>>());
+      n.list = list(arguments(*this, v) | std::views::transform(remap) |
+                    impl::to<std::vector<NodeId>>());
     } else {
       std::ranges::transform(n.in, n.in.begin(), [&](NodeId u) {
         return u == no_node ? no_node : remap(u);
@@ -588,10 +645,13 @@ public:
   [[nodiscard]] constexpr std::array<NodeId, 3> operands(NodeId id) const {
     return model_.operands(id);
   }
+  [[nodiscard]] constexpr ListOffset list_of(NodeId id) const {
+    return model_.list_of(id);
+  }
   [[nodiscard]] constexpr std::size_t size() const { return model_.size(); }
-  // What shape_of() reads before it walks.
-  [[nodiscard]] constexpr std::optional<Shape> recorded_shape(NodeId v) const {
-    return v < shapes_.size() ? std::optional{shapes_[v]} : std::nullopt;
+  [[nodiscard]] constexpr Shape shape(NodeId v) const {
+    assert(v < shapes_.size());
+    return shapes_[v];
   }
   [[nodiscard]] constexpr std::span<const Node<T>> nodes() const {
     return model_.nodes;
@@ -642,8 +702,8 @@ public:
   }
 
   // The leaf a named input is.
-  [[nodiscard]] constexpr NodeId leaf(OpCode op, std::uint32_t index) const {
-    return ids_[*named_index(op)][index];
+  [[nodiscard]] constexpr NodeId leaf(OpCode op, Slot slot) const {
+    return ids_[*named_index(op)][slot.value];
   }
 
   // Which input `name` is, if any.
@@ -658,7 +718,7 @@ public:
   [[nodiscard]] constexpr result<std::uint32_t>
   symbol(std::string_view name) const {
     const auto in = lookup(name);
-    return in && in->op == OpCode::Var ? result<std::uint32_t>{in->index}
+    return in && in->op == OpCode::Var ? result<std::uint32_t>{in->index.value}
                                        : fail(errc::unknown_symbol);
   }
 
@@ -683,38 +743,42 @@ public:
 private:
   // One namespace for every named input: a name is one kind of input, never
   // two, and naming it again hands back the same leaf.  A new name takes the
-  // next slot of its kind and moves nothing already built.  no_node is a name
+  // next slot of its kind and moves nothing already built.  None for a name
   // already taken by another kind, which named() poisons.
   template <impl::Numeric U>
   friend constexpr Expression<U> named(Arena<U> &, OpCode, std::string_view);
-  [[nodiscard]] constexpr NodeId input(OpCode op, std::string_view name) {
+  [[nodiscard]] constexpr std::optional<NodeId> input(OpCode op,
+                                                      std::string_view name) {
     const auto at = std::ranges::lower_bound(by_name_, name, {}, name_of());
     if (at != by_name_.end() && name_of()(*at) == name) {
-      return at->op == op ? leaf(op, at->index) : no_node;
+      return at->op == op ? std::optional{leaf(op, at->index)} : std::nullopt;
     }
     const auto k = *named_index(op);
-    const auto index = static_cast<std::uint32_t>(model_.names[k].size());
+    const Slot index{static_cast<std::uint32_t>(model_.names[k].size())};
     model_.names[k].emplace_back(name);
-    ids_[k].push_back(intern({.op = op, .payload = to_word(Slot{index})}));
+    ids_[k].push_back(intern({.op = op, .payload = to_word(index)}));
     by_name_.insert(at, {.op = op, .index = index});
     if (op == OpCode::Implicit) {
       model_.closures.push_back(no_node);
       closure_rows_.emplace_back();
     }
+    assert(ids_[k].size() == model_.names[k].size());
+    assert(model_.closures.size() == closure_rows_.size());
     return ids_[k].back();
   }
 
-  // Implicit `z` is a root of `f`.  A misuse -- a poisoned residual, or the
-  // same implicit named twice -- is kept rather than thrown: the equation
-  // built over this arena refuses with it.
+  // Implicit `z` is a root of `f`, or of a residual refused with why.  A
+  // misuse -- a poisoned residual, or the same implicit named twice -- is
+  // kept rather than thrown: the equation built over this arena refuses with
+  // it.
   template <impl::Numeric U, std::invocable<const Expression<U> &> F>
   friend constexpr Expression<U> implicit(Arena<U> &, std::string_view, F &&);
-  constexpr void close(NodeId z, NodeId f, std::optional<errc> why) {
+  constexpr void close(NodeId z, std::expected<NodeId, errc> f) {
     NodeId &closure = model_.closures[detail::get<Slot>(model_.nodes[z]).value];
-    if (why || closure != no_node) {
-      broken_ = broken_.value_or(why.value_or(errc::closed_twice));
+    if (!f || closure != no_node) {
+      broken_ = broken_.value_or(f ? errc::closed_twice : f.error());
     } else {
-      closure = f;
+      closure = *f;
     }
   }
 
@@ -739,16 +803,44 @@ private:
                 list(args));
   }
 
-  // Where `ids` sit in the pool: the run already there that spells them, else
-  // appended.  Content-keyed, so two nodes over the same list intern to one.
-  [[nodiscard]] constexpr NodeId list(std::span<const NodeId> ids) {
-    const auto found = std::ranges::search(model_.lists, ids);
-    if (!found.empty()) {
-      return static_cast<NodeId>(found.begin() - model_.lists.begin());
+  // Where `ids` sit in the pool: the list already there that spells them,
+  // else appended.  Interned by content, as nodes are, so two nodes over the
+  // same list intern to one and an offset is the list's identity.
+  [[nodiscard]] constexpr ListOffset list(std::span<const NodeId> ids) {
+    if ((listed_.size() + 1) * 2 > list_table_.size()) {
+      rehash_lists(listed_.size() + 1);
     }
-    const auto at = static_cast<NodeId>(model_.lists.size());
+    const auto spells = [this, ids](std::uint32_t k) {
+      const ListKey key = listed_[k];
+      return key.size == ids.size() &&
+             std::ranges::equal(
+                 std::span{model_.lists}.subspan(key.at, key.size), ids);
+    };
+    auto run = probe(hash_ids(ids), list_table_.size());
+    const std::size_t i = *std::ranges::find_if(run, [&](std::size_t k) {
+      return list_table_[k] == kFreeList || spells(list_table_[k]);
+    });
+    if (list_table_[i] != kFreeList) {
+      return listed_[list_table_[i]].at;
+    }
+    const ListOffset at{static_cast<std::uint32_t>(model_.lists.size())};
     impl::append(model_.lists, ids);
+    list_table_[i] = static_cast<std::uint32_t>(listed_.size());
+    listed_.push_back(
+        {.at = at, .size = static_cast<std::uint32_t>(ids.size())});
     return at;
+  }
+  constexpr void rehash_lists(std::size_t lists) {
+    list_table_.assign(std::bit_ceil(std::max<std::size_t>(64, 2 * lists)),
+                       kFreeList);
+    for (const auto [k, key] : listed_ | std::views::enumerate) {
+      auto run =
+          probe(hash_ids(std::span{model_.lists}.subspan(key.at, key.size)),
+                list_table_.size());
+      list_table_[*std::ranges::find_if(run, [this](std::size_t j) {
+        return list_table_[j] == kFreeList;
+      })] = static_cast<std::uint32_t>(k);
+    }
   }
 
   // A fold still being accumulated by `op=`: the terms so far as a list that
@@ -760,29 +852,53 @@ private:
   template <impl::Numeric U> friend class Expression;
   struct Pending {
     NodeId term = no_node;
-    std::uint32_t prev = no_node; // the entry before, no_node for the first
-    NodeId node = no_node;        // what this entry materialised as
+    detail::PendingEntry prev = detail::no_entry; // none for the first
+    NodeId node = no_node; // what this entry materialised as
+    // Whether `node` is the fold's running value here to the bit, which a
+    // later read may start from.
+    bool running = false;
   };
   std::vector<Pending> pending_;
-  [[nodiscard]] constexpr std::uint32_t push_term(std::uint32_t prev,
-                                                  NodeId term) {
+  [[nodiscard]] constexpr detail::PendingEntry
+  push_term(detail::PendingEntry prev, NodeId term) {
     pending_.push_back({.term = term, .prev = prev});
-    return static_cast<std::uint32_t>(pending_.size() - 1);
+    return detail::PendingEntry{
+        static_cast<std::uint32_t>(pending_.size() - 1)};
   }
-  [[nodiscard]] constexpr NodeId fold_of(OpCode fold, std::uint32_t entry) {
+  template <OpCode Fold>
+  [[nodiscard]] constexpr NodeId fold_of(detail::Folding<Fold> folding) {
+    const detail::PendingEntry entry = folding.entry;
     if (pending_[entry].node != no_node) {
       return pending_[entry].node;
     }
+    // Back to the start, or to an earlier read's running value: a loop that
+    // reads its accumulator every step lists each term once.
     std::vector<NodeId> terms;
-    for (auto i = entry; i != no_node; i = pending_[i].prev) {
+    bool resumed = false;
+    for (auto i = entry; i != detail::no_entry; i = pending_[i].prev) {
+      if (i != entry && pending_[i].running) {
+        terms.push_back(pending_[i].node);
+        resumed = true;
+        break;
+      }
       terms.push_back(pending_[i].term);
     }
     std::ranges::reverse(terms);
     const NodeId node = terms.size() == 1 ? terms[0]
                         : terms.size() == 2
-                            ? make(fold_op(fold), terms[0], terms[1])
-                            : listed(fold, terms);
+                            ? make(fold_op(Fold), terms[0], terms[1])
+                            : listed(Fold, terms);
+    // A sum's step fuses its term but rounds its first; an Add contracts
+    // whichever operand is a product.  So an Add is the running value where
+    // its first operand is no product, and a product is no prefix for one.
+    const auto product = [this](NodeId u) {
+      return static_cast<bool>(product_of(*this, u));
+    };
     pending_[entry].node = node;
+    pending_[entry].running =
+        Fold != OpCode::SumN ||
+        (!product(node) &&
+         (terms.size() != 2 || resumed || !product(terms[0])));
     return node;
   }
   // Another component of the call `v` is: the same function and list,
@@ -791,10 +907,10 @@ private:
   friend constexpr void detail::extern_partials(Arena<U> &, NodeId, Sink &&);
   constexpr NodeId extern_component(NodeId v, std::uint32_t component) {
     const Node<T> n = model_[v]; // by value: intern() may reallocate
-    return make(opcode<OpCode::ExternD>,
+    return make(opcode<OpCode::Extern>,
                 ExternRef{.function = detail::get<ExternRef>(n).function,
                           .component = component},
-                n.in[0]);
+                n.list);
   }
 
   // dz/ds for each implicit, by the implicit-function theorem, built the first
@@ -806,8 +922,8 @@ private:
   // slot.
   template <impl::Numeric U>
   friend constexpr Expression<U> seed(Arena<U> &, std::uint32_t);
-  [[nodiscard]] constexpr NodeId seed_node(std::uint32_t index) {
-    return intern({.op = OpCode::Seed, .payload = to_word(Slot{index})});
+  [[nodiscard]] constexpr NodeId seed_node(Slot slot) {
+    return intern({.op = OpCode::Seed, .payload = to_word(slot)});
   }
 
   static constexpr std::uint64_t payload_of(const Node<T> &n) {
@@ -826,7 +942,7 @@ private:
   }
 
   static constexpr bool same(const Node<T> &l, const Node<T> &r) {
-    if (l.op != r.op || l.in != r.in) {
+    if (l.op != r.op || l.in != r.in || l.list != r.list) {
       return false;
     } else if (l.op != OpCode::Const) {
       return l.payload == r.payload;
@@ -848,26 +964,36 @@ private:
     }
   }
 
+  static constexpr void mix(std::uint64_t &h, std::uint64_t v) {
+    constexpr std::uint64_t golden_ratio_64 = 0x9e3779b97f4a7c15ULL;
+    constexpr std::uint64_t murmur_mix_64 = 0xff51afd7ed558ccdULL;
+    h ^= v + golden_ratio_64 + (h << 6) + (h >> 2);
+    h *= murmur_mix_64;
+    h ^= h >> 33;
+  }
   static constexpr std::size_t hash_of(const Node<T> &n) {
     std::uint64_t h = static_cast<std::uint64_t>(n.op);
-    const auto mix = [&h](std::uint64_t v) {
-      constexpr std::uint64_t golden_ratio_64 = 0x9e3779b97f4a7c15ULL;
-      constexpr std::uint64_t murmur_mix_64 = 0xff51afd7ed558ccdULL;
-      h ^= v + golden_ratio_64 + (h << 6) + (h >> 2);
-      h *= murmur_mix_64;
-      h ^= h >> 33;
-    };
-    std::ranges::for_each(n.in, mix);
-    mix(payload_of(n));
+    for (const NodeId u : n.in) {
+      mix(h, u);
+    }
+    mix(h, payload_of(n));
+    mix(h, n.list);
+    return static_cast<std::size_t>(h);
+  }
+  static constexpr std::size_t hash_ids(std::span<const NodeId> ids) {
+    std::uint64_t h = ids.size();
+    for (const NodeId u : ids) {
+      mix(h, u);
+    }
     return static_cast<std::size_t>(h);
   }
 
   // Unbounded because the table is kept at most half full: every run reaches an
   // empty slot.
-  constexpr auto probe(std::size_t h) const {
+  static constexpr auto probe(std::size_t h, std::size_t size) {
     return std::views::iota(h) |
            std::views::transform(
-               [mask = table_.size() - 1](std::size_t k) { return k & mask; });
+               [mask = size - 1](std::size_t k) { return k & mask; });
   }
 
   // The table for `nodes` in all.  bit_ceil, not doubling: the size is the
@@ -876,7 +1002,7 @@ private:
   constexpr void rehash(std::size_t nodes) {
     table_.assign(std::bit_ceil(std::max<std::size_t>(64, 2 * nodes)), no_node);
     for (const auto [id, n] : model_.nodes | std::views::enumerate) {
-      auto run = probe(hash_of(n));
+      auto run = probe(hash_of(n), table_.size());
       table_[*std::ranges::find_if(run, [this](std::size_t i) {
         return table_[i] == no_node;
       })] = static_cast<NodeId>(id);
@@ -889,7 +1015,7 @@ private:
     }
     // The run stops at whichever comes first, the node itself or the empty
     // slot it would take.
-    auto run = probe(hash_of(n));
+    auto run = probe(hash_of(n), table_.size());
     const std::size_t i = *std::ranges::find_if(run, [this, &n](std::size_t k) {
       return table_[k] == no_node || same(model_.nodes[table_[k]], n);
     });
@@ -899,8 +1025,65 @@ private:
     const auto id = static_cast<NodeId>(model_.nodes.size());
     model_.nodes.push_back(n);
     table_[i] = id;
-    shapes_.push_back(shape_of(*this, id));
+    shapes_.push_back(shape_from(id));
+    assert(shapes_.size() == model_.nodes.size());
     return id;
+  }
+
+  // A new node's shape, one step from its operands' recorded ones: through
+  // the elementwise ops the first operand's (a Scale's, a RowScale's or a
+  // VSelect's second), and the matrix ops' own arithmetic.
+  [[nodiscard]] constexpr Shape shape_from(NodeId v) const {
+    const auto &n = model_.nodes[v];
+    const auto [a, b, c] = n.in;
+    const auto table = [this](NodeId t) {
+      const auto &m =
+          model_.tensors[detail::get<TensorRef>(model_.nodes[t]).value];
+      return Shape{.rows = m.rows, .cols = m.cols};
+    };
+    switch (n.op) {
+    case OpCode::VecConst:
+      return {.rows = table(v).rows, .cols = 1};
+    case OpCode::MatConst:
+      return {.rows = 0, .cols = 0};
+    case OpCode::MatRow: {
+      // A table, or -- the dense sweep's transpose -- a computed matrix.
+      const Shape m =
+          model_.nodes[a].op == OpCode::MatConst ? table(a) : shapes_[a];
+      return detail::get<Orientation>(n) == Orientation::transposed
+                 ? Shape{.rows = m.cols, .cols = m.rows}
+                 : m;
+    }
+    case OpCode::Pack:
+      return {.rows = detail::get<Count>(n).value, .cols = 1};
+    case OpCode::Diag:
+      return {.rows = shapes_[a].rows, .cols = shapes_[a].rows};
+    case OpCode::Outer:
+      return {.rows = shapes_[a].rows, .cols = shapes_[b].rows};
+    case OpCode::MatVec:
+      return {.rows = detail::get<Orientation>(n) == Orientation::transposed
+                          ? shapes_[a].cols
+                          : shapes_[a].rows,
+              .cols = 1};
+    case OpCode::MatMul:
+      return {.rows = shapes_[a].rows, .cols = shapes_[b].cols};
+    case OpCode::StackRows:
+      return {.rows = detail::get<Count>(n).value,
+              .cols = shapes_[arguments(*this, v)[0]].rows};
+    case OpCode::RowOf:
+      return {.rows = shapes_[a].cols, .cols = 1};
+    case OpCode::Map:
+    case OpCode::Zip:
+    case OpCode::AddAt:
+    case OpCode::ColScale:
+      return shapes_[a];
+    case OpCode::Scale:
+    case OpCode::RowScale:
+    case OpCode::VSelect:
+      return shapes_[b];
+    default:
+      return {};
+    }
   }
 
   // A scalar with no equality never matches, so ops/algebra.hpp's identity
@@ -1040,10 +1223,13 @@ private:
       }
       if constexpr (impl::CCommutativeMultiply<T>) {
         if (n.op == OpCode::MatVec && model_.nodes[b].op == OpCode::Scale) {
-          const auto [s, v, _] = model_.nodes[b].in;
+          const auto [scalar, vec] =
+              detail::operands<OpCode::Scale>(model_.nodes[b]);
           return make(
-              OpCode::Scale, s,
-              make(opcode<OpCode::MatVec>, detail::get<Orientation>(n), a, v));
+              opcode<OpCode::Scale>,
+              {.scalar = scalar,
+               .vec = make(opcode<OpCode::MatVec>, detail::get<Orientation>(n),
+                           {.matrix = a, .vec = vec})});
         }
       }
       const NodeId id = intern(n);
@@ -1089,12 +1275,16 @@ private:
       if (x.op == OpCode::VecConst) {
         return model_.tensors[detail::get<TensorRef>(x).value].data;
       }
-      if (x.op != OpCode::MatRow ||
-          model_.nodes[x.in[0]].op != OpCode::MatConst) {
+      if (x.op != OpCode::MatRow) {
+        return std::nullopt;
+      }
+      const Node<T> &source =
+          model_.nodes[detail::operands<OpCode::MatRow>(x).source];
+      if (source.op != OpCode::MatConst) {
         return std::nullopt;
       }
       const TensorConst<T> &m =
-          model_.tensors[detail::get<TensorRef>(model_.nodes[x.in[0]]).value];
+          model_.tensors[detail::get<TensorRef>(source).value];
       if (detail::get<Orientation>(x) == Orientation::plain) {
         return m.data;
       }
@@ -1152,8 +1342,8 @@ private:
     assert(!items.empty() && detail::info(op).payload == payload_index<Count>);
     return formed(
         {.op = op,
-         .in = padded(list(items)),
-         .payload = to_word(Count{static_cast<std::uint32_t>(items.size())})});
+         .payload = to_word(Count{static_cast<std::uint32_t>(items.size())}),
+         .list = list(items)});
   }
 
   // A literal condition has already chosen, read as select_impl reads it (any
@@ -1188,6 +1378,15 @@ private:
   std::vector<NodeId> table_; // power-of-two capacity; no_node == free slot
   // By id, what shape_of() found when intern() appended the node.
   std::vector<Shape> shapes_;
+  // The lists in the pool, and a table over them by content: open-addressed
+  // by hand like table_.
+  struct ListKey {
+    ListOffset at;
+    std::uint32_t size;
+  };
+  static constexpr std::uint32_t kFreeList = ~std::uint32_t{0};
+  std::vector<ListKey> listed_;
+  std::vector<std::uint32_t> list_table_;
   // Per named kind, the leaf interning made for each slot.
   PerKind<std::vector<NodeId>> ids_;
   // Every named input, sorted by name: a flat map by hand, since interning runs
@@ -1199,7 +1398,7 @@ private:
   // The key by_name_ is sorted on.
   [[nodiscard]] constexpr auto name_of() const {
     return [this](const Input &in) -> std::string_view {
-      return names(in.op)[in.index];
+      return names(in.op)[in.index.value];
     };
   }
 };
@@ -1249,26 +1448,48 @@ contraction_at(const CNodeSource auto &nodes, NodeId v) {
   return {};
 }
 
+// Whether a sweep fuses a product into the add that reads it: decided once
+// per equation (jit::Codegen::contract), and every path through it follows.
+enum class Contract : bool { off, on };
+
+// The ids a step's rows hold: a contraction's three, else the operands.  A
+// list is no operand: it is read off the arena, not the Step.
+[[nodiscard]] constexpr std::array<NodeId, 3>
+step_inputs(const CNodeSource auto &nodes, NodeId v, const Contraction &c) {
+  if (c) {
+    return {c.x, c.y, c.z};
+  }
+  return nodes.operands(v);
+}
+// Their rows in a tape by id.
+[[nodiscard]] constexpr std::array<TapeRow, 3>
+rows_of(const std::array<NodeId, 3> &ids) {
+  std::array<TapeRow, 3> rows{no_row, no_row, no_row};
+  std::ranges::transform(ids, rows.begin(), [](NodeId u) {
+    return u == no_node ? no_row : TapeRow{u};
+  });
+  return rows;
+}
+
 // The contraction at every node of `order`, resolved once.  Asking
 // contraction_at() inside a sweep re-derives per point what is a property of
-// the nodes, at two dependent loads a time.  `on` false contracts nothing.
+// the nodes, at two dependent loads a time.
 namespace detail {
 [[nodiscard]] constexpr std::vector<Step>
 schedule_of(const CNodeSource auto &nodes,
-            std::ranges::input_range auto &&order, bool on = true)
+            std::ranges::input_range auto &&order,
+            Contract contract = Contract::on)
   requires std::convertible_to<std::ranges::range_value_t<decltype(order)>,
                                NodeId>
 {
+  const bool on = contract == Contract::on;
   return DDX_FWD(order) | std::views::transform([&nodes, on](NodeId v) {
            const OpCode op = nodes.op_of(v);
            const Contraction c = on ? contraction_at(nodes, v) : Contraction{};
-           // A list is read off the arena, not the Step.
-           const auto ops = has_list(op) ? std::array{no_node, no_node, no_node}
-                                         : nodes.operands(v);
            return Step{.node = v,
                        .fma = c,
-                       .out = v,
-                       .in = c ? std::array{c.x, c.y, c.z} : ops,
+                       .out = TapeRow{v},
+                       .in = rows_of(step_inputs(nodes, v, c)),
                        .fused = on && op == OpCode::SumN,
                        .op = op};
          }) |
@@ -1356,9 +1577,6 @@ fused_into(const auto &s, std::span<const Step> schedule,
     }
   };
   for (const Step &step : schedule) {
-    if (has_list(s.op_of(step.node))) {
-      continue;
-    }
     for (const auto [slot, u] : s.operands(step.node) | std::views::enumerate) {
       if (u != no_node && uses[u] == 1 && elementwise(u) &&
           reads_once(s.op_of(step.node), static_cast<std::size_t>(slot))) {
@@ -1405,17 +1623,17 @@ last_uses(const auto &s, std::span<const Step> schedule,
 // list.  A node's own row is never one it reads this step: the frees happen
 // after the take, which is what lets the lane loops promise no aliasing.
 struct Packed {
-  std::vector<std::uint32_t> by_id; // no_node for a node not scheduled
+  std::vector<TapeRow> by_id; // no_row for a node not scheduled
   std::size_t rows = 0;
 };
 [[nodiscard]] constexpr Packed pack_rows(const auto &s,
                                          std::span<Step> schedule,
                                          std::span<const NodeId> outputs) {
   const auto last = last_uses(s, schedule, outputs);
-  Packed out{.by_id = std::vector<std::uint32_t>(s.size(), no_node)};
-  std::vector<std::uint32_t> taken(s.size(), no_node); // the row, while live
-  std::vector<std::uint32_t> free;
-  std::uint32_t next = 0;
+  Packed out{.by_id = std::vector<TapeRow>(s.size(), no_row)};
+  std::vector<TapeRow> taken(s.size(), no_row); // the row, while live
+  std::vector<TapeRow> free;
+  TapeRow next{0};
   for (const auto [p, step] : schedule | std::views::enumerate) {
     const auto at = static_cast<std::uint32_t>(p);
     auto &row = taken[step.node];
@@ -1427,16 +1645,16 @@ struct Packed {
     }
     out.by_id[step.node] = row;
     step.out = row;
-    for (const auto [k, u] : step.in | std::views::enumerate) {
-      step.in[static_cast<std::size_t>(k)] = u == no_node ? no_node : taken[u];
-    }
+    std::ranges::transform(
+        step_inputs(s, step.node, step.fma), step.in.begin(),
+        [&taken](NodeId u) { return u == no_node ? no_row : taken[u]; });
     // After the take.  A row read twice in one step is freed once.
     auto reads = reads_of(s, step);
     reads.push_back(step.node);
     for (const NodeId u : reads) {
-      if (last[u] == at && taken[u] != no_node) {
+      if (last[u] == at && taken[u] != no_row) {
         free.push_back(taken[u]);
-        taken[u] = no_node;
+        taken[u] = no_row;
       }
     }
   }

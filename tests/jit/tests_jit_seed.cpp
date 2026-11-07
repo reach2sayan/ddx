@@ -1,3 +1,4 @@
+#include "graph_builder.hpp"
 #include "ddx.hpp"
 #include "jit/kernel.hpp"
 #include "jit/tests_jit_common.hpp"
@@ -22,7 +23,7 @@ Graph<> seeded_graph(Arena<> &b) {
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * x * seed(b, 0) + exp(y) * seed(b, 1);
-  return ddx::rt::GraphBuilder{b}.value(f).finish();
+  return ddx::test::GraphBuilder{b}.value(f).finish();
 }
 
 TEST(JitSeed, KernelArityCountsTheSeeds) {

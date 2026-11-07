@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+#include <type_traits>
+
 #include <array>
 #include <cmath>
 #include <limits>
@@ -157,9 +159,46 @@ TEST(RtArena, ParamsShareTheNamespaceAndNumberTheirOwnSlots) {
   EXPECT_EQ(ddx::rt::param(b, "k").id(b), k.id(b));
   EXPECT_TRUE(ddx::rt::param(b, "x").poisoned()) << "x is a symbol";
   EXPECT_TRUE(var(b, "k").poisoned()) << "k is a parameter";
-  EXPECT_EQ(ddx::rt::input_column(b.inputs(), ddx::rt::OpCode::Param, 0), 2u);
+  EXPECT_EQ(ddx::rt::input_column(b.inputs(), ddx::rt::OpCode::Param,
+                                  ddx::rt::Slot{0}),
+            2u);
   (void)x;
 }
+
+// An op whose operands differ in meaning is made by name: positional
+// operands do not compile, and the names follow the table's order.
+namespace named {
+using ddx::rt::NodeId;
+using ddx::rt::OpCode;
+using ddx::rt::opcode;
+// Whether `build(arena, u, m)` compiles: its return type is the call.
+template <typename Build>
+constexpr bool compiles = std::is_invocable_v<Build, Arena<> &, NodeId, NodeId>;
+static_assert(!compiles<decltype([](auto &b, auto u, auto m)
+                                     -> decltype(b.make(
+                                         opcode<OpCode::RowScale>,
+                                         ddx::rt::NoPayload{}, u, m)) {
+  return {};
+})>);
+static_assert(compiles<decltype([](auto &b, auto u, auto m)
+                                    -> decltype(b.make(
+                                        opcode<OpCode::RowScale>,
+                                        {.scale = u, .matrix = m})) {
+  return {};
+})>);
+static_assert(!compiles<decltype([](auto &b, auto u, auto m)
+                                     -> decltype(b.make(
+                                         opcode<OpCode::RowScale>,
+                                         {.matrix = m, .scale = u})) {
+  return {};
+})>);
+static_assert(compiles<decltype([](auto &b, auto u, auto m)
+                                    -> decltype(b.make(
+                                        opcode<OpCode::ColScale>,
+                                        {.matrix = m, .scale = u})) {
+  return {};
+})>);
+} // namespace named
 
 // Compound assignment rebinds the handle through the same operators, so an
 // accumulator written either way lands on the same node -- which interning

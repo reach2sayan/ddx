@@ -104,32 +104,33 @@ static_assert(live_from_root() == 2); // x and x * x
 
 // The colouring is Boost.Graph's, so it stops at the boundary -- but reading a
 // Hessian back through one does not.
-consteval ddx::rt::NodeId scatter_reads() {
+using ddx::rt::NodeId;
+consteval NodeId scatter_reads() {
   // Not const: the vectors are built during this evaluation, and a constant
   // evaluation may not write through a const object.
   ddx::rt::Hessian h{
-      .value = 0,
+      .value = NodeId{0},
       .partial = {},
-      .compressed = {7, 8},
+      .compressed = {NodeId{7}, NodeId{8}},
       .colouring = {.colour = {0, 0}, .scatter = {0, 1}, .cell = {0, 1}},
-      .zero = 99};
+      .zero = NodeId{99}};
   return h.colours() == 1 && h.at(0, 0) == 7 && h.at(1, 1) == 8 ? h.at(0, 1)
-                                                                : 0;
+                                                                : NodeId{0};
 }
 static_assert(scatter_reads() == 99); // off the pattern: the zero node
 
 // A colour that owns only one of its two rows: the unowned cell gets no
 // storage at all, so `cells()` is short of `count() * n` and at() still
 // answers.
-consteval ddx::rt::NodeId unowned_cell_reads() {
-  ddx::rt::Hessian h{.value = 0,
+consteval NodeId unowned_cell_reads() {
+  ddx::rt::Hessian h{.value = NodeId{0},
                      .partial = {},
-                     .compressed = {7},
+                     .compressed = {NodeId{7}},
                      .colouring = {.colour = {0, 0},
                                    .scatter = {0, ddx::rt::no_column},
                                    .cell = {0, ddx::rt::no_column}},
-                     .zero = 99};
-  return h.at(0, 0) == 7 && h.at(1, 1) == 99 ? h.at(1, 0) : 0;
+                     .zero = NodeId{99}};
+  return h.at(0, 0) == 7 && h.at(1, 1) == 99 ? h.at(1, 0) : NodeId{0};
 }
 static_assert(unowned_cell_reads() == 99);
 

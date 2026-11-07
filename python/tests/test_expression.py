@@ -183,6 +183,34 @@ def test_in_place_multiply_and_divide_fold_like_their_chains() -> None:
         np.testing.assert_allclose(got, want, rtol=1e-12)
 
 
+@pytest.mark.parametrize(
+    "assign",
+    [operator.iadd, operator.isub, operator.imul, operator.itruediv],
+    ids=["+=", "-=", "*=", "/="],
+)
+def test_reading_the_accumulator_every_step_matches_reading_it_once(
+    assign: Callable[[Any, Any], Any],
+) -> None:
+    """A read mid-loop resumes the fold from what it read: the same number."""
+
+    def build(read_every_step: bool) -> ddx.Equation:
+        def model() -> ddx.Expression:
+            x, y = ddx.var("x"), ddx.var("y")
+            acc = x + 1.0
+            for k in range(500):
+                acc = assign(acc, 1.0 + 0.001 * k * ddx.sin(x * y + k))
+                if read_every_step:
+                    _ = ddx.cos(acc)
+            return acc
+
+        return ddx.equation(model)
+
+    every, once = build(True), build(False)
+    at = [0.7, 1.3]
+    assert every.evaluate(at) == once.evaluate(at)
+    assert every.gradient(at) == pytest.approx(once.gradient(at), rel=1e-12)
+
+
 def test_literals_fold_without_reaching_a_graph() -> None:
     """Two pending literals never become nodes, so this equation has no symbols."""
     eq = ddx.equation(lambda: ddx.Expression(2.0) * 3.0)

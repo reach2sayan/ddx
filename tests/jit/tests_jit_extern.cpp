@@ -1,3 +1,4 @@
+#include "graph_builder.hpp"
 #include "jit/kernel.hpp"
 #include "rt/equation.hpp"
 
@@ -129,8 +130,7 @@ TEST(JitExtern, AKernelOutlivesItsGraphAndKeepsItsObject) {
     const auto a = ddx::rt::var(b, "a");
     const auto bb = ddx::rt::var(b, "b");
     const auto g = ddx::rt::extern_fn(b, {.name = "g", .arity = 2}, g_of);
-    const auto graph = ddx::rt::Graph<>::freeze(
-        b, std::array{(g(a, bb) * 2.0).id(b)});
+    const auto graph = ddx::test::freeze_values(b, std::array{(g(a, bb) * 2.0).id(b)});
     auto k = c->compile(graph);
     EXPECT_TRUE(k.has_value()) << (k ? "" : k.error().detail);
     return k ? std::move(*k) : ddx::jit::Kernel<double>{};

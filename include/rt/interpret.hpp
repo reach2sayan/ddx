@@ -98,10 +98,10 @@ lanes_fma(bool negated, const T *DDX_RESTRICT x, const T *DDX_RESTRICT y,
   }
 }
 
-// The tape row an id names, W points wide.
+// A tape row's W points.
 template <std::size_t W, impl::Numeric U>
 [[nodiscard]] constexpr auto lanes_of(std::span<U> tape) {
-  return [tape](NodeId v) { return tape.data() + std::size_t{v} * W; };
+  return [tape](TapeRow r) { return tape.data() + std::size_t{r} * W; };
 }
 
 // Where a sweep's rows are and what computes them: the scalar tape's layout,
@@ -114,7 +114,7 @@ template <typename U> struct TapeView {
   // which is what an arena walk's schedule says.  The hot path reads rows off
   // the Step; this is for the reads a Step cannot carry -- an extern's or a
   // Pack's argument list.
-  std::span<const std::uint32_t> scalar_rows{};
+  std::span<const TapeRow> scalar_rows{};
   std::span<const TensorRow> tensor_rows{};
   U *vtape = nullptr;
   const TensorKernelTable<U> *kernels = nullptr;
@@ -122,8 +122,8 @@ template <typename U> struct TapeView {
   // is every product on its own.
   std::span<const NodeId> pairs{};
 
-  [[nodiscard]] constexpr std::uint32_t row(NodeId v) const noexcept {
-    return scalar_rows.empty() ? v : scalar_rows[v];
+  [[nodiscard]] constexpr TapeRow row(NodeId v) const noexcept {
+    return scalar_rows.empty() ? TapeRow{v} : scalar_rows[v];
   }
 
   // A frozen graph's view, over a tensor tape of the caller's.
@@ -233,12 +233,12 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         }
         // Every other MatRow is a transpose: of the table, or of a row.
         const Shape m = shape_of(b, v); // cols x rows of the source
+        const NodeId source = operands<OpCode::MatRow>(n).source;
         const std::span<const U> from =
-            b.op_of(n.in[0]) == OpCode::MatConst
-                ? std::span<
-                      const U>{b.tensors()[get<TensorRef>(b[n.in[0]]).value]
-                                   .data}
-                : in(n.in[0], k);
+            b.op_of(source) == OpCode::MatConst
+                ? std::span<const U>{b.tensors()[get<TensorRef>(b[source]).value]
+                                         .data}
+                : in(source, k);
         for (std::size_t i = 0; i < m.cols; ++i) {
           for (std::size_t j = 0; j < m.rows; ++j) {
             to[j + i * m.rows] = from[i + j * m.cols];
@@ -258,13 +258,14 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
       }
       case OpCode::VSelect: { // copied, so the arm not taken never meets a 0
         const auto chosen = [](U c) { return c != U{0}; }; // as select_impl
-        const auto on = in(n.in[1], k);
-        const auto off = in(n.in[2], k);
-        if (!is_tensor(b[n.in[0]])) {
-          std::ranges::copy(chosen(at(n.in[0], k)) ? on : off, to.begin());
+        const auto [cond, then, otherwise] = operands<OpCode::VSelect>(n);
+        const auto on = in(then, k);
+        const auto off = in(otherwise, k);
+        if (!is_tensor(b[cond])) {
+          std::ranges::copy(chosen(at(cond, k)) ? on : off, to.begin());
           break;
         }
-        const auto c = in(n.in[0], k);
+        const auto c = in(cond, k);
         for (std::size_t j = 0; j < to.size(); ++j) {
           to[j] = chosen(c[j]) ? on[j] : off[j];
         }
@@ -279,15 +280,14 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
           const std::span<U> other{other_at + k * other_w, other_w};
           const bool transposed =
               get<Orientation>(n) == Orientation::transposed;
+          const auto [matrix, vec] = operands<OpCode::MatVec>(n);
           if (kt.gemv_pair != nullptr) {
-            kt.gemv_pair(shape_of(b, n.in[0]).rows, in(n.in[0], k),
-                         in(n.in[1], k), transposed ? other : to,
-                         transposed ? to : other);
+            kt.gemv_pair(shape_of(b, matrix).rows, in(matrix, k), in(vec, k),
+                         transposed ? other : to, transposed ? to : other);
           } else {
-            const Shape m = shape_of(b, n.in[0]);
-            kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), to,
-                    transposed);
-            kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), other,
+            const Shape m = shape_of(b, matrix);
+            kt.gemv(m.rows, m.cols, in(matrix, k), in(vec, k), to, transposed);
+            kt.gemv(m.rows, m.cols, in(matrix, k), in(vec, k), other,
                     !transposed);
           }
         }
@@ -429,7 +429,7 @@ sweep_step(const Arena<T> &b, std::span<const Node<T>> nodes,
   } else if (is_leaf(s.op)) {
     const auto src =
         at + static_cast<std::ptrdiff_t>(
-                 input_column(inputs, s.op, get<Slot>(n).value) * W);
+                 input_column(inputs, s.op, get<Slot>(n)) * W);
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }
@@ -502,8 +502,10 @@ class ArenaWalk {
 public:
   constexpr ArenaWalk() = default;
   template <impl::Numeric T>
-  constexpr ArenaWalk(const Arena<T> &b, auto ids)
-      : schedule_{schedule_of(b, ids)}, layout_{tensor_layout(b, schedule_)} {}
+  constexpr ArenaWalk(const Arena<T> &b, auto ids,
+                      Contract contract = Contract::on)
+      : schedule_{schedule_of(b, ids, contract)},
+        layout_{tensor_layout(b, schedule_)} {}
   // Every node, in id order: a child always precedes its parent.
   template <impl::Numeric T>
   constexpr explicit ArenaWalk(const Arena<T> &b)
@@ -559,9 +561,10 @@ template <impl::Numeric T, std::ranges::random_access_range R>
 [[nodiscard]] constexpr auto
 evaluate_reachable(const Arena<T> &b, std::span<const NodeId> roots,
                    const R &point,
-                   const TensorKernelTable<T> &kernels = reference_table<T>) {
-  return detail::ArenaWalk{b, detail::live_ids(detail::reachable(b, roots))}(
-      b, point, kernels);
+                   const TensorKernelTable<T> &kernels = reference_table<T>,
+                   Contract contract = Contract::on) {
+  return detail::ArenaWalk{b, detail::live_ids(detail::reachable(b, roots)),
+                           contract}(b, point, kernels);
 }
 
 // Every node once, in id order: a child always precedes its parent, and the
