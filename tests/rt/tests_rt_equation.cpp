@@ -635,6 +635,30 @@ TEST(RtEquation, UnivariateDerivativesThroughMaxAndMin) {
               1e-10);
 }
 
+// The walk and the thread's tape are kept between calls, so a call after
+// another point, another order, or the arena's growth equals a fresh one.
+TEST(RtEquation, UnivariateDerivativeKeepsNothingBetweenCalls) {
+  const auto build = [] {
+    return ddx::rt::equation([] {
+      const auto x = ddx::rt::var("x");
+      const auto y = 0.5 * sin(3.0 * x) * x + 0.25;
+      return log(1.5 + y) / (2.0 - cos(y)) - 4.0 * tanh(y);
+    });
+  };
+  const auto cold = [&](double at) {
+    return *build().univariate_derivative<4>(at);
+  };
+  const auto warm = build();
+  for (const double at : {0.3, 0.9, 0.3}) {
+    EXPECT_EQ(*warm.univariate_derivative<4>(at), cold(at));
+    EXPECT_EQ(*warm.univariate_derivative<2>(at),
+              *build().univariate_derivative<2>(at));
+  }
+  // A Hessian appends its sweep to the arena the Taylor walk reads.
+  (void)*warm.hessian(0.6);
+  EXPECT_EQ(*warm.univariate_derivative<4>(0.6), cold(0.6));
+}
+
 } // namespace
 
 // The graph changes which nodes are visited but never the arithmetic at any of

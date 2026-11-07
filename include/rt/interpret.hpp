@@ -4,6 +4,7 @@
 #include "rt/arena.hpp"
 #include "rt/kernels.hpp"
 #include "util/config.hpp"
+#include "util/fmt.hpp" // is_dual_family_v
 
 #include <boost/container/small_vector.hpp>
 
@@ -11,6 +12,7 @@
 #include <cmath>
 #include <concepts>
 #include <functional>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <type_traits>
@@ -341,6 +343,44 @@ lanes_opaque(const Arena<T> &b, NodeId v, const Node<T> &n, bool fused, U *out,
   }
 }
 
+// Whether a field op at a dual sweep scalar U takes an arena constant as T,
+// picking U's ConstOperand overload over its arithmetic on an embedded
+// constant. Only the dual family: another U may convert T some other way.
+// A conjunction, so the invocable probes never instantiate a functor's
+// unconstrained body at a scalar that fails the cheaper tests.
+template <typename Fn, typename U, typename T>
+inline constexpr bool scales_by_constant = std::conjunction_v<
+    std::negation<std::is_same<U, T>>,
+    std::bool_constant<impl::detail::is_dual_family_v<U>>,
+    std::bool_constant<is_field_op_v<Fn>>,
+    std::is_invocable<Fn, const U &, const T &>,
+    std::is_invocable<Fn, const T &, const U &>>;
+
+// A binary field op with one Const operand, applied with that operand's T
+// value. False when neither operand is a Const.
+template <std::size_t W, typename Fn, impl::Numeric T, impl::Numeric U>
+DDX_NOINLINE constexpr bool
+lanes_by_constant(const Arena<T> &b, const Node<T> &n, U *DDX_RESTRICT out,
+                  const U *DDX_RESTRICT x, const U *DDX_RESTRICT y) noexcept {
+  const auto constant = [&b, &n](std::size_t j) -> std::optional<T> {
+    const Node<T> &u = b[n.in[j]];
+    return u.op == OpCode::Const ? std::optional<T>{u.value} : std::nullopt;
+  };
+  if (const auto c = constant(1)) {
+    for (std::size_t k = 0; k < W; ++k) {
+      out[k] = static_cast<U>(Fn{}(x[k], *c));
+    }
+    return true;
+  }
+  if (const auto c = constant(0)) {
+    for (std::size_t k = 0; k < W; ++k) {
+      out[k] = static_cast<U>(Fn{}(*c, y[k]));
+    }
+    return true;
+  }
+  return false;
+}
+
 // Opaque rows return true and run after the dispatch: called inside it, GCC
 // spills the closure and reloads the tape base on every step.
 template <std::size_t W, impl::Numeric T, typename U>
@@ -364,6 +404,11 @@ lanes_apply(const Arena<T> &b, NodeId i, const Node<T> &n, U *DDX_RESTRICT out,
       if constexpr (R::arity == 1) {
         lanes<W, Fn, U, R::ok>(out, lane(in[0]));
       } else if constexpr (R::arity == 2) {
+        if constexpr (scales_by_constant<Fn, U, T>) {
+          if (lanes_by_constant<W, Fn>(b, n, out, lane(in[0]), lane(in[1]))) {
+            return false;
+          }
+        }
         lanes<W, Fn, U, R::ok>(out, lane(in[0]), lane(in[1]));
       } else {
         lanes<W, Fn, U, R::ok>(out, lane(in[0]), lane(in[1]), lane(in[2]));
@@ -427,16 +472,6 @@ constexpr void evaluate_block(const Arena<T> &b, const R &point_lanes,
   }
 }
 
-// Whether every op the roots reach is supported at U. Check this first, since
-// apply() silently returns U{} for an unsupported op.
-template <impl::Numeric U, impl::Numeric T>
-[[nodiscard]] constexpr bool computes_at(const Arena<T> &b,
-                                         std::span<const NodeId> roots) {
-  const auto live = detail::reachable(b, roots);
-  return std::ranges::all_of(detail::live_ids(live),
-                             [&b](NodeId v) { return supports<U>(b[v].op); });
-}
-
 template <impl::Numeric T, std::ranges::random_access_range R>
   requires impl::Numeric<std::ranges::range_value_t<R>>
 [[nodiscard]] constexpr auto evaluate(const Arena<T> &b, NodeId root,
@@ -475,16 +510,22 @@ public:
     return layout_.extent;
   }
 
+  // Whether every scheduled op is supported at U. Check this first, since
+  // apply() silently returns U{} for an unsupported op.
+  template <impl::Numeric U, impl::Numeric T>
+  [[nodiscard]] constexpr bool computes(const Arena<T> &b) const {
+    return std::ranges::all_of(schedule_, [&b](const Step &s) {
+      return supports<U>(b[s.node].op);
+    });
+  }
+
   template <impl::Numeric T, impl::Numeric U>
   constexpr void
   operator()(const Arena<T> &b, const auto &point, std::span<U> values,
              std::span<U> vtape,
              const TensorKernelTable<T> &kernels = reference_table<T>) const {
-    // At another scalar, callers must have checked computes_at() first.
-    assert((std::same_as<U, T> ||
-            std::ranges::all_of(schedule_, [&b](const Step &s) {
-              return supports<U>(b[s.node].op);
-            })));
+    // At another scalar, callers must have checked computes() first.
+    assert((std::same_as<U, T> || computes<U>(b)));
     // Only the arena's own scalar has a kernel table for tensor rows.
     TapeView<U> tensors{.tensor_rows = layout_.rows, .vtape = vtape.data()};
     if constexpr (std::same_as<U, T>) {
@@ -521,6 +562,15 @@ evaluate_reachable(const Arena<T> &b, std::span<const NodeId> roots,
                    Contract contract = Contract::on) {
   return detail::ArenaWalk{b, detail::live_ids(detail::reachable(b, roots)),
                            contract}(b, point, kernels);
+}
+
+// Whether every op the roots reach is supported at U; ArenaWalk::computes over
+// the walk the roots would sweep.
+template <impl::Numeric U, impl::Numeric T>
+[[nodiscard]] constexpr bool computes_at(const Arena<T> &b,
+                                         std::span<const NodeId> roots) {
+  return detail::ArenaWalk{b, detail::live_ids(detail::reachable(b, roots))}
+      .template computes<U>(b);
 }
 
 // Evaluates every node in id order; this is the reference the JIT is checked

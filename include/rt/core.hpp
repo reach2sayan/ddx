@@ -17,6 +17,9 @@
 #include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>
+#include <boost/describe/enum.hpp>
+#include <boost/describe/enumerators.hpp>
+#include <boost/mp11/algorithm.hpp>
 
 #include "jit/options.hpp"
 
@@ -26,6 +29,7 @@
 #include <algorithm>
 #include <array>
 #include <concepts>
+#include <cstdint>
 #include <functional>
 #include <initializer_list>
 #include <memory>
@@ -217,6 +221,15 @@ struct Rebalanced {
   Jacobian derivative;
 };
 
+// The cones a Core walks one point at a time, each planned once.
+enum class PointWalk : std::uint8_t {
+  Hessians, // a system's hessian() at a point
+  Taylor,   // root 0's univariate_derivative
+};
+BOOST_DESCRIBE_ENUM(PointWalk, Hessians, Taylor)
+inline constexpr std::size_t point_walk_count =
+    boost::mp11::mp_size<boost::describe::describe_enumerators<PointWalk>>::value;
+
 // The arena's lock and every lazily built sweep, kept on the heap because a
 // mutex cannot move and constant evaluation never needs them.
 // Lock order: a pipeline's lock, then the arena's. Nothing under the arena's
@@ -227,7 +240,8 @@ struct Sweeps {
   Lazy<DenseHessian> dense;
   // Indexed by Want: the extra block of Hvp, Vjp, Jvp and JacobianJvp.
   std::array<Lazy<std::vector<NodeId>>, want_count> products;
-  Lazy<ArenaWalk> walk; // Serves a system's hessian() at a point.
+  // Indexed by PointWalk.
+  std::array<Lazy<ArenaWalk>, point_walk_count> walks;
 #ifdef DDX_HAS_JIT
   Lazy<Rebalanced> rebalanced;
 #endif
@@ -538,19 +552,27 @@ public:
       return fail(errc::not_univariate);
     }
     using Taylor = impl::TaylorDual<T, Order>;
-    const std::span<const NodeId> root{roots_.data(), 1};
-    [[maybe_unused]] const auto held = reading();
+    // Only root 0's cone is walked, since the arena may also hold a gradient
+    // and a Hessian and a Taylor node costs Order + 1 coefficients.
+    const ArenaWalk &walk = point_walk(PointWalk::Taylor, [this] {
+      return std::array{roots_[0]};
+    });
+    // The tape is thread-kept and not cleared; every id read below is
+    // scheduled, so this call writes it first.
+    TapeLease<Taylor> lease{calls_out_};
+    TapeSet<Taylor> &kept = lease.tapes().values;
+    [[maybe_unused]] const auto held = sweeping();
     // Refuse rather than sweep, since an op the Taylor scalar lacks would
     // evaluate to a zero node and give a silently wrong number.
-    if (!computes_at<Taylor>(*arena_, root)) {
+    if (!walk.template computes<Taylor>(*arena_)) {
       return fail(errc::unsupported_scalar);
     }
     const std::array<Taylor, 1> at{Taylor::variable(x0)};
-    // Only root 0's cone is evaluated, since the arena may also hold a gradient
-    // and a Hessian and a Taylor node costs Order + 1 coefficients.
-    const auto values = evaluate_reachable(*arena_, root, at,
-                                           reference_table<T>, contraction());
-    return values[roots_[0]].c[Order] *
+    kept.tape.resize(arena_->size());
+    kept.vtape.resize(walk.extent());
+    walk(*arena_, at, std::span<Taylor>{kept.tape},
+         std::span<Taylor>{kept.vtape});
+    return kept.tape[roots_[0]].c[Order] *
            static_cast<T>(impl::detail::compile_time_factorial(Order));
   }
 
@@ -849,16 +871,14 @@ protected:
     const auto &blocks = hessians();
     // The nodes the three blocks read, planned once. Appended per block rather
     // than via views::join, which GCC 15 flags maybe-uninitialized under -Wall.
-    const auto &walk = sweeps_->walk.get([&] {
+    const ArenaWalk &walk = point_walk(PointWalk::Hessians, [&] {
       std::vector<NodeId> wanted{roots_.begin(), roots_.end()};
       std::ranges::for_each(blocks, [&wanted](const Hessian &b) {
         impl::append(wanted, b.compressed);
         impl::append(wanted, b.partial);
         wanted.push_back(b.zero);
       });
-      [[maybe_unused]] const auto held = reading();
-      return ArenaWalk{*arena_, live_ids(reachable(*arena_, wanted)),
-                       contraction()};
+      return wanted;
     });
     const std::size_t n = symbol_count();
     // The tape is thread-kept and not cleared; every id read below is
@@ -906,6 +926,16 @@ protected:
   }
 
 private:
+  // The walk over the cone `wanted()` names, planned once under the read lock.
+  const ArenaWalk &point_walk(PointWalk which, auto &&wanted) const {
+    return sweeps_->walks[std::to_underlying(which)].get([&] {
+      const auto ids = wanted();
+      [[maybe_unused]] const auto held = reading();
+      return ArenaWalk{*arena_, live_ids(reachable(*arena_, ids)),
+                       contraction()};
+    });
+  }
+
   // Runs `build` once under the arena's write lock, since every sweep appends.
   template <typename V> const V &sweep(Lazy<V> &slot, auto &&build) const {
     return slot.get([&] {
