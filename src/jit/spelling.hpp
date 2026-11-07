@@ -9,11 +9,8 @@
 #include <string_view>
 #include <utility>
 
-// How the LLVM emitter spells each operation: an infix operator, an ordered
-// compare answering 1.0 or 0.0, a call by name -- an intrinsic where LLVM has
-// one, else a libm function the runtime defines -- or a form it writes by
-// hand.  The one list the emitter and the runtime's symbol table read; a leaf
-// and an extern have no spelling here.
+// How the LLVM emitter writes each operation: an infix operator, a compare, a
+// named call (intrinsic or libm), or a special hand-written form.
 namespace ddx::rt {
 
 enum class Form : std::uint8_t { None, Infix, Compare, Call, Special };
@@ -34,7 +31,7 @@ inline constexpr std::array spellings = [] {
   for (const OpCode op : {OpCode::Lt, OpCode::Le}) {
     set(op, Form::Compare);
   }
-  set(OpCode::Abs, Form::Call, "fabs"); // abs is the integer one in C
+  set(OpCode::Abs, Form::Call, "fabs"); // C's abs is the integer one
   for (const OpCode op : {OpCode::Pow, OpCode::Atan2, OpCode::Hypot}) {
     set(op, Form::Call);
   }
@@ -53,7 +50,7 @@ inline constexpr std::array spellings = [] {
   return detail::spellings[std::to_underlying(op)];
 }
 
-// Every operation a backend may meet has a spelling.
+// Every callable operation must have a spelling.
 static_assert(std::ranges::all_of(std::views::iota(0uz, op_count),
                                   [](std::size_t i) {
                                     const auto op = static_cast<OpCode>(i);

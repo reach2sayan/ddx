@@ -1,27 +1,24 @@
 #pragma once
-// The public surface, and the whole of it; everything else lives in ddx::impl.
-// Operators and math functions are found by ADL, so they are not re-exported.
-// REFERENCES.md carries the algorithms; per-derivation citations sit at the
-// code that implements them -- grep "Ref:".
+// The whole public compile-time surface; operators and math functions are
+// found by ADL. Citations are in REFERENCES.md and at each "Ref:" line.
 #include "symbolic/equation.hpp"
 #include "util/version.hpp"
 
 namespace ddx {
 
-// The only derivative entry point.
 using impl::Equation;
 
-// A `double` graph answers everything but hessian(), which needs `dual`.
+// A double-valued Equation answers all but hessian(), which needs dual.
 using impl::dual;
 using impl::dual2nd;
 
-// A forward dual N levels deep, on the stack: dual_seed<N>(v, mask) makes a
-// variable, dual_part<Mask>(f) reads one of f's 2^N coefficients.
+// A forward dual N levels deep. dual_seed<N>(v, mask) makes a variable and
+// dual_part<Mask>(f) reads one of f's 2^N coefficients.
 template <typename T, std::size_t N> using nth_dual = impl::nth_dual_t<T, N>;
 using impl::dual_part;
 using impl::dual_seed;
 
-// var_of<"x">(v) / dual_var_of<"x">(v) take the scalar from an exemplar.
+// var_of<"x">(v) and dual_var_of<"x">(v) take their scalar type from v.
 using impl::dual_var_of;
 using impl::sym;
 using impl::var;
@@ -29,17 +26,15 @@ using impl::var_of;
 using impl::variable;
 namespace literals = impl::literals;
 
-// constant(3.0) -- a value stored in the tree.
 using impl::constant;
 
-// eq[idx<1>()] -- the subscript spelling of Equation::get<N>().
+// eq[idx<1>()] is the same as eq.get<1>().
 using impl::idx;
 
-// named<"x">(3.0) -- one keyword argument of a point, or one record entry.
+// named<"x">(3.0) is one named entry of a point.
 using impl::Entry;
 using impl::named;
 
-// Symbolic evaluates the stored partial trees; Reverse builds none.
 using impl::DiffMode;
 
 } // namespace ddx

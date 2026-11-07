@@ -1,5 +1,5 @@
 #pragma once
-// What the forward-mode suite adds to tests_common.hpp.
+// The forward-mode suite's additions to tests_common.hpp.
 
 #include "tests_common.hpp"
 

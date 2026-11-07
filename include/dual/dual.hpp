@@ -17,7 +17,7 @@
 
 namespace ddx::impl {
 
-// (a+be)(c+de) = ac + (ad+bc)e
+// (a+bε)(c+dε) = ac + (ad+bc)ε commutes exactly when the scalar does.
 template <Numeric T> class Dual;
 template <Numeric T>
 inline constexpr bool is_commutative_multiply_v<Dual<T>> =
@@ -37,8 +37,8 @@ private:
 public:
   constexpr Dual() noexcept = default;
   constexpr explicit Dual(T v, T d = T{}) noexcept : val_{v}, deriv_{d} {}
-  // deriv_ is left to its NSDMI: naming T{} here is one of the spellings
-  // MSVC's front end cannot lower once T is itself a Dual (see dual_div).
+  // deriv_ keeps its default initializer, because MSVC cannot lower T{} here
+  // once T is itself a Dual (see dual_div).
   constexpr Dual(CArithmetic auto s) noexcept : val_{T(s)} {}
 
   constexpr Dual &operator++() noexcept {
@@ -46,7 +46,7 @@ public:
     return *this;
   }
 
-  // get() on an rvalue yields an rvalue, as std::get does.
+  // get() on an rvalue returns an rvalue, as std::get does.
   template <std::size_t Index>
   [[nodiscard]] constexpr decltype(auto) get(this auto &&self) noexcept {
     static_assert(Index < 2, "Dual index out of bounds");
@@ -64,12 +64,12 @@ public:
   }
 };
 
-// The primary lives in util/fmt.hpp, next to the formatter that reads it.
+// The primary template is in util/fmt.hpp, beside the formatter that reads it.
 namespace detail {
 template <Numeric T> inline constexpr bool is_dual_family_v<Dual<T>> = true;
 } // namespace detail
 
-// The Dual ends of the recursions ops/scalar.hpp starts for a plain scalar.
+// The Dual cases of the recursions that ops/scalar.hpp defines for scalars.
 template <Numeric T> constexpr auto val(const Dual<T> &d) noexcept {
   const auto &[real, _] = d;
   return val(real);
@@ -85,8 +85,8 @@ constexpr bool same_value(const Dual<T> &a, const Dual<T> &b) noexcept {
   return same_value(a_real, b_real) && same_value(a_dual, b_dual);
 }
 
-// dual_var_of<"x">(v) — here rather than beside var_of() because it needs Dual
-// complete, not declared.
+// dual_var_of<"x">(v) lives here rather than beside var_of() because it needs
+// Dual to be complete.
 template <FixedString S, Numeric T>
 [[nodiscard]] constexpr auto dual_var_of(const T &) noexcept {
   return Variable<Dual<T>, S>{};
@@ -97,10 +97,8 @@ template <FixedString S, Numeric T>
   return Variable<Dual<T>, S>{};
 }
 
-// Reciprocal form: one hardware division per nesting level instead of two.
-// V, not T, throughout the bodies below: MSVC's front end ICEs in lower-trees
-// on a local whose type is spelled as the bare template parameter once that
-// parameter is itself a Dual, and the alias is what it will lower.
+// One division per nesting level, by multiplying with the reciprocal. Locals
+// use the alias V because MSVC ICEs on bare T when T is itself a Dual.
 template <Numeric T>
 DDX_ALWAYS_INLINE constexpr Dual<T> dual_div(const Dual<T> &a,
                                              const Dual<T> &b) noexcept {
@@ -108,7 +106,7 @@ DDX_ALWAYS_INLINE constexpr Dual<T> dual_div(const Dual<T> &a,
   const auto &[av, ad] = a;
   const auto &[bv, bd] = b;
   const V inv = V{1} / bv;
-  const V q = av * inv; // value = a / b
+  const V q = av * inv;
   return Dual{q, (ad - q * bd) * inv};
 }
 
@@ -116,7 +114,7 @@ template <Numeric T>
 DDX_ALWAYS_INLINE constexpr Dual<T>
 dual_div(const Dual<T> &a, const ConstOperand<T> auto &s) noexcept {
   using V = T;
-  const auto &[av, ad] = a; // s is a zero-derivative constant
+  const auto &[av, ad] = a;
   const V inv = V{1} / V(s);
   return Dual{av * inv, ad * inv};
 }
@@ -125,16 +123,14 @@ template <Numeric T>
 DDX_ALWAYS_INLINE constexpr Dual<T> dual_div(const ConstOperand<T> auto &s,
                                              const Dual<T> &a) noexcept {
   using V = T;
-  const auto &[av, ad] = a; // s / a; inner kept T-on-left (wide-scalar-safe)
+  const auto &[av, ad] = a;
   const V inv = V{1} / av;
-  const V q = V(s) * inv; // value = s / a
+  const V q = V(s) * inv;
   return Dual{q, -(q * ad) * inv};
 }
 
-// All three shapes of each operator, (Dual, Dual), (Dual, scalar) and
-// (scalar, Dual), over av, ad, bv, bd and the scalar s.  Separate formulas
-// rather than a promotion, which would leave an `ad + 0` IEEE will not let the
-// compiler fold.  A scalar distributes, with no zero-derivative term.
+// Each operator for (Dual, Dual), (Dual, scalar) and (scalar, Dual). A scalar
+// is not promoted, which would leave an `ad + 0` that IEEE forbids folding.
 #define DDX_DUAL_BINOP(OP, BOTH, RIGHT, LEFT)                                  \
   template <DualLike A>                                                        \
   DDX_ALWAYS_INLINE constexpr auto operator OP(                                \
@@ -173,21 +169,20 @@ constexpr auto operator-(DualLike auto &&a) noexcept {
   return DT{-v, -d};
 }
 
-// The primal is reused when the descriptor can express its derivative in terms
-// of f(u).
+// The unary chain rule, reusing f(u) when the descriptor's derivative can be
+// written in terms of it.
 template <template <Numeric> class Fn> struct unary_dual_combine {
   DDX_ALWAYS_INLINE constexpr auto
   operator()(const DualLike auto &x) const noexcept {
     const auto &[v, d] = x;
-    // Comp must stay a Dual at depth >= 2 or fv truncates.  The descriptor is
-    // instantiated at the base scalar S: at Comp its constants would become
-    // duals and leave a `0.0 - x` behind.
+    // The descriptor is instantiated at the base scalar S, because at Comp its
+    // constants would become duals and leave a `0.0 - x` behind.
     using Comp = std::remove_cvref_t<decltype(v)>;
     using DT = std::remove_cvref_t<decltype(x)>;
     using S = scalar_base_t<Comp>;
     const Comp fv = Fn<S>{}(v);
-    // Left out, as binary_dual_combine leaves it: a partial that is infinite
-    // here, sqrt's at 0, times no motion is nothing, not NaN.
+    // A zero tangent skips the partial, so an infinite one such as sqrt's at 0
+    // gives zero rather than NaN.
     if (all_zero(d)) {
       return DT{fv};
     }
@@ -198,7 +193,7 @@ template <template <Numeric> class Fn> struct unary_dual_combine {
     }
   }
 };
-// One chain-rule overload per unary math function, from the registry.
+// One chain-rule overload per unary math table row.
 #define DDX_DUAL_UNARY(FN, OP, LABEL)                                          \
   constexpr auto FN(DualLike auto &&a) noexcept {                              \
     return unary_dual_combine<detail::OP##Fn>{}(a);                            \
@@ -213,7 +208,7 @@ constexpr auto abs(DualLike auto &&x) noexcept {
   return DT{abs(v), detail::sign(v) * d};
 }
 
-// ---- comparisons (operate on materialized values) -------------------------
+// Comparisons look at the value level only.
 template <typename A, typename B>
 concept DualComparable =
     DualOrArithmetic<A> && DualOrArithmetic<B> && (DualLike<A> || DualLike<B>);
@@ -229,13 +224,8 @@ constexpr bool operator==(const A &a,
   return val(a) == val(b);
 }
 
-// The binary chain rule off the shared descriptor, f' = da a' + db b', with
-// the primal from the value functor.  A term whose operand has a zero
-// derivative -- a constant, or a constant exponent handed over embedded in a
-// dual -- is left out, its rule never evaluated, rather than multiplied by
-// zero: at a <= 0 pow's exponent partial is 0 * log(a), which is NaN, not
-// nothing.  The descriptor is instantiated at the component, so a nested
-// dual's rule recurses.
+// The binary chain rule f' = da·a' + db·b'. A term with a zero tangent is
+// skipped, not multiplied by zero, since pow's 0·log(a) at a <= 0 is NaN.
 template <template <Numeric> class Desc, typename Value>
 struct binary_dual_combine {
   template <DualLike DT>
@@ -259,9 +249,8 @@ struct binary_dual_combine {
   }
 };
 
-// Each in three shapes: all-dual, and a constant on either side, which
-// arrives embedded with a zero derivative.  The inner calls are unqualified,
-// so ADL makes these work at any nesting depth.
+// Each binary function for two duals or a constant on either side. Unqualified
+// inner calls let ADL handle any nesting depth.
 #define DDX_DUAL_BINARY(FN, Desc, Value)                                       \
   template <DualLike A>                                                        \
   constexpr auto FN(A &&a, DualCompatible<A> auto &&b) noexcept {              \
@@ -284,8 +273,7 @@ DDX_BINARY_MATH_TABLE(DDX_DUAL_BINROW)
 #undef DDX_DUAL_BINROW
 #undef DDX_DUAL_BINARY
 
-// Linear, so it is its own derivative rule.  std::midpoint takes arithmetic
-// types only, which is why max/min go through midpoint_impl instead.
+// midpoint is linear, so it applies to value and tangent alike.
 template <DualLike A>
 constexpr auto midpoint(A &&a, DualCompatible<A> auto &&b) noexcept {
   using std::midpoint;
@@ -295,7 +283,7 @@ constexpr auto midpoint(A &&a, DualCompatible<A> auto &&b) noexcept {
   return DT{midpoint(xv, yv), midpoint(xd, yd)};
 }
 
-// 3-argument hypot, all-dual only.
+// Three-argument hypot, for duals only.
 template <DualLike A>
 constexpr auto hypot(A &&a, DualCompatible<A> auto &&b,
                      DualCompatible<A> auto &&c) noexcept {
@@ -312,14 +300,11 @@ constexpr auto hypot(A &&a, DualCompatible<A> auto &&b,
 static_assert(Numeric<Dual<double>>);
 static_assert(Numeric<Dual<float>>);
 
-using dual = nth_dual_t<double, 1>;    // first-order forward dual
-using dual2nd = nth_dual_t<double, 2>; // second-order (Hessian-capable) dual
+using dual = nth_dual_t<double, 1>;
+using dual2nd = nth_dual_t<double, 2>;
 
-// An N-deep dual has 2^N coefficients, one per subset of its ε's.  Bit l of a
-// mask is ε_l, l = 0 the outermost level.
-//
-// v with coefficient 1 on each ε_l in `mask`: a variable those ε's
-// differentiate by.
+// An N-deep dual has 2^N coefficients, one per subset of its ε's; bit l of a
+// mask is ε_l, with l = 0 outermost. dual_seed sets 1 on each ε in mask.
 template <std::size_t N, Numeric T>
 [[nodiscard]] constexpr nth_dual_t<T, N> dual_seed(T v,
                                                    std::size_t mask) noexcept {
@@ -331,8 +316,8 @@ template <std::size_t N, Numeric T>
   }
 }
 
-// The coefficient of the ε's in Mask: 0 is the value, 2^N - 1 the mixed Nth
-// derivative.
+// The coefficient of the ε's in Mask: 0 is the value and 2^N - 1 the mixed
+// Nth derivative.
 template <std::size_t Mask, Numeric D>
 [[nodiscard]] constexpr auto dual_part(const D &x) noexcept {
   if constexpr (dual_depth_v<D> == 0) {
@@ -345,7 +330,7 @@ template <std::size_t Mask, Numeric D>
 
 } // namespace ddx::impl
 
-// `v+de` -- the two-term case of the shared series renderer.
+// Prints a Dual as `v+dε` through the shared series renderer.
 template <ddx::impl::Numeric T>
 struct std::formatter<ddx::impl::Dual<T>, char>
     : ddx::impl::detail::dual_formatter_base<T> {

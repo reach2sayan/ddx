@@ -3,7 +3,7 @@ include_guard(GLOBAL)
 include(CMakePackageConfigHelpers)
 include(DdxBoostHeaders)
 
-# ddx_rt is libddx; the JIT objects are inside it, so ddx::jit exports nothing.
+# ddx_rt is libddx. The JIT objects live inside it, so ddx::jit is not exported.
 set(DDX_EXPORT_TARGETS ddx ddx_util ddx_ops ddx_md ddx_symbolic ddx_dual ddx_rt)
 
 install(TARGETS ${DDX_EXPORT_TARGETS}
@@ -13,8 +13,8 @@ install(TARGETS ${DDX_EXPORT_TARGETS}
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         FILE_SET HEADERS)
 
-# The Boost subset the installed headers reach -- only when ddx fetched it.  A
-# supplied Boost is the consumer's; the config below asks for it again.
+# Install the Boost headers ddx needs only when ddx fetched Boost itself. A
+# supplied Boost stays the consumer's, and the config finds it again.
 if (DDX_BOOST_VENDORED)
     foreach (dir IN LISTS DDX_BOOST_HEADER_DIRS)
         file(GLOB headers LIST_DIRECTORIES false "${DDX_BOOST_ROOT}/${dir}/*")
@@ -35,8 +35,8 @@ install(EXPORT ddxTargets
 install(FILES "${PROJECT_SOURCE_DIR}/LICENSE.txt" "${PROJECT_SOURCE_DIR}/THIRD-PARTY-NOTICES.txt"
         DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
-# Two configs from one template: the build tree and the prefix hold a fetched
-# Boost in different places.
+# Two configs from one template, because the build tree and the install prefix
+# keep a fetched Boost in different places.
 set(DDX_BOOST_CONFIG_ROOT "${DDX_BOOST_ROOT}")
 configure_package_config_file(
         "${PROJECT_SOURCE_DIR}/cmake/ddx-config.cmake.in"

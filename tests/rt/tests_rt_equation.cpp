@@ -31,7 +31,7 @@ namespace {
 constexpr auto sx = ddx::var<"x">;
 constexpr auto sy = ddx::var<"y">;
 
-// constexpr, never consteval (NOTES.md): one implementation serves both a
+// constexpr rather than consteval, so one implementation serves both a
 // static_assert and a value read at run time.
 consteval double slope_at_two() {
   ddx::rt::Arena<> b;
@@ -60,7 +60,7 @@ TEST(RtEquation, MatchesTheCompileTimeEquation) {
   }
 }
 
-// The runtime side resolves names against a run-time symbol list where
+// The runtime side resolves names against a run-time symbol list, where
 // make_point uses a compile-time one.
 TEST(RtEquation, EveryCallSpellingAgrees) {
   ddx::rt::Arena<> b;
@@ -82,8 +82,6 @@ TEST(RtEquation, EveryCallSpellingAgrees) {
   }
 }
 
-// var(name) reads a name the program only has at run time, and a varmap keyed
-// the same way is how a point for it is written.
 TEST(RtEquation, NamesAndPointsBothComeFromRunTimeStrings) {
   std::istringstream config{"beta alpha"};
   std::vector<std::string> names;
@@ -91,7 +89,7 @@ TEST(RtEquation, NamesAndPointsBothComeFromRunTimeStrings) {
     names.push_back(n);
   }
 
-  // 1 * beta + 2 * alpha, weighted in the order the names were read.
+  // The weights follow the order in which the names were read.
   const auto eq = ddx::rt::equation([&] {
     ddx::rt::Expression<double> acc = 0.0;
     double weight = 1.0;
@@ -109,14 +107,14 @@ TEST(RtEquation, NamesAndPointsBothComeFromRunTimeStrings) {
   EXPECT_DOUBLE_EQ(*eq.evaluate(vm), 1.0 * 5.0 + 2.0 * 3.0);
   EXPECT_TRUE(std::ranges::equal(*eq.jacobian(vm), std::array{1.0, 2.0}));
 
-  // Any range of pairs, not only a map, and the key need not own its text.
+  // Any range of pairs works, and the key need not own its text.
   const std::vector<std::pair<std::string_view, double>> pairs{{"beta", 5.0},
                                                                {"alpha", 3.0}};
   EXPECT_DOUBLE_EQ(*eq.evaluate(pairs), *eq.evaluate(vm));
 }
 
-// equation(expr) copies the arena; a `+=` still pending is materialised in the
-// copy, not in the caller's.
+// equation(expr) copies the arena, so a pending += is materialised in the
+// copy and not in the caller's arena.
 TEST(RtEquation, APendingSumRootsInTheCopiedArena) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -131,7 +129,6 @@ TEST(RtEquation, APendingSumRootsInTheCopiedArena) {
                                  std::array{3.0 + std::cos(2.0), 3.0}));
 }
 
-// No arguments is a point too: the empty one, refused here as short.
 TEST(RtEquation, AnEmptyPointIsSpellable) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -145,8 +142,8 @@ TEST(RtEquation, EveryNamedPointMustNameEverySymbolAndOnlyRealOnes) {
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x * y);
 
-  // Silence is not zero: a symbol no argument reaches is the mistake, and
-  // every spelling of a named point says so the same way.
+  // A symbol that no argument reaches is an error, not a silent zero, and
+  // every spelling of a named point reports it the same way.
   EXPECT_EQ(eq.evaluate(std::map<std::string, double>{{"x", 1.0}}).error().code,
             ddx::errc::short_point);
   EXPECT_EQ(eq.evaluate(ddx::named<"x">(1.0)).error().code,
@@ -160,7 +157,6 @@ TEST(RtEquation, EveryNamedPointMustNameEverySymbolAndOnlyRealOnes) {
       eq.evaluate(ddx::named<"x">(1.0), ddx::named<"z">(2.0)).error().code,
       ddx::errc::unknown_symbol);
 
-  // A whole point still goes through, either way round.
   EXPECT_DOUBLE_EQ(*eq.evaluate(ddx::named<"y">(3.0), ddx::named<"x">(2.0)),
                    6.0);
   EXPECT_DOUBLE_EQ(
@@ -176,7 +172,6 @@ TEST(RtEquation, SystemsGiveAJacobian) {
   const auto J = *eq.jacobian(1.3, 0.7);
   ASSERT_EQ(J.size(), 4u); // 2 functions x 2 symbols, row-major
 
-  // Row k is the Jacobian row of function k.
   const auto row0 = ddx::Equation{sx * sy + sin(sx)}.jacobian(1.3, 0.7);
   const auto row1 = ddx::Equation{exp(sx) - sy * sy}.jacobian(1.3, 0.7);
   EXPECT_NEAR(J[0], row0[0], 1e-12);
@@ -209,8 +204,8 @@ TEST(RtEquation, AWrongSizedPointIsRejected) {
 
 namespace {
 
-// dual2nd on the compile-time side, which is what its hessian needs; the
-// runtime graph is over plain double either way.
+// The compile-time side uses dual2nd, which its hessian needs; the runtime
+// graph is over plain double either way.
 TEST(RtEquation, HessianMatchesTheCompileTimeEquation) {
   using D = ddx::dual2nd;
   constexpr auto dx = ddx::var<"x", D>;
@@ -234,7 +229,6 @@ TEST(RtEquation, HessianMatchesTheCompileTimeEquation) {
   EXPECT_DOUBLE_EQ(got[1], got[2]) << "a Hessian is symmetric";
 }
 
-// Whether colouring saves anything is not something a caller can guess.
 TEST(RtEquation, HessianColoursReflectTheCoupling) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -256,8 +250,6 @@ TEST(RtEquation, HessianColoursReflectTheCoupling) {
 
 namespace {
 
-// equation() makes the arena and moves it into the result, so a caller never
-// names or keeps an Arena alive.
 TEST(RtEquation, TheFactoryHidesTheArena) {
   const auto eq = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
@@ -273,7 +265,6 @@ TEST(RtEquation, TheFactoryHidesTheArena) {
   EXPECT_NEAR(g[1], std::exp(1.0) * std::cos(2.0), 1e-12);
 }
 
-// Owning the arena is what lets an Equation be returned, stored and passed.
 TEST(RtEquation, AnOwningEquationOutlivesItsScope) {
   const auto make = [](double c) {
     return ddx::rt::equation([c] {
@@ -288,7 +279,7 @@ TEST(RtEquation, AnOwningEquationOutlivesItsScope) {
   EXPECT_NEAR((*eq.hessian(2.0))[0], 6.0, 1e-12);
 }
 
-// Same answers through the compiled kernel and the interpreter alike.
+// The compiled kernel and the interpreter must give the same answers.
 TEST(RtEquation, BatchAgreesWithPerPoint) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -315,9 +306,8 @@ TEST(RtEquation, BatchAgreesWithPerPoint) {
   }
 }
 
-// Every lane of a block sweep runs the scalar sweep's operations in its order,
-// so the two agree at every node to the bit -- contracted steps of both signs
-// included, which the block sweep packs and the scalar one does not.
+// Each block lane runs the scalar sweep's operations in the same order, so the
+// two agree to the bit, including the contracted steps the block sweep packs.
 TEST(RtEquation, BlockSweepAgreesWithTheScalarSweepToTheBit) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -359,8 +349,7 @@ TEST(RtEquation, BlockSweepAgreesWithTheScalarSweepToTheBit) {
   }
 }
 
-// The same through the equation: two whole blocks and a tail, each point
-// against the scalar accessor that sweeps it alone.
+// Two whole blocks and a tail, each point checked against the scalar accessor.
 TEST(RtEquation, BatchAgreesWithPerPointToTheBit) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -414,7 +403,6 @@ TEST(RtEquation, BatchHessianFillsTheCompressedColumns) {
 
   *eq.hessian(inputs, values, partials, block_ptrs, n);
 
-  // The dense per-point Hessian is the scatter of those columns.
   const auto dense = *eq.hessian(0.7, 1.1);
   EXPECT_NEAR(dense[1], dense[2], 1e-12) << "symmetric";
   for (std::size_t i = 0; i < n; ++i) {
@@ -426,7 +414,6 @@ TEST(RtEquation, BatchHessianFillsTheCompressedColumns) {
 
 namespace {
 
-// Any contiguous range of columns.
 TEST(RtEquation, BatchTakesAnyContiguousRange) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -454,7 +441,7 @@ TEST(RtEquation, BatchTakesAnyContiguousRange) {
   EXPECT_DOUBLE_EQ(f[0], 6.0);
 }
 
-// A wrong column count is silent corruption once it reaches the kernel.
+// A wrong column count would silently corrupt memory inside the kernel.
 TEST(RtEquation, AMismatchedColumnCountIsRejected) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -467,17 +454,14 @@ TEST(RtEquation, AMismatchedColumnCountIsRejected) {
   std::vector<double *> partials{dx.data(), dy.data()};
   EXPECT_TRUE(eq.jacobian(xs, values, partials, 2).has_value());
 
-  // One partial per symbol, so one column is one too few.
   const std::vector<double *> one_partial{dx.data()};
   EXPECT_EQ(eq.jacobian(xs, values, one_partial, 2).error().code,
             ddx::errc::wrong_column_count);
 
-  // One value column for one function, so two is one too many.
   const std::vector<double *> two_values{f.data(), dy.data()};
   EXPECT_EQ(eq.jacobian(xs, two_values, partials, 2).error().code,
             ddx::errc::wrong_column_count);
 
-  // And the point itself has to name every symbol.
   const std::vector<const double *> short_point{cx.data()};
   EXPECT_EQ(eq.jacobian(short_point, values, partials, 2).error().code,
             ddx::errc::wrong_column_count);
@@ -487,7 +471,6 @@ TEST(RtEquation, AMismatchedColumnCountIsRejected) {
 
 namespace {
 
-// Symbols come from equation(); no arena is ever named.
 TEST(RtEquation, TheArenaIsInvisible) {
   const auto eq = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
@@ -497,14 +480,14 @@ TEST(RtEquation, TheArenaIsInvisible) {
   EXPECT_EQ(eq.arity(), 2u);
   EXPECT_NEAR(*eq.evaluate(2.0, 3.0), 6.0 + std::sin(2.0), 1e-12);
 
-  // var() poisons rather than erroring, which would cost every model lambda a
-  // dereference.  The poison survives every operator and reaches the Equation.
+  // var() poisons the handle instead of returning an error, which would cost
+  // every model lambda a dereference; the poison survives every operator.
   const auto stray = ddx::rt::var("stray");
   EXPECT_TRUE(stray.poisoned());
   EXPECT_TRUE((stray * 2.0 + 1.0).poisoned());
 
-  // Compound assignment must neither lose the poison nor pick up a live right
-  // operand's arena.
+  // Compound assignment must neither lose the poison nor pick up the arena of a
+  // live right operand.
   auto spreading = stray;
   spreading += 2.0;
   EXPECT_TRUE(spreading.poisoned());
@@ -520,11 +503,10 @@ TEST(RtEquation, TheArenaIsInvisible) {
   ASSERT_TRUE(poisoned.status().has_value());
   EXPECT_EQ(poisoned.status()->code, ddx::errc::outside_equation);
 
-  // Every call spends the error rather than reading a graph that is not there.
   EXPECT_EQ(poisoned.evaluate(1.0).error().code, ddx::errc::outside_equation);
   EXPECT_EQ(poisoned.jacobian(1.0).error().code, ddx::errc::outside_equation);
   EXPECT_EQ(poisoned.point(1.0).error().code, ddx::errc::outside_equation);
-  // nullopt, never a 0 a caller could loop over by accident.
+  // arity() is nullopt, never a 0 that a caller could loop over by accident.
   EXPECT_FALSE(poisoned.arity().has_value());
   EXPECT_FALSE(poisoned.symbols().has_value());
   EXPECT_FALSE(poisoned.jacobian_columns().has_value());
@@ -533,9 +515,8 @@ TEST(RtEquation, TheArenaIsInvisible) {
   EXPECT_FALSE(poisoned.hessian_colours().has_value());
 }
 
-// An equation copies the arena it is lent, so the caller goes on building in
-// theirs -- a symbol that moves x's slot there moves nothing the equation
-// reads.
+// An equation copies the arena it is lent, so new symbols in the caller's
+// arena move nothing that the equation reads.
 TEST(RtEquation, ALentArenaIsCopiedAndStaysOpen) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -549,13 +530,12 @@ TEST(RtEquation, ALentArenaIsCopiedAndStaysOpen) {
   ASSERT_FALSE(second.poisoned());
   EXPECT_NEAR(*second.evaluate(2.0, 3.0), 5.0, 1e-12);
 
-  // The first equation is untouched: same symbol set, same slot, same answers.
   ASSERT_EQ(eq.arity(), 1u);
   EXPECT_EQ((*eq.symbols())[0], "x");
   EXPECT_NEAR((*eq.jacobian(3.0))[0], 6.0, 1e-12);
 }
 
-// Sealed stops symbols being added, not named.
+// Sealing stops new symbols from being added, but existing ones can be named.
 TEST(RtEquation, ASealedArenaStillNamesTheSymbolsItHas) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -571,7 +551,8 @@ TEST(RtEquation, ASealedArenaStillNamesTheSymbolsItHas) {
   EXPECT_NEAR(*second.evaluate(2.0, 3.0), 11.0, 1e-12);
 }
 
-// A bare literal names no arena -- distinct from outside_equation.
+// A bare literal names no arena, which is a different error from
+// outside_equation.
 TEST(RtEquation, ALiteralNamesNoGraph) {
   const auto eq = ddx::rt::equation(ddx::rt::Expression<double>{2.0});
   ASSERT_TRUE(eq.status().has_value());
@@ -608,14 +589,14 @@ TEST(RtEquation, HessianOfASystemIsOneBlockPerOutput) {
   }
 }
 
-// One Taylor sweep rather than K nested duals.
+// Computed by one Taylor sweep rather than by K nested duals.
 TEST(RtEquation, UnivariateDerivativesToArbitraryOrder) {
   const auto eq = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
     return exp(x) * sin(x);
   });
 
-  // d^k/dx^k [e^x sin x] = 2^(k/2) e^x sin(x + k*pi/4)
+  // The k-th derivative of e^x sin x is 2^(k/2) e^x sin(x + k*pi/4).
   constexpr double at = 0.7;
   const auto expected = [](std::size_t k) {
     return std::pow(std::numbers::sqrt2, static_cast<double>(k)) *
@@ -626,21 +607,21 @@ TEST(RtEquation, UnivariateDerivativesToArbitraryOrder) {
   EXPECT_NEAR(*eq.univariate_derivative<2>(at), expected(2), 1e-10);
   EXPECT_NEAR(*eq.univariate_derivative<4>(at), expected(4), 1e-10);
 
-  // It is a one-variable question; more than one symbol has no answer.
+  // The question has no answer for more than one symbol.
   const auto two =
       ddx::rt::equation([] { return ddx::rt::var("x") * ddx::rt::var("y"); });
   EXPECT_EQ(two.univariate_derivative<1>(1.0).error().code,
             ddx::errc::not_univariate);
 }
 
-// max and min take the winning side's coefficients; the Taylor scalar is
+// max and min take the winning side's coefficients; the Taylor scalar is only
 // asked for a comparison and a midpoint, never for a max of its own.
 TEST(RtEquation, UnivariateDerivativesThroughMaxAndMin) {
   const auto kink = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
     return max(x * x, x) * tanh(x) + min(x * x, x);
   });
-  // At 2: x*x wins max, x wins min.
+  // At x = 2, x*x wins the max and x wins the min.
   const double t = std::tanh(2.0), s = 1 - t * t;
   EXPECT_NEAR(*kink.univariate_derivative<1>(2.0), 4 * t + 4 * s + 1, 1e-12);
   EXPECT_NEAR(*kink.univariate_derivative<2>(2.0),
@@ -648,7 +629,6 @@ TEST(RtEquation, UnivariateDerivativesThroughMaxAndMin) {
   EXPECT_NEAR(*kink.univariate_derivative<1>(0.5),
               1 * std::tanh(0.5) + 0.5 * (1 - std::pow(std::tanh(0.5), 2)) + 1,
               1e-12);
-  // The reverse sweep says the same.
   EXPECT_NEAR(*kink.univariate_derivative<1>(2.0), (*kink.jacobian(2.0))[0],
               1e-12);
   EXPECT_NEAR(*kink.univariate_derivative<2>(2.0), (*kink.hessian(2.0))[0],
@@ -657,21 +637,18 @@ TEST(RtEquation, UnivariateDerivativesThroughMaxAndMin) {
 
 } // namespace
 
-// --- choosing the backend ---------------------------------------------------
-
-// The scalar accessors answer from the frozen graph, the arena walk from every
-// node in the arena.  EXPECT_EQ rather than a tolerance: the graph changes
-// which nodes are visited, never the arithmetic at any of them.
+// The graph changes which nodes are visited but never the arithmetic at any of
+// them, so the scalar accessors match the arena walk exactly.
 TEST(RtEquation, ScalarAccessorsAgreeWithTheArenaWalkToTheBit) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto z = var(b, "z");
-  // Every symbol under one log, so the Hessian is dense and the colouring
-  // sweeps the arena several times over.
+  // Every symbol is under one log, so the Hessian is dense and the colouring
+  // sweeps the arena several times.
   const auto expr = (x * log(x) + y * y * z) * log(x + y + z) / (z + y);
 
-  // Before the equation, so interning lands its own sweeps on these same nodes.
+  // Taken before the equation, so interning reuses these same nodes.
   const auto root = expr.id(b);
   const auto row = ddx::rt::derive_jacobian(b, root);
   const auto hess = ddx::rt::derive_hessian(b, root);
@@ -699,11 +676,8 @@ TEST(RtEquation, ScalarAccessorsAgreeWithTheArenaWalkToTheBit) {
 
 #ifdef DDX_HAS_JIT
 
-// The switchover contract, both halves of it.  `rebalance` blocks a reduction
-// spine of `least` = 16 terms or more for the kernel and leaves the sweep's
-// graph alone, so those two paths sum in different orders -- the one place in
-// the library where interpreted and compiled answers differ at all.  README
-// quotes the ULP figures below, so they are pinned here.
+// rebalance blocks reduction spines of 16 or more terms for the kernel only, so
+// the two paths then sum in different orders. README quotes these ULP bounds.
 TEST(RtEquation, ShortSpinesSurviveTheSwitchoverToTheBit) {
   const auto spine = [](std::size_t terms) {
     return ddx::rt::equation([terms] {
@@ -740,9 +714,8 @@ TEST(RtEquation, ShortSpinesSurviveTheSwitchoverToTheBit) {
         << terms << " terms is below the rewrite threshold";
   }
 
-  // Over it the kernel sums in blocks, and the gap is small and bounded.  A
-  // test that only checked "they agree" would have to be deleted here; one that
-  // pins the size is what keeps README honest.
+  // Over the threshold the kernel sums in blocks, so the gap is pinned to a
+  // small bound rather than to zero.
   for (const auto &[terms, bound] :
        std::array{std::pair{40uz, std::int64_t{8}},
                   std::pair{80uz, std::int64_t{16}}}) {
@@ -790,8 +763,8 @@ TEST(RtEquation, InterpretDeclinesTheBackendAndAgreesWithIt) {
   EXPECT_FALSE(used_none) << "Interpret still reached for a kernel";
   EXPECT_TRUE(used_kernel) << "Compile did not compile on a JIT build";
 
-  // Equal, not near: the contraction is decided in the graph, so kernel and
-  // sweep fold the same products and round the same number of times.
+  // Equal rather than near, because the contraction is decided in the graph, so
+  // kernel and sweep round the same products the same number of times.
   for (std::size_t i = 0; i < n; ++i) {
     EXPECT_EQ(std::bit_cast<std::uint64_t>(f_jit[i]),
               std::bit_cast<std::uint64_t>(f_int[i]))
@@ -805,8 +778,8 @@ TEST(RtEquation, InterpretDeclinesTheBackendAndAgreesWithIt) {
   }
 }
 
-// `points` picks the kernel width, and the two widths must agree to the bit --
-// a lane is its own IEEE operation.
+// The two kernel widths must agree to the bit, since each lane performs its
+// own IEEE operations.
 TEST(RtEquation, PointsPicksTheKernelWidthAndTheAnswerIsTheSame) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -820,7 +793,6 @@ TEST(RtEquation, PointsPicksTheKernelWidthAndTheAnswerIsTheSame) {
     cy[i] = 0.7 - 0.002 * static_cast<double>(i);
   }
 
-  // One equation says it steps, the other says it batches.
   auto stepping = ddx::rt::equation(f);
   auto batched = ddx::rt::equation(f);
   stepping.options({.backend = ddx::rt::Backend::Compile, .points = 1});
@@ -853,7 +825,6 @@ TEST(RtEquation, PointsPicksTheKernelWidthAndTheAnswerIsTheSame) {
   }
 }
 
-// Nothing compiles unless a backend is asked for.
 TEST(RtEquation, TheDefaultCompilesNothing) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -876,7 +847,6 @@ TEST(RtEquation, TheDefaultCompilesNothing) {
   }
 }
 
-// Asking again for what is already built throws nothing away.
 TEST(RtEquation, IdenticalOptionsKeepTheKernel) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -890,8 +860,8 @@ TEST(RtEquation, IdenticalOptionsKeepTheKernel) {
       << "an identical options() threw the kernel away";
 }
 
-// Sizing a buffer must not build a kernel: the counts are ones the constructor
-// already knew.
+// Sizing a buffer must not build a kernel, because the constructor already
+// knows the counts.
 TEST(RtEquation, TheColumnCountsCompileNothing) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -899,12 +869,11 @@ TEST(RtEquation, TheColumnCountsCompileNothing) {
   auto eq = ddx::rt::equation(x * log(x) + y * exp(x * y));
   eq.options({.backend = ddx::rt::Backend::Compile});
 
-  // Every count, before any call has been made.
   EXPECT_EQ(*eq.value_columns(), 1u);
   EXPECT_EQ(*eq.jacobian_columns(), 2u);
   EXPECT_GT(*eq.hessian_columns(), 0u);
 
-  // The Hessian lane is still unbuilt: it is the hessian() call that builds it.
+  // The Hessian lane is still unbuilt; the hessian() call is what builds it.
   constexpr std::size_t n = 2;
   const std::size_t hc = *eq.hessian_columns();
   std::vector<double> cx(n, 0.6), cy(n, 0.9), f(n), dx(n), dy(n);
@@ -918,14 +887,13 @@ TEST(RtEquation, TheColumnCountsCompileNothing) {
   double *const partials[]{dx.data(), dy.data()};
   EXPECT_TRUE(eq.hessian(columns, values, partials, hp, n).has_value());
 
-  // And they still answer once everything is built.
   EXPECT_EQ(*eq.value_columns(), 1u);
   EXPECT_EQ(*eq.jacobian_columns(), 2u);
   EXPECT_EQ(*eq.hessian_columns(), hc);
 }
 
-// One LLJIT serves every Equation type.  Results, not timings, so it cannot go
-// flaky.
+// One LLJIT serves every Equation type. The test checks results rather than
+// timings, so it cannot become flaky.
 TEST(RtEquation, DifferentEquationTypesShareOneCompilerSafely) {
   const auto scalar_model = [] {
     return ddx::rt::equation([] {
@@ -946,11 +914,11 @@ TEST(RtEquation, DifferentEquationTypesShareOneCompilerSafely) {
     cx[i] = 0.4 + 0.1 * static_cast<double>(i);
   }
 
-  // Both shapes, from several threads, all compiling at once.
+  // Both shapes compile at once from several threads.
   const auto one_scalar = [&] {
     auto eq = scalar_model();
     eq.options({.backend = ddx::rt::Backend::Compile, .points = n});
-    // Every arm has to be the kernel's rather than whichever path won a race.
+    // Every result must come from the kernel, not from a path that won a race.
     EXPECT_TRUE(eq.uses_kernel());
     std::vector<double> f(n), d(n);
     const double *const columns[]{cx.data()};
@@ -991,8 +959,8 @@ TEST(RtEquation, DifferentEquationTypesShareOneCompilerSafely) {
   }
 }
 
-// Changing the choice discards the kernel: flipping to Interpret leaves the
-// sweep, and flipping back builds afresh.
+// Changing the backend discards the kernel: Interpret falls back to the sweep,
+// and switching back to Compile builds a new kernel.
 TEST(RtEquation, ChangingTheBackendDiscardsTheKernel) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -1016,7 +984,6 @@ TEST(RtEquation, ChangingTheBackendDiscardsTheKernel) {
   EXPECT_NEAR(f, 0.7 * std::log(0.7) + std::exp(0.7), 1e-12);
 }
 
-// The first call under Compile is answered by the kernel it built.
 TEST(RtEquation, TheFirstCallBuildsTheKernel) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -1032,8 +999,6 @@ TEST(RtEquation, TheFirstCallBuildsTheKernel) {
   EXPECT_NEAR(f, 0.7 * std::log(0.7) + std::exp(0.7), 1e-12);
 }
 
-// The lane width has to be reachable from the Equation, and choosing it must
-// not change a bit of the answer.
 TEST(RtEquation, OptionsReachTheCompilerAndDoNotChangeTheAnswer) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -1053,7 +1018,7 @@ TEST(RtEquation, OptionsReachTheCompilerAndDoNotChangeTheAnswer) {
     double *const values[]{f.data()};
     double *const partials[]{dx.data(), dy.data()};
     eq.options(opt);
-    // Compared bit for bit below, so both have to be kernels.
+    // Both must be kernels, because the results are compared bit for bit below.
     const bool kernel = eq.uses_kernel();
     *eq.jacobian(columns, values, partials, n);
     return std::tuple{f, dx, dy, kernel};
@@ -1073,8 +1038,8 @@ TEST(RtEquation, OptionsReachTheCompilerAndDoNotChangeTheAnswer) {
       << "the setter did not take";
   EXPECT_TRUE(k0 && k1) << "an option refused the compile outright";
 
-  // Bit-exact: a lane is its own IEEE operation, so the width changes what is
-  // scheduled, never what is contracted.
+  // Bit-exact, since the lane width changes what is scheduled but never what is
+  // contracted.
   for (std::size_t i = 0; i < n; ++i) {
     EXPECT_EQ(f1[i], f0[i]) << "scalar value at " << i;
     EXPECT_EQ(dx1[i], dx0[i]) << "scalar d/dx at " << i;
@@ -1082,10 +1047,8 @@ TEST(RtEquation, OptionsReachTheCompilerAndDoNotChangeTheAnswer) {
   }
 }
 
-// Many threads on one Equation, mixing both lanes.  std::thread rather than
-// std::jthread: libc++ shipped jthread late and behind
-// _LIBCPP_ENABLE_EXPERIMENTAL.  Compiling deliberately -- the threads race to
-// build the one kernel.
+// std::thread rather than std::jthread, which libc++ shipped late. The threads
+// deliberately race to build the one kernel.
 TEST(RtEquation, ConcurrentConstCallsAgreeWithOneThread) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -1144,9 +1107,8 @@ TEST(RtEquation, ConcurrentConstCallsAgreeWithOneThread) {
   }
 }
 
-// Two equations over ONE borrowed Arena, each asked for a Hessian from its
-// own thread.  rt::derive_hessian appends to the arena, so no per-Equation
-// lock could make this safe if the sweep were not in the constructor.
+// derive_hessian appends to the shared arena, so this is safe only because the
+// sweep runs in the constructor rather than under a per-Equation lock.
 TEST(RtEquation, TwoEquationsSharingAnArenaDoNotRaceIt) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -1168,7 +1130,6 @@ TEST(RtEquation, TwoEquationsSharingAnArenaDoNotRaceIt) {
   EXPECT_EQ(c, expected_second);
 }
 
-// Values for many points, with no gradient computed anywhere along the way.
 TEST(RtEquation, EvaluatingABatchComputesNoPartials) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -1188,14 +1149,14 @@ TEST(RtEquation, EvaluatingABatchComputesNoPartials) {
   for (std::size_t i = 0; i < n; ++i) {
     EXPECT_NEAR(f[i], cx[i] * std::log(cx[i]) + cy[i] * cy[i], 1e-12)
         << "value at " << i;
-    // Bit-exact against the scalar accessor: one graph, one sweep.
+    // Bit-exact against the scalar accessor, which uses the same graph.
     const std::vector<double> at{cx[i], cy[i]};
     EXPECT_EQ(f[i], *eq.evaluate(std::span<const double>{at}));
   }
 }
 
-// The values lane's graph carries no Jacobian block at all -- a shape no other
-// caller produces.  A system rather than one root, where the sizes differ.
+// The values lane's graph carries no Jacobian block. A system is used rather
+// than one root, because there the sizes differ.
 TEST(RtEquation, EvaluatingUsesAValuesOnlyGraph) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -1206,14 +1167,14 @@ TEST(RtEquation, EvaluatingUsesAValuesOnlyGraph) {
   const auto v = *eq.evaluate(std::span<const double>{at});
   ASSERT_EQ(v.size(), 3u);
 
-  // Against the values+Jacobian lane: a different graph over the same nodes,
-  // and bit-exact since neither reorders anything.
+  // Bit-exact against the values-and-Jacobian lane, which is a different graph
+  // over the same nodes, since neither reorders anything.
   double f0 = 0, f1 = 0, f2 = 0;
   const double *const columns[]{&at[0], &at[1]};
   double *const values[]{&f0, &f1, &f2};
 
   // Five columns, not six: d(x log x)/dy is structurally zero, so it has no
-  // column and the pattern is what says which five these are.
+  // column, and the pattern says which five these are.
   const ddx::rt::Sparsity &pattern = eq.jacobian_pattern()->get();
   ASSERT_EQ(*eq.jacobian_columns(), 5u);
   EXPECT_EQ(pattern.nonzeros(), 5u);
@@ -1229,7 +1190,7 @@ TEST(RtEquation, EvaluatingUsesAValuesOnlyGraph) {
   EXPECT_EQ(v[1], f1);
   EXPECT_EQ(v[2], f2);
 
-  // And the dense spelling puts the zero back where the pattern left a hole.
+  // The dense form puts the zero back where the pattern left a hole.
   const auto dense = *eq.jacobian(0.6, 1.4);
   ASSERT_EQ(dense.size(), 6u);
   EXPECT_EQ(dense[1], 0.0);
@@ -1238,9 +1199,8 @@ TEST(RtEquation, EvaluatingUsesAValuesOnlyGraph) {
   EXPECT_EQ(dense[5], cells[*pattern.at(2, 1)]);
 }
 
-// The gradient lane sweeps a graph with no value block.  The answers are the
-// Jacobian lane's to the bit -- what changes is which nodes are visited, never
-// the arithmetic at any of them.
+// The gradient lane sweeps a graph with no value block, and its answers match
+// the Jacobian lane to the bit.
 TEST(RtEquation, GradientIsTheJacobianWithoutTheValue) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -1271,8 +1231,6 @@ TEST(RtEquation, GradientIsTheJacobianWithoutTheValue) {
   }
 }
 
-// Scalar and batch Hessians share a lane, with the scalar caller freezing it
-// first.
 TEST(RtEquation, ScalarAndBatchAgreeAtTheSamePoint) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -1280,7 +1238,7 @@ TEST(RtEquation, ScalarAndBatchAgreeAtTheSamePoint) {
   const auto eq = ddx::rt::equation(x * log(x) * y + y * y * y);
 
   const std::vector<double> at{0.6, 1.4};
-  // Scalar first, so the accessor freezes the lane rather than a batch call.
+  // Scalar first, so the scalar accessor freezes the lane, not a batch call.
   const auto dense = *eq.hessian(std::span<const double>{at});
   ASSERT_EQ(dense.size(), 4u);
 
@@ -1299,7 +1257,7 @@ TEST(RtEquation, ScalarAndBatchAgreeAtTheSamePoint) {
   EXPECT_EQ(g[1], dy);
 }
 
-// The scalar accessors touch the lane cache, and must not reach for a compiler
+// The scalar accessors touch the lane cache and must not reach for a compiler
 // under a backend that declines one.
 TEST(RtEquation, EvaluatingUnderInterpretCompilesNothing) {
   ddx::rt::Arena<> b;
@@ -1315,7 +1273,6 @@ TEST(RtEquation, EvaluatingUnderInterpretCompilesNothing) {
   EXPECT_FALSE(eq.uses_kernel());
 }
 
-// Interpret must not launch anything, however long one waits.
 TEST(RtEquation, InterpretNeverCompilesBehindTheCaller) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -1327,8 +1284,7 @@ TEST(RtEquation, InterpretNeverCompilesBehindTheCaller) {
 
 namespace {
 
-// Enough of the emitter's op set that the codegen levels have somewhere to
-// disagree.
+// Uses enough of the emitter's op set that the codegen levels could disagree.
 auto level_model() {
   return ddx::rt::equation([] {
     std::vector<ddx::rt::Expression<double>> v;
@@ -1343,7 +1299,6 @@ auto level_model() {
   });
 }
 
-// One gradient at a fixed point, as the bits.
 std::vector<double> level_gradient(const auto &eq, std::size_t n) {
   std::vector<double> at(n), value(1), partial(n);
   for (std::size_t i = 0; i < n; ++i) {
@@ -1363,7 +1318,6 @@ std::vector<double> level_gradient(const auto &eq, std::size_t n) {
 
 } // namespace
 
-// Every codegen level answers the same bits.
 TEST(RtEquation, EveryCodegenLevelAgreesToTheBit) {
   constexpr std::size_t n = 24;
 
@@ -1380,15 +1334,12 @@ TEST(RtEquation, EveryCodegenLevelAgreesToTheBit) {
                .codegen = {.codegen_level = ddx::rt::OptLevel::O1}});
   ASSERT_TRUE(top.uses_kernel());
 
-  // Level against level, to the bit: both compile the same graph.
+  // Both levels compile the same graph, so they agree to the bit.
   const auto low = level_gradient(cheap, n);
   EXPECT_EQ(level_gradient(top, n), low) << "codegen 1 moved a bit";
 
-  // Sweep against kernel, to a tolerance rather than to the bit.  The kernel is
-  // compiled from a graph whose reduction spines are blocked and the sweep is
-  // not -- see Compiled::compile_graph -- because a dependent chain is latency
-  // the kernel cannot hide and the same rewrite costs the sweep tape locality.
-  // Blocking reassociates, so the two disagree in the last places.
+  // The sweep is compared to a tolerance, because the kernel's graph has its
+  // reduction spines blocked and the sweep's does not, which reassociates sums.
   const auto expected = level_gradient(swept, n);
   ASSERT_EQ(low.size(), expected.size());
   for (const auto [got, want] : std::views::zip(low, expected)) {
@@ -1399,8 +1350,8 @@ TEST(RtEquation, EveryCodegenLevelAgreesToTheBit) {
 
 #endif
 
-// A census counts without a point: every step a scalar's one value, the rows
-// summing to the totals, the heaviest first.
+// A census counts without a point: each scalar step counts one value, the rows
+// sum to the totals, and the heaviest row comes first.
 TEST(RtEquation, CensusCountsTheFrozenScheduleWithoutSweeping) {
   const auto eq = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
@@ -1419,8 +1370,7 @@ TEST(RtEquation, CensusCountsTheFrozenScheduleWithoutSweeping) {
                                      &ddx::rt::Census::Row::values));
 }
 
-// A tensor step writes its whole shape: an n x n matrix the model computes is
-// n^2 values for one step.
+// A tensor step counts its whole shape, so an n x n matrix is n^2 values.
 TEST(RtEquation, CensusChargesATensorStepItsShape) {
   constexpr std::size_t n = 6;
   const std::vector<double> b(n * n, 0.25);
@@ -1438,9 +1388,8 @@ TEST(RtEquation, CensusChargesATensorStepItsShape) {
             eq.dense_hessian_cost().has_value());
 }
 
-// A vector read element by element -- how a model writes sparse coupling --
-// sums each element's reads into that element alone.  What the reads cost is
-// NoCallCostsMoreThanItsValueTimesAConstant's.
+// Element reads of a vector, which is how a model writes sparse coupling, are
+// summed into each element alone.
 TEST(RtEquation, ElementReadsSumIntoTheirOwnElements) {
   constexpr std::size_t n = 400;
   const auto eq = ddx::rt::equation([] {
@@ -1462,10 +1411,8 @@ TEST(RtEquation, ElementReadsSumIntoTheirOwnElements) {
   EXPECT_EQ((*g)[7], at[6] + at[8]);
 }
 
-// Every call over the shapes that each once cost n^2: element reads of a
-// symbol vector, of a vector select (whose reads carry guards), a dot, and a
-// system's rows over one vector.  Counted against the value at two sizes, so
-// a ratio that grows with n fails.
+// Shapes that each once cost n^2 are counted at two sizes, so a cost-to-value
+// ratio that grows with n fails.
 TEST(RtEquation, NoCallCostsMoreThanItsValueTimesAConstant) {
   using RE = ddx::rt::Expression<double>;
   using W = ddx::rt::Want;

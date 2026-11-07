@@ -13,16 +13,16 @@
 #include <string>
 #include <vector>
 
-// The LLVM side: what compiles and what it hands back.  Names no LLVM type;
-// jit/options.hpp holds what a caller says, in every build.
+// The JIT compiler and the kernels it returns. No LLVM type appears here; the
+// caller's options are in jit/options.hpp.
 namespace ddx::jit {
 
-// The scalars a kernel is emitted over; any other sweeps.
+// The scalars the JIT compiles for; any other scalar is interpreted.
 template <typename T>
 concept CKernelScalar = std::same_as<T, double> || std::same_as<T, float>;
 
-// The functions a kernel calls back into, whose addresses it was compiled
-// with: held, so a kernel outlives the graph it was lowered from.
+// The extern functions whose addresses a kernel was compiled with. Holding
+// them lets the kernel outlive its graph.
 using Externs = std::vector<std::shared_ptr<const void>>;
 
 template <impl::Numeric T>
@@ -35,17 +35,16 @@ template <impl::Numeric T>
          impl::to<Externs>();
 }
 
-// A copy is one atomic increment; the last Kernel to go frees the code.  Any
-// scalar names one, so a pipeline holds its slot whether or not it compiles;
-// only a CKernelScalar is ever filled.
+// A shared handle to compiled code, freed with the last copy. Any scalar can
+// name a Kernel, but only a CKernelScalar one is ever filled.
 template <impl::Numeric T> class Kernel {
 public:
   using function_type = void (*)(const T *const *, T *const *, T *const *,
                                  T *const *, std::size_t,
                                  const rt::detail::TensorCall<T> *, T *);
 
-  // What a kernel's tensor steps read besides the columns: the sweep's arena,
-  // graph and table, and shape().tapes elements to sweep through.
+  // Extra inputs for tensor steps: the sweep's TensorCall and shape().tapes
+  // elements of scratch tape.
   struct Tensors {
     const rt::detail::TensorCall<T> *call = nullptr;
     std::span<T> tapes{};
@@ -57,12 +56,12 @@ public:
       : fn_{fn}, code_{std::move(code)}, externs_{std::move(externs)},
         shape_{shape} {}
 
-  // xs[j] is the column for symbol j, g[j] the partial in it, each n long; an
-  // unrequested block is `{}`.  noexcept: codegen marks the kernel nounwind.
+  // xs[j] is the column for symbol j and g[j] its partial, each n long; an
+  // unrequested block is empty. The kernel is compiled nounwind.
   void operator()(std::span<const T *const> xs, std::span<T *const> f,
                   std::span<T *const> g, std::span<T *const> h, std::size_t n,
                   Tensors t = {}) const noexcept {
-    // A mismatch past here is silent memory corruption.
+    // The kernel trusts these sizes, so a mismatch would corrupt memory.
     assert(xs.size() == shape_.arity && f.size() == shape_.values &&
            g.size() == shape_.jacobian && h.size() == shape_.hessian &&
            t.tapes.size() >= shape_.tapes &&
@@ -77,12 +76,12 @@ public:
 
 private:
   function_type fn_ = nullptr;
-  std::shared_ptr<void> code_; // Held, never read
-  Externs externs_;            // Held, never read
+  std::shared_ptr<void> code_; // kept alive, never read
+  Externs externs_;            // kept alive, never read
   KernelShape shape_{};
 };
 
-// The LLJIT itself, shared by every Kernel it made.
+// Owns the LLVM JIT that every Kernel it made shares.
 class Compiler {
 public:
   Compiler(const Compiler &) = delete;
@@ -98,7 +97,7 @@ public:
   [[nodiscard]] DDX_API compile_result<Kernel<T>>
   compile(const rt::Graph<T> &g, const Options &opt = {});
 
-  // The module compile() would hand the backend, as text.
+  // The LLVM IR that compile() would hand to the backend, as text.
   template <CKernelScalar T>
   [[nodiscard]] DDX_API compile_result<std::string>
   ir(const rt::Graph<T> &g, const Options &opt = {}) const;

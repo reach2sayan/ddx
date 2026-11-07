@@ -18,14 +18,13 @@ TEST(NewMathFunctions, MaxMinTiesAverageAndNaNPropagatesSymmetrically) {
   auto gnan = Equation{max(x, y)}.jacobian(2.0, qnan);
   EXPECT_TRUE(std::isnan(gnan[0]));
   EXPECT_TRUE(std::isnan(gnan[1]));
-  // abs: sign(0) is 0 and sign(NaN) is NaN.
+  // The derivative of abs uses sign(0) = 0 and sign(NaN) = NaN.
   EXPECT_DOUBLE_EQ(abs(Dual<double>{0.0, 1.0}).deriv(), 0.0);
   EXPECT_TRUE(std::isnan(abs(Dual<double>{qnan, 1.0}).deriv()));
 }
 
-// The scalar-first spellings are separate overloads that run their two
-// comparisons in the opposite order, so each pair is checked in the derivative
-// as well as the value -- Dual's operator== compares only the value.
+// The scalar-first overloads compare in the opposite order, and Dual's
+// operator== reads only the value, so the derivative is checked as well.
 TEST(NewMathFunctions, MaxMinAgreeWhicheverSideTheScalarIsOn) {
   const auto same = [](const Dual<double> &l, const Dual<double> &r) {
     ASSERT_EQ(std::isnan(l.value()), std::isnan(r.value()));
@@ -61,7 +60,6 @@ TEST(NewMathFunctions, MaxMinAgreeWhicheverSideTheScalarIsOn) {
   EXPECT_TRUE(std::isnan(max(below, qnan).value()));
   EXPECT_TRUE(std::isnan(max(below, qnan).deriv()));
 }
-// ---- Forward lazy-dual mode (Variable<Dual>) ------------------------------
 TEST(NewMathFunctions, ForwardDualUnary) {
   double x0 = 0.5;
   Variable<Dual<double>, FixedString{"x"}> x;
@@ -90,7 +88,6 @@ TEST(NewMathFunctions, ForwardDualBinary) {
     EXPECT_DOUBLE_EQ(df, 3.0 * x0 * x0);
   }
 }
-// ---- Lazy dual used directly (Dual<T>) ------------------------------------
 TEST(NewMathFunctions, DualDirect) {
   Dual<double> x{0.7, 1.0};
   Dual<double> r = asinh(x);
@@ -99,10 +96,9 @@ TEST(NewMathFunctions, DualDirect) {
 
   Dual<double> a{1.0, 1.0}, b{2.0, 0.0}, c{2.0, 0.0};
   Dual<double> h = hypot(a, b, c);
-  EXPECT_DOUBLE_EQ(h.get<0>(), 3.0);       // sqrt(1+4+4)
-  EXPECT_DOUBLE_EQ(h.get<1>(), 1.0 / 3.0); // a/h
+  EXPECT_DOUBLE_EQ(h.get<0>(), 3.0);
+  EXPECT_DOUBLE_EQ(h.get<1>(), 1.0 / 3.0);
 }
-// ---- Taylor higher-order (value coeff drives expr + Taylor together) -------
 TEST(NewMathFunctions, TaylorFirstAndSecondDerivative) {
   EXPECT_NEAR(Equation{asinh(var<"x">)}.template univariate_derivative<1>(0.7),
               1.0 / std::sqrt(0.49 + 1.0), 1e-12);
@@ -112,37 +108,37 @@ TEST(NewMathFunctions, TaylorFirstAndSecondDerivative) {
               1.0 / (3.0 * std::cbrt(2.0) * std::cbrt(2.0)), 1e-12);
 
   {
-    double x0 = 0.7; // asinh'' = -x/(1+x²)^{3/2}
+    double x0 = 0.7;
     EXPECT_NEAR(
         Equation{asinh(var_of<"x">(x0))}.template univariate_derivative<2>(x0),
         -x0 / std::pow(1.0 + x0 * x0, 1.5), 1e-10);
   }
   {
-    double x0 = 0.5; // erf'' = -2x * 2/√π * e^{-x²}
+    double x0 = 0.5;
     EXPECT_NEAR(
         Equation{erf(var_of<"x">(x0))}.template univariate_derivative<2>(x0),
         -2.0 * x0 * k2OverSqrtPi * std::exp(-x0 * x0), 1e-10);
   }
   {
-    double x0 = 0.3; // atanh'' = 2x/(1-x²)²
+    double x0 = 0.3;
     EXPECT_NEAR(
         Equation{atanh(var_of<"x">(x0))}.template univariate_derivative<2>(x0),
         2.0 * x0 / std::pow(1.0 - x0 * x0, 2.0), 1e-10);
   }
   {
-    double x0 = 3.0; // log10'' = -1/(x² ln10)
+    double x0 = 3.0;
     EXPECT_NEAR(
         Equation{log10(var_of<"x">(x0))}.template univariate_derivative<2>(x0),
         -1.0 / (x0 * x0 * kLn10), 1e-10);
   }
   {
-    double x0 = 2.0; // cbrt'' = -2/9 x^{-5/3}
+    double x0 = 2.0;
     EXPECT_NEAR(
         Equation{cbrt(var_of<"x">(x0))}.template univariate_derivative<2>(x0),
         -2.0 / 9.0 * std::pow(x0, -5.0 / 3.0), 1e-10);
   }
   {
-    double x0 = 2.0; // acosh'' = -x/(x²-1)^{3/2}
+    double x0 = 2.0;
     EXPECT_NEAR(
         Equation{acosh(var_of<"x">(x0))}.template univariate_derivative<2>(x0),
         -x0 / std::pow(x0 * x0 - 1.0, 1.5), 1e-10);
@@ -221,13 +217,8 @@ TEST(NewMathFunctions, TaylorCompositeArguments) {
   }
 }
 
-// eval_with_tangent<"s"> is the ordinary eval_seeded sweep seeded with Dual<T>,
-// so what is pinned is the seeding and the Dual arithmetic -- cross-checked
-// against the reverse sweep and the symbolic derivative tree.
-
-// Forward and reverse agree algebraically but not bit-for-bit -- the quotient
-// rule is (a'b - ab')/b² forward and {adj/b, -adj·a/b²} in reverse -- so the
-// tangent is compared to a few ULP.
+// Forward and reverse spell the quotient rule differently, so the tangent
+// agrees with reverse mode to a few ULP rather than bit for bit.
 #define EXPECT_TANGENT_MATCHES_REVERSE(expr_, xv_)                             \
   do {                                                                         \
     const auto e_ = (expr_);                                                   \
@@ -245,14 +236,14 @@ TEST(ForwardTangentSweep, LeafSeeding) {
   EXPECT_DOUBLE_EQ(tx.value(), 2.0);
   EXPECT_DOUBLE_EQ(tx.deriv(), 1.0);
 
-  // Every other variable carries 0, including one whose name differs only in
-  // length (FixedString comparison across sizes).
+  // Every other variable has tangent 0, including a name that differs from
+  // the seeded one only in length.
   const auto ty = y.eval_with_tangent<"x">(3.0);
   EXPECT_DOUBLE_EQ(ty.value(), 3.0);
   EXPECT_DOUBLE_EQ(ty.deriv(), 0.0);
   EXPECT_DOUBLE_EQ(x.eval_with_tangent<"xx">(2.0).deriv(), 0.0);
 
-  const auto tc = constant(5.0).eval_with_tangent<"x">(); // no symbols
+  const auto tc = constant(5.0).eval_with_tangent<"x">();
   EXPECT_DOUBLE_EQ(tc.value(), 5.0);
   EXPECT_DOUBLE_EQ(tc.deriv(), 0.0);
 }
@@ -260,21 +251,19 @@ TEST(ForwardTangentSweep, ArithmeticRules) {
   double x0 = 1.7;
   auto x = var_of<"x">(x0);
 
-  EXPECT_TANGENT_MATCHES_REVERSE(x + x * x, 0.7); // sum + product
-  EXPECT_TANGENT_MATCHES_REVERSE(x - 3.0 * x * x,
-                                 0.7); // negate (a - b => a + -b)
-  EXPECT_TANGENT_MATCHES_REVERSE((x + 1.0) / x, 0.7); // quotient
+  EXPECT_TANGENT_MATCHES_REVERSE(x + x * x, 0.7);
+  EXPECT_TANGENT_MATCHES_REVERSE(x - 3.0 * x * x, 0.7);
+  EXPECT_TANGENT_MATCHES_REVERSE((x + 1.0) / x, 0.7);
   EXPECT_TANGENT_MATCHES_REVERSE(-(x / (x * x + 2.0)), 0.7);
 
-  // Third independent path.  derivative() is a total derivative, so this is
-  // only meaningful for a single-variable expression.
+  // derivative() is a total derivative, so this third check is only valid for
+  // a single-variable expression.
   const auto e = (x * x + 1.0) / (x + 2.0);
   EXPECT_DOUBLE_EQ(e.eval_with_tangent<"x">(x0).deriv(),
                    e.derivative().eval(x0));
 }
 TEST(ForwardTangentSweep, UnaryMathRules) {
-  // One probe per op in the DDX_UNARY_MATH_OP macro, plus AbsOp's hand-written
-  // forward().  Arguments stay inside each function's domain.
+  // One probe per unary math function, each inside its domain.
   EXPECT_TANGENT_MATCHES_REVERSE(sin(var<"x">), 0.6);
   EXPECT_TANGENT_MATCHES_REVERSE(cos(var<"x">), 0.6);
   EXPECT_TANGENT_MATCHES_REVERSE(tan(var<"x">), 0.6);
@@ -294,11 +283,9 @@ TEST(ForwardTangentSweep, UnaryMathRules) {
   EXPECT_TANGENT_MATCHES_REVERSE(atanh(var<"x">), 0.3);
   EXPECT_TANGENT_MATCHES_REVERSE(erf(var<"x">), 0.5);
 
-  // abs() on both sides of the kink: sign(u)·u'.
   EXPECT_DOUBLE_EQ(abs(var<"x">).eval_with_tangent<"x">(2.0).deriv(), 1.0);
   EXPECT_DOUBLE_EQ(abs(var<"x">).eval_with_tangent<"x">(-2.0).deriv(), -1.0);
 
-  // Composite argument: the chain rule must fire at every level.
   EXPECT_TANGENT_MATCHES_REVERSE(log(sin(var<"x">) + 2.0), 0.9);
 }
 TEST(ForwardTangentSweep, BinaryMathRules) {
@@ -317,10 +304,9 @@ TEST(ForwardTangentSweep, BinaryMathRules) {
   check(hypot(x, y), x0 / 5.0, y0 / 5.0);
   check(pow(x, y), y0 * std::pow(x0, y0 - 1.0),
         std::pow(x0, y0) * std::log(x0));
-  // atan2(y, x) — first operand is the numerator.
+  // atan2(y, x) takes the numerator as its first operand.
   const double q = x0 * x0 + y0 * y0;
   check(atan2(y, x), -y0 / q, x0 / q);
-  // max/min pass the selected branch's tangent through untouched.
   check(max(x, y), 0.0, 1.0);
   check(min(x, y), 1.0, 0.0);
 }
@@ -328,8 +314,6 @@ TEST(ForwardTangentSweep, MultiVariableMatchesReverseMode) {
   auto x = var<"x">;
   auto y = var<"y">;
 
-  // Deep composite: shared subexpressions, nested transcendentals, a quotient
-  // and a binary math op, so most forward rules participate in one tree.
   const auto e = sin(x * y) * exp(x + y) + log(y * y + 1.0) / (x + 2.0) -
                  hypot(x, y) * tanh(x);
 
@@ -345,8 +329,8 @@ TEST(ForwardTangentSweep, MultiVariableMatchesReverseMode) {
   EXPECT_DOUBLE_EQ(e.eval_with_tangent<"z">(0.8, 1.3).deriv(), 0.0);
 }
 TEST(ForwardTangentSweep, IsConstexpr) {
-  // The sweep runs entirely at compile time (no std:: transcendentals here, so
-  // this holds on every toolchain).
+  // The expression uses no std:: transcendentals, so the sweep is constexpr on
+  // every toolchain.
   constexpr auto x = var<"x">;
   constexpr auto e = x * x + 3.0 * x;
   constexpr auto t = e.eval_with_tangent<"x">(2.0);
@@ -366,9 +350,6 @@ TEST(FrozenVariable, EvaluatesAndSeesZeroDerivative) {
 }
 
 #undef EXPECT_TANGENT_MATCHES_REVERSE
-
-// Root-held values: one slot per *variable*, not per leaf occurrence.  Pins
-// canonical ordering, symbol lookup, and bit-identity with leaf storage.
 
 // Every unary math function must instantiate at 3 variables and agree with
 // reverse mode.
@@ -429,7 +410,6 @@ TEST(NewMathFunctions, TaylorAtan2OfHugeOperands) {
   const T w = atan2(T::variable(y0), T{x0});
   EXPECT_DOUBLE_EQ(w.c[0], std::atan2(y0, x0));
   EXPECT_DOUBLE_EQ(w.c[1], x0 / std::hypot(x0, y0) / std::hypot(x0, y0));
-  // And unchanged where nothing overflows.
   const T small = atan2(T::variable(0.3), T{0.4});
   EXPECT_DOUBLE_EQ(small.c[1], 0.4 / 0.25);
 }

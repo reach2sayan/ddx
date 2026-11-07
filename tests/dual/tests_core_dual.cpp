@@ -98,10 +98,10 @@ TEST(ForwardModeAD, BasicArithmetic) {
   EXPECT_DOUBLE_EQ(sum_deriv, 1.0);
   auto [prod_val, prod_deriv] = a * b;
   EXPECT_DOUBLE_EQ(prod_val, 6.0);
-  EXPECT_DOUBLE_EQ(prod_deriv, 2.0); // 1*2 + 3*0 = 2
+  EXPECT_DOUBLE_EQ(prod_deriv, 2.0);
   auto [quot_val, quot_deriv] = a / b;
   EXPECT_DOUBLE_EQ(quot_val, 1.5);
-  EXPECT_DOUBLE_EQ(quot_deriv, 0.5); // (1*2 - 3*0)/4 = 0.5
+  EXPECT_DOUBLE_EQ(quot_deriv, 0.5);
 }
 TEST(ForwardModeAD, DualScalarArithmetic) {
   // A bare scalar promotes to a zero-derivative Dual.
@@ -123,7 +123,7 @@ TEST(ForwardModeAD, DualScalarArithmetic) {
 
   auto [mul_v, mul_d] = 2.0 * d;
   EXPECT_DOUBLE_EQ(mul_v, 6.0);
-  EXPECT_DOUBLE_EQ(mul_d, 2.0); // scalar scales the derivative
+  EXPECT_DOUBLE_EQ(mul_d, 2.0);
 
   auto [div_v, div_d] = d / 2.0;
   EXPECT_DOUBLE_EQ(div_v, 1.5);
@@ -135,13 +135,13 @@ TEST(ForwardModeAD, DualScalarArithmetic) {
   EXPECT_DOUBLE_EQ(acc.template get<1>(), 1.0);
 }
 TEST(ForwardModeAD, ScalarPromotionDeepDual) {
-  // A zero derivative at every nesting level: one static_cast would need two
-  // chained explicit conversions.
+  // Every nesting level needs a zero derivative, which one static_cast would
+  // reach only through two chained explicit conversions.
   using DD = Dual<Dual<double>>;
   Variable<DD, ddx::impl::FixedString{"x"}> x;
   auto expr = x + 2.0;
   DD result = expr.eval(DD{Dual{2.0, 0.0}, Dual{0.0, 0.0}});
-  EXPECT_DOUBLE_EQ(get_real_part<2>(result), 4.0); // peel both Dual<> layers
+  EXPECT_DOUBLE_EQ(get_real_part<2>(result), 4.0);
 
   auto y = var<"y">;
   EXPECT_DOUBLE_EQ((y + 2.0).eval(3.0), 5.0);
@@ -212,10 +212,10 @@ TEST(EquationForward, TwoVariables) {
   Variable<double, FixedString{"y"}> y;
   auto ve = Equation(x * y, x + y);
   auto J = ve.derivative_tensor<1>(std::array{3.0, 4.0});
-  EXPECT_DOUBLE_EQ((J[0, 0]), 4.0); // ∂(x*y)/∂x = y = 4
-  EXPECT_DOUBLE_EQ((J[0, 1]), 3.0); // ∂(x*y)/∂y = x = 3
-  EXPECT_DOUBLE_EQ((J[1, 0]), 1.0); // ∂(x+y)/∂x
-  EXPECT_DOUBLE_EQ((J[1, 1]), 1.0); // ∂(x+y)/∂y
+  EXPECT_DOUBLE_EQ((J[0, 0]), 4.0);
+  EXPECT_DOUBLE_EQ((J[0, 1]), 3.0);
+  EXPECT_DOUBLE_EQ((J[1, 0]), 1.0);
+  EXPECT_DOUBLE_EQ((J[1, 1]), 1.0);
 }
 TEST(EquationForward, AgreesWithSymbolic) {
   double xv = 2.0, yv = 3.0;
@@ -267,9 +267,9 @@ TEST(ReverseModeAD, ScalarLiteralCoercion) {
   auto expe = 3.0 * x * y + y * z;
   auto g =
       Equation{expe}.jacobian(Dual{2.0, 0.0}, Dual{3.0, 0.0}, Dual{4.0, 0.0});
-  EXPECT_DOUBLE_EQ(g[0], 9.0);  // df/dx = 3*y = 9
-  EXPECT_DOUBLE_EQ(g[1], 10.0); // df/dy = 3*x + z = 10
-  EXPECT_DOUBLE_EQ(g[2], 3.0);  // df/dz = y = 3
+  EXPECT_DOUBLE_EQ(g[0], 9.0);
+  EXPECT_DOUBLE_EQ(g[1], 10.0);
+  EXPECT_DOUBLE_EQ(g[2], 3.0);
 }
 TEST(DualCompoundAssign, PlusEq) {
   Dual a{3.0, 1.0}, b{2.0, 0.5};
@@ -295,19 +295,18 @@ TEST(DualCompoundAssign, DivEq) {
   EXPECT_DOUBLE_EQ(a.template get<0>(), 2.0);
   EXPECT_DOUBLE_EQ(a.template get<1>(), 1.0);
 }
-// The four are gated on what Dual's own operators take, so the three operand
-// shapes that compile for `+` compile here: a same-T dual, an arithmetic
-// scalar, and -- one nesting up -- the inner Dual, which is dual2nd's scalar.
+// Compound assignment takes every operand shape that `+` takes: a same-T dual,
+// an arithmetic scalar, and one nesting up, the inner Dual.
 TEST(DualCompoundAssign, TakesEveryShapeTheOperatorDoes) {
   Dual a{3.0, 1.0};
-  a += Dual{2.0, 0.5}; // same-T dual
-  a += 2;              // integral
-  a += 2.0f;           // another floating type
+  a += Dual{2.0, 0.5};
+  a += 2;
+  a += 2.0f;
   EXPECT_DOUBLE_EQ(a.template get<0>(), 9.0);
   EXPECT_DOUBLE_EQ(a.template get<1>(), 1.5);
 
   ddx::dual2nd d{Dual{2.0, 1.0}, Dual{1.0, 0.0}};
-  d *= Dual{3.0, 0.0}; // the value type, one level down
+  d *= Dual{3.0, 0.0};
   EXPECT_DOUBLE_EQ(d.template get<0>().template get<0>(), 6.0);
   EXPECT_DOUBLE_EQ(d.template get<1>().template get<0>(), 3.0);
 }
@@ -372,10 +371,10 @@ TEST(HessianTest, ForwardOverReverse_XY) {
   Variable<D, FixedString{"y"}> y;
   auto ve = Equation(x * y, x * x);
   auto H = ve.hessian(std::array{2.0, 3.0});
-  EXPECT_DOUBLE_EQ((H[0, 0, 0]), 0.0); // ∂²(x*y)/∂x²
-  EXPECT_DOUBLE_EQ((H[0, 0, 1]), 1.0); // ∂²(x*y)/∂x∂y
-  EXPECT_DOUBLE_EQ((H[0, 1, 0]), 1.0); // ∂²(x*y)/∂y∂x
-  EXPECT_DOUBLE_EQ((H[0, 1, 1]), 0.0); // ∂²(x*y)/∂y²
+  EXPECT_DOUBLE_EQ((H[0, 0, 0]), 0.0);
+  EXPECT_DOUBLE_EQ((H[0, 0, 1]), 1.0);
+  EXPECT_DOUBLE_EQ((H[0, 1, 0]), 1.0);
+  EXPECT_DOUBLE_EQ((H[0, 1, 1]), 0.0);
 }
 TEST(HessianTest, ForwardOverReverse_Quadratic) {
   using D = Dual<double>;
@@ -407,13 +406,13 @@ TEST(HessianTest, ForwardOverReverse_TrigFunction) {
   Variable<D, FixedString{"y"}> y;
   auto ve = Equation(sin(x) * y, x + y);
   auto H = ve.hessian(std::array{xv, yv});
-  EXPECT_NEAR((H[0, 0, 0]), -yv * std::sin(xv), 1e-12); // -y*sin(x)
-  EXPECT_NEAR((H[0, 0, 1]), std::cos(xv), 1e-12);       // cos(x)
-  EXPECT_NEAR((H[0, 1, 0]), std::cos(xv), 1e-12);       // symmetric
+  EXPECT_NEAR((H[0, 0, 0]), -yv * std::sin(xv), 1e-12);
+  EXPECT_NEAR((H[0, 0, 1]), std::cos(xv), 1e-12);
+  EXPECT_NEAR((H[0, 1, 0]), std::cos(xv), 1e-12);
   EXPECT_NEAR((H[0, 1, 1]), 0.0, 1e-12);
 }
 TEST(HessianTest, ForwardOverReverse_Symmetric) {
-  // Two outputs, so the vector specialisation is selected.
+  // Two outputs select the vector specialisation.
   double xv = 0.5, yv = 1.5;
   using D = Dual<double>;
   Variable<D, FixedString{"x"}> x;
@@ -422,8 +421,8 @@ TEST(HessianTest, ForwardOverReverse_Symmetric) {
   auto H = ve.hessian(std::array{xv, yv});
   EXPECT_NEAR((H[0, 0, 1]), (H[0, 1, 0]), 1e-12);
 }
-// The canonicalised tree loses x and y, the Equation keeps them, and the
-// colouring and scatter are built over the Equation's list.
+// The canonicalised tree loses x and y, but the colouring and scatter are built
+// over the Equation's symbol list, which keeps them.
 TEST(HessianTest, SingleOutputIsLaidOutByTheEquationsSymbols) {
   using D = Dual<double>;
   Variable<D, FixedString{"x"}> x;
@@ -447,7 +446,6 @@ TEST(ForwardModeAD, PowAtAZeroExponentIsFlat) {
   EXPECT_DOUBLE_EQ(pow(at_zero, 0u).deriv(), 0.0);
   EXPECT_DOUBLE_EQ(pow(at_zero, D{0.0, 0.0}).deriv(), 0.0);
   EXPECT_DOUBLE_EQ(pow(at_zero, 0.0).value(), 1.0);
-  // The rule is untouched off the corner.
   EXPECT_DOUBLE_EQ(pow(D{2.0, 1.0}, 3.0).deriv(), 12.0);
   EXPECT_DOUBLE_EQ(pow(at_zero, 2.0).deriv(), 0.0);
 }
@@ -608,7 +606,7 @@ TEST(DerivativeTensorTest, Order1_MatchesJacobian) {
   (void)yv;
   Variable<double, FixedString{"x"}> x;
   Variable<double, FixedString{"y"}> y;
-  auto expr = x * x + x * y; // df/dx = 2x+y, df/dy = x
+  auto expr = x * x + x * y;
 
   auto T1 = Equation{expr}.template derivative_tensor<1>(std::array{xv, yv});
   EXPECT_NEAR(T1[0], 2 * xv + yv, 1e-12);
@@ -698,7 +696,7 @@ TEST(DerivativeTensorTest, Equation_Order3_TrigPolynomial) {
   Variable<double, FixedString{"x"}> x;
   auto ve = Equation(x * x * x * x);
   auto T3 = ve.derivative_tensor<3>(std::array{1.0});
-  EXPECT_NEAR((T3[0, 0, 0]), 24.0, 1e-9); // one output: no leading axis
+  EXPECT_NEAR((T3[0, 0, 0]), 24.0, 1e-9);
 }
 TEST(TutorialForward, SingleVar_DualNumbers) {
   double x0 = 2.0;
@@ -791,7 +789,7 @@ TEST(TutorialHigherOrder, ThirdOrder_MixedPartial) {
   auto T3 = Equation{exp(x) * y * y}.template derivative_tensor<3>(
       std::array{xv, yv});
   EXPECT_NEAR((T3[0, 0, 1]), 2.0 * yv * std::exp(xv), 1e-10);
-  EXPECT_NEAR((T3[1, 1, 1]), 0.0, 1e-10); // d³(exp(x)*y²)/dy³ = 0
+  EXPECT_NEAR((T3[1, 1, 1]), 0.0, 1e-10);
 }
 TEST(TutorialDirectional, FirstOrder_DualSeeding) {
   double xv = 1.0, yv = std::numbers::pi / 4.0;
@@ -893,8 +891,8 @@ TEST(TutorialReverseHessian, JacobianFromSameExpression) {
   Variable<D, FixedString{"y"}> y;
   auto f = x * x + x * y + y * y;
   auto g = Equation{f}.jacobian(D{xv}, D{yv});
-  EXPECT_NEAR(g[0], 2.0 * xv + yv, 1e-12); // df/dx = 2x + y
-  EXPECT_NEAR(g[1], xv + 2.0 * yv, 1e-12); // df/dy = x + 2y
+  EXPECT_NEAR(g[0], 2.0 * xv + yv, 1e-12);
+  EXPECT_NEAR(g[1], xv + 2.0 * yv, 1e-12);
 }
 TEST(TutorialReverseHigherOrder, SingleVar_SecondAndThird) {
   double x0 = 1.0;
@@ -937,20 +935,19 @@ TEST(TutorialReverseHigherOrder, ForwardReverseHessianAgree) {
 TEST(DualScalarContract, Val) {
   const dual2nd a = embed_constant<double, 2>(3.5);
   EXPECT_DOUBLE_EQ(val(a), 3.5);
-  EXPECT_DOUBLE_EQ(val(2.0), 2.0); // identity on a plain scalar
+  EXPECT_DOUBLE_EQ(val(2.0), 2.0);
 }
 TEST(DualScalarContract, ScalarMixingAtDepth) {
-  // x = 2, seeded so the outer first-derivative slot tracks d/dx.
+  // The outer first-derivative slot is seeded, so it tracks d/dx at x = 2.
   const dual2nd x{Dual<double>{2.0, 1.0}, Dual<double>{1.0, 0.0}};
-  // Bare doubles mix at depth 2.
   const dual2nd f = 3.0 * x + x * 2.0 - 1.0;
   EXPECT_DOUBLE_EQ(val(f), 9.0);
   EXPECT_DOUBLE_EQ(f.get<1>().get<0>(), 5.0);
 }
 TEST(DualScalarContract, PowMaxMinAndComparisons) {
   const dual2nd x = embed_constant<double, 2>(2.0);
-  EXPECT_DOUBLE_EQ(val(pow(x, 3.0)), 8.0); // scalar exponent
-  EXPECT_DOUBLE_EQ(val(pow(x, x)), 4.0);   // dual exponent
+  EXPECT_DOUBLE_EQ(val(pow(x, 3.0)), 8.0);
+  EXPECT_DOUBLE_EQ(val(pow(x, x)), 4.0);
   EXPECT_DOUBLE_EQ(val(max(x, 5.0)), 5.0);
   EXPECT_DOUBLE_EQ(val(min(x, 5.0)), 2.0);
   EXPECT_TRUE(x < 3.0);
@@ -962,9 +959,9 @@ TEST(DualScalarContract, PowMaxMinAndComparisons) {
 TEST(DualScalarContract, ImplicitConstantFromScalarAtDepth) {
   // Generic numeric code written against a plain scalar relies on S{0} and
   // S c = 1.0 meaning a zero-derivative constant.
-  const dual2nd a{0};    // brace-init from int
-  const dual2nd b = 2.5; // copy-init needs a non-explicit ctor
-  const std::vector<dual2nd> v(3, dual2nd{1}); // vector fill from a scalar
+  const dual2nd a{0};
+  const dual2nd b = 2.5;
+  const std::vector<dual2nd> v(3, dual2nd{1});
   EXPECT_DOUBLE_EQ(val(a), 0.0);
   EXPECT_DOUBLE_EQ(val(b), 2.5);
   EXPECT_DOUBLE_EQ(val(v[0]), 1.0);
@@ -973,20 +970,20 @@ TEST(DualScalarContract, ImplicitConstantFromScalarAtDepth) {
   EXPECT_DOUBLE_EQ(b.get<1>().get<1>(), 0.0);
 }
 TEST(ScopedValue, NestedGuardsOverSiblingScalarsOfOneDual) {
-  // Two independently scoped guards over the SAME dual2nd's seeds.
+  // Two independently scoped guards over the seeds of one dual2nd.
   dual2nd d{Dual<double>{2.0, 0.0}, Dual<double>{0.0, 0.0}};
   {
     const scoped_value inner{d.value().deriv(), 1.0};
     {
       const scoped_value outer{d.deriv().value(), 1.0};
-      EXPECT_DOUBLE_EQ(d.value().deriv(), 1.0); // both live at once
+      EXPECT_DOUBLE_EQ(d.value().deriv(), 1.0);
       EXPECT_DOUBLE_EQ(d.deriv().value(), 1.0);
     }
-    EXPECT_DOUBLE_EQ(d.deriv().value(), 0.0); // outer cleared
-    EXPECT_DOUBLE_EQ(d.value().deriv(), 1.0); // inner survives, unclobbered
+    EXPECT_DOUBLE_EQ(d.deriv().value(), 0.0);
+    EXPECT_DOUBLE_EQ(d.value().deriv(), 1.0);
   }
   EXPECT_DOUBLE_EQ(d.value().deriv(), 0.0);
-  EXPECT_DOUBLE_EQ(d.value().value(), 2.0); // the point never moved
+  EXPECT_DOUBLE_EQ(d.value().value(), 2.0);
 }
 
 TEST(ScopedValue, UsableDuringConstantEvaluation) {
@@ -1006,8 +1003,8 @@ TEST(ScopedValue, UsableDuringConstantEvaluation) {
   SUCCEED();
 }
 
-// sqrt and log have no finite derivative at 0, but x does not move along y: its
-// tangent there is a zero, not inf * 0.
+// sqrt and log have no finite derivative at 0, but x's tangent along y is zero
+// there, not inf * 0.
 TEST(EquationForward, AZeroTangentNeverMeetsAnInfinitePartial) {
   Variable<double, FixedString{"x"}> x;
   Variable<double, FixedString{"y"}> y;
@@ -1019,8 +1016,8 @@ TEST(EquationForward, AZeroTangentNeverMeetsAnInfinitePartial) {
   EXPECT_TRUE(std::isinf((J[1, 0])));
 }
 
-// ddx::nth_dual through the public names only: three variables on three ε's
-// give every mixed partial of a depth-3 dual in one evaluation.
+// Three variables on three ε's give every mixed partial of a depth-3 dual in
+// one evaluation, through the public names only.
 TEST(PublicDual, DepthThreeMixedPartials) {
   using D = ddx::nth_dual<double, 3>;
   const D x = ddx::dual_seed<3>(0.5, 0b001);
@@ -1037,7 +1034,7 @@ TEST(PublicDual, DepthThreeMixedPartials) {
   EXPECT_DOUBLE_EQ(ddx::dual_part<0b111>(f), 1.0);
 }
 
-// One variable on every ε: the all-ones coefficient is its Nth derivative.
+// With one variable on every ε, the all-ones coefficient is its Nth derivative.
 TEST(PublicDual, OneVariableOnEveryLevel) {
   constexpr auto third = [] {
     const auto x = ddx::dual_seed<3>(2.0, 0b111);

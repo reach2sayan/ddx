@@ -15,43 +15,22 @@
 #include <variant>
 #include <vector>
 
-// The dense Hessian of one function in O(n^2), as one matrix-valued node.
-//
-// hessian() colours the symbols and sweeps once per colour; a dense term --
-// Dot(x, C x) -- couples every symbol to every other, so that is n + 1
-// reverse sweeps and n GEMVs per point: n^3.  The hand formula is cheap
-// because d/dx [C x] is C, a copy, and d/dx [g(s) grad s] is an outer
-// product: the Hessian of such a model is a short sum of shaped terms.
-//
-// So this is a forward sweep over the gradient's cone carrying matrix-valued
-// tangents symbolically.  D[x] for the symbol vector is the identity; every
-// vector node's tangent is a sum of terms, each Identity, Diag(d), Outer(u, g)
-// or Dense(M), all w x n; a scalar node's tangent is its gradient row, a vector
-// of width n.  Each rule is the matrix calculus of a linear map over a sum, and
-// only a MatVec over a Dense term needs a product of two dense matrices -- the
-// one n^3 case, counted so a caller can see when a model's structure defeated
-// the algebra.  Where the partials are the gradient vector's elements, the
-// block is that vector's terms summed; otherwise the partials' rows are
-// stacked.
-//
-// A vector beside a few scalar symbols is swept alone, the scalars held: its
-// block is the Hessian at fixed scalars, and each scalar's row is one reverse
-// sweep of its partial, placed beside it.
+// The dense Hessian as one O(n^2) matrix node, from a forward sweep carrying
+// tangents as sums of Identity, Diag, Outer and Dense terms.
 namespace ddx::rt {
 
 struct DenseHessian {
   NodeId value = no_node;
-  std::vector<NodeId> partial; // n -- the gradient, which comes free
-  // The n x n block, one node: column-major, H(i, j) = d partial_i / d x_j at
-  // i + j n.
+  std::vector<NodeId> partial; // the n gradient entries
+  // The n x n Hessian as one column-major node: H(i, j) is at i + j * n.
   NodeId block = no_node;
-  std::uint32_t n2_terms = 0; // matrix terms the algebra kept quadratic
-  std::uint32_t n3_terms = 0; // MatMul fallbacks: right, and not O(n^2)
+  std::uint32_t n2_terms = 0; // matrix terms that stayed O(n^2)
+  std::uint32_t n3_terms = 0; // O(n^3) MatMul fallbacks
 };
 
 namespace detail {
 
-// One term of a vector node's tangent, w x n over the n symbols.
+// One w x n term of a vector node's tangent with respect to the n symbols.
 namespace term {
 struct Identity {};
 struct Diag {
@@ -69,8 +48,8 @@ using Term = std::variant<term::Identity, term::Diag, term::Outer, term::Dense>;
 static_assert(sizeof(Term) <= 12);
 using Terms = boost::container::small_vector<Term, 4>;
 
-// The left factor of an outer product or a dense block's matrix: what two
-// like terms add.
+// The part that two like terms add: the left factor of an outer product or a
+// dense block's matrix.
 [[nodiscard]] constexpr NodeId &primary(Term &t) {
   return std::holds_alternative<term::Outer>(t) ? std::get<term::Outer>(t).u
                                                 : std::get<term::Dense>(t).block;
@@ -80,14 +59,14 @@ using Terms = boost::container::small_vector<Term, 4>;
          std::holds_alternative<term::Diag>(t);
 }
 
-// The symbols the sweep differentiates by: `width` of them, `at` first.
+// The contiguous symbols the sweep differentiates by, starting at `at`.
 struct Swept {
   std::uint32_t at = 0;
   std::uint32_t width = 0;
 };
 
-// The widest vector of consecutive symbols the model packs, where it is most
-// of them; else every symbol.
+// The widest packed vector of consecutive symbols when it covers most of
+// them, else every symbol. Held scalar symbols get one reverse sweep each.
 template <impl::Numeric T>
 [[nodiscard]] Swept swept_of(const Arena<T> &b, NodeId root) {
   const auto all = static_cast<std::uint32_t>(b.symbols().size());
@@ -121,8 +100,8 @@ public:
   DenseSweep(Arena<T> &b, std::span<const NodeId> partials, Swept swept)
       : b_{b}, at_{swept.at}, n_{swept.width}, row_(b.size(), no_node),
         mat_(b.size()), source_{gathered(partials.subspan(at_, n_))} {
-    // Partials gathered from one vector are read through its tangent, so the
-    // walk stops at the vector and builds no row per partial.
+    // Partials gathered from one vector are read through that vector's
+    // tangent, so the walk stops there.
     const auto live =
         reachable(b_, source_ ? std::span<const NodeId>{&*source_, 1}
                               : partials.subspan(at_, n_));
@@ -131,12 +110,8 @@ public:
     }
   }
 
-  // No block where a matrix the symbols move was multiplied: its tangent is
-  // rows x cols x n, which no term holds.  Where the partials are the
-  // elements of one vector in order -- what the reverse sweep hands back
-  // through the symbols' Pack -- the block is that vector's tangent, its
-  // terms summed as matrices; otherwise the row each partial ends with,
-  // stacked, a partial nothing moves a zero row.
+  // The block is the gradient vector's summed tangent when the partials are its
+  // elements in order, otherwise the partials' rows stacked.
   [[nodiscard]] NodeId block(std::span<const NodeId> partials) {
     if (refused_) {
       return no_node;
@@ -154,13 +129,13 @@ private:
   [[nodiscard]] E expr(NodeId id) const { return E{b_, id}; }
   [[nodiscard]] NodeId zeros() { return b_.zeros({n_}); }
   [[nodiscard]] NodeId ones() { return b_.ones({n_}); }
-  // e_i, interned once per i and width.
+  // The unit vector e_i, interned once per index and width.
   [[nodiscard]] NodeId unit(std::uint32_t i) { return unit(i, n_); }
   [[nodiscard]] NodeId unit(std::uint32_t i, std::uint32_t width) {
     return b_.make(opcode<OpCode::AddAt>, Element{i},
                    {.vec = b_.zeros({width}), .scalar = b_.constant(T{1})});
   }
-  // The rows of `ids` as a matrix, a zero row for an id nothing moves.
+  // The rows of ids stacked as a matrix, with zero rows for constant ids.
   [[nodiscard]] NodeId stacked(const auto &ids) {
     const auto rows = ids | std::views::transform([this](NodeId g) {
                         return row(g) == no_node ? zeros() : row(g);
@@ -169,7 +144,7 @@ private:
     return b_.pack(rows, OpCode::StackRows);
   }
 
-  // The vector whose element i partial i reads, if there is one.
+  // The vector whose element i is partial i, if one exists.
   [[nodiscard]] std::optional<NodeId>
   gathered(std::span<const NodeId> partials) const {
     if (partials.size() != n_ || b_.op_of(partials.front()) != OpCode::Gather) {
@@ -185,10 +160,8 @@ private:
         });
     return in_order ? std::optional{source} : std::nullopt;
   }
-  // A tangent as one n x n matrix row: the diagonal terms summed as a vector
-  // and the outer products as one low-rank product, then every matrix written
-  // once, contiguously, where reading a term back by rows is a strided pass
-  // per row.
+  // A tangent summed into one n x n matrix: diagonals as a vector, outer
+  // products as one low-rank product, and each matrix written contiguously.
   [[nodiscard]] NodeId summed(const Terms &ts) {
     const auto of = [&ts]<typename K>(std::type_identity<K>) {
       return ts | std::views::filter([](const Term &t) {
@@ -207,8 +180,8 @@ private:
     auto matrices = of(std::type_identity<term::Dense>{}) |
                     std::views::transform(&term::Dense::block) |
                     impl::to<Ids>();
-    // sum_k u_k g_k^T is U G^T: an n x K by K x n product, written once, where
-    // K outer products would each be written and then added.
+    // sum_k u_k g_k^T is computed as one product U G^T instead of K outer
+    // products added together.
     const auto outers =
         of(std::type_identity<term::Outer>{}) |
         impl::to<boost::container::small_vector<term::Outer, 4>>();
@@ -228,8 +201,8 @@ private:
                                    rows(&term::Outer::u)),
                    .right = rows(&term::Outer::g)}));
     }
-    // A block with no terms is the zero diagonal.  A table alone needs no
-    // node over it: an output table gets a row of its own (tensor_layout).
+    // A block with no terms is the zero diagonal. A lone table needs no node,
+    // since tensor_layout gives an output table its own row.
     if (d != no_node || matrices.empty()) {
       matrices.push_back(b_.make(OpCode::Diag, d == no_node ? zeros() : d));
     }
@@ -238,16 +211,15 @@ private:
                [this](const E &sum, NodeId m) { return sum + expr(m); })
         .id(b_);
   }
-  // The block over every symbol from the swept one: that at (at_, at_), and
-  // each held symbol's row as a row and a column, its cells on held symbols
-  // once.
+  // The full block: the swept block placed at (at_, at_) and each held
+  // symbol's reverse-sweep row added as both a row and a column.
   [[nodiscard]] NodeId bordered(std::span<const NodeId> partials,
                                 NodeId swept) {
     const auto all = static_cast<std::uint32_t>(partials.size());
     const auto held = [this](std::uint32_t s) {
       return s < at_ || s >= at_ + n_;
     };
-    // m's rows at at_ of `all`, zero rows around them.
+    // Places m's rows starting at row at_, with zero rows around them.
     const auto spread_rows = [&](NodeId m) {
       const NodeId zero = b_.zeros({shape_of(b_, m).cols});
       return b_.pack(std::views::iota(0u, all) |
@@ -262,14 +234,13 @@ private:
     const auto transposed = [this](NodeId m) {
       return b_.make(opcode<OpCode::MatRow>, Orientation::transposed, m);
     };
-    // The swept block at (at_, at_): its columns spread by way of the
-    // transpose, then its rows.
+    // Spreads the swept block's columns through the transpose, then its rows.
     const auto placed = [&](NodeId m) {
       return spread_rows(transposed(spread_rows(transposed(m))));
     };
     Terms ts{term::Dense{placed(swept)}};
-    // A held symbol's reverse sweep is its row; its column is the same less
-    // the cells on held symbols, which the rows already hold.
+    // A held symbol's column is its row minus the cells on held symbols, which
+    // the rows already hold.
     for (const std::uint32_t s :
          std::views::iota(0u, all) | std::views::filter(held)) {
       auto row = build_reverse_jacobian(b_, partials[s]).partial;
@@ -284,7 +255,7 @@ private:
     return summed(ts);
   }
 
-  // Row arithmetic, with no_node the zero row.
+  // Row arithmetic, where no_node stands for the zero row.
   [[nodiscard]] NodeId add(NodeId l, NodeId r) {
     if (l == no_node) {
       return r;
@@ -305,10 +276,8 @@ private:
     return (expr(sid) * expr(r)).id(b_, {n_});
   }
 
-  // m * term.  A vector m (or a literal of the row's width) is diag(m) on the
-  // left of a w x n term, the step every Map and Zip takes; a scalar node is a
-  // multiple.  A diagonal folds into the matrix's own diag(e) where it has
-  // one: a vector scaled where the matrix would be copied.
+  // m * term, where a vector m means diag(m) on the left and a scalar m is a
+  // multiple. A diagonal folds into an existing diag so no matrix is copied.
   [[nodiscard]] Term scale(const E &m, const Term &t) {
     const bool vector = m.size() != 0 || m.pending();
     return std::visit([&]<typename K>(const K &k) -> Term {
@@ -340,7 +309,7 @@ private:
       const auto [matrix, scale] = operands<OpCode::ColScale>(inner);
       a = b_.make(opcode<OpCode::ColScale>,
                   {.matrix = matrix, .scale = rescaled(scale)});
-    } else { // a RowScale, so the next diagonal folds into it
+    } else { // a RowScale, so that the next diagonal folds into it
       a = b_.make(opcode<OpCode::RowScale>,
                   {.scale = vector ? m.id(b_, {rows})
                                    : (m * expr(b_.ones({rows}))).id(b_),
@@ -348,9 +317,8 @@ private:
     }
     return term::Dense{a};
   }
-  // Like terms summed into one: the diagonals, the dense blocks, and the
-  // outer products sharing a right factor.  A Zip whose operands share a
-  // tangent -- y = f(x) + g(x) -- otherwise doubles the list at every level.
+  // Merges like terms: diagonals, dense blocks, and outer products sharing a
+  // right factor. Without it, f(x) + g(x) doubles the term list at each level.
   [[nodiscard]] Terms merged(const Terms &ts) {
     const auto diag = [this](const Term &d) {
       const auto *g = std::get_if<term::Diag>(&d);
@@ -386,7 +354,6 @@ private:
            std::views::transform([&](const Term &t) { return scale(m, t); }) |
            impl::to<Terms>();
   }
-  // Row i of a term: a vector of width n.
   [[nodiscard]] NodeId row_of(const Term &t, std::uint32_t i) {
     return std::visit([&]<typename K>(const K &k) {
       if constexpr (std::same_as<K, term::Identity>) {
@@ -401,7 +368,7 @@ private:
       }
     }, t);
   }
-  // u^T applied to a term: a row.
+  // u^T times a term, which is a row.
   [[nodiscard]] NodeId left(const E &u, const Term &t) {
     return std::visit([&]<typename K>(const K &k) {
       if constexpr (std::same_as<K, term::Identity>) {
@@ -423,8 +390,7 @@ private:
       return add(r, left(u, t));
     });
   }
-  // A matrix M (or M^T) that no symbol moves -- a table, or one computed from
-  // parameters -- applied on the left of a term.
+  // A constant matrix M, or its transpose, applied on the left of a term.
   [[nodiscard]] Term gemv(NodeId matrix, Orientation orientation,
                           const Term &t) {
     const bool table = is_table(b_, matrix);
@@ -454,7 +420,8 @@ private:
     }, t);
   }
 
-  // Whether a Pack is the symbol vector itself, in order: the identity.
+  // Whether a Pack is the symbol vector in order, whose tangent is the
+  // identity.
   [[nodiscard]] bool is_symbols(NodeId v) const {
     const auto args = arguments(b_, v);
     return args.size() == n_ &&
@@ -463,8 +430,8 @@ private:
            });
   }
 
-  // A swept symbol's row is e_j, made where something reads it: a symbol read
-  // only through the symbol vector's Pack is the identity term, and no row.
+  // A swept symbol's row is e_j, built only when something reads the symbol
+  // outside the symbol vector's Pack.
   [[nodiscard]] NodeId row(NodeId u) {
     if (row_[u] == no_node && b_.op_of(u) == OpCode::Var) {
       const std::uint32_t j = get<Slot>(b_[u]).value;
@@ -476,7 +443,7 @@ private:
   }
 
   void visit(NodeId v) {
-    const Node<T> node = b_[v]; // by value: building below may reallocate
+    const Node<T> node = b_[v]; // a copy, since building may reallocate
     if (is_tensor(node)) {
       mat_[v] = matrix_tangent(v, node);
     } else {
@@ -500,7 +467,7 @@ private:
             arguments(b_, v), no_node,
             [this](NodeId r, NodeId t) { return add(r, row(t)); });
       }
-      // The chain's rows, one step at a time, as the Binary arm takes each.
+      // Folds the chain step by step, as the Binary arm handles each step.
       const OpCode step = fold_op(node.op);
       const auto steps = fold_steps(b_, v);
       NodeId r = row(steps.front().first);
@@ -521,15 +488,15 @@ private:
       });
       return r;
     }
-    // A partial is built only to scale a row there is.
+    // Partials are built only when there is a row to scale.
     case Kind::Unary:
       return row(node.in[0]) == no_node
                  ? no_node
                  : scaled(partial(node.op, expr(node.in[0]), expr(v)),
                           row(node.in[0]));
     case Kind::Binary: {
-      // Both partials before either product: `make` orders a commutative
-      // node's operands by id.
+      // Both partials are built before either product, because make() orders
+      // a commutative node's operands by id.
       const E l = expr(node.in[0]);
       const E r = expr(node.in[1]);
       const auto [pl, pr] =
@@ -539,7 +506,7 @@ private:
                         E{0});
       return add(scaled(pl, row(node.in[0])), scaled(pr, row(node.in[1])));
     }
-    case Kind::Ternary: { // picked, so the row not taken is never scaled by 0
+    case Kind::Ternary: { // a select never scales the untaken row by 0
       const auto [cond, then, otherwise] = operands<OpCode::Select>(node.in);
       if (row(then) == no_node && row(otherwise) == no_node) {
         return no_node;
@@ -552,8 +519,7 @@ private:
     }
     case Kind::Tensor:
       switch (node.op) {
-      case OpCode::MatConst: // a table, read through its MatRow: nothing moves
-                             // it
+      case OpCode::MatConst: // a constant table
         return no_node;
       case OpCode::Gather:
         return std::ranges::fold_left(
@@ -588,7 +554,7 @@ private:
         out.push_back(term::Dense{stacked(arguments(b_, v))});
       }
       break;
-    // A partial is built only to scale terms there are.
+    // Partials are built only when there are terms to scale.
     case OpCode::Map:
       if (!mat_[node.in[0]].empty()) {
         out = scale(partial(get<OpCode>(node), expr(node.in[0]), expr(v)),
@@ -623,7 +589,7 @@ private:
             impl::to<Terms>();
       break;
     }
-    case OpCode::MatRow: // a table
+    case OpCode::MatRow: // a constant table
       break;
     case OpCode::Outer:
       refused_ =
@@ -634,7 +600,7 @@ private:
       if (mat_[then].empty() && mat_[otherwise].empty()) {
         break;
       }
-      // A vector condition spread along each row of the w x n terms.
+      // Spreads a vector condition along each row of the w x n terms.
       const std::uint32_t w = width_of(b_, v);
       const auto block = [&](const Terms &ts) {
         return expr(ts.empty() ? b_.zeros({w, n_}) : summed(ts));
@@ -661,7 +627,7 @@ private:
       break;
     }
     default:
-      std::unreachable(); // a matrix row: formed here, never read here
+      std::unreachable(); // matrix rows are built here but never visited
     }
     return out;
   }

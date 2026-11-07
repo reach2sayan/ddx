@@ -1,4 +1,4 @@
-# The flags our own targets are built with, applied by ddx_target_flags().
+# The flags ddx's own targets are built with, applied by ddx_target_flags().
 include_guard(GLOBAL)
 
 option(ENABLE_NATIVE_ARCH "Build optimized for this machine" ON)
@@ -9,12 +9,12 @@ if (MSVC)
     set(DDX_WARNINGS /Wall /wd4061 /wd4623 /wd4625 /wd4626 /wd5026 /wd5027
                      /wd4710 /wd4711 /wd4868 /wd4820 /wd5045 /wd5246 /wd4514
                      /wd4324 /wd5266 /wd4866 /wd4371 /wd4686)
-    # False positives: C4548 on C++23 `m[i, j]`, C5264 on `named<"x">`.
+    # C4548 and C5264 are false positives on C++23 `m[i, j]` and `named<"x">`.
     list(APPEND DDX_WARNINGS /wd4548 /wd5264)
     list(APPEND DDX_WARNINGS /external:anglebrackets /external:W0)
     set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
     list(APPEND DDX_CODEGEN_FLAGS /EHs-c- /D_HAS_EXCEPTIONS=0 /wd4577)
-    # Overriding CMake's default /EHsc per target is warning D9025; drop it here.
+    # Drop CMake's default /EHsc, since overriding it per target warns D9025.
     string(REGEX REPLACE "[/-]EHsc *" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
     string(STRIP "${CMAKE_CXX_FLAGS}" CMAKE_CXX_FLAGS)
 else ()
@@ -33,7 +33,7 @@ else ()
     set(DDX_WARNINGS -Wall -Wextra -Wpedantic -Wfatal-errors)
 endif ()
 
-# Top level only.  The sloppiness lets ccache hit on TUs using the tests' PCH.
+# Top level only. The sloppiness setting lets ccache hit with the tests' PCH.
 option(DDX_CCACHE "Compile through ccache when it is found" ON)
 if (DDX_CCACHE AND PROJECT_IS_TOP_LEVEL AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
     find_program(DDX_CCACHE_PROGRAM ccache)
@@ -43,7 +43,7 @@ if (DDX_CCACHE AND PROJECT_IS_TOP_LEVEL AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
     endif ()
 endif ()
 
-# Global: a sanitizer has to instrument everything, gtest included.
+# Applied globally, since a sanitizer must instrument everything, gtest too.
 set(DDX_SANITIZE "off" CACHE STRING "off | thread | address | undefined")
 set_property(CACHE DDX_SANITIZE PROPERTY STRINGS off thread address undefined)
 if (NOT DDX_SANITIZE STREQUAL "off")
@@ -51,7 +51,8 @@ if (NOT DDX_SANITIZE STREQUAL "off")
         message(WARNING "DDX_SANITIZE=${DDX_SANITIZE} ignored: MSVC has no such sanitizer")
     else ()
         set(sanitize -fsanitize=${DDX_SANITIZE})
-        # The null checks stop GCC folding `&member == 0` in constant expressions.
+        # The null checks stop GCC folding `&member == 0` in constant
+        # expressions.
         if (DDX_SANITIZE STREQUAL "undefined")
             list(APPEND sanitize -fno-sanitize=null,nonnull-attribute,returns-nonnull-attribute)
         endif ()
@@ -61,7 +62,7 @@ if (NOT DDX_SANITIZE STREQUAL "off")
 endif ()
 
 # ddx_target_flags(<target> [EXCEPTIONS])
-# EXCEPTIONS keeps exceptions on for one target (pybind11, Boost.Parser).
+# EXCEPTIONS keeps exceptions enabled, as pybind11 and Boost.Parser need.
 function(ddx_target_flags target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "EXCEPTIONS" "" "")
     set(flags ${DDX_CODEGEN_FLAGS})
@@ -75,7 +76,7 @@ function(ddx_target_flags target)
     set_property(TARGET ${target} PROPERTY COMPILE_WARNING_AS_ERROR ON)
 endfunction()
 
-# A shared libddx has to be findable at run time by every executable linking it.
+# Makes the shared libddx findable at run time by an executable linking it.
 function(ddx_runtime_deps target)
     set_property(TARGET ${target} APPEND PROPERTY BUILD_RPATH "$ORIGIN")
     if (WIN32)

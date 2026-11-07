@@ -110,8 +110,7 @@ TEST(MathFunctionTest, ExpLogIdentity) {
 TEST(MathFunctionTest, QuotientSelfIsConstant) {
   auto x = var_of<"x">(2.0);
   auto expr = x / x;
-  // Folded structurally: x/x is the literal 1, so it names no symbol and
-  // takes no point.
+  // x/x folds to the literal 1, so it names no symbol and takes no point.
   static_assert(std::same_as<decltype(expr), ddx::impl::Lit<double, 1>>,
                 "x / x folds to the literal 1 while the tree is built");
   ASSERT_NEAR(expr.eval(), 1.0, 1e-12);
@@ -137,7 +136,7 @@ TEST(ReverseModeAD, LogDerivative) {
 TEST(ReverseModeAD, SqrtDerivative) {
   auto x = var<"x">;
   auto g = Equation{sqrt(x)}.jacobian(4.0);
-  ASSERT_DOUBLE_EQ(g[0], 0.25); // 0.5/sqrt(4) = 0.25
+  ASSERT_DOUBLE_EQ(g[0], 0.25);
 }
 TEST(ReverseModeAD, AsinDerivative) {
   double x0 = 0.5;
@@ -228,7 +227,7 @@ TEST(SymbolTest, TwoVariables) {
                std::declval<Variable<double, ddx::impl::FixedString{"y"}>>());
   using Syms = extract_symbols_from_expr_t<E>;
   static_assert(ddx::impl::mp::mp_size<Syms>::value == 2);
-  // Symbols are sorted lexicographically: "x" < "y"
+  // Symbols are sorted lexicographically, so "x" comes before "y".
   static_assert(
       std::is_same_v<ddx::impl::mp::mp_at_c<Syms, 0>,
                      ddx::impl::symbol_type<ddx::impl::FixedString{"x"}>>);
@@ -251,9 +250,8 @@ TEST(SymbolTest, ThreeVariables) {
   using Syms = extract_symbols_from_expr_t<decltype(expr)>;
   static_assert(ddx::impl::mp::mp_size<Syms>::value == 3);
 }
-// Canonical order turns a label into a slot index: out of order, repeated and
-// spread across subtrees, the symbols must still come back alphabetical and
-// deduplicated, or a Jacobian carries the right numbers against wrong names.
+// Symbols come back sorted and deduplicated however they are spread, or a
+// Jacobian would carry the right numbers against the wrong names.
 TEST(SymbolTest, CanonicalOrderIsAlphabetical) {
   auto expr = (var<"z"> * var<"a">)+(var<"m"> * var<"z">)+var<"b">;
   using Syms = extract_symbols_from_expr_t<decltype(expr)>;
@@ -273,7 +271,6 @@ TEST(ExpressionTest, StaticTests) {
   auto c = 2_ci;
   auto res = x * y + c;
   auto res2 = make_all_constant_except<ddx::impl::FixedString{"c"}>(res);
-  // Freezing changes only the derivative, so the value is unchanged.
   ASSERT_EQ(res2.eval(4), res.eval(4));
 }
 TEST(ExpressionTest, SumTest) {
@@ -288,7 +285,7 @@ TEST(ExpressionTest, MultiplyTest) {
   auto sum_exp = a * b * c;
   auto d = sum_exp.derivative();
   ASSERT_EQ(sum_exp.eval(2), 6);
-  ASSERT_EQ(d.eval(), 3); // 1*b*3 folds to the constant 3: no symbols left
+  ASSERT_EQ(d.eval(), 3);
 }
 TEST(ExpressionTest, SubtractTest) {
   auto a = 1_ci;
@@ -296,7 +293,7 @@ TEST(ExpressionTest, SubtractTest) {
   auto minus = a - b;
   auto d = minus.derivative();
   ASSERT_EQ(minus.eval(2), -1);
-  ASSERT_EQ(d.eval(), -1); // derivative of a constant-only tree
+  ASSERT_EQ(d.eval(), -1);
 }
 TEST(ExpressionTest, DivideTest) {
   auto a = 4.0_vd;
@@ -304,7 +301,7 @@ TEST(ExpressionTest, DivideTest) {
   auto divide = a / b;
   auto d = divide.derivative();
   ASSERT_EQ(divide.eval(4.0), 2.0);
-  ASSERT_EQ(d.eval(), 0.5); // d(a/2)/da folds to the constant 0.5
+  ASSERT_EQ(d.eval(), 0.5);
 }
 TEST(ExpressionTest, ExpTest) {
   constexpr auto exp_exp = exp(2.0_cd);
@@ -341,12 +338,12 @@ TEST(ExpressionTest, DerivativeTest) {
   auto expr = x * 2_ci;
   auto derv = expr.derivative();
   ASSERT_EQ(expr.eval(4), 8);
-  ASSERT_EQ(derv.eval(), 2); // d(x*2)/dx folds to the constant 2
+  ASSERT_EQ(derv.eval(), 2);
 }
 TEST(DerivativeRuleTest, SumRule) {
   auto x = var<"x", int>;
   auto expr = 3_ci * x + 5_ci;
-  ASSERT_EQ(expr.derivative().eval(), 3); // folds to the constant 3
+  ASSERT_EQ(expr.derivative().eval(), 3);
 }
 TEST(DerivativeRuleTest, ProductRule) {
   Variable<int, ddx::impl::FixedString{"x"}> x;
@@ -357,7 +354,6 @@ TEST(DerivativeRuleTest, QuotientRule) {
   Variable<double, ddx::impl::FixedString{"x"}> x;
   auto c = Constant<double>{3.0};
   auto expr = x / c;
-  // 1/c is constant in x, so the folded derivative names no symbols.
   ASSERT_DOUBLE_EQ(expr.derivative().eval(), 1.0 / 3.0);
 }
 TEST(DerivativeRuleTest, ChainRule_ExpOfLinear) {
@@ -389,7 +385,7 @@ TEST(VariableTest, UdlCompAndAssign) {
 }
 TEST(TrigTest, SinTest) {
   auto b = sin(constant(0.5));
-  ASSERT_EQ(b.eval(), std::sin(0.5)); // no symbols
+  ASSERT_EQ(b.eval(), std::sin(0.5));
 }
 TEST(TrigTest, CosTest) {
   auto b = cos(var<"x">);
@@ -426,23 +422,22 @@ TEST(EquationTest, SingleVariable) {
   auto x = var<"x", int>;
   auto expr = x * 2_ci;
   auto eq = Equation(expr);
-  ASSERT_EQ(eq[idx<1>()].eval(), 2); // d(2x)/dx folds to the constant 2
+  ASSERT_EQ(eq[idx<1>()].eval(), 2);
 }
 TEST(EquationTest, TwoVariables) {
   auto x = var<"x", int>;
   auto y = var<"y", int>;
   auto expr = x * y;
   auto eq = Equation(expr);
-  // The folded partials name one symbol each, so each takes just that value.
-  ASSERT_EQ(eq[idx<1>()].eval(2), 2); // df/dx = y = 2
-  ASSERT_EQ(eq[idx<2>()].eval(4), 4); // df/dy = x = 4
+  // Each folded partial names one symbol, so each takes just that value.
+  ASSERT_EQ(eq[idx<1>()].eval(2), 2);
+  ASSERT_EQ(eq[idx<2>()].eval(4), 4);
 }
 TEST(EquationTest, LinearCombination) {
   auto x = var<"x", int>;
   auto y = var<"y", int>;
   auto expr = constant(1) * x + constant(2) * y;
   auto eq = Equation(expr);
-  // Both partials fold to constants: no symbols left to supply.
   ASSERT_EQ(eq[idx<1>()].eval(), 1);
   ASSERT_EQ(eq[idx<2>()].eval(), 2);
 }
@@ -453,16 +448,16 @@ TEST(EquationTest, DifferenceOfSquares) {
   auto eq = Equation(expr);
   auto [d1, d2] =
       eq.template jacobian<ddx::DiffMode::Symbolic>(std::array{4, 2});
-  ASSERT_EQ(expr.eval(4, 2), 12); // (4+2)*(4-2) = 12
-  ASSERT_EQ(d1, 8);               // 2x = 8
-  ASSERT_EQ(d2, -4);              // -2y = -4
+  ASSERT_EQ(expr.eval(4, 2), 12);
+  ASSERT_EQ(d1, 8);
+  ASSERT_EQ(d2, -4);
 }
 TEST(EquationTest, ExpEquation) {
   auto x = var<"x">;
   auto expr = exp(x);
   auto eq = Equation(expr);
   ASSERT_DOUBLE_EQ(eq.evaluate(std::array{1.0}), std::exp(1.0));
-  ASSERT_DOUBLE_EQ(eq[idx<1>()].eval(1.0), std::exp(1.0)); // d(e^x)/dx = e^x
+  ASSERT_DOUBLE_EQ(eq[idx<1>()].eval(1.0), std::exp(1.0));
 }
 TEST(EquationTest, TrigEquation) {
   auto x = var<"x">;
@@ -471,13 +466,12 @@ TEST(EquationTest, TrigEquation) {
   ASSERT_DOUBLE_EQ(eq[idx<1>()].eval(0.5), std::cos(2 * 0.5));
 }
 TEST(EquationTest, IdxEquivalence) {
-  // eq[idx<N>()] is the subscript spelling of eq.get<N>(); both must select the
-  // same slot.
+  // eq[idx<N>()] is the subscript spelling of eq.get<N>().
   auto x = var<"x", int>;
   auto y = var<"y", int>;
   auto eq = Equation(x * y);
-  ASSERT_EQ(eq[idx<1>()].eval(5), eq.get<1>().eval(5)); // df/dx = y
-  ASSERT_EQ(eq[idx<2>()].eval(3), eq.get<2>().eval(3)); // df/dy = x
+  ASSERT_EQ(eq[idx<1>()].eval(5), eq.get<1>().eval(5));
+  ASSERT_EQ(eq[idx<2>()].eval(3), eq.get<2>().eval(3));
 }
 TEST(EquationTest, ThreeVariablePartials) {
   auto x = var<"x", int>;
@@ -492,17 +486,17 @@ TEST(EquationTest, ThreeVariablePartials) {
   ASSERT_EQ(dz, 3);
 }
 TEST(EquationTest, UpdateAndReevaluate) {
-  // Both copies of x in the derivative are live variables, so update
-  // propagates.
+  // Both copies of x in the derivative are live variables, so a new point
+  // reaches both.
   Variable<int, ddx::impl::FixedString{"x"}> x;
   auto expr = x * x;
   auto eq = Equation(expr);
 
   ASSERT_EQ(eq.evaluate(std::array{3}), 9);
-  ASSERT_EQ(eq[idx<1>()].eval(3), 6); // 2*3 = 6
+  ASSERT_EQ(eq[idx<1>()].eval(3), 6);
 
   ASSERT_EQ(eq.evaluate(std::array{5}), 25);
-  ASSERT_EQ(eq[idx<1>()].eval(5), 10); // 2*5 = 10
+  ASSERT_EQ(eq[idx<1>()].eval(5), 10);
 }
 TEST(EquationTest, MixedTrigExpEquation) {
   auto x = var<"x">;
@@ -537,39 +531,39 @@ TEST(EquationTest, JacobianLinear) {
   auto y = var<"y", int>;
   auto ve = Equation(x + y, x * y);
   auto J = ve.template jacobian<ddx::DiffMode::Symbolic>(std::array{3, 4});
-  ASSERT_EQ((J[0, 0]), 1); // ∂(x+y)/∂x
-  ASSERT_EQ((J[0, 1]), 1); // ∂(x+y)/∂y
-  ASSERT_EQ((J[1, 0]), 4); // ∂(x*y)/∂x = y = 4
-  ASSERT_EQ((J[1, 1]), 3); // ∂(x*y)/∂y = x = 3
+  ASSERT_EQ((J[0, 0]), 1);
+  ASSERT_EQ((J[0, 1]), 1);
+  ASSERT_EQ((J[1, 0]), 4);
+  ASSERT_EQ((J[1, 1]), 3);
 }
 TEST(EquationTest, JacobianWithTrig) {
   auto x = var<"x">;
   auto y = var<"y">;
   auto ve = Equation(x * y, sin(x) + y * y);
   auto J = ve.template jacobian<ddx::DiffMode::Symbolic>(std::array{2.0, 3.0});
-  ASSERT_DOUBLE_EQ((J[0, 0]), 3.0);           // ∂(x*y)/∂x = y
-  ASSERT_DOUBLE_EQ((J[0, 1]), 2.0);           // ∂(x*y)/∂y = x
-  ASSERT_DOUBLE_EQ((J[1, 0]), std::cos(2.0)); // ∂(sin(x)+y²)/∂x
-  ASSERT_DOUBLE_EQ((J[1, 1]), 6.0);           // ∂(sin(x)+y²)/∂y = 2y
+  ASSERT_DOUBLE_EQ((J[0, 0]), 3.0);
+  ASSERT_DOUBLE_EQ((J[0, 1]), 2.0);
+  ASSERT_DOUBLE_EQ((J[1, 0]), std::cos(2.0));
+  ASSERT_DOUBLE_EQ((J[1, 1]), 6.0);
 }
 TEST(EquationTest, SingleComponentIsJacobian) {
   auto x = var<"x">;
   auto y = var<"y">;
   auto eq = Equation(x * y);
   auto g = eq.template jacobian<ddx::DiffMode::Symbolic>(std::array{2.0, 3.0});
-  ASSERT_DOUBLE_EQ(g[0], 3.0); // ∂(x*y)/∂x = y
-  ASSERT_DOUBLE_EQ(g[1], 2.0); // ∂(x*y)/∂y = x
+  ASSERT_DOUBLE_EQ(g[0], 3.0);
+  ASSERT_DOUBLE_EQ(g[1], 2.0);
 }
 TEST(EquationTest, SymbolUnionAcrossComponents) {
   auto x = var<"x">;
   auto y = var<"y">;
-  auto ve = Equation(x * x, y * y); // (x², y²)
+  auto ve = Equation(x * x, y * y);
   static_assert(decltype(ve)::input_dim == 2);
   auto J = ve.template jacobian<ddx::DiffMode::Symbolic>(std::array{4.0, 3.0});
-  ASSERT_DOUBLE_EQ((J[0, 0]), 8.0); // ∂(x²)/∂x = 2x = 8
-  ASSERT_DOUBLE_EQ((J[0, 1]), 0.0); // ∂(x²)/∂y = 0
-  ASSERT_DOUBLE_EQ((J[1, 0]), 0.0); // ∂(y²)/∂x = 0
-  ASSERT_DOUBLE_EQ((J[1, 1]), 6.0); // ∂(y²)/∂y = 2y = 6
+  ASSERT_DOUBLE_EQ((J[0, 0]), 8.0);
+  ASSERT_DOUBLE_EQ((J[0, 1]), 0.0);
+  ASSERT_DOUBLE_EQ((J[1, 0]), 0.0);
+  ASSERT_DOUBLE_EQ((J[1, 1]), 6.0);
 }
 TEST(EquationTest, ThreeOutputs) {
   auto x = var<"x">;
@@ -578,12 +572,12 @@ TEST(EquationTest, ThreeOutputs) {
   static_assert(decltype(ve)::output_dim == 3);
   static_assert(decltype(ve)::input_dim == 2);
   auto J = ve.template jacobian<ddx::DiffMode::Symbolic>(std::array{2.0, 5.0});
-  ASSERT_DOUBLE_EQ((J[0, 0]), 4.0);  // 2x
-  ASSERT_DOUBLE_EQ((J[0, 1]), 0.0);  // 0
-  ASSERT_DOUBLE_EQ((J[1, 0]), 5.0);  // y
-  ASSERT_DOUBLE_EQ((J[1, 1]), 2.0);  // x
-  ASSERT_DOUBLE_EQ((J[2, 0]), 0.0);  // 0
-  ASSERT_DOUBLE_EQ((J[2, 1]), 10.0); // 2y
+  ASSERT_DOUBLE_EQ((J[0, 0]), 4.0);
+  ASSERT_DOUBLE_EQ((J[0, 1]), 0.0);
+  ASSERT_DOUBLE_EQ((J[1, 0]), 5.0);
+  ASSERT_DOUBLE_EQ((J[1, 1]), 2.0);
+  ASSERT_DOUBLE_EQ((J[2, 0]), 0.0);
+  ASSERT_DOUBLE_EQ((J[2, 1]), 10.0);
 }
 TEST(EquationTest, ReverseJacobianAgreesWithSymbolic) {
   auto x = var<"x">;
@@ -636,7 +630,7 @@ TEST(EquationTest, ReverseJacobianSingleOutputMatchesFlatRow) {
   auto x = var<"x">;
   auto y = var<"y">;
   auto expr = exp(x) * sin(y);
-  // Use a 2-component Equation so the vector specialization is selected.
+  // A two-component Equation selects the vector specialization.
   auto ve = Equation(expr, exp(x) * sin(y));
 
   auto J_rev = ve.jacobian(std::array{2.0, 5.0});
@@ -645,9 +639,8 @@ TEST(EquationTest, ReverseJacobianSingleOutputMatchesFlatRow) {
   for (std::size_t j = 0; j < decltype(ve)::input_dim; ++j)
     ASSERT_DOUBLE_EQ((J_rev[0, j]), g[j]);
 }
-// canonicalise folds (y*x)/(x*y) to 1, so the tree has one symbol where the
-// Equation has three; the sweep is indexed by the Equation's list, or z's
-// partial would land in x's slot.
+// canonicalise folds (y*x)/(x*y) to 1, so the sweep must be laid out by the
+// Equation's symbols, or z's partial would land in x's slot.
 TEST(EquationTest, ReverseJacobianIsLaidOutByTheEquationsSymbols) {
   auto x = var<"x">;
   auto y = var<"y">;
@@ -661,8 +654,8 @@ TEST(EquationTest, ReverseJacobianIsLaidOutByTheEquationsSymbols) {
   EXPECT_DOUBLE_EQ(reverse[2], 1.0);
   EXPECT_DOUBLE_EQ(symbolic[2], 1.0);
 }
-// a^0 is the constant 1 and 0^b the constant 0: both partials are 0 there,
-// not the 0 * inf the rules spell.
+// a^0 is the constant 1 and 0^b the constant 0, so both partials are 0 there
+// rather than the 0 * inf the general rules would give.
 TEST(ReverseModeAD, PowAtAZeroBaseOrExponent) {
   auto x = var<"x">;
   auto y = var<"y">;
@@ -674,7 +667,6 @@ TEST(ReverseModeAD, PowAtAZeroBaseOrExponent) {
   EXPECT_DOUBLE_EQ(origin[0], 0.0);
   const auto stored = Equation{pow(x, 0.0)}.jacobian(0.0);
   EXPECT_DOUBLE_EQ(stored[0], 0.0);
-  // Away from zero nothing changes.
   const auto plain = eq.jacobian(2.0, 3.0);
   EXPECT_DOUBLE_EQ(plain[0], 12.0);
   EXPECT_DOUBLE_EQ(plain[1], 8.0 * std::log(2.0));
@@ -709,8 +701,8 @@ TEST(ReverseModeAD, TwoVariables) {
   auto expr = x * y;
   auto g = Equation{expr}.jacobian(3.0, 4.0);
   static_assert(g.size() == 2);
-  EXPECT_DOUBLE_EQ(g[0], 4.0); // df/dx = y
-  EXPECT_DOUBLE_EQ(g[1], 3.0); // df/dy = x
+  EXPECT_DOUBLE_EQ(g[0], 4.0);
+  EXPECT_DOUBLE_EQ(g[1], 3.0);
 }
 TEST(ReverseModeAD, Sum) {
   auto x = var<"x">;
@@ -773,7 +765,7 @@ TEST(ReverseModeAD, ThreeVariables) {
 TEST(ReverseModeAD, ScalarOnRight) {
   auto x = var<"x">;
   auto g = Equation{x * 4.0 + 1.0}.jacobian(5.0);
-  EXPECT_DOUBLE_EQ(g[0], 4.0); // df/dx = 4
+  EXPECT_DOUBLE_EQ(g[0], 4.0);
 }
 TEST(ReverseModeAD, AgreesWithForwardMode) {
   double xv = 1.0, yv = std::numbers::pi / 4.0;
@@ -848,8 +840,7 @@ TEST(TutorialReverseConditionals, UpdateReevaluatesDerivatives) {
   auto eq = Equation(x * x + sin(x));
   EXPECT_NEAR(eq.evaluate(std::array{2.0}), 4.0 + std::sin(2.0), 1e-12);
   EXPECT_NEAR(eq.template jacobian<ddx::DiffMode::Symbolic>(std::array{2.0})[0],
-              4.0 + std::cos(2.0),
-              1e-12); // 2x + cos(x)
+              4.0 + std::cos(2.0), 1e-12);
   EXPECT_NEAR(eq.evaluate(std::array{5.0}), 25.0 + std::sin(5.0), 1e-12);
   EXPECT_NEAR(eq.template jacobian<ddx::DiffMode::Symbolic>(std::array{5.0})[0],
               10.0 + std::cos(5.0), 1e-12);
@@ -874,23 +865,23 @@ TEST(ScopedValue, SeedsOnEntryAndRestoresOnExit) {
     const scoped_value seed{slot, 1.0};
     EXPECT_DOUBLE_EQ(slot, 1.0);
   }
-  EXPECT_DOUBLE_EQ(slot, 7.5); // the previous value, not zero
+  EXPECT_DOUBLE_EQ(slot, 7.5);
 }
 TEST(ScopedValue, RestoreIsBitExactFromAnyBase) {
-  // The guard saves the old bits: a `slot += 1` / `slot -= 1` round trip is
-  // not the identity in floating point.
+  // The guard saves the old bits, because slot += 1 then slot -= 1 is not the
+  // identity in floating point.
   double slot = 0.1;
   {
     const scoped_value seed{slot, 1.0};
     EXPECT_DOUBLE_EQ(slot, 1.0);
   }
-  EXPECT_EQ(slot, 0.1);            // exact, not merely close
-  EXPECT_NE(0.1 + 1.0 - 1.0, 0.1); // what the arithmetic undo would have given
+  EXPECT_EQ(slot, 0.1);
+  EXPECT_NE(0.1 + 1.0 - 1.0, 0.1);
 }
 
 TEST(ScopedValue, IsPinned) {
-  // Exactly one guard per slot: moving one would leave a second destructor
-  // writing back a value that has been carried off.
+  // Moving a guard would leave a second destructor writing back a value that
+  // has already been carried off.
   using Guard = scoped_value<double>;
   static_assert(!std::is_copy_constructible_v<Guard>);
   static_assert(!std::is_move_constructible_v<Guard>);
@@ -899,13 +890,13 @@ TEST(ScopedValue, IsPinned) {
   SUCCEED();
 }
 TEST(ScopedValue, CarriesNothingForTheNewValue) {
-  // The reference plus the saved scalar, and nothing else.
+  // The guard holds the reference and the saved scalar, and nothing else.
   static_assert(sizeof(scoped_value<double>) ==
                 sizeof(double *) + sizeof(double));
   SUCCEED();
 }
 TEST(ScopedValue, HoldsARuntimeValueToo) {
-  // As rt::equation() uses it: a pointer slot, and a non-constant value.
+  // rt::equation() uses the guard on a pointer slot with a non-constant value.
   int a = 1;
   int b = 2;
   int *slot = &a;
@@ -914,7 +905,7 @@ TEST(ScopedValue, HoldsARuntimeValueToo) {
     EXPECT_EQ(slot, &b);
     {
       const ddx::impl::scoped_value inner{slot, &a};
-      EXPECT_EQ(slot, &a); // nesting, the way equation() nests
+      EXPECT_EQ(slot, &a);
     }
     EXPECT_EQ(slot, &b);
   }
@@ -922,15 +913,14 @@ TEST(ScopedValue, HoldsARuntimeValueToo) {
 }
 
 TEST(Ownership, EquationSubtreeAccessorsWorkOnTemporaries) {
-  // The nodes are empty types now, so the rvalue overload copies nothing.
+  // The nodes are empty types, so the rvalue overload copies nothing.
   auto x = var<"x">;
   auto y = var<"y">;
   EXPECT_DOUBLE_EQ(Equation(x * y).get<1>().eval(2.0), 2.0);
   EXPECT_DOUBLE_EQ(Equation(x * y)[idx<2>()].eval(4.0), 4.0);
 }
 
-// The stored partial trees answer as the sweep does at pow's zeros: a^0 is the
-// constant 1 and 0^b the constant 0.
+// The stored partial trees agree with the sweep at pow's zeros.
 TEST(EquationTest, SymbolicPowAtAZeroBaseOrExponent) {
   auto x = var<"x">;
   auto y = var<"y">;
@@ -943,7 +933,6 @@ TEST(EquationTest, SymbolicPowAtAZeroBaseOrExponent) {
   const auto stored =
       Equation{pow(x, 0.0)}.jacobian<DiffMode::Symbolic>(0.0);
   EXPECT_DOUBLE_EQ(stored[0], 0.0);
-  // Away from zero nothing changes.
   const auto plain = eq.jacobian<DiffMode::Symbolic>(2.0, 3.0);
   EXPECT_DOUBLE_EQ(plain[0], 12.0);
   EXPECT_DOUBLE_EQ(plain[1], 8.0 * std::log(2.0));

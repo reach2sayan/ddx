@@ -10,9 +10,7 @@ import pytest
 
 import ddx
 
-# Every unary the library generates, against math's own.  The list is what the
-# module exports, so an opcode added to the C++ tables is covered without this
-# file changing.
+# Every unary function the module exports, checked against Python's math.
 UNARY = {
     "sin": math.sin,
     "cos": math.cos,
@@ -49,12 +47,11 @@ def test_every_exported_unary_is_covered() -> None:
         if callable(getattr(ddx, name)) and not isinstance(getattr(ddx, name), type)
     }
     binary = {"pow", "atan2", "hypot", "max", "min"}
-    # `select` is the one ternary.
     ternary = {"select"}
-    # Not operations at all: these build, read or run an equation.
+    # These build, read or run an equation rather than being operations.
     not_an_op = {"derivative", "equation", "gradient", "implicit", "param",
                  "release_tapes", "var"}
-    # Vectors and matrices: factories and reductions, not scalar operations.
+    # Vector and matrix factories and reductions.
     vectors = {"mat_constant", "outer", "pack", "sum",
                "transpose", "vec", "vec_constant", "vec_param"}
     assert functions - binary - ternary - not_an_op - vectors == set(UNARY)

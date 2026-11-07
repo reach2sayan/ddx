@@ -3,7 +3,7 @@
 TEST(MdLayout, SimplexPackedIsABijectionOnSortedMultiIndices) {
   using T = ddx::impl::md_tensor<double, ddx::impl::uniform_extents_t<4, 3>,
                                  ddx::impl::layout_simplex_packed>;
-  EXPECT_EQ(T::size(), 20u); // C(4 + 3 - 1, 3) = C(6, 3) = 20
+  EXPECT_EQ(T::size(), 20u);
 
   constexpr T::mapping_type m{};
   std::set<std::size_t> slots;
@@ -12,16 +12,16 @@ TEST(MdLayout, SimplexPackedIsABijectionOnSortedMultiIndices) {
       for (std::size_t k = j; k < 4; ++k) {
         const auto s = static_cast<std::size_t>(m(i, j, k));
         EXPECT_LT(s, T::size());
-        // Distinct multisets must not collide...
+        // Distinct multisets must not collide.
         EXPECT_TRUE(slots.insert(s).second);
-        // ...and every permutation of one must.
+        // Every permutation of a multiset must land in the same slot.
         EXPECT_EQ(static_cast<std::size_t>(m(k, j, i)), s);
         EXPECT_EQ(static_cast<std::size_t>(m(j, i, k)), s);
         EXPECT_EQ(static_cast<std::size_t>(m(k, i, j)), s);
       }
     }
   }
-  EXPECT_EQ(slots.size(), T::size()); // the packing wastes no cell
+  EXPECT_EQ(slots.size(), T::size());
 }
 TEST(ConstexprContract, MdspanLayerIsConstantEvaluated) {
   constexpr auto simplex = [] {
@@ -34,7 +34,7 @@ TEST(ConstexprContract, MdspanLayerIsConstantEvaluated) {
   constexpr auto stacked = [] {
     ddx::impl::nd_stack_t<double, 2, 3, 2> s{};
     s[1, 0, 2] = 3.0;
-    return (s[1, 2, 0]) + (s[0, 0, 2]); // second output set, first still zero
+    return (s[1, 2, 0]) + (s[0, 0, 2]);
   }();
   static_assert(stacked == 3.0);
 

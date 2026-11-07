@@ -39,17 +39,15 @@
 namespace ddx::py {
 namespace {
 
-// The arena a model is assembled in, for the duration of the call.  Ours rather
-// than the one rt::var(name) reads, because what has to survive is the shared
-// ownership: every symbol below goes through the two-argument rt::var.
+// The arena the running model builds into. It is separate from rt's own
+// because Python needs shared ownership of it.
 thread_local std::shared_ptr<rt::Arena<double>> current_arena;
 
-// The exception type Python sees.  Deliberately leaked: it is a type object
-// that lives as long as the module, and a translator is a plain function
-// pointer, so it cannot capture.
+// The exception type Python sees. It is leaked on purpose, because the
+// translator is a plain function pointer and cannot capture it.
 pyb::handle error_class;
 
-// The model running now.
+// The arena of the model running now, or a refusal outside equation().
 [[nodiscard]] PyExpression::SharedArena arena_now() {
   if (!current_arena) {
     fail_with(errc::outside_equation);
@@ -57,9 +55,8 @@ pyb::handle error_class;
   return current_arena;
 }
 
-// A symbol or a parameter of the model running now.  C++ carries a poison
-// instead, unable to afford a branch per input; Python already pays more per
-// call than the branch costs.
+// A symbol or parameter of the running model. Unlike C++, which carries a
+// poison, Python raises at once, since the extra branch costs nothing here.
 [[nodiscard]] PyExpression make_input(rt::OpCode kind, std::string_view name) {
   const auto arena = arena_now();
   const auto e = rt::named(*arena, kind, name);
@@ -69,8 +66,8 @@ pyb::handle error_class;
   return {e, arena};
 }
 
-// An implicit input and the residual `residual(z)` it is a root of; a
-// poisoned residual is kept on the arena for the equation.
+// An implicit input z defined as a root of `residual(z)`. A poisoned residual
+// is left on the arena for the equation to report.
 [[nodiscard]] PyExpression make_implicit(std::string_view name,
                                          const pyb::function &residual) {
   const auto arena = arena_now();
@@ -84,8 +81,7 @@ pyb::handle error_class;
   return {z, arena};
 }
 
-// One root, or m of them from a tuple or list.  The count is a runtime value
-// throughout, which is why these bindings sit below impl::Equation.
+// The roots of a model's result, one expression or a tuple or list of them.
 [[nodiscard]] std::vector<rt::NodeId> roots_of(const pyb::object &built,
                                                rt::Arena<double> &arena) {
   const bool many =
@@ -98,9 +94,8 @@ pyb::handle error_class;
   }
 
   return returned | std::views::transform([&arena](const pyb::handle item) {
-           // By value, not by reference: a bare number is a pending literal,
-           // and implicitly_convertible is what lets `lambda: 2.0` name a
-           // constant.
+           // Cast by value, so a bare number such as `lambda: 2.0` converts
+           // to a constant.
            const auto e = pyb::cast<PyExpression>(item);
            if (e.poisoned()) {
              fail_with(*rt::detail::Router::why(e.base()));
@@ -110,11 +105,8 @@ pyb::handle error_class;
          impl::to<std::vector<rt::NodeId>>();
 }
 
-// ddx.equation over sources rather than a callback: the same three steps, with
-// the model read instead of run.  The roots go through roots_of, so a model
-// naming no symbol is refused exactly as `lambda: 2.0` is, and every source is
-// read before any of them is an equation -- a symbol the second function
-// introduces still wants a slot.
+// ddx.equation over source strings instead of a callback. Every source is
+// parsed into one arena before the equation is formed.
 [[nodiscard]] pyb::object text_equation(std::span<const std::string> sources) {
   auto arena = std::make_shared<rt::Arena<double>>();
   pyb::list built;
@@ -127,16 +119,14 @@ pyb::handle error_class;
   return pyb::cast(PyEquation{std::move(arena), std::move(roots)});
 }
 
-// The whole of ddx.equation: install an arena, run the model in it, take what
-// comes back -- rt::equation(assemble)'s three steps, with the output count a
-// number rather than a template parameter.
+// ddx.equation: installs an arena, runs the model in it, and forms an
+// equation from what the model returns.
 [[nodiscard]] pyb::object make_equation(const pyb::object &model) {
   auto arena = std::make_shared<rt::Arena<double>>();
   pyb::object built;
   {
-    // RAII, and load-bearing: if the model raises, pybind11 unwinds through
-    // here as py::error_already_set and this is what puts the previous arena
-    // back.  Without it a raising model would poison every one after it.
+    // Restores the previous arena even when the model raises, or one failing
+    // model would break every later one.
     const impl::scoped_value scope{current_arena, arena};
     built = model();
   }
@@ -144,13 +134,11 @@ pyb::handle error_class;
   auto roots = roots_of(built, *arena);
   pyb::object eq = pyb::cast(PyEquation{std::move(arena), std::move(roots)});
 
-  // What functools.wraps would do, without a Python wrapper to do it: the
-  // equation answers help() and repr() with the model's own name and docstring.
+  // Copies the model's name and docstring onto the equation, as
+  // functools.wraps would.
   static constexpr std::array kWrapped{"__name__", "__qualname__", "__doc__",
                                        "__module__"};
   for (const char *attr : kWrapped) {
-    // One getattr, not a hasattr probe and then the fetch; an attribute that
-    // exists and holds None is still copied, as hasattr read it.
     if (const auto value = pyb::reinterpret_steal<pyb::object>(
             PyObject_GetAttrString(model.ptr(), attr))) {
       eq.attr(attr) = value;
@@ -182,8 +170,8 @@ PYBIND11_MODULE(_ddx, m) {
   m.attr("has_jit") = false;
 #endif
 
-  // The class first, then a translator that puts the code on the instance --
-  // register_exception would install one that carries only the message.
+  // A custom translator, because register_exception's would carry only the
+  // message and not the error code.
   ddx::py::error_class =
       pyb::exception<ddx::py::PyError>(m, "Error", PyExc_RuntimeError)
           .release();
@@ -199,10 +187,7 @@ PYBIND11_MODULE(_ddx, m) {
     }
   });
 
-  // Off the library's own table, so an errc added there reaches Python without
-  // this file changing, each member carrying that table's text as its
-  // docstring.  The literal rather than detail::kMessages[...].data(): a
-  // string_view need not be null-terminated.
+  // Generated from the errc table, so new codes reach Python with no edit here.
   pyb::native_enum<errc> errors(m, "errc", "enum.IntEnum",
                                 "Why ddx refused; Error.code carries one.");
 #define DDX_PY_ERRC(name, text) errors.value(#name, errc::name, text);
@@ -210,11 +195,8 @@ PYBIND11_MODULE(_ddx, m) {
 #undef DDX_PY_ERRC
   errors.finalize();
 
-  // Each operator twice: once against another expression, once against a plain
-  // number.  implicitly_convertible already makes the second work at run time,
-  // but only a real overload puts `float` in the signature -- and the signature
-  // is what reaches the generated stubs, so without it a type checker rejects
-  // `x * 2.0` while the interpreter accepts it.
+  // Each operator is bound twice, for an expression and for a float, so the
+  // generated stubs let type checkers accept `x * 2.0`.
   pyb::class_<PyExpression> expression(m, "Expression");
   const auto binop = [&expression](const char *name, auto fn) {
     expression
@@ -233,7 +215,7 @@ PYBIND11_MODULE(_ddx, m) {
   };
   expression.def(pyb::init<double>(), pyb::arg("value"))
       .def("__repr__", &PyExpression::repr)
-      // A vector: its length, one element as a scalar, and its shape.
+      // Vector access: length, elements and shape.
       .def("__len__", &PyExpression::size)
       .def("__getitem__", &PyExpression::at, pyb::arg("i"))
       .def("__iter__",
@@ -250,10 +232,8 @@ PYBIND11_MODULE(_ddx, m) {
       .def_property_readonly("shape", [](const PyExpression &e) {
         return pyb::tuple(pyb::cast(e.shape()));
       });
-  // The base's own operator, so `x - y` is the node C++ builds; a reflected
-  // name takes the operands the other way round.  `1.0 < x` reaches __gt__ by
-  // Python's own reflection, and __ne__ is spelled out: Python would otherwise
-  // derive it as `not (a == b)`.
+  // Uses the C++ operators, so `x - y` builds the same node as in C++. __ne__
+  // is bound explicitly, or Python would derive it as `not (a == b)`.
   using Base = rt::Expression<double>;
   const auto infix = [&binop](const char *name, const char *reflected,
                               auto fn) {
@@ -279,8 +259,8 @@ PYBIND11_MODULE(_ddx, m) {
   infix("__ge__", nullptr, std::greater_equal<>{});
   infix("__eq__", nullptr, std::equal_to<>{});
   infix("__ne__", nullptr, std::not_equal_to<>{});
-  // On a copy, so `y = acc; acc += t` leaves y alone; a loop of +=, *= or /=
-  // is one node of all its terms.
+  // Applied to a copy, so `y = acc; acc += t` leaves y unchanged. A loop of
+  // +=, *= or /= builds one node over all its terms.
   binop("__iadd__", [](PyExpression acc, const PyExpression &r) {
     return acc += r;
   });
@@ -302,7 +282,7 @@ PYBIND11_MODULE(_ddx, m) {
           "__abs__",
           [](const PyExpression &u) { return unary(rt::OpCode::Abs, u); },
           pyb::is_operator())
-      // C++'s `%`: dot of two vectors, gemv of a matrix and a vector.
+      // C++'s `%`: a dot product of vectors, or a matrix-vector product.
       .def(
           "__matmul__",
           [](const PyExpression &l, const PyExpression &r) {
@@ -310,9 +290,8 @@ PYBIND11_MODULE(_ddx, m) {
                           [](const auto &a, const auto &b) { return a % b; });
           },
           pyb::is_operator())
-      // A comparison is a value with no truth until a point is given, so
-      // `if x < 1:` and `a if x < 1 else b` refuse rather than take the first
-      // arm every time.
+      // A comparison has no truth value until evaluated, so `if x < 1:` raises
+      // instead of silently taking one branch.
       .def("__bool__", [](const PyExpression &) -> bool {
         throw pyb::type_error("the truth value of an Expression is ambiguous; "
                               "use select(cond, if_true, if_false)");
@@ -320,11 +299,8 @@ PYBIND11_MODULE(_ddx, m) {
 
   pyb::implicitly_convertible<double, PyExpression>();
 
-  // After the class, not before: a signature naming a type pybind11 has not
-  // been told about yet renders as the raw C++ spelling, which is what reaches
-  // the generated stubs.
-  // Text first, and typed: the model overload takes pyb::object, which a str
-  // matches too, and pybind11 tries these in the order they are registered.
+  // Registered after the class so the stubs show its Python name. The str
+  // overload comes first, because the callable overload would also match a str.
   m.def(
       "equation",
       [](const std::string &source) {
@@ -352,12 +328,11 @@ PYBIND11_MODULE(_ddx, m) {
   m.def("implicit", &ddx::py::make_implicit, pyb::arg("name"),
         pyb::arg("residual"));
 
-  // Off the opcode table, by each row's factory spelling, so an opcode added
-  // there reaches Python without this file changing; select, the one ternary,
-  // is below.
+  // Generated from the opcode table, so new opcodes reach Python with no edit
+  // here.
   for (const auto i : std::views::iota(0uz, rt::op_count)) {
     const auto op = static_cast<rt::OpCode>(i);
-    // An operator already spells these.
+    // These are already bound as operators.
     if (std::ranges::contains(std::array{rt::OpCode::Neg, rt::OpCode::Add,
                                          rt::OpCode::Mul, rt::OpCode::Div,
                                          rt::OpCode::Lt, rt::OpCode::Le},
@@ -384,8 +359,7 @@ PYBIND11_MODULE(_ddx, m) {
     }
   }
 
-  // Both arms are evaluated and the condition picks one; any nonzero condition
-  // is true, as in C.
+  // Both arms are evaluated; any nonzero condition is true, as in C.
   m.def(
       "select",
       [](const PyExpression &c, const PyExpression &t, const PyExpression &f) {
@@ -393,9 +367,8 @@ PYBIND11_MODULE(_ddx, m) {
       },
       pyb::arg("cond"), pyb::arg("if_true"), pyb::arg("if_false"));
 
-  // The vector factories and reductions: an Expression with a width is a
-  // vector, and the arithmetic above is elementwise over one.  A factory
-  // builds in the equation() callback's arena.
+  // Vector factories and reductions. Factories build in the arena of the
+  // running equation() callback.
   const auto in_arena = [](auto make) {
     const auto arena = ddx::py::arena_now();
     return PyExpression::checked(make(*arena), arena);
@@ -418,8 +391,7 @@ PYBIND11_MODULE(_ddx, m) {
         return PyExpression::pack(scalars, ddx::py::current_arena);
       },
       pyb::arg("scalars"));
-  // Read in place where already column-major, else copied once; a list
-  // converts the same way.
+  // Read in place when already column-major, otherwise copied once.
   using Columns = pyb::array_t<double, pyb::array::f_style | pyb::array::forcecast>;
   const auto data_of = [](const Columns &a) {
     return std::span<const double>{a.data(), static_cast<std::size_t>(a.size())};
@@ -471,7 +443,7 @@ PYBIND11_MODULE(_ddx, m) {
       },
       pyb::arg("u"), pyb::arg("w"));
 
-  // Derivatives as expressions to build on, in the model running now.
+  // Symbolic derivatives, built in the model running now.
   const auto rooted = [](const PyExpression &f) {
     if (f.poisoned()) {
       ddx::py::fail_with(*rt::detail::Router::why(f.base()));
@@ -497,7 +469,7 @@ PYBIND11_MODULE(_ddx, m) {
       },
       pyb::arg("f"), pyb::arg("symbol"));
 
-  // JacobianJvp as JACOBIAN_JVP: an underscore before every inner capital.
+  // Converts CamelCase to UPPER_SNAKE, such as JacobianJvp to JACOBIAN_JVP.
   const auto upper = [](std::string_view name) {
     std::string out;
     for (const auto [i, c] : name | std::views::enumerate) {
@@ -528,9 +500,8 @@ PYBIND11_MODULE(_ddx, m) {
   }
   wants.finalize();
 
-  // Bound once, called repeatedly: `x` is written into and the blocks are read
-  // back.  Not constructible from Python -- Equation.buffer() is the only way
-  // to get one, because it is the equation that owns the pipeline behind it.
+  // A call bound once and run repeatedly. Only Equation.buffer() creates one,
+  // because the equation owns the pipeline behind it.
   pyb::class_<PyCall>(m, "Call")
       .def("__repr__", &PyCall::repr)
       .def("__call__", &PyCall::operator())
@@ -539,12 +510,10 @@ PYBIND11_MODULE(_ddx, m) {
       .def_property_readonly("jacobian", &PyCall::jacobian)
       .def_property_readonly("hessian", &PyCall::hessian);
 
-  // Internal.  ddx.Options is the pydantic model over this, which is where the
-  // ranges are checked; the defaults stay here, because they follow how the
-  // library was built.
+  // Internal; ddx.Options wraps it and checks ranges. The defaults live here
+  // because they follow how the library was built.
   pyb::class_<jit::Options> options{m, "_Options"};
-  // Flat in Python: the identity/policy split is the C++ struct's, and the
-  // pydantic model over this names every field at one level.
+  // The nested Codegen fields are exposed flat, as ddx.Options expects.
   const auto codegen = [&options](const char *name, auto jit::Codegen::*field) {
     options.def_property(
         name, [field](const jit::Options &o) { return o.codegen.*field; },
@@ -555,7 +524,7 @@ PYBIND11_MODULE(_ddx, m) {
   options.def(pyb::init<>())
       .def_readwrite("backend", &jit::Options::backend)
       .def_readwrite("points", &jit::Options::points)
-      // None derives the width; a stated one must hold a point.
+      // None derives the width; a stated width must be at least 1.
       .def_property(
           "lanes",
           [](const jit::Options &o) { return o.codegen.lanes.stated(); },
@@ -588,8 +557,7 @@ PYBIND11_MODULE(_ddx, m) {
       .def("jacobian", &PyEquation::jacobian, pyb::arg("x"))
       .def("gradient", &PyEquation::gradient, pyb::arg("x"))
       .def("hessian", &PyEquation::hessian, pyb::arg("x"))
-      // The direction leads, as it does in C++: a trailing one could not be
-      // told from the point.
+      // The direction comes first, as in C++.
       .def("jvp", &PyEquation::jvp, pyb::arg("v"), pyb::arg("x"))
       .def("vjp", &PyEquation::vjp, pyb::arg("w"), pyb::arg("x"))
       .def("hvp", &PyEquation::hvp, pyb::arg("v"), pyb::arg("x"))
@@ -606,7 +574,7 @@ PYBIND11_MODULE(_ddx, m) {
       .def(
           "buffer",
           [](PyEquation &self, const pyb::handle &x, PyEquation::Want want) {
-            // By pointer: a Point pins its buffers, so a PyCall never moves.
+            // Held by pointer, since a PyCall's Point must never move.
             return std::make_unique<PyCall>(self, want, x);
           },
           pyb::arg("x"), pyb::kw_only(),
@@ -621,8 +589,7 @@ PYBIND11_MODULE(_ddx, m) {
       .def_property_readonly("inputs", &PyEquation::inputs_list)
       .def_property_readonly("arity", &PyEquation::width)
       .def_property_readonly("outputs", &PyEquation::height)
-      // Colours, not n: the Hessian is stored compressed and scattered on
-      // read, so this is what the compiled kernel actually computes per point.
+      // The number of colours the compressed Hessian sweep computes per point.
       .def_property_readonly("hessian_colours",
                              [](const PyEquation &self) {
                                const auto colours = self.hessian_colours();

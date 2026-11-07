@@ -10,17 +10,15 @@
 
 #include <bit>
 
-// Bit-exactness gate: fold the raw IEEE bits of every driver result over a
-// sweep into one FNV hash.  Checked only under -DDDX_PIN_BIT_HASH=<value>; the
-// hash is per-toolchain (FMA formation moves the last bit).  Recompute the
-// pinned value deliberately -- it moving means results moved.
+// Hashes the IEEE bits of every result; the hash is pinned per toolchain with
+// -DDDX_PIN_BIT_HASH=<value>, and a moved hash means results moved.
 
 namespace {
 struct BitHash {
   boost::hash2::fnv1a_64 h;
   void operator()(double d) noexcept {
-    // The bits, not the double: hash2 appends a float as bit_cast(v + 0),
-    // which would fold -0.0 onto +0.0 and hide a sign flip in the last bit.
+    // Hash the bits, because hash2 appends a float as v + 0, which would fold
+    // -0.0 onto +0.0 and hide a sign flip.
     const auto bits = std::bit_cast<std::uint64_t>(d);
     boost::hash2::hash_append(h, boost::hash2::little_endian_flavor{}, bits);
   }
@@ -29,8 +27,8 @@ struct BitHash {
 };
 } // namespace
 
-// The packed tensor with the permutations skipped must equal the dense tensor
-// with every multi-index evaluated.
+// The packed tensor, which skips permutations, must equal the dense tensor
+// evaluated at every multi-index.
 template <std::size_t Order, CExpression Expr, CTupleLike Values>
 void ExpectPackedMatchesDense(const Expr &expr, const Values &values) {
   const auto packed = Equation{expr}.template derivative_tensor<Order>(values);
@@ -39,7 +37,7 @@ void ExpectPackedMatchesDense(const Expr &expr, const Values &values) {
   using S = double;
   using U = ddx::impl::nth_dual_t<S, Order>;
   using symbols = ddx::impl::extract_symbols_from_expr_t<Expr>;
-  // Every multi-index, layout_right order.
+  // Every multi-index, in layout_right order.
   const auto grid = ddx::impl::index_apply<Order>([&]<std::size_t... D>() {
     return std::views::cartesian_product(
         ((void)D, std::views::iota(std::size_t{0}, N))...);

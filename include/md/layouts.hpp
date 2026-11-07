@@ -7,20 +7,20 @@
 #include <cstddef>
 #include <ranges>
 
-// A derivative tensor's symmetry as storage rather than convention.  (The
-// sparse-pattern layout is in coupling.hpp, next to the pass deriving it.)
+// An mdspan layout that stores a derivative tensor's symmetry, keeping one
+// cell per distinct mixed partial.
 namespace ddx::impl {
 
 namespace detail {
 
-// C(n, k), integer arithmetic only: a rounded double would file a derivative in
-// the wrong cell.  consteval; the subscript path uses binomial_fixed.
+// C(n, k) in integer arithmetic, since a rounded double could pick the wrong
+// cell. The run-time subscript path uses binomial_fixed instead.
 [[nodiscard]] consteval std::size_t binomial(std::size_t n,
                                              std::size_t k) noexcept {
   if (k > n) {
     return 0;
   }
-  k = std::min(k, n - k); // C(n, k) == C(n, n - k); take the shorter fold
+  k = std::min(k, n - k); // C(n, k) == C(n, n - k), the shorter fold
   return std::ranges::fold_left(
       std::views::iota(std::size_t{1}, k + 1), std::size_t{1},
       [n, k](std::size_t acc, std::size_t i) { return acc * (n - k + i) / i; });
@@ -30,9 +30,8 @@ static_assert(binomial(4, 2) == 6);
 static_assert(binomial(8, 3) == 56);
 static_assert(binomial(10, 0) == 1);
 
-// C(n, K) with K fixed: the falling product over K!.  binomial()'s
-// `k = min(k, n - k)` makes the fold's bound depend on the runtime n, so the
-// loop cannot unroll; this collapses to a few multiplies and one divide.
+// C(n, K) for a fixed K, as the falling product over K!. Unlike binomial(), it
+// unrolls to a few multiplies and one divide.
 template <std::size_t K>
 [[nodiscard]] constexpr std::size_t binomial_fixed(std::size_t n) noexcept {
   if (n < K) {
@@ -54,16 +53,12 @@ static_assert(binomial_fixed<2>(1) == 0);
 
 } // namespace detail
 
-// Lead dense leading axes over a simplex-packed remainder.  By Schwarz only
-// non-decreasing multi-indices over the derivative axes carry distinct values:
-// C(N + Order - 1, Order) against N^Order dense cells.  Lead covers a
-// vector-valued Equation's output axis; Lead == 0 is the scalar case.  The
-// symmetric part ranks the sorted multiset in colex order, via b_t = a_t + t.
+// Lead dense axes, for a vector output, over symmetric derivative axes packed
+// into C(N + Order - 1, Order) cells, one per sorted multi-index.
 template <std::size_t Lead> struct layout_leading_simplex {
   template <md::CExtents Ext>
   static constexpr std::size_t order_of = Ext::rank() - Lead;
-  // Two axes can only be interchangeable if they have the same length, so the
-  // mapping refuses extents whose symmetric axes differ.
+  // Symmetric axes must have equal lengths to be interchangeable.
   template <md::CStaticExtents Ext> class mapping {
     static_assert(Ext::rank() > Lead,
                   "layout_leading_simplex needs at least one symmetric axis");
@@ -105,9 +100,8 @@ template <std::size_t Lead> struct layout_leading_simplex {
       std::array<index_type, kOrder> a{};
       std::ranges::copy(all | std::views::drop(Lead), a.begin());
       std::ranges::sort(a);
-      // b_t = a_t + t is strictly increasing, so it is a plain combination;
-      // its colex rank is the sum of C(b_t, t + 1).  Expanded over an
-      // index_sequence so that `t` is a compile-time constant at each term.
+      // b_t = a_t + t is strictly increasing, and its colex rank is the sum of
+      // C(b_t, t + 1), with t a compile-time constant in each term.
       const index_type slot = [&]<std::size_t... T>(std::index_sequence<T...>) {
         return static_cast<index_type>(
             (detail::binomial_fixed<T + 1>(static_cast<std::size_t>(a[T]) + T) +
@@ -117,8 +111,7 @@ template <std::size_t Lead> struct layout_leading_simplex {
     }
 
   private:
-    // Cells per output block: C(N + Order - 1, Order).  The packing is what
-    // this layout *is*; required_span_size and operator() are how it is asked.
+    // Cells per output block: C(N + Order - 1, Order).
     [[nodiscard]] constexpr index_type block_size() const noexcept {
       return static_cast<index_type>(detail::binomial_fixed<kOrder>(
           static_cast<std::size_t>(Ext{}.extent(Lead)) + kOrder - 1));
@@ -126,7 +119,7 @@ template <std::size_t Lead> struct layout_leading_simplex {
   };
 };
 
-// The scalar case: every axis is a derivative axis.
+// The scalar-output case, where every axis is a derivative axis.
 using layout_simplex_packed = layout_leading_simplex<0>;
 
 } // namespace ddx::impl

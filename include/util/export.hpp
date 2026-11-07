@@ -2,18 +2,16 @@
 
 #include <boost/config.hpp>
 
-// Default visibility outside MSVC either way: a consumer's TU must see the
-// instances as exported, not hidden.
+// Outside MSVC both sides use default visibility, so a consumer sees the
+// instances as exported rather than hidden.
 #if defined(_MSC_VER) && !defined(DDX_BUILDING)
 #define DDX_API BOOST_SYMBOL_IMPORT
 #else
 #define DDX_API BOOST_SYMBOL_EXPORT
 #endif
 
-// A template libddx instantiates explicitly (DDX_RT_INSTANCES).  GCC and Clang
-// take the visibility on the template, since an instantiation line refuses it
-// for a type a TU completed earlier; MSVC takes it on the instantiation line,
-// since on the template it would import every specialisation.
+// For templates that libddx instantiates explicitly. GCC and Clang need the
+// attribute on the template, MSVC on the instantiation line.
 #if defined(_MSC_VER)
 #define DDX_TEMPLATE_API
 #define DDX_INSTANCE_API DDX_API
@@ -22,11 +20,8 @@
 #define DDX_INSTANCE_API
 #endif
 
-// The extern half of an instantiation libddx makes once, written beside the
-// class: a TU that sees the class and not this instantiates hidden copies of
-// its inline members, and the linker keeps the hidden one.  MSVC refuses
-// dllexport on it (C4910), so libddx's own TUs skip it there; C4251 is the
-// std:: members of an exported class, and both sides share one STL.
+// Declares an instantiation that libddx makes, so no TU builds hidden copies
+// that would win at link. MSVC rejects it inside libddx itself (C4910).
 #if defined(_MSC_VER) && defined(DDX_BUILDING)
 #define DDX_EXTERN_INSTANCE(...)
 #elif defined(_MSC_VER)

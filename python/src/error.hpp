@@ -9,14 +9,8 @@
 
 namespace ddx::py {
 
-// libddx is compiled -fno-exceptions and every refusal travels as a result<T>.
-// This TU cannot be, for two reasons: py::error_already_set is itself a C++
-// exception, and equation() runs a caller's model under scoped_arena, whose
-// guard only the unwind runs.  No throw crosses a -fno-exceptions frame -- the
-// callback and the guard are both here, and libddx never calls into Python.
-//
-// Inherits ddx::error rather than restating it: the code *is* that type and the
-// message is what its own formatter says.
+// The bindings use exceptions, unlike libddx, because pybind11 needs them. No
+// throw crosses into libddx, which never calls back into Python.
 struct PyError : error, std::runtime_error {
   explicit PyError(error e)
       : error(e), std::runtime_error(std::format("{}", e)) {}
@@ -31,8 +25,8 @@ inline void unwrap(const result<void> &r) {
   }
 }
 
-// Constrained away from void: a result<void> prvalue would bind here in
-// preference to the overload above.
+// Excludes void, or a result<void> prvalue would bind here instead of the
+// overload above.
 template <typename T>
   requires(!std::is_void_v<T>)
 [[nodiscard]] T unwrap(result<T> &&r) {

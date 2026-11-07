@@ -6,14 +6,13 @@
 
 #include <vector>
 
-// The gate: H(x)v built by re-rooting, against derive_hessian's own
-// Hessian contracted with the same v.  Two different sweeps of the same arena,
-// so a wrong rule for the Seed leaf shows up as a wrong number here.
+// H(x)v built by re-rooting is checked against derive_hessian's Hessian times
+// the same v, so a wrong rule for the Seed leaf shows up as a wrong number.
 
 namespace {
 using ddx::rt::Arena;
 
-// The point, then the direction, in the order input_column() states.
+// The point followed by the direction, in the order input_column() states.
 std::vector<double> widened(std::span<const double> x,
                             std::span<const double> v) {
   std::vector<double> at{x.begin(), x.end()};
@@ -21,7 +20,7 @@ std::vector<double> widened(std::span<const double> x,
   return at;
 }
 
-// Every cell of the coloured Hessian, scattered, times v.
+// The coloured Hessian scattered to dense and multiplied by v.
 std::vector<double> reference_product(const ddx::rt::Hessian &h,
                                       std::span<const double> values,
                                       std::span<const double> v) {
@@ -59,7 +58,7 @@ void expect_hvp_matches_hessian(auto build, std::size_t nvars,
   }
 }
 
-// Dense coupling: colours == n, the worst case for the coloured path.
+// Dense coupling needs n colours, the worst case for the coloured path.
 auto all_pairs = [](Arena<> &, auto &v) {
   auto acc = ddx::rt::Expression<>{0};
   for (const auto &a : v) {
@@ -70,8 +69,8 @@ auto all_pairs = [](Arena<> &, auto &v) {
   return acc;
 };
 
-// Separable: one colour, and every off-diagonal cell structurally zero, so the
-// fold's terms mostly vanish before a node exists.
+// Separable terms need one colour and leave every off-diagonal cell zero, so
+// most of the fold's terms vanish before a node exists.
 auto separable = [](Arena<> &, auto &v) {
   auto acc = ddx::rt::Expression<>{0};
   for (const auto &a : v) {

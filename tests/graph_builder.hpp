@@ -1,11 +1,7 @@
 #pragma once
 
-// Hand-made graphs for the tests that freeze or compile one directly; an
-// equation builds its own blocks.
-//
-//   GraphBuilder{b}.value(f).build_jacobian().finish()
-//   GraphBuilder{b}.values({f0, f1}).build_jacobian().finish()
-//   GraphBuilder{b}.value(f).build_jacobian().build_hessian().finish()
+// Hand-made graphs for tests that freeze or compile one directly, for example
+// GraphBuilder{b}.value(f).build_jacobian().finish().
 
 #include "rt/derivative.hpp"
 #include "rt/graph.hpp"
@@ -32,8 +28,8 @@ public:
                        impl::to<std::vector<rt::NodeId>>());
   }
 
-  // Not `output`: the functions to differentiate only, so the graph carries
-  // no value block.
+  // Takes the functions to differentiate only, so the graph has no value
+  // block.
   constexpr GraphBuilder &values_from(std::span<const rt::NodeId> roots,
                                       bool output = true) {
     roots_.assign(roots.begin(), roots.end());
@@ -70,7 +66,7 @@ private:
 
 template <impl::Numeric T> GraphBuilder(rt::Arena<T> &) -> GraphBuilder<T>;
 
-// Every output a value.
+// Builds a graph in which every output is a value.
 template <impl::Numeric T>
 [[nodiscard]] rt::Graph<T> freeze_values(const rt::Arena<T> &b,
                                          std::span<const rt::NodeId> values,

@@ -1,6 +1,6 @@
 #pragma once
-// Shared by every tests_jit_*.cpp: the one compiler, and a compile that names
-// LLVM's reason rather than meeting an empty Kernel three lines later.
+// Shared by every tests_jit_*.cpp: the one compiler, and a compile helper that
+// reports LLVM's reason instead of returning an empty Kernel.
 
 #include "jit/kernel.hpp"
 
@@ -11,7 +11,7 @@
 
 namespace {
 
-// No native target means no JIT to test; bring it up once and name the reason.
+// Without a native target there is no JIT to test, so report the reason once.
 ddx::jit::Compiler &compiler() {
   static ddx::jit::compile_result<ddx::jit::Compiler> c =
       ddx::jit::Compiler::create();

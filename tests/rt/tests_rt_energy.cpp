@@ -11,18 +11,16 @@
 #include <numeric>
 #include <string>
 
-// There is no compile-time twin for these models, so the reference is central
+// These models have no compile-time twin, so the reference is central
 // differences on the interpreter, which shares no code with the reverse sweep.
-// Two structural facts: the Jacobian stays cheap as species are added, and the
-// Hessian does not -- a mixing rule couples every species to every other.
 
 namespace {
 using ddx::rt::Arena;
 using models::composition;
 using models::RE;
 
-// Zero-padded: a slot is the symbol's place in the alphabet, so x9 has to sort
-// before x10 for slot order to be site order -- which is what banded means.
+// Names are zero-padded so that x9 sorts before x10, making slot order match
+// site order, which is what makes the Hessian banded.
 std::vector<RE> species(Arena<> &b, std::size_t n) {
   const auto width = std::to_string(n - 1).size();
   std::vector<RE> x;
@@ -33,7 +31,7 @@ std::vector<RE> species(Arena<> &b, std::size_t n) {
   return x;
 }
 
-// Central differences on the interpreter: independent of the sweep.
+// Central differences on the interpreter, independent of the reverse sweep.
 void expect_jacobian_matches_differences(Arena<> &b, ddx::rt::NodeId root,
                                          const ddx::rt::JacobianRow &g,
                                          std::vector<double> pt,
@@ -79,7 +77,7 @@ TEST(RtEnergy, MseJacobian) {
   expect_jacobian_matches_differences(b, f.id(b), g, composition(6));
 }
 
-// 1e-12 mole fractions are routine, and UNIQUAC has x*log(x) and log(phi/x).
+// Mole fractions of 1e-12 are routine, and UNIQUAC has x*log(x) and log(phi/x).
 TEST(RtEnergy, StableDownToTraceMoleFractions) {
   constexpr std::size_t n = 6;
   Arena<> b;
@@ -99,8 +97,8 @@ TEST(RtEnergy, StableDownToTraceMoleFractions) {
       EXPECT_TRUE(std::isfinite(values[g.partial[i]]))
           << "dG/dx" << i << " at trace " << trace;
     }
-    // The change per decade must be proportional to the trace (~1.6x it),
-    // not merely below a fixed tolerance.
+    // The change per decade must be proportional to the trace (about 1.6 times
+    // it), not merely below a fixed tolerance.
     if (previous_trace != 0) {
       EXPECT_LT(std::abs(values[g.value] - previous_value),
                 100.0 * previous_trace)
@@ -112,10 +110,8 @@ TEST(RtEnergy, StableDownToTraceMoleFractions) {
   }
 }
 
-// Every cell of a swept Hessian against central differences of the swept
-// Jacobian row.  Both Hessian tests below are this check; they differ in the
-// model.  Every cell, not only the stored ones -- a cell the colouring dropped
-// still has to read back as the zero it claims to be.
+// Checks every cell of a swept Hessian, including cells the colouring dropped,
+// against central differences of the swept Jacobian row.
 void expect_matches_differences(const ddx::rt::Hessian &h, Arena<> &b,
                                 std::size_t n) {
   const auto pt = composition(n);
@@ -154,14 +150,12 @@ TEST(RtEnergy, MixingRulesGiveADenseHessian) {
     const auto colouring = ddx::rt::colour_columns(rows);
     EXPECT_EQ(colouring.count(), n) << "n=" << n;
 
-    // Every column couples every other, so no two may share a colour.
     for (const auto [i, row] : rows | std::views::enumerate) {
       EXPECT_EQ(row.count(), n) << "row " << i << " couples fewer than all";
     }
   }
 }
 
-// The Jacobian stays proportional to the expression; the Hessian does not.
 TEST(RtEnergy, JacobianStaysCheapAsSpeciesAreAdded) {
   std::size_t previous_ratio = 0;
   for (const std::size_t n : {5u, 10u, 20u}) {
@@ -172,7 +166,7 @@ TEST(RtEnergy, JacobianStaysCheapAsSpeciesAreAdded) {
     (void)ddx::rt::derive_jacobian(b, f.id(b));
     const std::size_t added = b.size() - built;
 
-    // One reverse sweep: a small multiple of the function, not of n.
+    // One reverse sweep costs a small multiple of the function, not of n.
     EXPECT_LT(added, 3 * built) << "n=" << n;
     const std::size_t ratio = added / built;
     if (previous_ratio != 0) {
@@ -186,8 +180,6 @@ TEST(RtEnergy, JacobianStaysCheapAsSpeciesAreAdded) {
 
 namespace {
 
-// A finite interaction range makes the Hessian banded, and the colouring is
-// then a handful of sweeps rather than one per species.
 TEST(RtEnergySparse, FiniteRangeGivesFewColours) {
   for (const std::size_t n : {20u, 60u, 200u}) {
     Arena<> b;
@@ -196,8 +188,8 @@ TEST(RtEnergySparse, FiniteRangeGivesFewColours) {
     const auto colouring =
         ddx::rt::colour_columns(ddx::rt::coupling_pattern(b, e.id(b)));
 
-    // Bounded degree, so the colour count must not grow with n.  Measured at
-    // 5 with smallest-last ordering, which is worth ~2.4x here.
+    // The degree is bounded, so the colour count must not grow with n; it
+    // measures 5 with smallest-last ordering.
     EXPECT_LE(colouring.count(), 6u) << "n=" << n;
     EXPECT_LT(colouring.count(), n);
   }
@@ -221,9 +213,8 @@ TEST(RtEnergySparse, BondedChainIsBanded) {
   EXPECT_LE(ddx::rt::colour_columns(rows).count(), 5u);
 }
 
-// Colouring can silently break correctness, so check elementwise.
 TEST(RtEnergySparse, ColouredHessianIsStillCorrect) {
-  // Larger than the interaction range: a ring of 8 at range 2 saves nothing.
+  // Larger than the interaction range; a ring of 8 at range 2 saves nothing.
   constexpr std::size_t n = 16;
   Arena<> b;
   const auto s = species(b, n);

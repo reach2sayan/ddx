@@ -9,9 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from . import _ddx
 from ._ddx import Backend, OptLevel, VecLib
 
-# What the build settled on: DDX_JIT_DEFAULT_OPT follows CMAKE_BUILD_TYPE and
-# DDX_JIT_DEFAULT_CONTRACT follows DDX_FP_FLAGS, so the defaults are read off the
-# library rather than restated here, where they would drift.
+# The defaults depend on how the library was built, so they are read from it
+# rather than restated here.
 _DEFAULTS: _ddx._Options = _ddx._Options()
 
 

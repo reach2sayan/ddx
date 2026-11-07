@@ -16,10 +16,6 @@
 
 namespace ddx::impl {
 
-// An owning, constant-evaluable tensor with compile-time extents and a layout
-// policy.  t[i, j, k] is one mapping call; there is no rank-reducing view,
-// since the packed and sparse layouts have no cheap submdspan_mapping.
-
 namespace detail {
 
 template <typename... I>
@@ -36,14 +32,15 @@ template <std::size_t N, std::size_t Order>
 using uniform_extents_t =
     boost::mp11::mp_apply<detail::extents_of, detail::repeated<N, Order>>;
 
-// The same with one leading axis: a per-output stack, as a vector-valued
-// Equation produces.
+// The same with a leading output axis, as a vector-valued Equation produces.
 template <std::size_t Lead, std::size_t N, std::size_t Order>
 using stacked_extents_t = boost::mp11::mp_apply<
     detail::extents_of,
     boost::mp11::mp_push_front<detail::repeated<N, Order>,
                                boost::mp11::mp_size_t<Lead>>>;
 
+// An owning, constexpr-usable tensor with compile-time extents and a layout.
+// There is no rank-reducing view, since packed layouts have no cheap one.
 template <Numeric S, md::CStaticExtents Ext, typename Layout = md::layout_right>
 class md_tensor {
 public:
@@ -72,13 +69,12 @@ private:
 public:
   constexpr md_tensor() noexcept = default;
 
-  // Stored, which under a packed layout is fewer than addressable.
+  // The number of stored cells, fewer than the addressable ones when packed.
   [[nodiscard]] static constexpr std::size_t size() noexcept { return kSize; }
   [[nodiscard]] static constexpr index_type extent(std::size_t r) noexcept {
     return Ext{}.extent(r);
   }
 
-  // Const-ness rides on `self`, so one body serves every category.
   [[nodiscard]] constexpr auto *data(this auto &&self) noexcept {
     return DDX_FWD(self).data_.data();
   }
@@ -105,13 +101,12 @@ public:
   }
 };
 
-// The default layout is the symmetric packing, not layout_right:
+// A derivative tensor, packed by symmetry by default.
 template <Numeric S, std::size_t N, std::size_t Order,
           typename Layout = layout_simplex_packed>
 using nd_tensor_t = md_tensor<S, uniform_extents_t<N, Order>, Layout>;
 
-// A per-output stack, as one rank-(Order + 1) object.  The output axis is
-// dense: it indexes different functions.
+// One derivative tensor per output, stacked along a dense leading axis.
 template <Numeric S, std::size_t Lead, std::size_t N, std::size_t Order,
           typename Layout = layout_leading_simplex<1>>
 using nd_stack_t = md_tensor<S, stacked_extents_t<Lead, N, Order>, Layout>;

@@ -1,17 +1,7 @@
 #pragma once
 
-// Vectors and matrices in a runtime graph: the factories and reductions over
-// a handle that is itself tensor-valued (Expression::size() > 0).
-//
-//   auto x = rt::vec("x", n);                    // n symbols, packed
-//   auto B = rt::mat_constant(n, n, data);       // column-major
-//   auto g = x % (exp(T * B) % x) + rt::sum(log(x) * x);
-//
-// The arithmetic is Expression's own: elementwise over a vector or a matrix,
-// a Scale for a scalar times one, and a literal takes the shape of the row it
-// meets.  `%` is the product -- dot() of two vectors, gemv() of a matrix and a
-// vector, gemv(M, v, true) for rt::transpose(M) % v.  A mat_constant table is
-// read as its row, in place.
+// Factories and reductions for vector and matrix expressions. The % operator
+// is dot() for two vectors and gemv() for a matrix and a vector.
 
 #include "rt/arena.hpp"
 #include "rt/expressions.hpp"
@@ -33,31 +23,30 @@
 namespace ddx::rt {
 
 namespace detail {
-// The arena a vector is built in: the first scalar that names one, else the
-// equation() callback's.
+// The arena of the first scalar that has one, else the callback's arena.
 template <impl::Numeric T>
 [[nodiscard]] Arena<T> *arena_of(std::span<const Expression<T>> scalars) {
   Arena<T> *const b = Router::first_arena(scalars);
   return b != nullptr ? b : current_arena<T>;
 }
 
-// The refusal the factories share, and a factory over the equation()
-// callback's arena, refused outside one.
+// A poisoned result for a refused factory call.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> refused(errc why) noexcept {
   return Router::poison<T>(why);
 }
+// Runs make in the callback's arena, or refuses outside an equation callback.
 template <impl::Numeric T> [[nodiscard]] Expression<T> in_arena(auto &&make) {
   return current_arena<T> == nullptr ? refused<T>(errc::outside_equation)
                                      : DDX_FWD(make)(*current_arena<T>);
 }
-// The first operand's poison, if one is poisoned.
+// The poison of the first poisoned operand, if any.
 [[nodiscard]] constexpr std::optional<errc> poisoned(const auto &...es) {
   std::optional<errc> why;
   ((why = why ? why : Router::why(es)), ...);
   return why;
 }
-// A table's rows and columns, which shape_of() leaves to the table itself.
+// The shape of a node, including a table, which shape_of() does not cover.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Shape matrix_shape(const Arena<T> &b,
                                            const Expression<T> &m) {
@@ -67,8 +56,8 @@ template <impl::Numeric T>
   const auto &data = b.tensors()[get<TensorRef>(b[m.id()]).value];
   return {.rows = data.rows, .cols = data.cols};
 }
-// Why the operands are not all vector nodes of an arena, if they are not: a
-// pending literal has no width and a scalar node is not a vector.
+// The error if any operand is not a vector node, such as a pending literal or
+// a scalar node.
 [[nodiscard]] constexpr std::optional<errc> not_a_vector(const auto &...vs) {
   if (const auto why = poisoned(vs...)) {
     return why;
@@ -78,8 +67,8 @@ template <impl::Numeric T>
 }
 } // namespace detail
 
-// The vector of `scalars`, in order.  Every scalar is one element, so a
-// vector of n symbols is n Var leaves and symbols() is unchanged.
+// Packs scalars into a vector, one element each, so a vector of n symbols is
+// still n Var leaves.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T>
 pack(Arena<T> &b, std::span<const Expression<T>> scalars) {
@@ -115,7 +104,7 @@ template <impl::Numeric T>
 }
 
 namespace detail {
-// n inputs of `kind` named `name[0]` .. `name[n-1]`, packed.
+// Packs n inputs of the given kind named name[0] through name[n-1].
 template <impl::Numeric T>
 [[nodiscard]] Expression<T> indexed(Arena<T> &b, OpCode kind,
                                     std::string_view name, std::size_t n) {
@@ -128,8 +117,8 @@ template <impl::Numeric T>
 }
 } // namespace detail
 
-// n symbols named `name[0]` .. `name[n-1]`, packed; vec_param the same of
-// params, a vector the point brings and nothing differentiates.
+// A vector of n symbols named name[0] through name[n-1]; vec_param makes
+// parameters, which are never differentiated.
 template <impl::Numeric T>
 [[nodiscard]] Expression<T> vec(Arena<T> &b, std::string_view name,
                                 std::size_t n) {
@@ -150,7 +139,7 @@ template <impl::Numeric T = double>
       [&](Arena<T> &b) { return vec_param(b, name, n); });
 }
 
-// A constant vector or matrix, column-major.
+// A constant vector or a column-major matrix.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> vec_constant(Arena<T> &b,
                                                    std::span<const T> data) {
@@ -174,7 +163,8 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T>
 mat_constant(Arena<T> &b, std::size_t rows, std::size_t cols,
              std::span<const T> data) {
-  // Each fits 32 bits first, so the product below cannot wrap.
+  // Both dimensions are checked against 32 bits first, so rows * cols cannot
+  // wrap.
   constexpr std::size_t most = std::numeric_limits<std::uint32_t>::max();
   if (rows == 0 || cols == 0 || rows > most || cols > most ||
       data.size() != rows * cols) {
@@ -191,7 +181,7 @@ mat_constant(std::size_t rows, std::size_t cols,
       [&](Arena<T> &b) { return mat_constant(b, rows, cols, data); });
 }
 
-// The reductions to a scalar.
+// Reductions to a scalar.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> sum(const Expression<T> &v) {
   if (const auto why = detail::not_a_vector(v)) {
@@ -206,7 +196,7 @@ template <impl::Numeric T>
   if (const auto why = detail::poisoned(u, v)) {
     return detail::refused<T>(*why);
   }
-  // Either side may be a literal, which takes the other's width.
+  // Either side may be a literal, which takes the other side's width.
   Arena<T> *const b = detail::Router::arena(u) ? detail::Router::arena(u)
                                                : detail::Router::arena(v);
   const Shape shape = u.size() ? u.shape() : v.shape();
@@ -221,8 +211,7 @@ template <impl::Numeric T>
                       {.left = u.id(*b, shape), .right = v.id(*b, shape)})};
 }
 
-// M v, or M^T v: a mat_constant table read in place, or a matrix the model
-// computed, which the derivatives then reach too.
+// M v, or M^T v when transposed, for a constant table or a computed matrix.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T>
 gemv(const Expression<T> &m, const Expression<T> &v, Orientation orientation) {
@@ -252,8 +241,8 @@ gemv(const Expression<T> &m, const Expression<T> &v, bool transposed = false) {
 }
 
 namespace detail {
-// Mᵀ, only as the left side of `%`: the gemv(M, v, true) node, not a node of
-// its own.
+// A transposed matrix usable only on the left of %, where it builds
+// gemv(M, v, true) rather than a node of its own.
 template <impl::Numeric T> struct Transposed {
   Expression<T> m;
 
@@ -270,8 +259,8 @@ transpose(const Expression<T> &m) {
   return {m};
 }
 
-// The product: M % v is gemv(M, v), u % v is dot(u, v), and a matrix on the
-// right is refused.
+// M % v is gemv(M, v) and u % v is dot(u, v); a matrix on the right is
+// refused.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> operator%(const Expression<T> &l,
                                                 const Expression<T> &r) {
@@ -286,7 +275,7 @@ template <impl::Numeric T>
   return is_matrix(l) ? gemv(l, r) : dot(l, r);
 }
 
-// u w^T, the matrix of every product of an element of u with one of w.
+// The outer product u w^T.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> outer(const Expression<T> &u,
                                             const Expression<T> &w) {
@@ -303,8 +292,7 @@ template <impl::Numeric T>
 }
 
 namespace detail {
-// v + s e_i: the vector with one element moved by a scalar -- the adjoint of
-// v[i].
+// v + s e_i, which adds a scalar to element i; this is the adjoint of v[i].
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T>
 add_at(const Expression<T> &v, const Expression<T> &s, std::size_t i) {

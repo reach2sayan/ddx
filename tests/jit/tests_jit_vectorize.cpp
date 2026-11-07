@@ -11,15 +11,14 @@
 #include <regex>
 #include <string>
 
-// A scalar fallback is silent -- right answers, slowly -- so vectorisation is
-// asserted on the IR, not inferred from a benchmark.  Transcendentals are
-// asserted both ways: scalar under the default, vector when a caller opts in.
+// A scalar fallback still gives right answers, only slowly, so vectorisation is
+// asserted on the IR rather than inferred from timings.
 
 namespace {
 using ddx::rt::Arena;
 using ddx::rt::Graph;
 
-// Any width: libmvec offers 2, 4 and 8, and the choice is the host's.
+// libmvec offers widths 2, 4 and 8, and the host picks, so any width counts.
 bool has_vector_doubles(const std::string &ir) {
   return std::regex_search(ir, std::regex{R"(<[0-9]+ x double>)"});
 }
@@ -48,15 +47,14 @@ std::string ir_for(auto build, std::size_t nvars, ddx::jit::Options opt = {}) {
   return *compiler().ir(graph, opt);
 }
 
-// nounwind is what Kernel::operator()'s noexcept rests on, and willreturn lets
-// the optimiser move code across the call.  Asserted on the *optimised* IR,
-// which is what runs.
+// nounwind backs Kernel::operator()'s noexcept and willreturn lets the
+// optimiser move code across the call; both are checked on the optimised IR.
 TEST(JitVectorize, TheKernelIsNounwind) {
   const auto ir = ir_for([](auto &v) { return exp(v[0]) * sin(v[1]); }, 2);
 
   const std::smatch attrs = [&] {
     std::smatch m;
-    // The attribute group the kernel definition names, then that group's body.
+    // Find the attribute group the kernel definition names, then its body.
     std::smatch def;
     EXPECT_TRUE(std::regex_search(
         ir, def, std::regex{R"(define[^\n]*@ddx_kernel_\w+\([^\n]*#(\d+))"}))
@@ -70,8 +68,8 @@ TEST(JitVectorize, TheKernelIsNounwind) {
   const std::string got = attrs[1].str();
   EXPECT_NE(got.find("nounwind"), std::string::npos) << got;
   EXPECT_NE(got.find("willreturn"), std::string::npos) << got;
-  // The columns are reached through pointers the kernel loads, so no argmem
-  // claim is true of it; one here would be a lie the optimiser may believe.
+  // The kernel reaches its columns through loaded pointers, so an argmem claim
+  // would be false and the optimiser might act on it.
   EXPECT_EQ(got.find("argmem"), std::string::npos) << got;
 }
 
@@ -80,16 +78,15 @@ TEST(JitVectorize, ArithmeticLoopVectorises) {
   EXPECT_TRUE(has_vector_doubles(ir)) << "the arithmetic loop stayed scalar";
 }
 
-// The default declines the vector library, so a transcendental is the scalar
-// libm one -- the same routine the interpreter calls.  This is the assertion
-// that keeps the two on one implementation unless someone says otherwise.
+// By default the vector library is declined, so a transcendental is the scalar
+// libm routine that the interpreter also calls.
 TEST(JitVectorize, TranscendentalsStayScalarByDefault) {
   const auto ir = ir_for([](auto &v) { return exp(v[0]) * sin(v[1]); }, 2);
   EXPECT_FALSE(calls_vector_libm(ir, "sin")) << "sin took a vector route";
   EXPECT_FALSE(calls_vector_libm(ir, "exp")) << "exp took a vector route";
 }
 
-// And the opt-in still works: the machinery is kept, only its default changed.
+// Opting in to libmvec still produces vector libm calls.
 TEST(JitVectorize, VecLibLibmvecUsesVectorLibm) {
   if constexpr (!host_has_libmvec) {
     GTEST_SKIP() << "libmvec is glibc on x86-64";
@@ -102,9 +99,8 @@ TEST(JitVectorize, VecLibLibmvecUsesVectorLibm) {
   EXPECT_TRUE(calls_vector_libm(ir, "exp")) << "exp was not vectorised";
 }
 
-// A derived width under the vector library is the widest it serves: LLVM 20's
-// libmvec stops at four doubles, and an AVX-512 host would otherwise emit an
-// eight-wide sin with no library form and get scalar calls back.
+// LLVM 20's libmvec stops at four doubles, so a derived width is capped there;
+// an eight-wide sin would otherwise fall back to scalar calls.
 TEST(JitVectorize, VecLibCapsADerivedWidth) {
   if constexpr (!host_has_libmvec) {
     GTEST_SKIP() << "libmvec is glibc on x86-64";
@@ -114,14 +110,14 @@ TEST(JitVectorize, VecLibCapsADerivedWidth) {
   const auto ir = ir_for([](auto &v) { return sin(v[0]) + v[1]; }, 2, on);
   EXPECT_FALSE(std::regex_search(ir, std::regex{R"(<(8|16) x double>)"}))
       << "wider than the library serves";
-  // Stated widths are taken as stated, whatever the library has.
+  // A stated width is used as stated, whatever the library supports.
   on.codegen.lanes = *ddx::jit::Lanes::exactly(8);
   const auto wide = ir_for([](auto &v) { return sin(v[0]) + v[1]; }, 2, on);
   EXPECT_NE(wide.find("<8 x double>"), std::string::npos) << wide;
 }
 
 TEST(JitVectorize, JacobianLoopVectorises) {
-  // Wider and sharing subexpressions, and still has to vectorise.
+  // A wider Jacobian with shared subexpressions must still vectorise.
   Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
@@ -133,9 +129,8 @@ TEST(JitVectorize, JacobianLoopVectorises) {
   EXPECT_TRUE(has_vector_doubles(ir)) << "the Jacobian loop stayed scalar";
 }
 
-// Many columns and a transcendental in every one.  A loop vectoriser would
-// need a runtime alias check per pair of columns and give up past a handful;
-// the body is emitted wide instead, so the column count is not a question.
+// A loop vectoriser would give up on many columns over alias checks, but the
+// body is emitted wide, so the column count does not matter.
 TEST(JitVectorize, WideTranscendentalJacobianIsVector) {
   Arena<> b;
   std::vector<ddx::rt::Expression<>> v;
@@ -155,7 +150,6 @@ TEST(JitVectorize, WideTranscendentalJacobianIsVector) {
       << "the batch tail is not masked";
 }
 
-// The scalar kernel has no vector type anywhere in it.
 TEST(JitVectorize, OneLaneIsScalar) {
   ddx::jit::Options scalar;
   scalar.codegen.lanes = ddx::jit::Lanes::scalar();
@@ -165,8 +159,8 @@ TEST(JitVectorize, OneLaneIsScalar) {
   EXPECT_EQ(ir.find("llvm.masked"), std::string::npos) << ir;
 }
 
-// LLVM's table is written against a newer glibc than some hosts ship, so under
-// the opt-in every symbol the vectoriser chose has to resolve.
+// LLVM's vector table targets a newer glibc than some hosts ship, so every
+// symbol the vectoriser chose under the opt-in must resolve.
 TEST(JitVectorize, EveryVectorSymbolResolves) {
   if constexpr (!host_has_libmvec) {
     GTEST_SKIP() << "libmvec is glibc on x86-64";

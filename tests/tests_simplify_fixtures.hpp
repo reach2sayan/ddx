@@ -1,19 +1,11 @@
 #pragma once
-// Everything tests_simplify.cpp and dual/tests_simplify_dual.cpp both build on:
-// the includes, the model expressions and the local helpers.  Split out so the
-// two suites share one definition of each rather than a copy apiece.
+// The includes, model expressions and helpers shared by tests_simplify.cpp and
+// dual/tests_simplify_dual.cpp.
 
 #include "tests_common.hpp"
 
-// ===========================================================================
-// Algebraic simplification (expr/simplify.hpp)
-//
-// Identity folding runs in the operator factories, so trees are born folded
-// and the garbage is never instantiated; canonical ordering of commutative
-// operands runs where Equation is built.  The point of all of it is node
-// count -- node_cache_t is one slot per node and every sweep visits every one
-// -- so these assertions are on node_count_v, at compile time.
-// ===========================================================================
+// Folding runs as trees are built and every sweep visits every node, so these
+// tests assert on node_count_v at compile time.
 
 namespace {
 using ddx::impl::detail::canonicalise;
@@ -30,9 +22,8 @@ constexpr auto F4 =
     (sx + sy) * (sz - sw) + exp(sx * sz) + sin(sy * sw) + sx * sy * sz * sw;
 } // namespace
 
-// Two scalars for the commutativity opt-in below: the same type but for the
-// tag, so the only thing that differs is whether they declare that their
-// multiplication commutes.
+// Two scalars that differ only in whether their multiplication declares itself
+// commutative.
 template <int Tag> struct Ring {
   double v{};
   friend constexpr Ring operator+(Ring a, Ring b) noexcept {
@@ -53,10 +44,8 @@ using Undeclared = Ring<0>;
 using Declared = Ring<1>;
 DDX_COMMUTATIVE_MULTIPLY(Ring<1>)
 
-// A genuine non-commutative ring: the only kind of scalar that can observe
-// which side an adjoint multiplies on.  Scalars embed as s*I, which is what
-// makes Lit<Mat2, 0>, Lit<Mat2, 1> and the sweep's root adjoint T{1} come out
-// as the zero and identity matrices.
+// A non-commutative ring, the only kind of scalar that can observe which side
+// an adjoint multiplies on; scalars embed as s*I.
 struct Mat2 {
   double a{}, b{}, c{}, d{};
   constexpr Mat2() = default;
@@ -73,25 +62,22 @@ struct Mat2 {
     return {x.a * y.a + x.b * y.c, x.a * y.b + x.b * y.d, x.c * y.a + x.d * y.c,
             x.c * y.b + x.d * y.d};
   }
-  friend constexpr Mat2 operator/(Mat2 x, Mat2 y) noexcept { // x * y^-1
+  friend constexpr Mat2 operator/(Mat2 x, Mat2 y) noexcept {
     const double det = y.a * y.d - y.b * y.c;
     return x * Mat2{y.d / det, -y.b / det, -y.c / det, y.a / det};
   }
   constexpr Mat2 operator-() const noexcept { return {-a, -b, -c, -d}; }
-  // Deliberately NO operator+= -- CFieldLike does not require one, and this
-  // type existing without it is what pins that the reverse sweep does not
-  // secretly demand one either (values.hpp accumulates with + and assignment).
+  // Mat2 has no operator+=, which pins that the reverse sweep accumulates with
+  // + and assignment and never demands one.
   friend constexpr bool operator==(Mat2, Mat2) noexcept = default;
 };
 
-// Whether an op template accepts a scalar, WITHOUT instantiating it -- naming a
-// constrained specialisation directly is a hard error rather than a
-// substitution failure, so the template template parameter is what puts the
-// check in a deduced context where the constraint can fail softly.
+// Checks whether an op accepts a scalar without instantiating it, because a
+// constrained specialisation named directly is a hard error.
 template <template <class> class Op, class T>
 concept OpAccepts = requires { typename Op<T>; };
 
-// Closed under the five operators CFieldLike names, but with no way to spell 1.
+// A type closed under the five CFieldLike operators but with no way to spell 1.
 class NoIdentity {
   [[maybe_unused]] double v{};
 

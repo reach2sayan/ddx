@@ -17,7 +17,7 @@
 #include <vector>
 
 // A kernel computes exactly the outputs its graph was frozen with, so freezing
-// {value, partials...} yields the Jacobian columns.
+// the value and partials yields the Jacobian columns.
 
 namespace {
 using ddx::rt::Arena;
@@ -32,7 +32,7 @@ void expect_jacobian_matches_interpreter(auto build, std::size_t nvars,
     vars.push_back(var(b, names[i]));
   }
   const auto root = build(b, vars);
-  // The sweep is repeated for the reference values; the arena runs its own.
+  // The reference sweep is run separately; the arena runs its own.
   const auto reference_jacobian = ddx::rt::derive_jacobian(b, root.id(b));
   const auto kernel = must_compile(
       ddx::test::GraphBuilder{b}.value(root).build_jacobian().finish());
@@ -129,7 +129,7 @@ TEST(JitJacobian, MatchesDdxThroughTheBridge) {
 namespace {
 
 // The Hessian arrives compressed by colour, so the kernel reports its column
-// count rather than leaving the caller to derive it from n.
+// count instead of leaving the caller to derive it.
 TEST(JitHessian, ThirdBlockCarriesTheColouredHessian) {
   Arena<> b;
   const auto x = var(b, "x");
@@ -167,7 +167,7 @@ TEST(JitHessian, ThirdBlockCarriesTheColouredHessian) {
 
   kernel(xs, values, jp, hp, n);
 
-  // Against the interpreter over the same graph, scattered the same way.
+  // Compare against the interpreter on the same graph, scattered the same way.
   const auto &colouring = graph.colouring();
   for (std::size_t point = 0; point < n; ++point) {
     const std::array<double, 2> at{cx[point], cy[point]};
@@ -186,9 +186,8 @@ TEST(JitHessian, ThirdBlockCarriesTheColouredHessian) {
   EXPECT_EQ(colouring.count() * 2, kernel.shape().hessian);
 }
 
-// The kernel is lowered from the rebalanced roots whatever the arena holds
-// besides: a dense Hessian swept first leaves tensor nodes no scalar root
-// reads, and the value kernel keeps the bits of one swept without it.
+// A dense Hessian swept first leaves tensor nodes that no scalar root reads,
+// and the value kernel must keep the bits it has without them.
 TEST(JitJacobian, ADenseHessianSweptFirstLeavesTheKernelsBits) {
   const auto build = [] {
     return ddx::rt::equation([] {

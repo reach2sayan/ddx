@@ -16,12 +16,12 @@
 #include <vector>
 
 // A system's output count is a run-time number, and every sweep past the
-// Jacobian waits to be asked for.
+// Jacobian is built only when asked for.
 namespace {
 
 using RE = ddx::rt::Expression<>;
 
-// Five functions of three symbols, as a model whose count comes from data.
+// Five functions of three symbols, like a model whose count comes from data.
 [[nodiscard]] std::vector<RE> five(const RE &x, const RE &y, const RE &z) {
   return {x * y, sin(x) + z, exp(y * z), x * x * z, log(y) + x};
 }
@@ -103,7 +103,6 @@ TEST(RtSystem, BatchJacobianMatchesThePointCalls) {
   }
 }
 
-// The one-output members refuse a system rather than answer for output 0.
 TEST(RtSystem, OneOutputMembersRefuseASystem) {
   const auto sys = five_system();
   const std::array v{1.0, 0.0, 0.0};
@@ -124,7 +123,6 @@ TEST(RtSystem, OneOutputMembersRefuseASystem) {
           .has_value());
 }
 
-// m x n x n off the arena, each block the scalar equation's Hessian.
 TEST(RtSystem, HessianStacksTheScalarHessians) {
   const auto sys = five_system();
   const auto H = *sys.hessian(system_point);
@@ -138,10 +136,8 @@ TEST(RtSystem, HessianStacksTheScalarHessians) {
   }
 }
 
-// A system's hessian() at a point walks the arena rather than a frozen graph,
-// and contracts as the equation says: with contraction off, no product is
-// fused there either, so each output's block is the one-output batch path's
-// to the bit.
+// A system's hessian() walks the arena and contracts as the equation says, so
+// with contraction off each block matches the one-output batch path to the bit.
 TEST(RtSystem, AHessianAtAPointContractsAsTheEquationSays) {
   for (const bool contract : {true, false}) {
     ddx::jit::Options opt;
@@ -161,8 +157,8 @@ TEST(RtSystem, AHessianAtAPointContractsAsTheEquationSays) {
   }
 }
 
-// A literal output is a constant function wherever it stands: the arena is
-// the first output's that names one.
+// A literal output is constant wherever it stands, so the arena comes from the
+// first output that names one.
 TEST(RtSystem, ALiteralFirstOutputTakesTheArenaOfTheNext) {
   const auto first = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
@@ -187,9 +183,8 @@ TEST(RtSystem, AnEmptyRangeIsNoGraph) {
   EXPECT_FALSE(sys.outputs().has_value());
 }
 
-// Construction sweeps the Jacobian and nothing else: at n = 128 the coloured
-// Hessian the constructor used to sweep is minutes in a debug build, so this
-// finishing at all is the check.  The time is printed, not asserted.
+// Construction sweeps only the Jacobian; a coloured Hessian at n = 128 takes
+// minutes in a debug build, so finishing is the check.
 constexpr std::size_t many_species = 128;
 
 TEST(RtSystem, BuildingSweepsOnlyTheJacobian) {
@@ -209,9 +204,8 @@ TEST(RtSystem, BuildingSweepsOnlyTheJacobian) {
               built.count());
 }
 
-// prepare() builds the lane, so the threads below only ever read it -- and
-// every one of them gets the single-thread answer to the bit.  The latch makes
-// the overlap happen rather than hoping for it.
+// prepare() builds the lane so the threads only read it. The latch forces the
+// threads to overlap rather than hoping they do.
 TEST(RtSystem, PreparedLanesServeManyThreads) {
   const auto sys = five_system();
   ASSERT_TRUE(sys.prepare({ddx::rt::Want::Jacobian}).has_value());

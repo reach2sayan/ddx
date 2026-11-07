@@ -98,18 +98,17 @@ TEST(RtExtern, TheChainRuleRunsAroundIt) {
   }
 }
 
-// Any number of arguments, and one argument passed twice: f(x, y, z, w) =
-// x y + z w^2 as a function of four, called with w = x.
+// f(x, y, z, w) = x y + z w^2 as a function of four, called with w = x.
 TEST(RtExtern, AnyArityAndARepeatedArgument) {
   const auto f = [](std::span<const double> in, std::span<double> out) {
     const double x = in[0], y = in[1], z = in[2], w = in[3];
     out[0] = x * y + z * w * w;
-    // first partials: x, y, z, w
+    // First partials, in the order x, y, z, w.
     out[1] = y;
     out[2] = x;
     out[3] = w * w;
     out[4] = 2 * z * w;
-    // second, upper triangle row-major: xx xy xz xw yy yz yw zz zw ww
+    // Second partials fill the upper triangle in row-major order.
     std::ranges::fill(out.subspan(5), 0.0);
     out[5 + 1] = 1.0;   // xy
     out[5 + 8] = 2 * w; // zw
@@ -159,7 +158,7 @@ TEST(RtExtern, AMisshapenRegistrationOrCallIsRefused) {
     return ddx::rt::extern_fn({.name = "g", .arity = 1, .order = 3}, g_of)(a);
   });
   EXPECT_EQ(third.status()->code, ddx::errc::extern_shape);
-  // 1 + 400 + 80200 components do not fit a slot's half-word of them.
+  // At arity 400, 1 + 400 + 80200 components overflow a slot's half-word count.
   const auto wide = ddx::rt::equation([] {
     const auto a = ddx::rt::var("a");
     return ddx::rt::extern_fn({.name = "g", .arity = 400, .order = 2}, g_of)(a);
@@ -195,8 +194,8 @@ TEST(RtExtern, ABatchMatchesThePointCalls) {
   }
 }
 
-// Called from every thread that sweeps, at once: the function only has to be
-// re-entrant, and each thread's answers are the single-thread ones.
+// Every sweeping thread calls the function at once, so it only has to be
+// re-entrant, and each thread must get the single-thread answers.
 TEST(RtExtern, CalledFromManyThreads) {
   std::atomic<std::size_t> calls{0};
   const auto eq = ddx::rt::equation([&calls] {
@@ -245,9 +244,8 @@ TEST(RtExtern, ASystemThroughOneFunction) {
   EXPECT_NEAR(J[1], j[1], 1e-13);
 }
 
-// A function that sweeps another equation: the inner sweep has the same scalar,
-// so the same thread-kept buffers, and is larger, so it would grow them under
-// the outer sweep's feet.
+// The inner equation shares the outer sweep's scalar type and thread-local
+// buffers, and is larger, so it would grow them during the outer sweep.
 void expect_reentry_matches(auto inner_model, auto native_model,
                             auto outer_model, std::size_t symbols,
                             ddx::rt::Backend backend) {
@@ -273,7 +271,6 @@ void expect_reentry_matches(auto inner_model, auto native_model,
     const auto phase = static_cast<double>(j * 7 + p);
     return 0.25 + 0.5 * std::abs(std::sin(1.0 + phase));
   };
-  // Every point call, then a batch at each sweep width.
   for (const std::size_t p : std::views::iota(0uz, 3uz)) {
     const auto at = std::views::iota(0uz, symbols) |
                     std::views::transform(

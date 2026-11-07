@@ -12,8 +12,7 @@
 #include <ranges>
 #include <vector>
 
-// What matters is that operand *position* survives the freeze and that
-// nothing reachable is dropped.
+// The freeze must keep each operand in its position and drop nothing reachable.
 
 namespace {
 using ddx::rt::Graph;
@@ -41,9 +40,8 @@ TEST(RtGraph, UnaryNodeHasOneOperand) {
   EXPECT_EQ(rhs, ddx::rt::no_node);
 }
 
-// Roots that are not outputs: the value block is empty, and the nodes only the
-// value needs are not live.  x*y is the case -- d/dx wants y, never the
-// product.
+// When roots are not outputs, the value block is empty and nodes only the value
+// needs are dead; d(x*y)/dx needs y, never the product.
 TEST(RtGraph, RootsAloneLeaveTheValueOut) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -98,8 +96,8 @@ TEST(RtGraph, IdOrderIsTopological) {
   const auto graph =
       ddx::test::GraphBuilder{b}.value(root).build_jacobian().finish();
 
-  // Codegen emits in id order in one pass, which is only correct if every
-  // child precedes its parent.
+  // Codegen emits in id order in one pass, which is only correct if every child
+  // precedes its parent.
   for (NodeId v{0}; v < graph.size(); ++v) {
     for (const NodeId child : graph.operands(v)) {
       if (child != ddx::rt::no_node) {
@@ -111,10 +109,8 @@ TEST(RtGraph, IdOrderIsTopological) {
 
 } // namespace
 
-// The tape is the live set, not the arena: a row is freed after its last
-// reader and taken by the next node, so a dense model's gradient sweeps over a
-// fraction of the ids it schedules.  The arithmetic is untouched -- every
-// kernel-against-sweep test is the proof -- so this asks only about size.
+// Tape rows are reused once their last reader is done, so a dense model's sweep
+// touches a fraction of its ids. Only the size is checked here.
 TEST(RtGraph, PacksTheTapeByLiveness) {
   ddx::rt::Arena<> b;
   std::vector<ddx::rt::Expression<>> x;
@@ -131,7 +127,6 @@ TEST(RtGraph, PacksTheTapeByLiveness) {
   std::printf("[ ddx ] mse n = 64: %zu live nodes, %zu tape rows (%.3f)\n",
               g.live_count(), g.tape_rows(), ratio);
   EXPECT_LT(ratio, 0.25);
-  // Every output owns a distinct row inside the tape.
   auto rows = ddx::rt::in_order(g.output_blocks()) | std::views::join |
               std::views::transform([&g](NodeId o) { return g.rows()[o]; }) |
               ddx::impl::to<std::vector<std::uint32_t>>();
@@ -139,7 +134,7 @@ TEST(RtGraph, PacksTheTapeByLiveness) {
       rows, [&g](std::uint32_t r) { return r < g.tape_rows(); }));
   std::ranges::sort(rows);
   EXPECT_EQ(std::ranges::adjacent_find(rows), rows.end());
-  // No step reads the row it writes: the lane loops promise no aliasing.
+  // No step reads the row it writes, since the lane loops assume no aliasing.
   for (const ddx::rt::Step &s : g.schedule()) {
     for (const std::uint32_t in : s.in) {
       EXPECT_NE(in, s.out);

@@ -21,14 +21,14 @@ add_executable(consumer consumer.cpp)
 target_link_libraries(consumer PRIVATE ddx::ddx)
 target_compile_options(consumer PRIVATE ${ddx_CODEGEN_FLAGS})
 
-# Off what find_package reported, not cache variables the parent never passes.
+# Link through what find_package reported, not cache variables from the parent.
 target_link_libraries(consumer PRIVATE ddx::rt)
 target_compile_definitions(consumer PRIVATE DDX_CONSUMER_RT)
 if (ddx_jit_FOUND)
     target_link_libraries(consumer PRIVATE ddx::jit)
 endif ()
 
-# Every header the package ships, against the Boost it ships.
+# Compile every header the package ships, against the Boost it ships.
 get_target_property(DDX_INCLUDE_DIRS ddx::util INTERFACE_INCLUDE_DIRECTORIES)
 list(GET DDX_INCLUDE_DIRS 0 DDX_INCLUDE_DIR)
 # A file set's base directory is exported inside $<BUILD_INTERFACE:...>.
@@ -54,8 +54,8 @@ if (ddx_jit_FOUND)
     target_link_libraries(all_headers PRIVATE ddx::jit)
 endif ()
 
-# Windows has no rpath: libddx's DLLs go beside the executables, or the loader
-# raises a missing-DLL dialog that nobody on a CI runner dismisses.
+# Windows has no rpath, so libddx's DLLs are copied beside the executables to
+# avoid a missing-DLL dialog on CI.
 if (WIN32)
     foreach (target IN ITEMS consumer all_headers)
         add_custom_command(TARGET ${target} POST_BUILD

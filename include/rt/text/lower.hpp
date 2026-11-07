@@ -22,21 +22,14 @@
 #include <variant>
 #include <vector>
 
-// An Ast into somebody's arena.  Every node goes through Expression::form,
-// which interns, folds and carries poison, so nothing here re-implements what
-// building an expression by hand already does.
+// Lowers an Ast into an arena through Expression::form, which interns, folds
+// and propagates poison exactly as hand-built expressions do.
 namespace ddx::rt::text {
 
 namespace detail {
 
-// The literal as written, read at T rather than at double and then narrowed:
-// the grammar has no types, so "1/2" is T(1)/T(2) whatever T is.  Whole or not
-// at all -- a trailing character is a literal the grammar should not have
-// matched.  Past the range is the infinity or the zero it rounds to, as a
-// number in source would be.
-//
-// Too small or too large, from_chars says only that; 0.d x 10^k is below one
-// exactly when k <= 0, k being the exponent plus the leading digit's place.
+// Whether an out-of-range literal underflows rather than overflows, since
+// from_chars does not say. 0.d x 10^k is below one exactly when k <= 0.
 [[nodiscard]] inline bool below_one(const std::string_view text) noexcept {
   const auto e = text.find_first_of("eE");
   const std::string_view mantissa = text.substr(0, e);
@@ -56,6 +49,8 @@ namespace detail {
   return exponent + (lead < point ? point - lead : point + 1 - lead) <= 0;
 }
 
+// Reads a literal directly at T. An out-of-range value becomes zero or
+// infinity, and a partially consumed literal is a syntax error.
 template <std::floating_point T>
 [[nodiscard]] result<T> scalar_of(const std::string_view text) noexcept {
   T v{};
@@ -69,7 +64,7 @@ template <std::floating_point T>
   return ec == std::errc{} ? result<T>{v} : fail(errc::bad_syntax);
 }
 
-// One term, with its symbols and its operands already standing.
+// Builds one term whose symbols and operands are already built.
 template <std::floating_point T>
 [[nodiscard]] constexpr result<Expression<T>>
 form(const Ast &ast, std::span<const Expression<T>> symbols,
@@ -79,7 +74,7 @@ form(const Ast &ast, std::span<const Expression<T>> symbols,
                      const std::uint32_t i) -> result<Expr> {
     return i < from.size() ? result<Expr>{from[i]} : fail(errc::bad_syntax);
   };
-  // The op over its first sizeof...(I) operands, every one already built.
+  // Applies the op to its first sizeof...(I) operands, checking each exists.
   const auto over =
       [&]<std::size_t... I>(std::index_sequence<I...>) -> result<Expr> {
     const auto stands = [&built](std::uint32_t i) { return i < built.size(); };
@@ -96,10 +91,8 @@ form(const Ast &ast, std::span<const Expression<T>> symbols,
           if constexpr (std::same_as<Index, NameIndex>) {
             return at(symbols, leaf.i);
           } else if constexpr (std::same_as<Index, LiteralIndex>) {
-            // Pending, not lit(): a literal that has not met a symbol yet
-            // stays out of the graph, so "3 + 4" folds without a node and
-            // `x * 2` builds exactly what the same expression written in C++
-            // builds.
+            // A pending literal rather than lit(), so "3 + 4" folds without a
+            // node and the result matches the same expression built in C++.
             return (leaf.i < ast.literals.size()
                         ? scalar_of<T>(ast.literals[leaf.i])
                         : result<T>{fail(errc::bad_syntax)})
@@ -125,16 +118,14 @@ form(const Ast &ast, std::span<const Expression<T>> symbols,
 
 } // namespace detail
 
-// The arena gains one symbol per free identifier and one node per term; the
-// answer is the root.
+// Adds one symbol per free identifier and one node per term, returning the
+// root.
 template <std::floating_point T>
 [[nodiscard]] result<Expression<T>> lower(Arena<T> &arena, const Ast &ast) {
   using Expr = Expression<T>;
 
-  // Every symbol before any node, in the order the text first named them: the
-  // arena is then a function of the model rather than of the order the parser
-  // happened to reduce it in, which is what lets a model that was written down
-  // be the same nodes as the same model built by hand.
+  // Symbols are declared first, in order of first use, so the arena matches
+  // the same model built by hand regardless of parse order.
   arena.reserve(arena.size() + ast.names.size() + ast.terms.size(),
                 arena.symbols().size() + ast.names.size());
   std::vector<Expr> symbols;
@@ -143,8 +134,7 @@ template <std::floating_point T>
       ast.names, std::back_inserter(symbols),
       [&arena](const std::string &name) { return var(arena, name); });
 
-  // Children before parents, so a term's operands are always already built and
-  // the pass never looks forward.
+  // Terms are stored children first, so operands are always already built.
   std::vector<Expr> built;
   built.reserve(ast.terms.size());
   for (const Term &t : ast.terms) {

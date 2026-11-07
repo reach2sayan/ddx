@@ -10,19 +10,18 @@
 #include <tuple>
 #include <type_traits>
 
-// Lowering a compile-time tree into the runtime graph: the structure is in the
-// type, so the walk is a compile-time recursion that emits nodes.
+// Lowers a compile-time expression tree into the runtime graph by a
+// compile-time recursion over its type.
 namespace ddx::rt {
 
 namespace detail {
 
 // Sum and Multiply are n-ary in the type but binary in the graph, so a wide
-// node folds left into a chain.  A select is the one node of three.
+// node is folded left into a chain of binary nodes.
 template <impl::Numeric T, impl::CExpression U>
 [[nodiscard]] constexpr Expression<T> lower(Arena<T> &b, const U &e) {
-  // A dual-valued tree's literals and constants are duals; the graph is over
-  // the base.  Unqualified val(): ADL finds the dual's, ordinary lookup the
-  // scalar's.
+  // Literals in a dual-valued tree are duals, so val() strips them to the base
+  // scalar. The call is unqualified so ADL can find the dual overload.
   using impl::val;
   if constexpr (impl::CVariable<U>) {
     return var(b, U::label.view());
@@ -40,7 +39,7 @@ template <impl::Numeric T, impl::CExpression U>
           if constexpr (sizeof...(rest) == 0) {
             return Expression<T>::form(*code, lower(b, first));
           } else if constexpr (*code == OpCode::Select) {
-            // Braces, so the arms are lowered in order on every compiler.
+            // Brace initialisation guarantees left-to-right lowering order.
             const std::array arms{lower(b, first), lower(b, rest)...};
             return Expression<T>::form(*code, arms[0], arms[1], arms[2]);
           } else {
@@ -53,9 +52,8 @@ template <impl::Numeric T, impl::CExpression U>
   }
 }
 
-// Whether every op the tree holds computes at U.  A sweep at a Taylor or dual
-// scalar asks before it runs: apply() answers U{} for an op the scalar lacks,
-// which is a wrong number with nothing to say so.
+// Whether every op in the tree is supported at scalar U. Sweeps check first,
+// since apply() silently returns U{} for an unsupported op.
 template <impl::Numeric U, impl::CExpression E>
 [[nodiscard]] consteval bool computes_at_tree() {
   using Tree = std::remove_cvref_t<E>;
@@ -73,10 +71,8 @@ template <impl::Numeric U, impl::CExpression E>
 
 } // namespace detail
 
-// The symbols are declared first, in the compile-time Equation's canonical
-// order, so a symbol's graph column is its column there too.  A frozen leaf has
-// no spelling here: a Var is always differentiated, so lowering one would
-// quietly revive what the caller held -- the tree is refused instead.
+// Symbols are declared first in the compile-time Equation's order so their
+// columns match. Trees with frozen leaves are refused, as a Var is always live.
 template <impl::Numeric T, impl::CExpression U>
   requires(!impl::holds_frozen<U>())
 [[nodiscard]] constexpr Expression<T> to_graph(Arena<T> &b, const U &e) {

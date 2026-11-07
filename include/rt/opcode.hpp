@@ -20,21 +20,12 @@
 #include <utility>
 #include <vector>
 
-// The runtime mirror of the compile-time operation set.  Rows are (factory
-// spelling, enumerator, label), the shape DDX_UNARY_MATH_TABLE already has.
+// The runtime mirror of the compile-time operation set. Each row starts with
+// (factory spelling, enumerator, label), as DDX_UNARY_MATH_TABLE does.
 namespace ddx::rt {
 
-// Every leaf but Const reads an input column.  Only a Var is differentiated:
-// being a leaf that is not a Var is what keeps a Param, an Implicit or a Seed
-// out of symbols(), out of the reverse sweep's harvest and out of the coupling
-// pattern, with no slot-range convention for any of them to agree on.  A Param
-// is a named input present in every Want's graph; an Implicit, one the caller
-// solved for; a Seed, a seeded product's direction.  The last cell is the
-// payload: none for a literal, else the Slot -- a place among the named inputs
-// of that kind, or a seed's position. The named kinds are their own table, in
-// the order a point passes them: it is what the Arena keeps one name list per
-// and what var()'s spellings, the Python factories and the column layout are
-// generated from.
+// Leaves; every one but Const reads an input column, and only Var is
+// differentiated. Named kinds are listed in the order a point passes them.
 #define DDX_RT_NAMED_TABLE(X)                                                  \
   X(var, Var, "var", Slot)                                                     \
   X(param, Param, "param", Slot)                                               \
@@ -44,10 +35,8 @@ namespace ddx::rt {
   DDX_RT_NAMED_TABLE(X)                                                        \
   X(seed, Seed, "seed", Slot)
 
-// The last cell is the ops/adjoints.hpp descriptor carrying the reverse-mode
-// rule, which the compile-time ops call too -- the rule is written once, there.
-// The eighteen transcendentals get the same treatment from
-// DDX_UNARY_MATH_TABLE, whose descriptors are found by name rather than listed.
+// The last cell names the ops/adjoints.hpp descriptor holding the reverse
+// rule, shared with the compile-time ops.
 #define DDX_RT_UNARY_TABLE(X)                                                  \
   X(neg, Neg, "-", std::negate<>, NegateOpFn)                                  \
   X(abs, Abs, "abs", impl::detail::abs_impl, AbsOpFn)                          \
@@ -59,62 +48,31 @@ namespace ddx::rt {
   X(div, Div, "/", std::divides<>, DivideOpFn)                                 \
   DDX_BINARY_MATH_TABLE(X)
 
-// Their own table, and so no descriptor: the derivative is zero wherever it
-// exists, which is what rt/derivative.hpp's `default` already answers.
+// Comparisons need no adjoint descriptor, as their derivative is zero.
 #define DDX_RT_COMPARE_TABLE(X)                                                \
   X(lt, Lt, "<", impl::detail::lt_impl)                                        \
   X(le, Le, "<=", impl::detail::le_impl)
 
-// `c != 0 ? t : f`, both arms evaluated.  VSelect is the one over tensor arms
-// of one shape, the condition a scalar or of theirs, where the arm taken is
-// copied, never scaled by 1 or 0.  The last cells are what the node yields and
-// its operands' names (detail::Operands in rt/arena.hpp).
+// c != 0 ? t : f with both arms evaluated; VSelect is the tensor form. The
+// last cells are the yield and the operand names.
 #define DDX_RT_TERNARY_TABLE(X)                                                \
   X(select, Select, "select", impl::detail::select_impl, Scalar,               \
     (cond, then, otherwise))                                                   \
   X(vselect, VSelect, "vselect", impl::detail::select_impl, Row,               \
     (cond, then, otherwise))
 
-// A node over a list of ids rather than over operands: the list sits in
-// Model::lists (has_list below), its length the function's arity for an
-// extern, else the Count it carries.  The last cells are the arity -- none,
-// the list being no operand -- and the Kind.
-//
-// A function the caller supplies with its own partials, of any number of
-// arguments: which function, and which component of its answer -- the value
-// or one partial -- is the node's ExternRef.
+// A call to a user function over a list of arguments. Its ExternRef payload
+// picks the function and the component: the value or one partial.
 #define DDX_RT_EXTERN_TABLE(X) X(extern_call, Extern, "extern", 0, Extern)
-// A left fold of `Count` terms in list order, ((t0 op t1) op t2) ..., the op
-// the last cell: what a chain of +=, *= or /= builds, one node where a chain
-// of the binary op would be one per term.  In a sum every product term is
-// fused into the running sum as an Add fuses its one (contraction_at), so a
-// sum of products is a loop of fma.
+// A left fold ((t0 op t1) op t2) ... over a list, built by chains of +=, *=
+// or /=. The last cell is the binary op; sums fuse product terms into fmas.
 #define DDX_RT_NARY_TABLE(X)                                                   \
   X(sum_n, SumN, "sum_n", 0, Nary, Add)                                        \
   X(prod_n, ProdN, "prod_n", 0, Nary, Mul)                                     \
   X(quot_n, QuotN, "quot_n", 0, Nary, Div)
 
-// A node whose value is a vector of `width` scalars per point, or a scalar
-// read off one.  Operands are ids like any other; no node carries data, and a
-// shape is a function of the source (shape_of in rt/arena.hpp), never of the
-// node alone.  A matrix is a row too, column-major.  Map, Zip, Scale, Sum and
-// Dot read one as the vector of its elements.
-//   VecConst, MatConst  the data lives in Model::tensors
-//   Pack                a list of scalars
-//   Gather              the element, a scalar
-//   Map, Zip            the elementwise opcode
-//   Sum, Dot            a scalar
-//   AddAt               vec + scalar e_element
-//   MatRow              a MatConst, the table as a row; in the dense sweep
-//                       also a matrix
-//   Outer               left right^T
-//   Diag                the w x w diagonal of vec
-//   RowScale            diag(scale) matrix
-//   ColScale            matrix diag(scale)
-//   StackRows           a list of vectors, each a row
-//   RowOf               that row of matrix, as a vector
-// The last cells are the arity, the Kind, the payload, what it yields and its
-// operands' names (detail::Operands in rt/arena.hpp).
+// Tensor nodes yield a column-major row per point, or a scalar read off one.
+// The cells after the label are arity, Kind, payload, yield and operand names.
 #define DDX_RT_TENSOR_TABLE(X)                                                 \
   X(vec_const, VecConst, "vconst", 0, Tensor, TensorRef, Row, ())              \
   X(mat_const, MatConst, "mconst", 0, Tensor, TensorRef, Table, ())            \
@@ -163,9 +121,8 @@ inline constexpr std::size_t op_count = [] {
   return n;
 }();
 
-// What a node carries besides its operands, one type per meaning; each row
-// of the table names the one its op carries, and a node's word is read back
-// only as that type (detail::get in rt/arena.hpp).
+// Typed payloads: each opcode row names the type its node's payload word is
+// read back as.
 struct NoPayload {
   constexpr bool operator==(const NoPayload &) const = default;
 };
@@ -173,20 +130,19 @@ template <typename Tag> struct Index {
   std::uint32_t value = 0;
   constexpr bool operator==(const Index &) const = default;
 };
-// A named input's place among its kind, or a seed's direction.
+// A named input's index within its kind, or a seed's direction.
 using Slot = Index<struct SlotTag>;
-// Where a VecConst's or MatConst's data sits in Model::tensors.
+// The index of a VecConst's or MatConst's data in Model::tensors.
 using TensorRef = Index<struct TensorRefTag>;
-// How long a node's list is.
+// The length of a node's operand list.
 using Count = Index<struct CountTag>;
-// The element a Gather reads or an AddAt adds to, or the row a RowOf takes.
+// The element a Gather reads or an AddAt adds to, or the row RowOf takes.
 using Element = Index<struct ElementTag>;
 // Whether a MatRow or MatVec reads its matrix as M^T.
 enum class Orientation : std::uint32_t { plain, transposed };
 
-// An extern node's payload: which registered function, and which component of
-// its answer -- 0 the value, 1..k the first partials, then the upper triangle
-// of the second, row-major.  A half-word each; fits() is the one bound.
+// The function index and answer component, 16 bits each. Component 0 is the
+// value, then the first partials, then the second's row-major upper triangle.
 struct ExternRef {
   std::uint32_t function = 0;
   std::uint32_t component = 0;
@@ -205,7 +161,7 @@ struct ExternRef {
   constexpr bool operator==(const ExternRef &) const = default;
 };
 
-// A Map's or Zip's payload is the OpCode it applies elementwise.
+// Every payload type. A Map's or Zip's payload is its elementwise OpCode.
 using Payloads = boost::mp11::mp_list<NoPayload, Slot, TensorRef, Count,
                                       Element, Orientation, OpCode, ExternRef>;
 template <typename P>
@@ -213,7 +169,7 @@ template <typename P>
 inline constexpr auto payload_index =
     static_cast<std::uint8_t>(boost::mp11::mp_find<Payloads, P>::value);
 
-// The word a payload is stored as, and back.
+// Converts a payload to its stored word and back.
 template <typename P>
 [[nodiscard]] constexpr std::uint32_t to_word(const P &p) noexcept {
   if constexpr (std::same_as<P, NoPayload>) {
@@ -239,16 +195,11 @@ template <typename P>
   }
 }
 
-// What a node's value is: one scalar, a row of scalars per point, or a table
-// a MatRow reads and nothing sweeps.
+// A node's value: a scalar, a row of scalars per point, or a table that only
+// a MatRow reads.
 enum class Yields : std::uint8_t { Scalar, Row, Table };
 
-// What a walker does with a node: the one classification every sweep, emitter
-// and checker switches on, so none tests an opcode ahead of its arity.  A
-// Const is a literal, an Input reads a column, an Extern calls the program's
-// function (its value or one partial), a Nary node reduces a list of any
-// length, a Tensor node computes over or into a vector row
-// (DDX_RT_TENSOR_TABLE).
+// The node classification that every sweep, emitter and checker switches on.
 enum class Kind : std::uint8_t {
   Const,
   Input,
@@ -263,7 +214,7 @@ enum class Kind : std::uint8_t {
 namespace detail {
 
 struct OpInfo {
-  std::string_view name; // the factory spelling, and the Python name
+  std::string_view name; // the factory spelling and the Python name
   std::string_view label;
   std::uint8_t arity;
   Kind kind;
@@ -271,9 +222,8 @@ struct OpInfo {
   Yields yields = Yields::Scalar;
 };
 
-// Arity and kind are which sub-table a row sits in, so the groups fill one
-// array in one pass each.  Each row lands at its own enumerator, so nothing
-// depends on the table order matching the enum's.
+// Fills one entry per opcode from each sub-table, indexed by enumerator so
+// the table order does not matter.
 inline constexpr std::array op_info = [] {
   std::array<OpInfo, op_count> t{};
 #define DDX_RT_ROW(fn, Op, label, payload)                                     \
@@ -316,16 +266,16 @@ inline constexpr std::array op_info = [] {
   return t;
 }();
 
-// A duplicate would make opcode_of() ambiguous, and the compile-time ops
-// pick their enumerator by label.
+// Labels must be unique, since opcode_of() and the compile-time ops look up
+// enumerators by label.
 static_assert([] {
   auto labels = op_info;
   std::ranges::sort(labels, {}, &OpInfo::label);
   return std::ranges::adjacent_find(labels, {}, &OpInfo::label) == labels.end();
 }());
 
-// An OpCode names a row: a byte from outside -- a Python int -- is
-// range-checked where it is cast, never here.
+// Not range-checked; external bytes such as Python ints are checked where
+// they are cast to OpCode.
 [[nodiscard]] constexpr const OpInfo &info(OpCode op) noexcept {
   const auto i = static_cast<std::size_t>(op);
   assert(i < op_count);
@@ -348,25 +298,20 @@ static_assert([] {
 [[nodiscard]] constexpr Yields yields_of(OpCode op) noexcept {
   return detail::info(op).yields;
 }
-// Whether an op's operands are built and read by name: two or more of a
-// tensor op's, or a VSelect's, where swapping them is a different node of
-// the same type.  A scalar op's stay positional -- its factory's order is
-// the table's, written once.
+// Whether an op's operands are passed by name, for tensor ops and VSelect
+// where swapped operands would still type-check. Scalar ops stay positional.
 [[nodiscard]] constexpr bool named_operands(OpCode op) noexcept {
   return arity_of(op) >= 2 &&
          (kind_of(op) == Kind::Tensor || yields_of(op) == Yields::Row);
 }
-// The type of what an `Op` node carries: what make() takes and get() hands
-// back for it.
+// The payload type of an Op node, as make() takes and get() returns it.
 template <OpCode Op>
 using payload_of_t = boost::mp11::mp_at_c<Payloads, detail::info(Op).payload>;
-// An op as a value whose type names it: what lets make() check an arity and a
-// payload type as it compiles.
+// An opcode as a type, so make() can check arity and payload at compile time.
 template <OpCode Op>
 inline constexpr std::integral_constant<OpCode, Op> opcode{};
 
-// By label, at compile time for the bridge and at run time for the text
-// parser.
+// Looks up an opcode by label, for the bridge and the text parser.
 [[nodiscard]] constexpr std::optional<OpCode>
 opcode_of(std::string_view label) noexcept {
   const auto row =
@@ -388,8 +333,8 @@ template <impl::Numeric T>
                                 op == OpCode::Min || op == OpCode::Hypot);
 }
 
-// The leaf table opens the op table, so a leaf is one compare: the sweep asks
-// on every step, and a kind_of() here is a table load ahead of its dispatch.
+// Leaves come first in the op table, so this is one compare instead of a
+// table load on every sweep step.
 [[nodiscard]] constexpr bool is_leaf(OpCode op) noexcept {
   return op <= OpCode::Seed;
 }
@@ -401,7 +346,6 @@ static_assert(std::ranges::all_of(std::views::iota(0uz, op_count), [](auto i) {
 [[nodiscard]] constexpr bool is_extern(OpCode op) noexcept {
   return kind_of(op) == Kind::Extern;
 }
-// The binary op a Nary node folds its terms with.
 [[nodiscard]] constexpr OpCode fold_op(OpCode op) noexcept {
   switch (op) {
 #define DDX_RT_FOLD(fn, Op, label, arity, kind, binary)                        \
@@ -413,7 +357,7 @@ static_assert(std::ranges::all_of(std::views::iota(0uz, op_count), [](auto i) {
     std::unreachable();
   }
 }
-// The Nary node that folds with `binary`, if one does.
+// The Nary opcode that folds with the given binary op, if any.
 [[nodiscard]] constexpr std::optional<OpCode> fold_of(OpCode binary) noexcept {
 #define DDX_RT_FOLD(fn, Op, label, arity, kind, bin)                           \
   if (binary == OpCode::bin) {                                                 \
@@ -423,21 +367,17 @@ static_assert(std::ranges::all_of(std::views::iota(0uz, op_count), [](auto i) {
 #undef DDX_RT_FOLD
   return std::nullopt;
 }
-// Whether the node is over a list in Model::lists rather than operands: an
-// extern's arguments, a Pack's or StackRows' items, a sum's terms -- every
-// node whose payload says how long the list is.
+// Whether the node reads a list in Model::lists rather than fixed operands.
 [[nodiscard]] constexpr bool has_list(OpCode op) noexcept {
   const auto payload = detail::info(op).payload;
   return payload == payload_index<Count> || payload == payload_index<ExternRef>;
 }
-// What text and Python may call by name: a scalar operation on operands, not
-// a leaf, not a function the program registered, not a list and not a tensor
-// row.
+// Whether text and Python may call the op by name: scalar operand ops only.
 [[nodiscard]] constexpr bool callable(OpCode op) noexcept {
   return !is_leaf(op) && !has_list(op) && kind_of(op) != Kind::Tensor &&
          yields_of(op) == Yields::Scalar;
 }
-// Which kind of named input a leaf is, in table order.
+// The index of a leaf's named kind in table order, if it has one.
 [[nodiscard]] constexpr std::optional<std::size_t>
 named_index(OpCode op) noexcept {
   std::size_t i = 0;
@@ -458,12 +398,8 @@ inline constexpr std::size_t named_count = [] {
   return n;
 }();
 
-// One T per named kind: a std::array, and on every compiler but one nothing
-// besides.  GCC before 15 deallocates twice when constant evaluation copies an
-// array whose elements allocate, so there the copies are spelled element by
-// element -- the one spelling it gets right.  An equation copies the arena it
-// was lent, which is what makes a consteval equation reach this at all; the
-// run-time copy is the array's own either way.
+// One T per named kind. GCC before 15 double-frees when constant evaluation
+// copies an array of allocating elements, so there it copies element-wise.
 template <typename T> struct PerKind : std::array<T, named_count> {
 #if defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 15
   using Array = std::array<T, named_count>;
@@ -497,10 +433,8 @@ template <typename T> struct PerKind : std::array<T, named_count> {
   }
 
 private:
-  // What the base is built from: its own copy, which is the whole of this at
-  // run time, and an empty array during constant evaluation -- the elements
-  // the constructor's body then assigns are what the bug is dodged by.  A
-  // prvalue, so the run-time copy lands in the base and no second one exists.
+  // At run time a plain copy; during constant evaluation an empty array that
+  // the constructor body fills element by element.
   [[nodiscard]] constexpr Array copied() const {
     if consteval {
       return Array{};
@@ -516,8 +450,8 @@ private:
 #endif
 };
 
-// How many input columns of each kind a call passes, in the order it passes
-// them: the named kinds in table order, then a seeded product's direction.
+// Input column counts per kind, in call order: the named kinds in table order,
+// then the seeded direction.
 struct Inputs {
   std::array<std::size_t, named_count> by_kind{};
   std::size_t directions = 0;
@@ -534,13 +468,12 @@ struct Inputs {
   constexpr bool operator==(const Inputs &) const = default;
 };
 
-// Which column of `xs` a leaf reads: its kind's columns start after every
-// kind before it.  Written once, because the interpreter, codegen and the ABI
-// have to agree.
+// The input column a leaf reads. The interpreter, codegen and the ABI all use
+// this, so they agree.
 [[nodiscard]] constexpr std::size_t input_column(const Inputs &in, OpCode op,
                                                  Slot slot) noexcept {
-  // A scan of fixed length: a fold over a prefix of variable length
-  // vectorises, and the sweep's leaf step pays for the loop.
+  // A fixed-length scan, since a variable-length prefix fold vectorises and
+  // slows the sweep's leaf step.
   std::array<std::size_t, named_count + 1> start{};
   std::inclusive_scan(in.by_kind.begin(), in.by_kind.end(), start.begin() + 1);
   return start[named_index(op).value_or(named_count)] + slot.value;

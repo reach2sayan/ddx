@@ -17,10 +17,8 @@
 #include <string>
 #include <vector>
 
-// A loop of `acc op= term` is one fold node over its terms -- SumN, ProdN or
-// QuotN -- where the same loop spelled `acc = acc op term` is a chain of the
-// binary op.  The two agree on every number to rounding, and the fold is the
-// smaller arena.
+// A loop of acc op= term builds one fold node (SumN, ProdN or QuotN) where
+// acc = acc op term builds a chain; both agree to rounding.
 
 namespace {
 using ddx::rt::Arena;
@@ -35,7 +33,7 @@ std::vector<RE> fold_symbols(Arena<> &b, std::size_t n) {
   return x;
 }
 
-// k terms over six symbols, a product for every third term, the rest not.
+// k terms over six symbols, with every third term a product.
 constexpr std::size_t kTerms = 200;
 RE term(const std::vector<RE> &x, std::size_t t) {
   const RE &a = x[t % x.size()];
@@ -63,9 +61,8 @@ void expect_close(double got, double want, double rel) {
   EXPECT_NEAR(got, want, rel * std::max(1.0, std::abs(want)));
 }
 
-// One fold: its node, its `op=`, the binary op its chain is built of, and the
-// term a long loop of it stays finite on -- near one for a product or a
-// quotient.
+// One fold: its node, its op=, the binary op of its chain, and a term near one
+// for products and quotients so that a long loop stays finite.
 struct Fold {
   const char *name;
   OpCode op;
@@ -88,7 +85,7 @@ const Fold kFolds[]{
     {"Quot", OpCode::QuotN, OpCode::Div, [](RE &a, const RE &t) { a /= t; },
      [](const RE &a, const RE &t) { return a / t; }, near_one,
      [](double a, double t) { return a / t; }},
-    // `-=` is the sum of the negated term, as `-` is the add of it.
+    // -= sums the negated term, just as - is the add of the negation.
     {"Diff", OpCode::SumN, OpCode::Add, [](RE &a, const RE &t) { a -= t; },
      [](const RE &a, const RE &t) { return a - t; }, term,
      [](double a, double t) { return a - t; }},
@@ -126,7 +123,6 @@ TEST_P(RtFold, ALoopIsOneNode) {
 
   Arena<> chain;
   (void)chained(fold_symbols(chain, 6)).id(chain);
-  // The chain's k binary nodes against the one fold, and nothing else.
   EXPECT_EQ(chain.size(), fold.size() + kTerms - 1);
 }
 
@@ -137,11 +133,11 @@ TEST_P(RtFold, TwoTermsAreTheChainsBinaryNode) {
   GetParam().assign(acc, x[1]);
   EXPECT_EQ(acc.id(b), GetParam().chain(x[0], x[1]).id(b));
   EXPECT_EQ(b[acc.id(b)].op, GetParam().binary);
-  // Read, so the next term resumes from it: the binary op over what was read.
+  // Reading the accumulator makes the next term resume from the read node.
   const auto read = acc.id(b);
   GetParam().assign(acc, x[0] * x[1]);
   EXPECT_EQ(acc.id(b), GetParam().chain(RE{b, read}, x[0] * x[1]).id(b));
-  // Unread, a third term makes the fold.
+  // Without a read, a third term makes the fold.
   auto fresh = x[0];
   GetParam().assign(fresh, x[1]);
   GetParam().assign(fresh, x[0] * x[1]);
@@ -170,7 +166,7 @@ TEST_P(RtFold, ACopyOfAnAccumulatorKeepsItsValue) {
   f.assign(acc, x[1] * x[2]);
   const auto kept = before.id(b);
   const auto grown = acc.id(b);
-  // Reading a fold again is the node it formed, not another.
+  // Reading a fold again returns the node it formed rather than a new one.
   const std::size_t n = b.size();
   EXPECT_EQ(acc.id(b), grown);
   EXPECT_EQ(b.size(), n);
@@ -211,9 +207,8 @@ TEST_P(RtFold, ValueGradientHvpAndHessianMatchTheChain) {
   }
 }
 
-// A loop that reads its accumulator every step: each read resumes from the
-// last one's node, so the pool holds each term once rather than k^2 / 2 of
-// them, and the last read is the read-once fold to the bit.
+// Each read resumes from the previous read's node, so the pool holds each
+// term once rather than k^2 / 2 times, and the last read matches the fold.
 TEST_P(RtFold, ReadingEveryStepListsEachTermOnce) {
   constexpr std::size_t n = 6;
   constexpr std::size_t k = 2000;
@@ -243,14 +238,14 @@ TEST_P(RtFold, ReadingEveryStepListsEachTermOnce) {
   }
 }
 
-// A fold's sparsity is its chain's: a sum couples nothing between its terms,
-// a product every pair, a quotient its divisors with themselves as well.
+// A sum couples none of its terms, a product couples every pair, and a quotient
+// also couples each divisor with itself.
 TEST_P(RtFold, CouplingPatternIsTheChains) {
   constexpr std::size_t n = 6;
   Arena<> fold, chain;
   const auto x = fold_symbols(fold, n);
   const auto y = fold_symbols(chain, n);
-  // Terms each reading one symbol, so the coupling is the fold's own.
+  // Each term reads one symbol, so the coupling is the fold's own.
   const auto build = [&](const std::vector<RE> &s, auto &&combine) {
     RE acc = s[0] * s[0];
     for (std::size_t i = 1; i < n; ++i) {
@@ -267,8 +262,6 @@ TEST_P(RtFold, CouplingPatternIsTheChains) {
             ddx::rt::coupling_pattern(chain, fc));
 }
 
-// A fold computes at any scalar the sweep runs at, so a dual point carries
-// its derivative through it.
 TEST_P(RtFold, SweepsAtADualScalar) {
   using D = ddx::impl::Dual<double>;
   Arena<> fold, chain;
@@ -281,8 +274,8 @@ TEST_P(RtFold, SweepsAtADualScalar) {
   expect_close(vs[fs].get<1>(), vc[fc].get<1>(), 1e-13);
 }
 
-// The whole pipeline: every derivative equation() answers, and the dense
-// Hessian -- whose sweep has its own fold arm -- against the coloured one.
+// Checks every derivative equation() answers, and the dense Hessian, whose
+// sweep has its own fold arm, against the coloured one.
 TEST_P(RtFold, TheEquationMatchesTheChains) {
   constexpr std::size_t n = 6;
   const auto build = [&](bool in_place) {
@@ -315,8 +308,8 @@ TEST_P(RtFold, TheEquationMatchesTheChains) {
   close(*fold.hessian(at), *dense, 1e-12, "dense vs coloured");
 }
 
-// A product with a zero term: the reverse rule takes each term's adjoint off
-// the running products, never by dividing the whole by the term.
+// The reverse rule takes each term's adjoint from the running products, never
+// by dividing the whole product by the term.
 TEST(RtFoldProd, AZeroTermHasAFiniteGradient) {
   Arena<> b;
   const auto x = fold_symbols(b, 3);
@@ -362,7 +355,7 @@ INSTANTIATE_TEST_SUITE_P(Folds, RtFold, ::testing::ValuesIn(kFolds),
                            return std::string{info.param.name};
                          });
 
-// The sum alone: what contraction and rebalancing do with it.
+// The sum alone, to see what contraction and rebalancing do with it.
 RE summed(const std::vector<RE> &x) {
   RE acc{0};
   for (std::size_t t = 0; t < kTerms; ++t) {
@@ -371,8 +364,8 @@ RE summed(const std::vector<RE> &x) {
   return acc;
 }
 
-// Lists intern by content, whole: the same terms are one list and one node,
-// a list that only starts another's is its own.
+// Lists intern by their whole content, so a list that is only a prefix of
+// another is a separate list.
 TEST(RtSumN, ListsInternByContent) {
   Arena<> b;
   const auto x = fold_symbols(b, 4);
@@ -408,15 +401,15 @@ TEST(RtSumN, ZeroTermsAreDroppedAndMinusNegates) {
   EXPECT_DOUBLE_EQ(values[root], p[0] - p[1] - p[0] * p[1]);
 }
 
-// The frozen graph fuses a product term into the running sum where it
-// contracts an Add; unfused it adds the term's own row.  Both are the sum.
+// The frozen graph fuses product terms into the running sum where it contracts
+// an Add; unfused, it adds each term's own row. Both compute the same sum.
 TEST(RtSumN, FusedAndUnfusedSchedulesAgree) {
   Arena<> b;
   const auto x = fold_symbols(b, 6);
   const auto f = summed(x).id(b);
   const auto fused = ddx::test::freeze_values(b, std::array{f}, true);
   const auto plain = ddx::test::freeze_values(b, std::array{f}, false);
-  // Fused, the product terms' multiplies are nobody's to compute.
+  // When fused, the product terms need no multiplies of their own.
   EXPECT_LT(fused.schedule().size(), plain.schedule().size());
 
   const auto p = ramp(6);
@@ -431,7 +424,7 @@ TEST(RtSumN, FusedAndUnfusedSchedulesAgree) {
   expect_close(tf[fused.rows()[f]], ddx::rt::evaluate(b, f, p), 1e-14);
 }
 
-// The kernel's blocked summation reads a SumN as the spine it already is.
+// The kernel's blocked summation treats a SumN as the spine it already is.
 TEST(RtSumN, RebalanceBlocksTheSum) {
   Arena<> b;
   const auto x = fold_symbols(b, 6);
@@ -445,9 +438,8 @@ TEST(RtSumN, RebalanceBlocksTheSum) {
   expect_close(values[moved[0]], values[f], 1e-13);
 }
 
-// models::mse at n = 64 writes its n^2 pair terms with `+=`: one SumN of n^2
-// terms where the chain was n^2 Add nodes.  The arena size is printed for the
-// record; the terms and their derivatives are what remains of it.
+// models::mse at n = 64 writes its n^2 pair terms with +=, giving one SumN
+// instead of n^2 Add nodes.
 TEST(RtSumN, MseSumsItsPairTermsInOneNode) {
   constexpr std::size_t n = 64;
   Arena<> b;
@@ -456,8 +448,8 @@ TEST(RtSumN, MseSumsItsPairTermsInOneNode) {
   std::printf("[ ARENA    ] mse n=%zu: %zu nodes with the gradient\n", n,
               b.size());
   EXPECT_EQ(g.partial.size(), n);
-  // All but the pairs whose coefficient pseudo() makes exactly zero, which
-  // fold out of the sum as they fold out of `x + 0`.
+  // Pairs whose coefficient pseudo() makes exactly zero fold out of the sum, as
+  // they would out of x + 0.
   const auto widest = std::ranges::max(
       b.nodes() | std::views::filter([](const auto &node) {
         return node.op == OpCode::SumN;

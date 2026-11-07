@@ -20,7 +20,7 @@ from pathlib import Path
 
 REPO = "kokkos/mdspan"
 BRANCH = "single-header"
-# The commit include/md/third_party/mdspan.hpp was taken from.  Bump on re-vendor.
+# The upstream commit the vendored mdspan.hpp came from; update on re-vendor.
 PINNED = "c3fc07b607db2a43cd65aabc12ffda9328833d95"
 VENDORED = Path(__file__).resolve().parent.parent / "include/md/third_party/mdspan.hpp"
 
@@ -66,8 +66,7 @@ def normalize(src: str) -> list[str]:
         if not s:             continue
         if s.startswith("#"): toks.append("#DIRECTIVE " + " ".join(TOKEN.findall(s)))
         else:                 toks.extend(TOKEN.findall(s))
-    # "abc " "def" and "abc def" are the same string to the compiler, and
-    # clang-format moves the split around freely.
+    # Merge adjacent string literals, since clang-format moves the split freely.
     merged: list[str] = []
     for t in toks:
         if (t.startswith('"') and

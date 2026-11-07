@@ -20,16 +20,9 @@
 
 namespace ddx::rt {
 
-// What a Want's graph carries; each level is the one below plus a block.  The
-// columns: whether the Want is one function's (a system refuses it), whether
-// it is second order (a function supplying first partials only refuses it),
-// whether its kernel may be built over the rebalanced graph, what its
-// direction is counted in, whether it fills the values block, and the shape of
-// its Jacobian and Hessian blocks -- the pattern's cells, one per symbol or per
-// function, the colouring's compressed columns, or n x n dense.  The seeded
-// and second-order Wants may not rebalance: their block is swept from the
-// unblocked roots, so a rebalanced copy would answer in different last bits
-// than the sweep it is checked against.
+// What each Want's graph computes; the columns are WantInfo's fields in order.
+// Seeded and second-order Wants are swept from unblocked roots, so they cannot
+// use the rebalanced graph without changing their last bits.
 #define DDX_RT_WANT_TABLE(X)                                                   \
   X(Value, false, false, true, None, true, None, None)                         \
   X(Jacobian, false, false, true, None, true, Cells, None)                     \
@@ -81,8 +74,7 @@ inline constexpr std::array want_table{
 };
 inline constexpr std::size_t want_count = want_table.size();
 
-// The Wants in table order, so a pipeline zipped against them needs no cast
-// back from an index.
+// Every Want in table order, for zipping against per-Want arrays.
 inline constexpr std::array want_values{
 #define DDX_RT_WANT(Name, ...) Want::Name,
     DDX_RT_WANT_TABLE(DDX_RT_WANT)
@@ -99,47 +91,39 @@ inline constexpr std::array want_values{
   return want_info(w).rebalanceable;
 }
 
-// One of a thing per output block, in the order the kernel writes them.  The
-// ids an arena collects, the spans a frozen graph lends, the counts read off
-// them and the columns codegen loads are the same three names, said once.
-// (jit::KernelShape cannot share it: the core may not include rt/.)
+// One Per for each output block, in the order the kernel writes them.
+// jit::KernelShape cannot reuse it because the JIT core may not include rt/.
 template <std::semiregular Per> struct PerBlock {
   Per values{};
   Per jacobian{};
   Per hessian{};
 };
 
-using OutputBlocks = PerBlock<std::vector<NodeId>>; // what a freeze is handed
-// The column counts, read off the blocks so no column can be miscounted:
-// `values` is m, `jacobian` is the pattern's nonzeros row-major by function,
-// and `hessian` is colours * n, compressed.
+using OutputBlocks = PerBlock<std::vector<NodeId>>; // the input to freeze()
+// Column counts: m values, the Jacobian pattern's nonzeros, and colours * n
+// compressed Hessian columns.
 using Layout = PerBlock<std::size_t>;
-// What a sweep writes into: a triple rather than three parameters, so a block
-// and the columns it fills cannot be paired one way here and another there.
+// The output columns a sweep writes into, one span per block.
 template <impl::Numeric T> using Columns = PerBlock<std::span<T *const>>;
 
-// The three, in the order the ABI writes them.  Said here and nowhere else.
+// The three blocks as an array, in the order the ABI writes them.
 template <std::semiregular Per>
 [[nodiscard]] constexpr auto in_order(const PerBlock<Per> &b) {
   return std::array{b.values, b.jacobian, b.hessian};
 }
 
-// One triple against another, block for block.
 template <std::semiregular A, std::semiregular B>
 [[nodiscard]] constexpr auto zip_blocks(const PerBlock<A> &a,
                                         const PerBlock<B> &b) {
   return std::views::zip(in_order(a), in_order(b));
 }
 
-// Where each output's value sits: a scalar's tape row, or a vector's tensor
-// rows, which fill `width` consecutive output columns -- the dense Hessian is
-// one such output, n^2 columns wide.
+// Where each output's value sits: a scalar's tape row, or a tensor's rows,
+// which fill `width` consecutive output columns.
 using OutputRows = PerBlock<std::span<const TensorRow>>;
 
-// `stride` is the tape's lanes per node, `width` how many this sweep filled,
-// `i` where they start in the caller's columns.  A scalar output is one copy
-// off the tape; a vector output is one column per element off the tensor tape,
-// whose lanes are element-minor.
+// Copies a sweep's `width` lanes into the output columns starting at point i.
+// stride is the tape's lanes per node; tensor-tape lanes are element-minor.
 template <impl::Numeric T>
 constexpr void scatter_blocks(const OutputRows &rows, std::span<const T> tape,
                               std::span<const T> vtape, const Columns<T> &out,
@@ -154,7 +138,7 @@ constexpr void scatter_blocks(const OutputRows &rows, std::span<const T> tape,
         ++column;
         continue;
       }
-      // Column c of a column-major rows x cols matrix, read row-major.
+      // Output column c reads a column-major matrix in row-major order.
       const std::size_t cols = r.width / r.rows;
       const T *const base = vtape.data() + std::size_t{r.at} * stride;
       for (std::size_t c = 0; c < r.width; ++c, ++column) {
@@ -167,8 +151,8 @@ constexpr void scatter_blocks(const OutputRows &rows, std::span<const T> tape,
   }
 }
 
-// An arena frozen into per-node arrays, the form codegen walks: three operand
-// slots each, so position is the index, and lists for the n-ary nodes.
+// An arena frozen into flat per-node arrays, the form that codegen and the
+// interpreter walk.
 template <impl::Numeric T = double> class DDX_TEMPLATE_API Graph {
 public:
   using value_type = T;
@@ -179,19 +163,14 @@ public:
     ListOffset list = no_list;
   };
 
-  // `contract` is settled here, not per sweep: it decides the arithmetic, so
-  // changing it afterwards means freezing again.
-  // `directions` is how many direction columns the call hands, read or not.
-  // `fuse` is for a kernel, which forms an elementwise row inside its reader:
-  // the operands then live to that reader, which a sweep -- computing every
-  // row on its own -- pays for in tape and nothing else.
+  // contract fixes FMA contraction for this graph. fuse lets a kernel compute
+  // elementwise rows inside their reader; a sweep gains nothing from it.
   [[nodiscard]] static Graph
   freeze(const Arena<T> &b, OutputBlocks blocks, Colouring colouring = {},
          Sparsity jacobian = {}, bool contract = true,
          std::size_t directions = 0, bool fuse = true) {
     Graph g;
-    // Node counts per block, and the column counts: a vector output is one
-    // column per element.
+    // A tensor output takes one column per element.
     const auto columns = [&b](std::span<const NodeId> ids) {
       return std::ranges::fold_left(ids, 0uz, [&b](std::size_t n, NodeId v) {
         return n + (detail::is_tensor(b[v]) ? width_of(b, v) : 1uz);
@@ -224,8 +203,7 @@ public:
     }
     g.mark_live();
     g.contract(contract ? Contract::on : Contract::off);
-    // Read off what survived rather than taken from the arena, so a
-    // pipeline that kept no seed keeps the kernel it had.
+    // Directions are counted from the surviving seeds, not from the arena.
     for (const NodeId v : g.schedule_ | std::views::transform(&Step::node)) {
       if (g.properties_[v].op == OpCode::Seed) {
         g.inputs_.directions = std::max(
@@ -237,8 +215,7 @@ public:
     if (g.has_tensors_) {
       g.pair_products();
     }
-    // The tape packed by liveness, scalar rows and tensor rows alike; off the
-    // arena, which holds the tensor table the widths come from.
+    // Packs the tape rows by liveness, for scalar and tensor rows alike.
     auto packed = detail::pack_rows(b, g.schedule_, g.outputs_);
     g.rows_ = std::move(packed.by_id);
     g.tape_rows_ = packed.rows;
@@ -277,78 +254,63 @@ public:
   [[nodiscard]] std::span<const NodeId> outputs() const { return outputs_; }
   [[nodiscard]] const Layout &layout() const { return layout_; }
   [[nodiscard]] const Colouring &colouring() const { return colouring_; }
-  // Which (function, symbol) cells the jacobian block holds, in its order.
+  // The (function, symbol) cells of the jacobian block, in block order.
   [[nodiscard]] const Sparsity &jacobian_pattern() const {
     return jacobian_pattern_;
   }
-  // How many input columns of each kind `xs` carries, and the names of all
-  // but the seeds, in column order.
+  // The input column count of each kind, and the input names in column order.
   [[nodiscard]] const Inputs &inputs() const { return inputs_; }
   [[nodiscard]] const std::vector<std::string> &names() const { return names_; }
 
-  // The functions extern nodes call, shared with the arena: a kernel lowered
-  // from this graph calls them by index into this table.
+  // The extern functions, shared with the arena and called by index.
   [[nodiscard]] std::span<const ExternEntry<T>> externs() const {
     return externs_;
   }
-  // Every has_list node's ids, shared with the arena: what arguments() reads.
+  // The operand lists of n-ary nodes, shared with the arena.
   [[nodiscard]] std::span<const NodeId> lists() const { return lists_; }
-  // Whether a live node is a tensor op: what makes the sweep carry a second
-  // tape, and a kernel call the interpreter's step for that node.
+  // Whether any live node is a tensor op, which needs a second tape.
   [[nodiscard]] bool has_tensors() const noexcept { return has_tensors_; }
-  // Where each tensor-valued node's rows sit in that tape.
+  // Where each tensor node's rows sit in the tensor tape.
   [[nodiscard]] const TensorLayout &tensors() const noexcept {
     return tensors_;
   }
-  // By id, a tensor node's rows x cols, and a table's; what a kernel's loops
-  // run over.
-  // A scalar's is the default, recorded or not: a graph with no tensor keeps
-  // no shapes.
+  // A node's rows x cols; scalars, and every node of a graph with no tensor,
+  // report the default shape.
   [[nodiscard]] Shape shape(NodeId v) const {
     return shapes_.empty() ? Shape{} : shapes_[v];
   }
-  // By id, the step a kernel computes a node inside, or no_node where the
-  // node is a row of its own.  The tensor layout keeps such a node's operands
-  // live until that step.
+  // The step a kernel computes node v inside, or no_node when v is its own row.
   [[nodiscard]] NodeId fused_into(NodeId v) const {
     return fused_.empty() ? no_node : fused_[v];
   }
-  // By id, the other product of a pair -- one matrix times one vector, both
-  // ways round -- which the schedule runs next to it, else no_node.  Empty
-  // for a graph with no tensor.
+  // For each M v or M^T v product, its scheduled partner, else no_node.
   [[nodiscard]] std::span<const NodeId> pairs() const { return paired_; }
 
-  // How many input columns `xs` carries: the symbol count is not the width.
+  // The total number of input columns, which can exceed the symbol count.
   [[nodiscard]] std::size_t arity() const { return inputs_.total(); }
 
   [[nodiscard]] bool live(NodeId v) const { return live_[v]; }
 
-  // How many ids the freeze kept.
   [[nodiscard]] std::size_t live_count() const { return live_order_.size(); }
 
-  // The ids left to compute, in topological order so a consumer emits them in
-  // one pass, each with its fma.  A multiply every reader swallowed into an fma
-  // is computed by nobody; contraction_at() decides that arithmetic, off the
-  // nodes, and the freeze keeps the answer so no sweep re-derives it per point.
-  // The span must not outlive this graph.
+  // The steps to compute in topological order, with FMA contraction already
+  // decided. Multiplies absorbed into an FMA are omitted.
   [[nodiscard]] std::span<const Step> schedule() const { return schedule_; }
 
-  // Derived once, for codegen, the interpreter and the ABI size checks.
   [[nodiscard]] PerBlock<std::span<const NodeId>> output_blocks() const {
     return blocks_of(std::span<const NodeId>{outputs_});
   }
   [[nodiscard]] OutputRows output_rows() const {
     return blocks_of(std::span<const TensorRow>{output_rows_});
   }
-  // By id, the tape row each scheduled node's value sits in; how many rows the
-  // tape has.  Packed by liveness, so the tape is a fraction of the arena.
+  // Each scheduled node's tape row, and the row count. Rows are packed by
+  // liveness, so the tape is much smaller than the arena.
   [[nodiscard]] std::span<const TapeRow> rows() const noexcept { return rows_; }
   [[nodiscard]] std::size_t tape_rows() const noexcept { return tape_rows_; }
 
   [[nodiscard]] OpCode op_of(NodeId v) const { return properties_[v].op; }
 
-  // Operands in slot order; arity is at most three, a select being the only op
-  // that reaches it.
+  // Operands in slot order; only a select uses all three.
   [[nodiscard]] std::array<NodeId, 3> operands(NodeId v) const {
     return operands_[v];
   }
@@ -366,9 +328,8 @@ private:
                                    counts_.hessian)};
   }
 
-  // M v and M^T v, which a quadratic form's value and gradient both ask for,
-  // are a pair: the later step moves to just after the earlier, where both
-  // its operands already are, so a kernel reads the matrix once for the two.
+  // Schedules M v and M^T v next to each other so that a kernel reads the
+  // matrix once for both, as a quadratic form's value and gradient need.
   void pair_products() {
     paired_.assign(properties_.size(), no_node);
     std::vector<bool> later(properties_.size(), false);
@@ -409,7 +370,7 @@ private:
     schedule_ = std::move(out);
   }
 
-  // Nothing but the outputs and what they reach needs to be emitted.
+  // Marks the nodes reachable from the outputs.
   void mark_live() {
     live_ = detail::reachable(*this, outputs_);
     live_order_.reserve(
@@ -417,10 +378,8 @@ private:
     impl::append(live_order_, detail::live_ids(live_));
   }
 
-  // Liveness under contraction, which is all this freeze settles -- an add,
-  // or a sum, reaches a multiply's operands rather than the multiply, so a
-  // multiply nothing else reads drops out with the Neg of a subtraction
-  // behind it.
+  // Recomputes liveness with FMA contraction, so a multiply read only by
+  // contracted adds is dropped from the schedule.
   void contract(Contract contract) {
     if (contract == Contract::off) {
       schedule_ = detail::schedule_of(*this, live_order_, Contract::off);
@@ -476,9 +435,8 @@ private:
   std::vector<Step> schedule_;
 };
 
-// What one call steps through and the values those steps write, a tensor
-// step its rows x cols, counted off a frozen graph: no point and no sweep.  A
-// call costs in proportion to `values`.
+// Static counts of the steps a call executes and the values they write,
+// taken from a frozen graph. A call's cost is proportional to values.
 struct Census {
   struct Row {
     OpCode op = OpCode::Const;
@@ -488,7 +446,7 @@ struct Census {
   };
   std::size_t steps = 0;
   std::size_t values = 0;
-  // The opcodes present, most values first.
+  // Per-opcode counts, sorted by values written, largest first.
   std::vector<Row> by_op;
 };
 

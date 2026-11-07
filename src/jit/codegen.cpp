@@ -31,11 +31,8 @@
 namespace ddx::jit::detail {
 namespace {
 
-// Which intrinsic covers a Call row; the rest go out as libm calls by the
-// same name.  One array indexed by the enumerator, filled once, the shape
-// rt::op_info already has: lookupIntrinsicID binary-searches a name table off
-// a Twine that has to be flattened into a heap string, and the emitter asks
-// per node.
+// The LLVM intrinsic for each Call opcode, or not_intrinsic for a libm call.
+// Cached in a table because lookupIntrinsicID is too slow to call per node.
 llvm::Intrinsic::ID intrinsic_for(rt::OpCode op) {
   static const std::array<llvm::Intrinsic::ID, rt::op_count> table = [] {
     std::array<llvm::Intrinsic::ID, rt::op_count> t{};
@@ -43,9 +40,8 @@ llvm::Intrinsic::ID intrinsic_for(rt::OpCode op) {
       const auto &[form, name] = rt::spelling_of(static_cast<rt::OpCode>(i));
       llvm::SmallString<32> spelled{"llvm."};
       spelled += name;
-      // Not pow: the library-call simplifier rewrites llvm.pow with a constant
-      // operand -- 1/x for -1, sqrt for 0.5 -- and libm's pow is not
-      // correctly rounded, so the kernel would leave the sweep by an ulp.
+      // Pow stays a libm call: the simplifier rewrites llvm.pow with constant
+      // exponents into sqrt or 1/x, which differ from libm's pow by an ulp.
       t[i] = form == rt::Form::Call && i != std::to_underlying(rt::OpCode::Pow)
                  ? llvm::Intrinsic::lookupIntrinsicID(spelled)
                  : llvm::Intrinsic::not_intrinsic;
@@ -55,8 +51,8 @@ llvm::Intrinsic::ID intrinsic_for(rt::OpCode op) {
   return table[std::to_underlying(op)];
 }
 
-// A function the kernel calls out to, which neither unwinds nor loops;
-// `effects`, where known, is what lets the optimiser move the call.
+// Declares an external callee that never throws and always returns. Passing
+// `effects` lets the optimiser move calls to it.
 llvm::Function *declare(llvm::Module &m, llvm::StringRef name,
                         llvm::FunctionType *type,
                         std::optional<llvm::MemoryEffects> effects = {}) {
@@ -70,8 +66,8 @@ llvm::Function *declare(llvm::Module &m, llvm::StringRef name,
   return fn;
 }
 
-// The IR spelling of -fno-math-errno: without it a call is assumed to write
-// errno, which blocks hoisting across it.
+// Declares a libm function as not touching memory, the IR form of
+// -fno-math-errno, so that calls to it can be hoisted.
 llvm::Function *libm_decl(llvm::Module &m, std::string_view name,
                           llvm::Type *scalar, unsigned args) {
   llvm::SmallVector<llvm::Type *, 2> params(args, scalar);
@@ -81,9 +77,8 @@ llvm::Function *libm_decl(llvm::Module &m, std::string_view name,
   return fn;
 }
 
-// A way out of a kernel into the runtime, defined beside libm: the extern
-// trampoline, handed the function's address as a constant, and the
-// tensor step and store.
+// Declares a runtime entry point the kernel calls: the extern trampoline, the
+// tensor step, or the tensor store.
 template <CKernelScalar T>
 llvm::Function *runtime_decl(llvm::Module &m, std::string_view symbol,
                              llvm::ArrayRef<llvm::Value *> args) {
@@ -94,9 +89,8 @@ llvm::Function *runtime_decl(llvm::Module &m, std::string_view symbol,
                                          types, false));
 }
 
-// W points per iteration, as a T at W == 1 and <W x T> otherwise.  Every
-// IRBuilder operation is typed on `ty`, so only the memory accesses and the
-// calls with no vector intrinsic tell the two apart.
+// The kernel handles `width` points per iteration, as T when width is 1 and as
+// <width x T> otherwise. Only memory accesses and libm calls differ by width.
 struct LaneType {
   unsigned width;
   llvm::Type *scalar;
@@ -104,8 +98,8 @@ struct LaneType {
   [[nodiscard]] constexpr bool vector() const noexcept { return width > 1; }
 };
 
-// The kernel's arguments a tensor step is handed: the TensorCall, and the
-// interpreter's two tapes.  Null in a scalar graph.
+// The kernel arguments a tensor step needs: the TensorCall and the two
+// interpreter tapes. All are null in a graph without tensors.
 struct TensorTapes {
   llvm::Value *call = nullptr;
   llvm::Value *tape = nullptr;
@@ -118,14 +112,13 @@ public:
           TensorTapes tensors)
       : m_{m}, b_{b}, lanes_{lanes}, tensors_{tensors} {}
 
-  // A splat where the lane type is a vector.
+  // A constant of the lane type, splatted when the lane type is a vector.
   [[nodiscard]] llvm::Value *constant(double v) const {
     return llvm::ConstantFP::get(lanes_.ty, v);
   }
 
-  // Columns are plain T*, so no alignment past the element's is claimed.
-  // A load past the batch reads inactive lanes as 1.0: never stored, and inside
-  // every op's domain, so a scalarised libm call cannot hit a pole.
+  // Inactive lanes load 1.0, which is inside every op's domain, so a scalarised
+  // libm call on them cannot hit a pole. Their results are never stored.
   [[nodiscard]] llvm::Value *load(llvm::Value *column, llvm::Value *index,
                                   llvm::Value *mask,
                                   const llvm::Twine &name) const {
@@ -154,8 +147,7 @@ public:
     if (op == rt::OpCode::Neg) {
       return b_.CreateFNeg(u);
     }
-    // Sign: u > 0 ? 1 : u < 0 ? -1 : u - u -- the last arm reaches only ±0
-    // and NaN.
+    // Sign is u > 0 ? 1 : u < 0 ? -1 : u - u. Only ±0 and NaN reach u - u.
     llvm::Value *const zero = constant(0.0);
     return b_.CreateSelect(b_.CreateFCmpOGT(u, zero), constant(1.0),
                            b_.CreateSelect(b_.CreateFCmpOLT(u, zero),
@@ -163,7 +155,7 @@ public:
                                            b_.CreateFSub(u, u)));
   }
 
-  // Not llvm.fmuladd, which is only *permission* to fuse
+  // A real llvm.fma, not llvm.fmuladd, which only permits fusion.
   llvm::Value *fma(const rt::Contraction &c, llvm::Value *x, llvm::Value *y,
                    llvm::Value *z) const {
     return b_.CreateIntrinsic(llvm::Intrinsic::fma, {lanes_.ty},
@@ -176,8 +168,8 @@ public:
       return op == rt::OpCode::Add   ? b_.CreateFAdd(l, r)
              : op == rt::OpCode::Mul ? b_.CreateFMul(l, r)
                                      : b_.CreateFDiv(l, r);
-    // 1.0 or 0.0 in the lane type, as compare_impl computes.  Ordered, so a
-    // NaN operand compares false.
+    // Yields 1.0 or 0.0, as compare_impl does. The compare is ordered, so a
+    // NaN operand gives false.
     case rt::Form::Compare:
       return b_.CreateUIToFP(b_.CreateFCmp(op == rt::OpCode::Lt
                                                ? llvm::CmpInst::FCMP_OLT
@@ -186,8 +178,8 @@ public:
                              lanes_.ty);
     case rt::Form::Call:
       return call(op, {l, r});
-    // Max and Min: the NaN-propagating pair the interpreter matches, where
-    // maxnum/minnum are not.
+    // Max and Min use llvm.maximum and llvm.minimum, which propagate NaN as
+    // the interpreter does; maxnum and minnum do not.
     case rt::Form::Special:
     case rt::Form::None:
       return b_.CreateBinaryIntrinsic(op == rt::OpCode::Max
@@ -198,13 +190,11 @@ public:
     std::unreachable();
   }
 
-  // Every component of one call, lane by lane: [component * width + lane].
+  // The results of one extern call, indexed by component * width + lane.
   using Answers = std::vector<llvm::Value *>;
 
-  // One call per lane, the function having a scalar entry point only, as a
-  // libm call does; inactive lanes call it too, at the 1.0 a masked load
-  // reads, and their answers are never stored.  Every component is read back
-  // from the one call, so a value and its partials cost one call per lane.
+  // Calls the extern once per lane, since it has only a scalar entry point.
+  // One call returns the value and all of its partials for that lane.
   Answers extern_call(const rt::ExternEntry<T> &e,
                       std::span<llvm::Value *const> args) const {
     llvm::Function *const kernel = b_.GetInsertBlock()->getParent();
@@ -238,23 +228,19 @@ public:
     });
     return out;
   }
-  // One component of a call's answers, back in the lane type.
+  // Gathers one component of an extern call's results into the lane type.
   llvm::Value *component(const Answers &answers, std::uint32_t c) const {
     return gathered(
         [&](unsigned lane) { return answers[c * lanes_.width + lane]; });
   }
 
-  // Both arms are already computed, so this is one blend: no branch and no
-  // lane divergence.
   llvm::Value *ternary(llvm::Value *c, llvm::Value *t, llvm::Value *f) const {
-    // UNE, not ONE: C's `!=` is unordered, so a NaN condition is true, which
-    // is what select_impl computes.  The ordered form sends the kernel down the
-    // other arm than the sweep, and only a raw value as a condition reaches it
-    // -- a comparison's output is never NaN.
+    // UNE, not ONE: a NaN condition counts as true, as C's != does in
+    // select_impl. Only a raw value used as a condition can be NaN.
     return b_.CreateSelect(b_.CreateFCmpUNE(c, constant(0.0)), t, f);
   }
 
-  // Lane k of tape row r at tape + r*W + k, as the interpreter lays it out.
+  // Lane k of tape row r lives at tape + r * width + k, as in the interpreter.
   void to_tape(llvm::Value *v, std::uint32_t row, llvm::Value *mask) const {
     store(v, tensors_.tape, lanes_at(row), mask);
   }
@@ -286,10 +272,8 @@ private:
     return b_.getInt64(std::uint64_t{row} * lanes_.width);
   }
 
-  // An intrinsic is declared on the lane type and left to the backend to
-  // unroll; a libm function has only a scalar entry point, so it is unrolled
-  // here.  Declared once per opcode: getOrInsertDeclaration re-mangles the name
-  // into a heap string per ask, and the emitter asks per node.
+  // Intrinsics take the lane type directly; libm calls are made once per lane.
+  // Callees are cached per opcode because declaring one per node is slow.
   llvm::Value *call(rt::OpCode op, llvm::ArrayRef<llvm::Value *> args) const {
     auto &[fn, scalarise] = callees_[std::to_underlying(op)];
     if (fn == nullptr) {
@@ -304,8 +288,8 @@ private:
     }
     return scalarise ? scalarised(fn, args) : libm_call(fn, args);
   }
-  // A libm call stays that call: nobuiltin keeps the simplifier from trading
-  // it for another function that rounds differently.
+  // nobuiltin stops the simplifier from replacing a libm call with another
+  // function that rounds differently.
   llvm::Value *libm_call(llvm::Function *fn,
                          llvm::ArrayRef<llvm::Value *> args) const {
     llvm::CallInst *const c = b_.CreateCall(fn, args);
@@ -325,8 +309,7 @@ private:
     return gathered([&](unsigned lane) { return answers[lane]; });
   }
 
-  // Lane by lane, each argument as a scalar: what a function with a scalar
-  // entry point only -- libm's, or the program's -- is handed.
+  // Calls `scalar` once per lane with that lane's element of each argument.
   void per_lane(std::span<llvm::Value *const> args, auto &&scalar) const {
     for (const unsigned lane : std::views::iota(0u, lanes_.width)) {
       llvm::SmallVector<llvm::Value *, 4> scalars;
@@ -337,7 +320,7 @@ private:
       scalar(lane, scalars);
     }
   }
-  // Each lane's scalar, back in the lane type.
+  // Builds a lane-type value from one scalar per lane.
   llvm::Value *gathered(auto &&of_lane) const {
     if (!lanes_.vector()) {
       return of_lane(0u);
@@ -360,12 +343,8 @@ private:
   mutable std::array<Callee, rt::op_count> callees_{};
 };
 
-// Tensor nodes as loops: one nest per row the kernel keeps, over its columns
-// and then its contiguous rows, the inner loop marked for the loop vectoriser
-// -- which, forced, may also reorder a reduction's adds.  A node the graph
-// fused into its reader is its element expression inside the reader's loop.
-// MatMul and StackRows stay the interpreter's step.  Lane k of a W-lane kernel
-// is one pass of a loop over k.
+// Emits tensor nodes as loop nests, columns outer and rows inner. The inner
+// loop is force-vectorised, which may reorder a reduction's adds.
 template <CKernelScalar T> class TensorLoops {
 public:
   TensorLoops(llvm::Module &m, llvm::IRBuilder<> &b, const rt::Graph<T> &g,
@@ -373,7 +352,7 @@ public:
       : m_{m}, b_{b}, g_{g}, elem_{elem}, lanes_{lanes}, tapes_{tapes},
         tables_(g.size(), nullptr), stepped_(g.size(), false),
         done_(g.size(), false) {
-    // In the entry block, once per call.
+    // Table pointers are fetched once per call, in the entry block.
     auto *const decl =
         declare(m, libm_name<T>(tensor_table_symbol),
                 llvm::FunctionType::get(b.getPtrTy(),
@@ -389,7 +368,8 @@ public:
              b.getInt64(rt::detail::get<rt::TensorRef>(g[v]).value)},
             "table");
       }
-      // A step and the output scatter read rows; a loop reads a table in place.
+      // Operands of interpreter steps need a tape row; loops read tables in
+      // place.
       if (!handles(v)) {
         rt::detail::for_each_operand(g, v,
                                      [&](rt::NodeId u) { stepped_[u] = true; });
@@ -400,13 +380,13 @@ public:
     }
   }
 
-  // Whether node v is a loop here rather than the interpreter's step.
+  // MatMul and StackRows are left to the interpreter; the rest become loops.
   [[nodiscard]] bool handles(rt::NodeId v) const {
     return g_.op_of(v) != rt::OpCode::MatMul &&
            g_.op_of(v) != rt::OpCode::StackRows;
   }
 
-  // Node v at every lane; a scalar it yields is left in its tape row.
+  // Emits node v for every lane. A scalar result is left in its tape row.
   void emit(rt::NodeId v, std::span<llvm::Value *const> value) {
     value_ = value;
     if (lanes_.width == 1) {
@@ -434,9 +414,8 @@ private:
     return g_.shape(u).rows;
   }
 
-  // for (iv = 0; iv < n; ++iv) with `init` carried through `body`, which
-  // answers the next values; the finals come back.  n is a constant, the
-  // shapes being the graph's.
+  // Emits for (iv = 0; iv < n; ++iv), threading `init` through `body`, which
+  // returns the next carried values. Returns the final carried values.
   Carried loop(std::uint64_t n, llvm::ArrayRef<llvm::Value *> init,
                bool vectorise, auto &&body) {
     if (n == 0) {
@@ -471,8 +450,8 @@ private:
       llvm::Metadata *const enable[] = {
           llvm::MDString::get(ctx, "llvm.loop.vectorize.enable"),
           llvm::ConstantAsMetadata::get(b_.getTrue())};
-      // Unrolled whole first, a reduction is a serial chain the vectoriser
-      // never sees.
+      // Unrolling is disabled because a fully unrolled reduction becomes a
+      // serial chain the vectoriser cannot see.
       llvm::Metadata *const keep[] = {
           llvm::MDString::get(ctx, "llvm.loop.unroll.disable")};
       llvm::Metadata *const ops[] = {nullptr, llvm::MDNode::get(ctx, enable),
@@ -484,7 +463,7 @@ private:
     b_.SetInsertPoint(done);
     return next;
   }
-  // Every (i, j) of an r x c shape, i innermost.
+  // Visits every (i, j) of a shape, with i innermost.
   Carried each(rt::Shape s, llvm::ArrayRef<llvm::Value *> init, auto &&body) {
     return loop(s.cols, init, false, [&](llvm::Value *j, const Carried &outer) {
       return loop(s.rows, outer, true, [&](llvm::Value *i, const Carried &c) {
@@ -506,14 +485,14 @@ private:
   [[nodiscard]] llvm::Value *read(llvm::Value *base, llvm::Value *at) const {
     return b_.CreateLoad(lanes_.scalar, element(base, at));
   }
-  // Lane k of u's row.
+  // Lane k's copy of node u's tensor row.
   [[nodiscard]] llvm::Value *row(rt::NodeId u) const {
     const rt::TensorRow &r = g_.tensors().rows[u];
     return element(tapes_.vtape, add(i64(std::uint64_t{r.at} * lanes_.width),
                                      b_.CreateMul(k_, i64(r.width))));
   }
-  // Lane k of a scalar node, which is SSA: its tape row may be another
-  // node's by the time a fused reader runs.
+  // Lane k of a scalar node, read from its SSA value: by the time a fused
+  // reader runs, the tape row may belong to another node.
   [[nodiscard]] llvm::Value *scalar(rt::NodeId u) const {
     return lanes_.width == 1 ? value_[u]
                              : b_.CreateExtractElement(value_[u], k_);
@@ -524,7 +503,7 @@ private:
                    add(i64(std::uint64_t{g_.rows()[v]} * lanes_.width), k_)));
   }
 
-  // Element (i, j) of u: off a table, off u's row, or computed here.
+  // Element (i, j) of node u, read from a table or u's row, or computed inline.
   llvm::Value *at(rt::NodeId u, llvm::Value *i, llvm::Value *j) {
     switch (g_.op_of(u)) {
     case rt::OpCode::VecConst:
@@ -548,8 +527,8 @@ private:
   }
   llvm::Value *at(rt::NodeId u, llvm::Value *i) { return at(u, i, i64(0)); }
 
-  // What an elementwise node is at (i, j), in the operand order the
-  // interpreter multiplies in.
+  // Element (i, j) of an elementwise node, multiplying operands in the
+  // interpreter's order.
   llvm::Value *expr(rt::NodeId v, llvm::Value *i, llvm::Value *j) {
     const auto in = g_.operands(v);
     using rt::detail::operands;
@@ -603,9 +582,8 @@ private:
                               {x, y, z});
   }
 
-  // M x into `plain`'s row and M^T x into `transposed`'s, either absent,
-  // four columns a pass: each element of M is read once for both, out is
-  // loaded and stored a quarter as often, and x[i] once for four dots.
+  // Computes M x into `plain` and M^T x into `transposed`, either optional,
+  // four columns per pass so each element of M is loaded once for both.
   void products(rt::NodeId m, rt::NodeId x, rt::NodeId plain,
                 rt::NodeId transposed) {
     const rt::Shape s = g_.shape(m);
@@ -666,8 +644,8 @@ private:
     case rt::OpCode::MatConst:
       return;
     case rt::OpCode::MatRow:
-      // A table is read in place: copied only where it has a row -- an output
-      // -- or, transposed, where a step reads that row.
+      // A table is read in place. It is copied only when it is an output, or a
+      // transpose whose row an interpreter step reads.
       if (g_.op_of(a) == rt::OpCode::MatConst &&
           (g_.tensors().rows[v].width == 0 ||
            (rt::detail::get<rt::Orientation>(p) ==
@@ -691,7 +669,7 @@ private:
       return;
     case rt::OpCode::Gather:
     {
-      // A flat index: a fused matrix is read by its row and its column.
+      // The element index is flat; a fused matrix is read by row and column.
       const std::uint64_t e = rt::detail::get<rt::Element>(p).value;
       scalar_out(v, at(a, i64(e % rows(a)), i64(e / rows(a))));
       return;
@@ -724,7 +702,7 @@ private:
       return;
     }
     case rt::OpCode::MatVec: {
-      // A pair is one nest, at whichever of the two comes first.
+      // A paired M x and M^T x share one nest, emitted at whichever is first.
       const rt::NodeId mate = g_.pairs()[v];
       if (done_[v]) {
         return;
@@ -750,7 +728,7 @@ private:
     default:
       break;
     }
-    // Everything elementwise, as a row of its own.
+    // Every remaining node is elementwise and gets a row of its own.
     llvm::Value *const out = row(v);
     each(s, {}, [&](llvm::Value *i, llvm::Value *j, auto) {
       b_.CreateStore(expr(v, i, j), element(out, flat(i, j, s.rows)));
@@ -764,9 +742,9 @@ private:
   const Emitter<T> &elem_;
   LaneType lanes_;
   TensorTapes tapes_;
-  std::vector<llvm::Value *> tables_; // by id: a table's elements
-  std::vector<bool> stepped_;         // by id: read as a row, not in place
-  std::vector<bool> done_;            // by id: formed with its pair
+  std::vector<llvm::Value *> tables_; // per node, a table's elements
+  std::vector<bool> stepped_;         // per node, read as a row
+  std::vector<bool> done_;            // per node, emitted with its pair
   std::span<llvm::Value *const> value_;
   llvm::Value *k_ = nullptr;
 };
@@ -777,8 +755,8 @@ llvm::Function *declare_kernel(llvm::Module &m, llvm::StringRef name,
   llvm::LLVMContext &ctx = m.getContext();
   llvm::Type *const i64 = llvm::Type::getInt64Ty(ctx);
   llvm::PointerType *const ptr = llvm::PointerType::getUnqual(ctx);
-  // xs, f, g, h, n, tensors, tapes -- four column arrays, the batch length,
-  // and what the tensor steps read.
+  // Four column-pointer arrays, the batch length, then the tensor call and the
+  // tape that tensor steps read.
   auto *const fty = llvm::FunctionType::get(
       llvm::Type::getVoidTy(ctx), {ptr, ptr, ptr, ptr, i64, ptr, ptr}, false);
   auto *const fn =
@@ -790,12 +768,8 @@ llvm::Function *declare_kernel(llvm::Module &m, llvm::StringRef name,
     fn->getArg(static_cast<unsigned>(i))->setName(arg_name);
   }
 
-  // Everything here is about the four pointer *arrays*, not the columns they
-  // hold: those are reached through a load, so no parameter attribute reaches
-  // them and the kernel is not argmemonly.  All four are readonly -- the writes
-  // go through loaded pointers, never back into the arrays.  A block that was
-  // not asked for arrives as an empty span, whose data() may be null, so it
-  // gets neither nonnull nor a size.
+  // These attributes describe the pointer arrays, not the columns they hold,
+  // which are written through loaded pointers. Unrequested blocks may be null.
   const auto &layout = g.layout();
   const std::array counts{g.arity(), layout.values, layout.jacobian,
                           layout.hessian};
@@ -814,18 +788,18 @@ llvm::Function *declare_kernel(llvm::Module &m, llvm::StringRef name,
   }
   fn->addParamAttr(4, llvm::Attribute::NoUndef);
 
-  // nounwind, or the optimiser cannot move code across the libm calls.
+  // Without nounwind the optimiser cannot move code across the libm calls.
   fn->setDoesNotThrow();
   fn->setWillReturn();
   fn->setMustProgress();
   return fn;
 }
 
-// Loaded once in the entry block, so they are loop-invariant.
+// Column pointers loaded once in the entry block, so they are loop-invariant.
 using ColumnValues = boost::container::small_vector<llvm::Value *, 8>;
 struct HoistedColumns {
   ColumnValues inputs;
-  // f[k], g[k*n + j], h[c*n + i]
+  // Value columns f[k], Jacobian g[k*n + j] and Hessian h[c*n + i].
   rt::PerBlock<ColumnValues> out;
 };
 
@@ -852,10 +826,8 @@ HoistedColumns hoist_columns(llvm::IRBuilder<> &b, llvm::Function &fn,
                   .hessian = load_columns(3, layout.hessian, "h")}};
 }
 
-// Ids are topological, so one pass needs no worklist.  Under contraction the
-// adds carry their product and the multiplies they swallowed are never reached.
-// A tensor node is a loop nest, or the interpreter's step over the scalars it
-// reads stored to the tape; a scalar either yields is read back.
+// Node ids are topological, so one pass in schedule order suffices. Tensor
+// nodes become loop nests, or interpreter steps that exchange scalars via tape.
 template <CKernelScalar T>
 [[nodiscard]] std::vector<llvm::Value *>
 emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops, const rt::Graph<T> &g,
@@ -882,9 +854,8 @@ emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops, const rt::Graph<T> &g,
                     index, mask, "");
       break;
     case rt::Kind::Nary: {
-      // The terms into the running value in list order, a product term of a
-      // sum as the fma the sweep takes where the step is fused; the first
-      // term is formed.
+      // Folds the terms in list order. In a fused step a product term becomes
+      // an fma, as the sweep computes it.
       const rt::OpCode op = rt::fold_op(p.op);
       llvm::Value *acc = nullptr;
       for (const rt::NodeId t : rt::arguments(g, v)) {
@@ -903,9 +874,8 @@ emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops, const rt::Graph<T> &g,
       break;
     }
     case rt::Kind::Extern: {
-      // One call per (function, argument list), whichever component asked
-      // first; the rest are loads off the same answer.  Lists are interned,
-      // so the offset is the list.
+      // One call per function and argument list; other components reuse its
+      // results. Lists are interned, so the offset identifies the list.
       const auto [fn, component] = rt::detail::get<rt::ExternRef>(p);
       auto [answers, fresh] = called.try_emplace({fn, g.list_of(v)});
       if (fresh) {
@@ -969,8 +939,8 @@ void emit_stores(const Emitter<T> &emit, const rt::Graph<T> &g,
   }
 }
 
-// With tensor rows the outputs leave through the sweep's own scatter: each
-// scalar into its tape row, then one call for every block.
+// With tensors, outputs go through the interpreter's scatter: scalars are
+// stored to their tape rows, then one call writes every block.
 template <CKernelScalar T>
 void emit_tensor_stores(const Emitter<T> &emit, const rt::Graph<T> &g,
                         std::span<llvm::Value *const> value,
@@ -992,8 +962,7 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g, llvm::StringRef name,
             const unsigned width, const llvm::DataLayout &layout,
             llvm::StringRef triple) {
   auto m = std::make_unique<llvm::Module>("ddx.jit", ctx);
-  // Before the first instruction: IRBuilder reads the layout for every
-  // alignment it fills in without being told one.
+  // Set the data layout first, since IRBuilder reads it for default alignments.
   m->setDataLayout(layout);
   m->setTargetTriple(triple);
   llvm::Function *const fn = declare_kernel(*m, name, g);
@@ -1011,12 +980,12 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g, llvm::StringRef name,
   auto *const loop = llvm::BasicBlock::Create(ctx, "loop", fn);
   auto *const exit = llvm::BasicBlock::Create(ctx, "exit", fn);
 
-  // No fast-math flags at all: contraction is decided in the graph and spelled
-  // llvm.fma, so allowContract would fuse a *second* set the sweep computed
-  // separately.
+  // No fast-math flags: contraction is decided in the graph and emitted as
+  // llvm.fma, and allowContract would fuse pairs the sweep keeps apart.
   llvm::IRBuilder<> b(entry);
   const HoistedColumns cols = hoist_columns(b, *fn, g);
-  // The scalar tape, tape_rows() rows `width` wide, then the tensor tape.
+  // The tape argument holds the scalar tape, tape_rows() rows of `width`, and
+  // then the tensor tape.
   const TensorTapes tensors =
       g.has_tensors() ? TensorTapes{.call = fn->getArg(5),
                                     .tape = fn->getArg(6),
@@ -1033,8 +1002,7 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g, llvm::StringRef name,
     loops.emplace(*m, b, g, elem, lanes, tensors);
   }
 
-  // n == 0 is a degenerate call, and saying so is what keeps the loop out of
-  // the cold half of the layout.
+  // Weighting n == 0 as unlikely keeps the loop out of the cold code layout.
   llvm::MDBuilder md(ctx);
   b.CreateCondBr(b.CreateICmpEQ(count, llvm::ConstantInt::get(i64, 0)), exit,
                  loop, md.createBranchWeights(1, 1U << 12));
@@ -1043,13 +1011,12 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g, llvm::StringRef name,
   llvm::PHINode *const index = b.CreatePHI(i64, 2, "i");
   index->addIncoming(llvm::ConstantInt::get(i64, 0), entry);
 
-  // Lane k is live while k < n - i.  Signed on purpose: both sides are
-  // non-negative, and it is one instruction where the saturating
-  // llvm.get.active.lane.mask is a dozen on AVX2.
+  // Lane k is live while k < n - i. The signed compare is safe since both sides
+  // are non-negative, and it is far cheaper than llvm.get.active.lane.mask.
   llvm::Value *mask = nullptr;
-  llvm::Value *live = b.getInt64(1); // lanes this iteration fills
+  llvm::Value *live = b.getInt64(1); // lanes filled this iteration
   if (lanes.vector()) {
-    // nuw: i < n on every entry to the body, so the difference never wraps.
+    // nuw holds because i < n whenever the body runs.
     llvm::Value *const remaining =
         b.CreateSub(count, index, "remaining", /*HasNUW=*/true);
     llvm::Value *const step =
@@ -1068,8 +1035,8 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g, llvm::StringRef name,
     emit_stores(emit, g, cols, value, index, mask);
   }
 
-  // nuw/nsw: n counts points the caller has allocated, so n + W is nowhere
-  // near either bound.  It is what lets SCEV name an exact trip count.
+  // nuw and nsw hold because n counts allocated points, and they let SCEV
+  // compute an exact trip count.
   llvm::Value *const next =
       b.CreateAdd(index, llvm::ConstantInt::get(i64, width), "i.next",
                   /*HasNUW=*/true, /*HasNSW=*/true);

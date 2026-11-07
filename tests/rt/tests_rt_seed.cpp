@@ -6,8 +6,8 @@
 
 #include <gtest/gtest.h>
 
-// A Seed is an input column that is never a symbol.  What these pin is the one
-// thing every consumer has to agree on: which column of the point a leaf reads.
+// A Seed is an input column that is never a symbol; these tests pin which
+// column of the point a seed leaf reads.
 
 namespace {
 using ddx::rt::Graph;
@@ -17,7 +17,7 @@ TEST(RtSeed, ReadsTheColumnAfterTheSymbols) {
   const auto x = var(b, "x");
   const auto f = x * x + seed(b, 0);
 
-  // Symbols first, then the directions: one symbol, so the seed is column 1.
+  // Symbols come before directions, so with one symbol the seed is column 1.
   const std::array point{3.0, 7.0};
   const auto values = ddx::rt::evaluate_all(b, point);
   EXPECT_DOUBLE_EQ(values[f.id(b)], 16.0);
@@ -51,7 +51,6 @@ TEST(RtSeed, WidensTheGraphArity) {
   EXPECT_EQ(graph.arity(), 2u);
 }
 
-// The regression guard for every graph that existed before seeds did.
 TEST(RtSeed, AGraphWithoutSeedsIsUnchanged) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");

@@ -56,9 +56,8 @@ enum class errc : std::uint8_t {
 #undef DDX_ERRC_ENUMERATOR
 };
 
-// No message string and no source location: an error travels the numeric path,
-// where an allocation is as unwelcome as the throw it replaces.  The text sits
-// in a static table the formatter reads.
+// Just a code, with no message or source location, so errors never allocate on
+// the numeric path. The text comes from a static table.
 struct error {
   errc code;
   [[nodiscard]] friend constexpr bool operator==(error,
@@ -94,8 +93,7 @@ template <typename T> using result = std::expected<T, error>;
 
 } // namespace ddx
 
-// Deriving from the string_view formatter, so a caller's "{:>16}" reaches the
-// text.
+// Derives from the string_view formatter so a spec such as "{:>16}" applies.
 template <>
 struct std::formatter<ddx::errc, char>
     : std::formatter<std::string_view, char> {

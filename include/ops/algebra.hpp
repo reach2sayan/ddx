@@ -6,13 +6,13 @@
 #include <cstdint>
 #include <utility>
 
-// The algebraic identities, written once.
+// The algebraic identities shared by the type-level and graph simplifiers.
 namespace ddx::impl::algebra {
 
 enum class RuleOp : std::uint8_t { Add, Mul, Div, Pow, Neg };
 
-// Each simplifier answers these in its own terms: a type trait on one side, a
-// node-id compare on the other.
+// Conditions that each simplifier tests in its own terms, by type trait or by
+// node id.
 enum class Pred : std::uint8_t {
   ZeroA,   // a is the literal 0
   ZeroB,   // b is the literal 0
@@ -25,7 +25,7 @@ enum class Pred : std::uint8_t {
   NegatedA // a is itself a negation
 };
 
-// What the node becomes.
+// What a matched node is replaced by.
 enum class Take : std::uint8_t {
   LitZero,
   LitOne,
@@ -41,13 +41,12 @@ struct Rule {
   RuleOp op;
   Pred when;
   Take then;
-  // a * (n/a) is a*n*a^-1, which is n only where the factors commute.  The
-  // mirrored (n/a) * a needs no such guard: `/` is right division, so the
-  // a^-1 already meets the a.
+  // a * (n/a) is a*n*a^-1, which is n only when the factors commute. (n/a) * a
+  // needs no guard, because / is right division.
   bool needs_commutative_multiply = false;
 };
 
-// Order is significant: both simplifiers take the first match.
+// Order matters, since both simplifiers take the first match.
 inline constexpr std::array kRules{
     // clang-format off
     Rule{.op = RuleOp::Mul, .when = Pred::ZeroA,  .then = Take::LitZero},
@@ -66,17 +65,15 @@ inline constexpr std::array kRules{
 
     Rule{.op = RuleOp::Pow, .when = Pred::ZeroB,  .then = Take::LitOne},
     Rule{.op = RuleOp::Pow, .when = Pred::OneB,   .then = Take::OperandA},
-    // The one integer power that is exact: a square is a single correctly-
-    // rounded multiply, so it *is* pow's answer, where x^3 is two roundings
-    // against one.  Worth a rule because the reverse rules manufacture
-    // pow(u, r-1) for every integer power a model writes.
+    // x^2 is the one integer power that a single multiply gives exactly. The
+    // reverse rule creates pow(u, r-1) for every power, so this one pays.
     Rule{.op = RuleOp::Pow, .when = Pred::TwoB,     .then = Take::SquareOfA},
 
     Rule{.op = RuleOp::Neg, .when = Pred::NegatedA, .then = Take::OperandOfA},
     // clang-format on
 };
 
-// Operands an op reads.  No default: a new enumerator must be filed here.
+// The operand count of an op. No default, so a new enumerator must be added.
 [[nodiscard]] constexpr std::size_t arity_of(RuleOp op) noexcept {
   switch (op) {
   case RuleOp::Add:
@@ -90,7 +87,7 @@ inline constexpr std::array kRules{
   std::unreachable();
 }
 
-// Operands a predicate reads: the *A predicates only a.
+// The operands a predicate reads; the *A predicates read only a.
 [[nodiscard]] constexpr std::size_t arity_of(Pred p) noexcept {
   switch (p) {
   case Pred::ZeroA:

@@ -1,6 +1,5 @@
-// Every call on a thread with a 1 MiB stack -- Windows' default and many
-// pools' -- over a thousand symbols: nothing in building or differentiating
-// may recurse once per symbol or per term.
+// Runs every call over a thousand symbols on a 1 MiB stack, the Windows
+// default, so nothing may recurse once per symbol or per term.
 
 #include "rt/equation.hpp"
 #include "rt/tensor.hpp"
@@ -18,7 +17,7 @@
 
 namespace {
 
-// Runs `body` on a thread with a 1 MiB stack; std::thread cannot size one.
+// Runs body on a thread with a 1 MiB stack, which std::thread cannot size.
 void on_small_stack([[maybe_unused]] auto body) {
 #ifndef DDX_TEST_SMALL_STACK
   GTEST_SKIP() << "no pthreads to size a stack with";
@@ -50,7 +49,7 @@ TEST(RtStack, AThousandChainedSymbolsOnAOneMegabyteStack) {
       for (std::size_t i = 0; i < kSymbols; ++i) {
         x.push_back(ddx::rt::var("x" + std::to_string(10000 + i)));
       }
-      // Built the way a loop builds it: one term deeper each time.
+      // Built the way a loop builds it, one term deeper each time.
       ddx::rt::Expression<double> acc{0.0};
       for (std::size_t i = 0; i + 1 < kSymbols; ++i) {
         acc = acc + x[i] * x[i + 1] + sin(x[i]);

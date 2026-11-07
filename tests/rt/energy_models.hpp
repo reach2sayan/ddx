@@ -4,10 +4,8 @@
 #include <numeric>
 #include <vector>
 
-// UNIQUAC, Peng-Robinson and an MSE-shaped electrolyte model as runtime graphs:
-// the species list comes from a database, so the expression cannot be written
-// in source.  The parameters are deterministic nonsense of the right magnitude
-// -- the machinery is what is under test, not the thermodynamics.
+// Thermodynamic models built as runtime graphs. The parameters are arbitrary
+// values of a realistic magnitude, since only the differentiation is tested.
 namespace models {
 
 using RE = ddx::rt::Expression<>;
@@ -17,9 +15,7 @@ inline double pseudo(std::size_t i, std::size_t j, double lo, double hi) {
   return lo + t * (hi - lo);
 }
 
-// UNIQUAC excess Gibbs energy over n species at fixed T.
-//   comb = sum xi ln(Phi_i/xi) + (z/2) sum qi xi ln(theta_i/Phi_i)
-//   res  = -sum qi xi ln(sum_j theta_j tau_ji)
+// UNIQUAC excess Gibbs energy over n species at a fixed temperature.
 inline RE uniquac(const std::vector<RE> &x) {
   const std::size_t n = x.size();
   std::vector<double> r(n), q(n);
@@ -58,9 +54,8 @@ inline RE uniquac(const std::vector<RE> &x) {
   return comb + res;
 }
 
-// Peng-Robinson: the cubic in Z, with van der Waals mixing.  Z is a variable.
-//   A = a_mix P/(RT)^2,  B = b_mix P/(RT)
-//   f(Z) = Z^3 - (1-B)Z^2 + (A - 3B^2 - 2B)Z - (AB - B^2 - B^3)
+// Peng-Robinson cubic in the compressibility factor Z, which is a variable,
+// with van der Waals mixing rules.
 inline RE peng_robinson(const std::vector<RE> &x, const RE &Z) {
   const std::size_t n = x.size();
   std::vector<double> ai(n), bi(n);
@@ -87,8 +82,8 @@ inline RE peng_robinson(const std::vector<RE> &x, const RE &Z) {
          (A * B - B * B - B * B * B);
 }
 
-// MSE-flavoured: long-range Debye-Huckel, a middle-range ionic double sum and
-// a short-range UNIQUAC.  The double sum is what makes the Hessian dense.
+// An MSE-like model: Debye-Huckel, a middle-range ionic double sum and a
+// short-range UNIQUAC term. The double sum makes the Hessian dense.
 inline RE mse(const std::vector<RE> &x) {
   const std::size_t n = x.size();
   std::vector<double> zc(n);
@@ -112,9 +107,8 @@ inline RE mse(const std::vector<RE> &x) {
   return lr + mr + uniquac(x);
 }
 
-// --- sparse models ---------------------------------------------------------
-// A finite interaction range couples each site to its neighbours only, so the
-// Hessian is banded and the colouring has something to exploit.
+// The models below couple each site only to its neighbours, so their Hessian
+// is banded and the colouring has something to exploit.
 
 // Cluster expansion truncated at nearest and next-nearest neighbours on a ring.
 inline RE cluster_expansion(const std::vector<RE> &s, std::size_t range = 2) {
@@ -145,14 +139,8 @@ inline RE bonded_chain(const std::vector<RE> &r) {
   return e;
 }
 
-// Regular-solution free energy of a binary mixture:
-//
-//   f(x) = c x(1-x) + k( x ln x + (1-x) ln(1-x) )
-//
-// Symmetric about x = 1/2, so f'(1/2) is exactly zero for every c and k, and
-// f''(x) = -2c + k/(x(1-x)) in closed form.  With k > 0 and c > 2k, x = 1/2 is
-// a maximum flanked by two minima -- a miscibility gap.  k < 0 inverts that and
-// admits no interior double well for any c.
+// Regular-solution free energy f(x) = c x(1-x) + k(x ln x + (1-x) ln(1-x)).
+// With k > 0 and c > 2k, x = 1/2 is a maximum between two minima.
 inline RE regular_solution(const RE &x, double c, double k) {
   return c * x * (RE{1} - x) + k * (x * log(x) + (RE{1} - x) * log(RE{1} - x));
 }

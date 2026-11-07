@@ -10,9 +10,8 @@
 #include <ranges>
 #include <vector>
 
-// A parameter's column sits between the symbols' and the seeds', and the kernel
-// has to read the same column the sweep does -- the wrong one is silent wrong
-// arithmetic, not a crash.
+// A parameter's column sits between the symbols' and the seeds', and reading
+// the wrong one gives silently wrong arithmetic rather than a crash.
 
 namespace {
 
@@ -77,8 +76,8 @@ TEST(JitParam, AnEquationWithAParamCompilesAndAgreesWithTheSweep) {
   }
 }
 
-// A partial taken during construction is ordinary nodes: compiled, every
-// derivative of it is the sweep's.
+// A partial taken during construction is ordinary nodes, so its compiled
+// derivatives match the sweep's.
 TEST(JitParam, ADerivativeBuiltIntoTheGraphCompiles) {
   const auto build = [] {
     return ddx::rt::equation([] {

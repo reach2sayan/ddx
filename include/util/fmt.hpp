@@ -18,8 +18,8 @@ inline void fmt_put(std::format_context &ctx, std::string_view s) {
   ctx.advance_to(std::ranges::copy(s, ctx.out()).out);
 }
 
-// S unconstrained: std::formattable<S, char> would recurse through the very
-// std::formatter specialisation that derives from this.
+// S is unconstrained because std::formattable<S, char> would recurse through
+// the std::formatter specialisation that derives from this base.
 template <typename S> struct dual_formatter_base {
   constexpr auto parse(std::format_parse_context &ctx) {
     return part_.parse(ctx);
@@ -45,7 +45,7 @@ protected:
     }
   }
 
-  // c0+c1ε+c2ε^2+..., zeros included, so the order stays legible.
+  // Prints c0+c1ε+c2ε^2+..., zeros included, so each order stays visible.
   void series(std::format_context &ctx, const auto &coeffs) const {
     for (const auto [k, c] : coeffs | std::views::enumerate) {
       if (k > 0) {
@@ -64,7 +64,7 @@ private:
   std::formatter<S, char> part_{};
 };
 
-// Opt-in list for the operator<< below; each dual header adds itself.
+// Opts a type into the operator<< below; each dual header specialises it.
 template <typename T> inline constexpr bool is_dual_family_v = false;
 
 } // namespace ddx::impl::detail

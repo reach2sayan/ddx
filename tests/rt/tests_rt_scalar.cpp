@@ -8,9 +8,8 @@
 #include <cmath>
 #include <span>
 
-// Numeric admits matrices and quaternions, so the rewrites that would assume a
-// commuting product have to ask.  M2 is associative under + and *, commutative
-// under + only.
+// Numeric admits matrices, so rewrites that assume a commuting product must
+// check for one. M2 is associative under + and *, commutative under + only.
 
 namespace {
 
@@ -41,9 +40,8 @@ struct M2 {
   }
   friend constexpr bool operator==(M2 l, M2 r) = default;
 };
-// The one operator the library never reaches for: there is no Sub opcode, and a
-// difference is built as the sum of a negation.  CFieldLike asks for it all the
-// same, so it is here, and here is where it is checked to agree with the sum.
+// The library never builds a Sub node, since a difference is the sum of a
+// negation, but CFieldLike requires operator-, so check that the two agree.
 static_assert(M2{3} - M2{1} == M2{3} + -M2{1});
 
 static_assert(ddx::impl::CFieldLike<M2>, "M2 is field-like");
@@ -55,7 +53,6 @@ TEST(RtScalar, CommutativeSwapIsAskedNotAssumed) {
   ddx::rt::Arena<M2> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
-  // A matrix product must not be canonicalised by swapping operands.
   EXPECT_NE((x * y).id(b), (y * x).id(b));
 
   ddx::rt::Arena<double> d;
@@ -68,9 +65,9 @@ TEST(RtScalar, OnlyTheCancellationThatHoldsForAnyScalarFires) {
   ddx::rt::Arena<M2> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
-  // (n/d)*d is n whatever T is: `/` is right division, so d^-1 meets d.
+  // (n/d)*d is n for any T, because / is right division, so d^-1 meets d.
   EXPECT_EQ(((y / x) * x).id(b), y.id(b));
-  // d*(n/d) is d n d^-1, which is n only when the factors commute.
+  // d*(n/d) is d n d^-1, which equals n only when the factors commute.
   EXPECT_NE((x * (y / x)).id(b), y.id(b));
 }
 
@@ -83,16 +80,16 @@ TEST(RtScalar, EvaluatesInTheScalarsOwnArithmetic) {
   EXPECT_EQ(v, (M2{19, 22, 43, 50}));
 }
 
-// A transcendental over a matrix is meaningless, and must not stop the type
-// being usable at all.
+// A transcendental over a matrix is meaningless, but must not stop the type
+// from being usable at all.
 TEST(RtScalar, UnsupportedOpsDoNotBreakTheInstantiation) {
   ddx::rt::Arena<M2> b;
   const auto x = var(b, "x");
-  // The assertion is that it instantiates and builds a node at all.
+  // The check is only that the type instantiates and builds a node.
   EXPECT_NE((x + x * x - x / x).id(b), ddx::rt::no_node);
 }
 
-// What apply() cannot compute it answers with a zero, so a sweep asks first.
+// apply() answers zero for what it cannot compute, so a sweep asks first.
 TEST(RtScalar, ComputesAtSaysWhichOpsTheScalarHas) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -114,7 +111,7 @@ TEST(RtScalar, ComputesAtSaysWhichOpsTheScalarHas) {
 
 namespace {
 
-// Forward mode falls out of the interpreter rather than being a second engine:
+// Forward mode comes from the interpreter rather than a second engine, since
 // evaluate_all takes its arithmetic from the point's element type.
 TEST(RtScalar, ADualPointCarriesDerivativesThroughTheSameWalk) {
   ddx::rt::Arena<> b; // the graph itself is over double
@@ -129,14 +126,14 @@ TEST(RtScalar, ADualPointCarriesDerivativesThroughTheSameWalk) {
   EXPECT_NEAR(v.value(), std::exp(1.0) * std::sin(2.0), 1e-14);
   EXPECT_NEAR(v.deriv(), std::exp(1.0) * std::sin(2.0), 1e-14);
 
-  // And it agrees with the reverse sweep over the same graph.
+  // It also agrees with the reverse sweep over the same graph.
   const auto g = ddx::rt::derive_jacobian(b, f.id(b));
   const auto plain = ddx::rt::evaluate_all(b, std::array{1.0, 2.0});
   EXPECT_NEAR(plain[g.partial[0]], v.deriv(), 1e-14);
 }
 
-// A constant is its whole value: a dual that is 1 or 2 at its value part is
-// still not the dual 1, nor the same constant as another 2.
+// A constant keeps its whole dual value, so a dual with value part 1 is not the
+// dual 1, nor the same constant as another dual with value part 2.
 TEST(RtScalar, ADualConstantKeepsItsDerivativePart) {
   using D = ddx::dual;
   const auto scaled = ddx::rt::equation<D>([] {
@@ -157,8 +154,8 @@ TEST(RtScalar, ADualConstantKeepsItsDerivativePart) {
   EXPECT_DOUBLE_EQ(g.deriv(), 1.0);
 }
 
-// A tensor row has no kernel at a scalar that is not floating point, and a
-// zero row is not an answer.
+// A tensor row has no kernel at a non-floating-point scalar, and a zero row is
+// not an acceptable answer.
 TEST(RtScalar, TensorsAtADualArenaAreRefused) {
   using D = ddx::dual;
   const auto eq = ddx::rt::equation<D>([] {

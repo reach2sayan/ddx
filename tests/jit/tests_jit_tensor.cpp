@@ -18,9 +18,8 @@
 #include <utility>
 #include <vector>
 
-// A tensor row compiles to loops of the kernel's own, whose sums take their
-// own order, so the kernel answers the sweep to a few ulps: every Want, every
-// width, both scalars.
+// The kernel's tensor loops sum in their own order, so it matches the sweep to
+// a few ulps for every Want, every width and both scalars.
 namespace jit_tensor {
 namespace {
 using ddx::rt::OpCode;
@@ -39,7 +38,7 @@ std::vector<T> table(std::size_t count, std::size_t seed, double lo,
          std::ranges::to<std::vector>();
 }
 
-// Gemv both ways off tables, a Dot, a Sum, Maps and Zips.
+// Gemv in both orientations off tables, plus a Dot, a Sum, Maps and Zips.
 template <typename T> auto msevec(std::size_t n) {
   return ddx::rt::equation<T>([n] {
     using E = ddx::rt::Expression<T>;
@@ -62,7 +61,7 @@ template <typename T> auto msevec(std::size_t n) {
   });
 }
 
-// A matrix computed from a parameter, read both ways.
+// A matrix computed from a parameter, read in both orientations.
 template <typename T> auto msevec_t(std::size_t n) {
   return ddx::rt::equation<T>([n] {
     using E = ddx::rt::Expression<T>;
@@ -74,10 +73,8 @@ template <typename T> auto msevec_t(std::size_t n) {
   });
 }
 
-// What the dense Hessian's block is built from: a Diag, an Outer (of a
-// parameter, so it does not fold to a table), a RowScale
-// and a ColScale, a MatMul over StackRows, and RowOf for the scalar symbol
-// beside the vector.
+// The ops a dense Hessian block is built from, with the Outer taken of a
+// parameter so that it does not fold to a table.
 template <typename T> ddx::rt::Expression<T> dense_block(std::size_t n) {
   using E = ddx::rt::Expression<T>;
   const E x = ddx::rt::vec<T>("x", n);
@@ -97,8 +94,8 @@ template <typename T> auto dense(std::size_t n) {
   return ddx::rt::equation<T>([n] { return dense_block<T>(n); });
 }
 
-// x^T A x over a table: the dense block folds to a table, an output with no
-// node computed over it.
+// x^T A x over a table, whose dense block folds to a table with no node over
+// it.
 template <typename T> auto quadratic(std::size_t n) {
   return ddx::rt::equation<T>([n] {
     using E = ddx::rt::Expression<T>;
@@ -107,7 +104,7 @@ template <typename T> auto quadratic(std::size_t n) {
   });
 }
 
-// A scalar condition and a vector one.
+// Selects on a scalar condition and on a vector one.
 template <typename T> auto vselect(std::size_t n) {
   return ddx::rt::equation<T>([n] {
     using E = ddx::rt::Expression<T>;
@@ -119,7 +116,7 @@ template <typename T> auto vselect(std::size_t n) {
 
 template <typename T> using Columns = std::vector<std::vector<T>>;
 
-// `count` columns of n points, inside every model's domain.
+// Builds `count` columns of n points inside every model's domain.
 template <typename T>
 Columns<T> points(std::size_t count, std::size_t n, std::size_t seed) {
   return std::views::iota(0uz, count) |
@@ -145,7 +142,7 @@ template <typename T> auto pointers(const Columns<T> &c) {
          std::ranges::to<std::vector>();
 }
 
-// One batch of `want`, every output column it writes.
+// Runs one batch of `want` and returns every output column it writes.
 template <typename T>
 Columns<T> batch(const auto &eq, Want want, std::size_t n) {
   const std::size_t inputs = *eq.input_count();
@@ -213,8 +210,8 @@ Columns<T> batch(const auto &eq, Want want, std::size_t n) {
   return std::views::join(out) | std::ranges::to<std::vector>();
 }
 
-// Relative to the larger magnitude, with a floor for the zeros a sum lands
-// near: the kernel's sums and the sweep's associate differently.
+// The kernel and the sweep associate sums differently, so the error is relative
+// to the larger magnitude, with a floor for results near zero.
 template <typename T>
 void expect_close(const Columns<T> &want, const Columns<T> &got,
                   const std::string &what) {
@@ -249,8 +246,8 @@ ddx::jit::Options compiled(ddx::jit::Lanes lanes) {
           .codegen = {.lanes = lanes}};
 }
 
-// Every Want at every width, against the sweep, on a ragged batch and a
-// single point.
+// Checks every Want at every width against the sweep, on a ragged batch and on
+// a single point.
 template <typename T> void expect_kernel_is_the_sweep(auto &&model) {
   const auto swept = model();
   ASSERT_FALSE(swept.poisoned()) << swept.status()->code;
@@ -269,7 +266,7 @@ template <typename T> void expect_kernel_is_the_sweep(auto &&model) {
   }
 }
 
-// The ops a model's dense block reads.
+// Collects the ops that a model's dense block reads.
 std::set<OpCode> dense_ops(auto &&expression) {
   ddx::rt::Arena<> b;
   const auto arena = ddx::rt::detail::scoped_arena(b);
@@ -373,8 +370,8 @@ TEST(JitTensor, BatchesAndThreadsAreBitIdentical) {
   EXPECT_TRUE(std::ranges::all_of(ok, std::identity{}));
 }
 
-// One element of a matrix the kernel never forms: the flat index is its row and
-// its column, and the kernel reads the element the sweep does.
+// The kernel never forms this matrix, so a gathered element must still map its
+// flat index to the same row and column as the sweep.
 TEST(JitTensor, AGatherFromAFusedMatrixReadsItsRowAndColumn) {
   using RE = ddx::rt::Expression<double>;
   const auto check = [](auto element, double want) {
@@ -388,7 +385,7 @@ TEST(JitTensor, AGatherFromAFusedMatrixReadsItsRowAndColumn) {
     EXPECT_DOUBLE_EQ(*compiled.evaluate(point), want);
     EXPECT_EQ(*compiled.jacobian(point), *swept.jacobian(point));
   };
-  // Column-major: element 4 of a 3 x 2 is (1, 1).
+  // In column-major order, element 4 of a 3 x 2 matrix is (1, 1).
   check(
       [] -> RE {
         const RE u = ddx::rt::vec("u", 3);
@@ -405,9 +402,8 @@ TEST(JitTensor, AGatherFromAFusedMatrixReadsItsRowAndColumn) {
       std::exp(3.0 * 11.0));
 }
 
-// A kernel over rebalanced roots is checked against the sweep's layout, so it
-// must have that layout, cell for cell, wherever the rebalanced sums fold
-// differently.
+// The kernel is checked against the sweep's layout, so rebalanced roots must
+// keep that layout cell for cell even where their sums fold differently.
 TEST(JitRebalance, AKernelKeepsTheLayoutOfTheSweep) {
   using RE = ddx::rt::Expression<double>;
   constexpr std::size_t count = 16;
@@ -430,7 +426,7 @@ TEST(JitRebalance, AKernelKeepsTheLayoutOfTheSweep) {
       EXPECT_NEAR(g, w, 1e-9);
     }
   };
-  // Two spellings of one sum: rebalanced they are one node, and a/b folds to 1.
+  // Two spellings of one sum become one node, and a/b then folds to 1.
   check([&] {
     std::vector<RE> y;
     for (const std::size_t i : std::views::iota(0uz, count)) {

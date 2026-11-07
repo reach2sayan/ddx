@@ -1,5 +1,5 @@
-# The grammar, the one libddx object built with exceptions: Boost.Parser's
-# parse() is a try/catch.
+# The text grammar is the only libddx object built with exceptions, because
+# Boost.Parser's parse() uses try/catch.
 add_library(ddx_text_objs OBJECT parse.cpp)
 
 set_target_properties(ddx_text_objs PROPERTIES
@@ -11,7 +11,7 @@ target_compile_definitions(ddx_text_objs PRIVATE DDX_BUILDING BOOST_PARSER_DISAB
 target_link_libraries(ddx_text_objs PRIVATE ddx Boost::headers)
 ddx_target_flags(ddx_text_objs EXCEPTIONS)
 
-# C4702 from the disabled trace code; /external:W0 does not reach codegen warnings.
+# Silences C4702 in the disabled trace code, which /external:W0 cannot reach.
 if (MSVC)
     target_compile_options(ddx_text_objs PRIVATE /wd4702)
 endif ()
