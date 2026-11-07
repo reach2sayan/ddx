@@ -90,10 +90,14 @@ namespace detail {
 // A tensor op's or a select's operands under their table names, in slot
 // order, as make() takes them and operands() returns them.
 template <OpCode Op> struct Operands;
-#define DDX_RT_MEMBERS(...) __VA_OPT__(NodeId __VA_ARGS__;)
+// Keyed on arity, not __VA_OPT__, which MSVC's default preprocessor lacks.
+#define DDX_RT_MEMBERS_0(...)
+#define DDX_RT_MEMBERS_1(...) NodeId __VA_ARGS__;
+#define DDX_RT_MEMBERS_2 DDX_RT_MEMBERS_1
+#define DDX_RT_MEMBERS_3 DDX_RT_MEMBERS_1
 #define DDX_RT_OPERANDS(Op, arity, names)                                      \
   template <> struct Operands<OpCode::Op> {                                    \
-    DDX_RT_MEMBERS names                                                       \
+    DDX_RT_MEMBERS_##arity names                                               \
   };                                                                           \
   static_assert((arity) == 0 ||                                                \
                 sizeof(Operands<OpCode::Op>) == (arity) * sizeof(NodeId));
@@ -107,7 +111,10 @@ DDX_RT_TERNARY_TABLE(DDX_RT_TERNARY_OPERANDS)
 #undef DDX_RT_TERNARY_OPERANDS
 #undef DDX_RT_TENSOR_OPERANDS
 #undef DDX_RT_OPERANDS
-#undef DDX_RT_MEMBERS
+#undef DDX_RT_MEMBERS_3
+#undef DDX_RT_MEMBERS_2
+#undef DDX_RT_MEMBERS_1
+#undef DDX_RT_MEMBERS_0
 
 template <OpCode Op>
 [[nodiscard]] constexpr Operands<Op>
