@@ -4,7 +4,7 @@
 
 #include <format>
 
-// One number, CMake's: the macros, the constants and the string agree.
+// The macros, the constants and the version string all agree with CMake's.
 static_assert(ddx::version_number == ddx::version_major * 100000 +
                                          ddx::version_minor * 100 +
                                          ddx::version_patch);

@@ -1,16 +1,7 @@
 #pragma once
 
-// What computes a tensor node: a backend is a type satisfying TensorKernels,
-// a TensorKernelTable is that type erased to function pointers, and the
-// interpreter holds one table per scalar, the equation's own.  The reference
-// backend below is plain loops with nothing behind it; a consumer with Eigen or
-// a BLAS writes a backend over it (tests/eigen and tests/cblas each hold one)
-// and hands the table over once.
-//
-// Spans at the boundary, not a library's types; a matrix is column-major, and
-// every vector a kernel sees is contiguous.  Results may differ between
-// backends in the last bits: a summation order is the only thing a table
-// chooses.
+// Tensor kernel backends: a TensorKernels type, erased into a TensorKernelTable
+// of function pointers. Matrices are column-major and vectors contiguous.
 
 #include "rt/apply.hpp"
 #include "rt/opcode.hpp"
@@ -32,11 +23,8 @@
 
 namespace ddx::rt {
 
-// `M` is r x c column-major; gemv writes M v (c in, r out) or, transposed,
-// M^T v (r in, c out).  map and zip are the scalar table's rows, elementwise.
-// gemm(r, k, c, A, B, out) writes the r x c product of A (r x k) and B (k x c),
-// the one cubic kernel, which the dense Hessian sweep reaches only where its
-// shape algebra ran out.
+// gemv writes M v, or M^T v when transposed, for an r x c column-major M.
+// gemm writes the r x c product of A (r x k) and B (k x c).
 template <class B, typename T = double>
 concept TensorKernels =
     requires(std::span<const T> u, std::span<const T> v, std::span<T> out,
@@ -51,8 +39,8 @@ concept TensorKernels =
       { B::gemm(r, c, r, u, v, out) } -> std::same_as<void>;
     };
 
-// A backend as the interpreter holds it: one record of function pointers, so
-// no backend type reaches an equation's type.
+// A type-erased backend, so that no backend type leaks into an equation's
+// type.
 template <impl::Numeric T = double> struct TensorKernelTable {
   using In = std::span<const T>;
   using Out = std::span<T>;
@@ -63,13 +51,13 @@ template <impl::Numeric T = double> struct TensorKernelTable {
   void (*zip)(OpCode, In, In, Out) = nullptr;
   T (*sum)(In) = nullptr;
   void (*gemm)(std::size_t, std::size_t, std::size_t, In, In, Out) = nullptr;
-  // Optional: M v and M^T v of a square M in one pass.  Null is two gemvs.
+  // Optional M v and M^T v of a square M in one pass; null means two gemvs.
   void (*gemv_pair)(std::size_t, In, In, Out, Out) = nullptr;
   std::string_view name;
 };
 
-// The only way to make one: a backend that misses a member fails here, against
-// the concept, and not at the first call.
+// Builds a table, so a backend missing a member fails here against the
+// concept rather than at the first call.
 template <typename B, impl::Numeric T = double>
   requires TensorKernels<B, T>
 [[nodiscard]] consteval TensorKernelTable<T> tensor_kernel_table() noexcept {
@@ -89,12 +77,8 @@ template <typename B, impl::Numeric T = double>
 
 namespace reference {
 
-// Straight loops, each written so the compiler vectorises it; the one
-// backend ddx ships and tests against, at any scalar.  A reduction runs in
-// kLanes independent partial sums, folded pairwise at the end: one chain of
-// dependent adds is the latency of an add per term, kLanes of them are a
-// register's worth of terms per add.  Every product goes through madd, so no
-// -O level or contraction setting moves a bit.
+// The built-in backend of plain vectorisable loops. Reductions use kLanes
+// partial sums, and every product goes through madd so results never vary.
 template <impl::Numeric T = double> struct Kernels {
   static constexpr std::string_view name = "reference";
   using In = typename TensorKernelTable<T>::In;
@@ -104,13 +88,13 @@ template <impl::Numeric T = double> struct Kernels {
   [[nodiscard]] static constexpr T madd(T a, T b, T c) noexcept {
     if constexpr (std::floating_point<T>) {
       return std::fma(a, b, c);
-    } else { // a field-like scalar: no fma, and no rounding to keep
+    } else { // a field-like scalar has no fma and no rounding to match
       return a * b + c;
     }
   }
 
-  // Unrolled at compile time: as a loop it stays one, over a spilled array,
-  // and on a short row costs more than the row.
+  // Unrolled at compile time, since a loop over a spilled array costs more
+  // than a short row.
   template <std::size_t N>
   [[nodiscard]] static constexpr T fold(std::array<T, N> &acc) noexcept {
     boost::mp11::mp_for_each<boost::mp11::mp_iota_c<std::bit_width(N) - 1>>(
@@ -131,8 +115,8 @@ template <impl::Numeric T = double> struct Kernels {
       }
       return;
     }
-    // out = sum_j v[j] column_j, four columns a pass so out is read and
-    // written a quarter as often; each out[i] still takes j in order.
+    // out = sum_j v[j] column_j, four columns per pass to cut traffic on out.
+    // Each out[i] still accumulates j in order.
     std::ranges::fill(out, T{});
     T *DDX_RESTRICT y = out.data();
     std::size_t j = 0;
@@ -156,8 +140,7 @@ template <impl::Numeric T = double> struct Kernels {
     }
   }
 
-  // M v into `plain` and M^T v into `transposed`, M n x n: one pass over M,
-  // four columns a pass, each column's dot in eight lanes.
+  // Writes M v into plain and M^T v into transposed in one pass over n x n M.
   static constexpr void gemv_pair(std::size_t n, In m, In v, Out plain,
                                   Out transposed) noexcept {
     constexpr std::size_t L = 8;
@@ -205,8 +188,8 @@ template <impl::Numeric T = double> struct Kernels {
     }
   }
 
-  // kLanes accumulators over n elements, folded: `step(acc, i)` takes
-  // element i into one.
+  // Reduces n elements into kLanes accumulators, then folds them pairwise.
+  // step(acc, i) adds element i into acc.
   [[nodiscard]] static constexpr T reduce(std::size_t n, auto step) noexcept {
     std::array<T, kLanes> acc{};
     const std::size_t whole = n / kLanes * kLanes;
@@ -231,8 +214,8 @@ template <impl::Numeric T = double> struct Kernels {
     std::ranges::transform(v, out.begin(), [s](T x) { return s * x; });
   }
 
-  // The scalar table's row, picked once and then looped: apply<T> per
-  // element would re-dispatch the opcode inside the loop.
+  // Dispatches the opcode once and then loops, rather than calling apply<T>
+  // per element.
   static constexpr void map(OpCode op, In v, Out out) noexcept {
     detail::dispatch<T>(op, [&]<typename R>(R) {
       using Fn = typename R::functor;
@@ -264,7 +247,7 @@ template <impl::Numeric T = double> struct Kernels {
                   [a = v.data()](T acc, std::size_t i) { return acc + a[i]; });
   }
 
-  // out = A B, one column of B at a time: a gemv per column.
+  // out = A B, computed as one gemv per column of B.
   static constexpr void gemm(std::size_t r, std::size_t k, std::size_t c, In a,
                              In bm, Out out) noexcept {
     for (std::size_t j = 0; j < c; ++j) {
@@ -282,8 +265,8 @@ inline constexpr TensorKernelTable<T> reference_table =
     tensor_kernel_table<reference::Kernels<T>, T>();
 
 namespace detail {
-// One per scalar.  libddx holds double's and float's, so a program and the
-// library set and read the same one; any other scalar's is the reader's own.
+// The default table per scalar. libddx exports the double and float ones so
+// a program and the library share them.
 template <impl::Numeric T>
 DDX_TEMPLATE_API std::atomic<const TensorKernelTable<T> *> &
 default_tensor_kernels() noexcept {
@@ -292,9 +275,8 @@ default_tensor_kernels() noexcept {
 }
 } // namespace detail
 
-// The process default at T: what every T equation's tensor nodes run on unless
-// the equation was handed a table of its own.  Set once, before any sweep -- a
-// race to set it is the caller's, as it is for a jit::Compiler.
+// Sets the process-wide default table for T. Call it once before any sweep;
+// concurrent setting is the caller's responsibility.
 template <impl::Numeric T>
 void use_tensor_kernels(const TensorKernelTable<T> &table) noexcept {
   detail::default_tensor_kernels<T>().store(&table, std::memory_order_release);

@@ -15,7 +15,7 @@ namespace ddx::impl {
 
 namespace detail {
 
-// Precedence as seen by the parent; leaves and function calls are atomic.
+// A node's precedence as its parent sees it; leaves and calls are atomic.
 template <CExpression E> consteval int node_precedence() {
   using U = std::remove_cvref_t<E>;
   if constexpr (CExpressionNode<U>) {
@@ -34,7 +34,7 @@ template <typename E> inline constexpr bool is_sum_v = false;
 template <Numeric T, CExpression... C>
 inline constexpr bool is_sum_v<Expression<SumOp<T>, C...>> = true;
 
-// Renders as a subtraction: a two-child sum whose right operand is a negation.
+// A two-child sum whose right operand is a negation prints as a subtraction.
 template <CExpression E> consteval bool renders_as_subtraction() {
   using U = std::remove_cvref_t<E>;
   if constexpr (is_sum_v<U> && std::tuple_size_v<typename U::children_t> == 2) {
@@ -45,8 +45,7 @@ template <CExpression E> consteval bool renders_as_subtraction() {
   }
 }
 
-// What a walk carries that is not per-node: the output context and the value
-// formatter.
+// The output context and value formatter shared by a whole print walk.
 template <Numeric V> struct printer {
   std::format_context &ctx;
   const std::formatter<V, char> &value_fmt;
@@ -54,15 +53,14 @@ template <Numeric V> struct printer {
   void put(std::string_view s) const { fmt_put(ctx, s); }
   void put(char c) const { put(std::string_view{&c, 1}); }
 
-  // Through the nested formatter, so a caller's "{::.3f}" reaches every leaf.
+  // Uses the nested formatter, so a spec such as "{::.3f}" reaches every leaf.
   void put_value(const Numeric auto &v) const {
     ctx.advance_to(value_fmt.format(v, ctx));
   }
 };
 
-// `min_prec` is what the parent demands; anything looser is parenthesised.  A
-// left operand may be as loose as its own operator, a right operand must be one
-// step tighter -- so x / (y / z) and x - (y + z) but not x - y * z.
+// Parenthesises a node looser than min_prec. A right operand must bind one
+// step tighter, giving x - (y + z) but x - y * z.
 template <Numeric V>
 void print_infix(const printer<V> &p, const CExpression auto &e, int min_prec) {
   using U = std::remove_cvref_t<decltype(e)>;
@@ -94,7 +92,7 @@ void print_infix(const printer<V> &p, const CExpression auto &e, int min_prec) {
                     "prefix notation is only defined for unary nodes");
       p.put(Op::label);
       print_infix(p, std::get<0>(kids), prec + 1); // -(-c), never --c
-    } else { // Function: brings its own parentheses, children start fresh
+    } else { // function notation brings its own parentheses
       p.put(Op::label);
       p.put('(');
       std::apply(
@@ -122,7 +120,7 @@ void print_infix(const printer<V> &p, const CExpression auto &e, int min_prec) {
     }
   } else if constexpr (CConstant<U>) {
     p.put_value(e.get());
-  } else { // anything else that is just a value
+  } else {
     p.put_value(e.eval());
   }
 }
@@ -135,8 +133,8 @@ std::ostream &operator<<(std::ostream &out, const CExpression auto &e) {
 
 } // namespace ddx::impl
 
-// The whole spec is the value-spec; the leading ':' is optional, as in
-// std::formatter for ranges.
+// The whole spec applies to each value; a leading ':' is optional, as for
+// ranges.
 template <ddx::impl::CExpression E> struct std::formatter<E, char> {
   constexpr auto parse(std::format_parse_context &ctx) {
     auto it = ctx.begin();

@@ -13,8 +13,8 @@ from numpy.typing import NDArray
 
 import ddx
 
-# One row per symbol, one column per point -- which is the kernel's own layout,
-# so a batch shaped this way reaches it without a copy.
+# One row per symbol and one column per point, the kernel's own layout, so the
+# batch is passed without a copy.
 Batch = NDArray[np.float64]
 
 

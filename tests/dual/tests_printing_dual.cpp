@@ -1,8 +1,8 @@
 #include "dual/tests_dual_common.hpp"
 #include "tests_printing_fixtures.hpp"
 
-// A dual-valued constant is reachable through PDV, so the leaf printer has to
-// cope with a value_type that is not an arithmetic type.
+// A dual-valued constant is a reachable leaf, so the leaf printer must handle a
+// value_type that is not arithmetic.
 TEST(ExpressionPrinting, DualValuedLeavesPrint) {
   const ddx::impl::Constant<ddx::impl::Dual<double>> c{
       ddx::impl::Dual<double>{1.5, 2.0}};
@@ -10,8 +10,8 @@ TEST(ExpressionPrinting, DualValuedLeavesPrint) {
   EXPECT_EQ(std::format("{::.2f}", c), "1.50+2.00ε");
 }
 
-// One formatter base (util/fmt.hpp), so a spec means the same thing in both
-// and the iostream spelling cannot drift from std::format.
+// All duals share one formatter base in util/fmt.hpp, so a spec means the same
+// in each and iostream output matches std::format.
 TEST(DualPrinting, EachDualRendersItsOwnShape) {
   const ddx::impl::Dual<double> d{1.5, 2.0};
   ddx::impl::TaylorDual<double, 3> t;

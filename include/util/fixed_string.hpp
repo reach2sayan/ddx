@@ -10,7 +10,7 @@ namespace ddx::impl {
 template <std::size_t N> struct FixedString {
   static_assert(N > 0, "FixedString: N counts the terminating NUL, so N >= 1");
 
-  // Public by necessity — see the structural-type note above.
+  // Public, as a structural type must be to serve as a template argument.
   char data[N];
   consteval FixedString(const char (&str)[N]) noexcept {
     std::copy_n(str, N, data);
@@ -19,12 +19,12 @@ template <std::size_t N> struct FixedString {
   // Length in characters, excluding the terminating NUL.
   [[nodiscard]] static constexpr std::size_t size() noexcept { return N - 1; }
 
-  // constexpr, not consteval: printing a symbol reads this at run time.
+  // Not consteval, because printing a symbol calls view() at run time.
   [[nodiscard]] constexpr std::string_view view() const noexcept {
     return {data, size()};
   }
 
-  // Both by view(), so == and <=> cannot disagree across lengths.
+  // Both compare views, so == and <=> agree across different lengths.
   template <std::size_t M>
   [[nodiscard]] constexpr bool
   operator==(const FixedString<M> &other) const noexcept {

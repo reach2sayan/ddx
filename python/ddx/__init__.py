@@ -46,9 +46,8 @@ if TYPE_CHECKING:
 	import ddx._ddx as _extension
 	
 	
-	# What the runtime adds and a generated stub cannot see: the exception
-	# translator's code, the pydantic-facing members installed below, and the
-	# decorator, which the bindings hand over as py::object.
+	# Declares what the runtime adds and the generated stub cannot see, such as
+	# Error.code and the members installed below.
 	class Error(_extension.Error):
 		"""A refusal from ddx, carrying the code it refused with."""
 		code: errc
@@ -73,13 +72,12 @@ if TYPE_CHECKING:
 else:
 	from ._ddx import Equation, Error, equation
 
-# From the extension, which was built from CMake's project() line: the same
-# number an installed package's metadata carries, and there for an in-tree
-# build that was never installed.
+# The version compiled into the extension from CMake's project() line, which
+# also works for an in-tree build that was never installed.
 from ._ddx import __version__
 
 
-# The two places pydantic sits between a caller and the struct.
+# Equation.options converts between the pydantic model and the native struct.
 def _get_options(self: Equation) -> Options:
 	return Options._from_native(self._options)
 

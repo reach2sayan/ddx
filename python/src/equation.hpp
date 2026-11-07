@@ -11,8 +11,7 @@
 #include "rt/pipeline.hpp"
 #include "util/ranges.hpp"
 
-// Unconditional: jit::Options and jit::Kernel are header types, so the Python
-// surface has one shape whether or not the backend was compiled in.
+// Included even without the JIT, so the Python surface is the same either way.
 #include "jit/kernel.hpp"
 #include "rt/equation.hpp"
 
@@ -34,9 +33,8 @@ namespace ddx::py {
 
 class PyCall;
 
-// A compressed block -- the Jacobian's cells or the Hessian's owned cells --
-// back into the dense array a caller reads, `points` wide: one fill for the
-// zeros the layout left out, then rt::scatter over its entries.
+// Expands a compressed Jacobian or Hessian block into the dense array the
+// caller reads, zero-filling the cells the layout leaves out.
 inline void scatter(const auto &layout, Columns &cells, Dense &dense,
                     std::size_t n, std::size_t rows, std::size_t points) {
   std::ranges::fill_n(dense.at(0),
@@ -46,24 +44,24 @@ inline void scatter(const auto &layout, Columns &cells, Dense &dense,
       [&dense](std::size_t c) { return dense.at(c); }, n, points);
 }
 
-// Every sweep gives up the GIL while it runs, and only the sweep: the pipelines
-// and the arena's lock are touched holding it.
+// Each sweep releases the GIL while it runs. Pipelines and the arena lock are
+// only touched while holding it.
 using PyCore = rt::detail::Core<double, pyb::gil_scoped_release>;
 
-// rt::detail::Core, spelled in arrays: the output count a number, a point a
-// dict or an array, and a refusal an exception.
+// rt::detail::Core with a Python interface: points are dicts or arrays, and
+// refusals are raised as exceptions.
 class PyEquation : public PyCore {
 public:
   using Want = rt::Want;
 
-  // The arena is copied: the expressions that built it stay usable.
+  // The arena is copied, so the expressions that built it stay usable.
   PyEquation(const std::shared_ptr<rt::Arena<double>> &arena,
              std::vector<rt::NodeId> roots)
       : PyCore{std::make_unique<rt::Arena<double>>(*arena), std::move(roots)},
         symbols_{*sound().symbols()}, inputs_{*inputs()} {}
 
 private:
-  // What C++ poisons is raised here, before anything reads the core.
+  // Raises a poisoned equation's error before anything reads the core.
   [[nodiscard]] const PyCore &sound() const {
     if (const auto why = status()) {
       throw PyError{*why};
@@ -75,30 +73,28 @@ public:
   [[nodiscard]] std::size_t width() const { return symbol_count(); }
   [[nodiscard]] std::size_t height() const { return roots().size(); }
 
-  // The Python spelling: a list over the keys Symbols already built, so an
-  // access costs increfs and never a PyUnicode.
   [[nodiscard]] pyb::list symbols_list() const { return symbols_.listed(); }
   [[nodiscard]] pyb::list params_list() const {
     return pyb::cast(
         std::vector<std::string>(params()->begin(), params()->end()));
   }
-  // What a point supplies: the symbols, then the parameters.
+  // The inputs a point supplies: the symbols, then the parameters.
   [[nodiscard]] pyb::list inputs_list() const { return inputs_.listed(); }
 
-  // Each call is one pipeline run through run<W>(); the tuple's members are the
-  // blocks the table says the pipeline fills, in order.
+  // Each call is one pipeline run through run<W>(), returning the blocks that
+  // pipeline fills, in order.
   [[nodiscard]] pyb::object evaluate(const pyb::handle &x) {
     return run<Want::Value>(x)[0];
   }
   [[nodiscard]] pyb::tuple jacobian(const pyb::handle &x) {
     return run<Want::Jacobian>(x);
   }
-  // The Jacobian alone, from a pipeline with no value block.
+  // The Jacobian alone, from a pipeline without a value block.
   [[nodiscard]] pyb::object gradient(const pyb::handle &x) {
     return run<Want::Gradient>(x)[0];
   }
-  // One function: the pipeline holds it compressed by colour.  A system: Core's
-  // walk over the arena, which is a point at a time and says so.
+  // A single function uses the coloured pipeline; a system walks the arena one
+  // point at a time.
   [[nodiscard]] pyb::tuple hessian(const pyb::handle &x) {
     unwrap(orders(Want::Hessian));
     return height() == 1 ? run<Want::Hessian>(x)
@@ -110,25 +106,24 @@ public:
   [[nodiscard]] pyb::tuple vjp(const pyb::handle &w, const pyb::handle &x) {
     return run<Want::Vjp>(x, &w);
   }
-  // (value, gradient, H v): the gradient comes off the same sweep.
+  // Returns (value, gradient, H v), all from the same sweep.
   [[nodiscard]] pyb::tuple hvp(const pyb::handle &v, const pyb::handle &x) {
     unwrap(ready(Want::Hvp));
     return run<Want::Hvp>(x, &v);
   }
-  // (value, gradient, H): the dense n x n from one O(n^2) sweep over matrix
-  // rows, where hessian() colours.
+  // Returns (value, gradient, H) with H dense, from one O(n^2) sweep instead of
+  // the colouring hessian() uses.
   [[nodiscard]] pyb::tuple dense_hessian(const pyb::handle &x) {
     unwrap(ready(Want::DenseHessian));
     return run<Want::DenseHessian>(x);
   }
-  // (value, J, dJ/dv): the Jacobian and its derivative along `v`, both dense,
-  // from one forward sweep.
+  // Returns (value, J, dJ/dv), both dense, from one forward sweep.
   [[nodiscard]] pyb::tuple jacobian_jvp(const pyb::handle &v,
                                         const pyb::handle &x) {
     return run<Want::JacobianJvp>(x, &v);
   }
 
-  // F(z, x) for each implicit's residual at one point.
+  // Each implicit equation's residual F(z, x) at one point.
   [[nodiscard]] std::vector<double> residual_at(const pyb::handle &x) const {
     const Point at{x, inputs_};
     if (at.batched()) {
@@ -137,13 +132,12 @@ public:
     return unwrap(residual(scalars_of(at)));
   }
 
-  // What one call for `want` evaluates: the contracted live order, which is
-  // the sweep and what the kernel is lowered from.
+  // The number of steps one call for `want` evaluates.
   [[nodiscard]] std::size_t nodes(Want want) const {
     return unwrap(census(want)).steps;
   }
 
-  // census() as a dict, each row (label, steps, values).
+  // census() as a dict, with each by_op row as (label, steps, values).
   [[nodiscard]] pyb::dict census_dict(Want want) const {
     const rt::Census c = unwrap(census(want));
     pyb::list rows;
@@ -165,10 +159,8 @@ public:
              : pyb::object{pyb::make_tuple(s.error().code, s.error().detail)};
   }
 
-  // Only what is free to answer: uses_kernel() would freeze a pipeline, and a
-  // repr that compiles something is one nobody can call in a debugger.  Boost's
-  // join, not views::join_with: libstdc++ 14.2 gets that one wrong under
-  // clang, and 14.2 is what Ubuntu 24.04 ships.
+  // Must not compile or freeze a pipeline. Uses Boost's join because
+  // views::join_with is broken in libstdc++ 14.2 under clang.
   [[nodiscard]] std::string repr() const {
     return std::format("<ddx.Equation ({}) -> {} output{}>",
                        boost::algorithm::join(symbols_.text(), ", "), height(),
@@ -185,10 +177,8 @@ private:
     unwrap(dispatch(want, at.columns(), out, at.size()));
   }
 
-  // The storage one derivative block is swept into, and the array it becomes.
-  // The pattern's cells and a coloured block are scattered afterwards; a
-  // block per symbol or per function, and a dense n x n, is laid out as the
-  // array already.
+  // Storage for one derivative block. Compressed blocks go to scratch and are
+  // scattered afterwards; the other shapes are written straight into the array.
   struct Out {
     std::optional<Scratch> cells{};
     std::optional<Block> block{};
@@ -219,8 +209,8 @@ private:
     }
     std::unreachable();
   }
-  // `pattern` is what scatters the cells -- a restrict() view's own, since it
-  // keeps a subset of the columns -- and `colouring` the Hessian pipeline's.
+  // `pattern` scatters the Jacobian cells (a restricted view supplies its own),
+  // and `colouring` scatters the Hessian.
   [[nodiscard]] pyb::object finish(rt::BlockShape shape, Out &o,
                                    const Point &at, const rt::Sparsity &pattern,
                                    const rt::Colouring *colouring) const {
@@ -248,11 +238,8 @@ private:
     std::unreachable();
   }
 
-  // One call of `W` at `x`, seeded along `*v` where the pipeline takes a
-  // direction -- one value per symbol, or per function for a covector, by
-  // position: functions have no names for a dict to key on.  The point's
-  // columns and the direction's go in one array, symbols first, which is the
-  // order input_column() states.
+  // One call of `W` at `x`, seeded along `*v` when the pipeline takes a
+  // direction. The point's columns come first, then the direction's.
   template <Want W>
   [[nodiscard]] pyb::tuple run(const pyb::handle &x,
                                const pyb::handle *v = nullptr) {
@@ -261,8 +248,8 @@ private:
         [this](auto &&...a) { return dispatch(DDX_FWD(a)...); },
         l->graph->layout(), derivative().pattern, &l->graph->colouring(), x, v);
   }
-  // The same over any dispatch -- a restrict() view's -- with its block sizes,
-  // the pattern its cells scatter by and the Hessian pipeline's colouring.
+  // The same over any dispatcher, such as a restricted view's, with its own
+  // block sizes, pattern and colouring.
   template <Want W>
   [[nodiscard]] pyb::tuple run_on(auto &&dispatcher, const rt::Layout &sizes,
                                   const rt::Sparsity &pattern,
@@ -283,8 +270,8 @@ private:
     if constexpr (w.direction == rt::Direction::None) {
       unwrap(dispatcher(W, at.columns(), columns, at.size()));
     } else {
-      // Built in place: Point is pinned, and its positional constructor is
-      // ours alone -- optional::emplace would construct it from outside.
+      // Built by a lambda because Point is not movable and its positional
+      // constructor is private, which rules out optional::emplace.
       const Point dir = [&] {
         if constexpr (w.direction == rt::Direction::Functions) {
           return Point(*v, height());
@@ -311,8 +298,7 @@ private:
     return pyb::tuple(parts);
   }
 
-  // One unbatched point's values, an input each: the symbols, then the
-  // params.
+  // One unbatched point's input values: the symbols, then the parameters.
   [[nodiscard]] static boost::container::small_vector<double, 16>
   scalars_of(const Point &at) {
     return at.columns() |
@@ -320,8 +306,7 @@ private:
            impl::to<boost::container::small_vector<double, 16>>();
   }
 
-  // A system: Core's walk over the arena, which is a point at a time and says
-  // so.
+  // A system's Hessian, walked over the arena one point at a time.
   [[nodiscard]] pyb::tuple hessian_from_arena(const Point &at) const {
     if (at.batched() && at.size() != 1) {
       fail_with(errc::wrong_column_count);
@@ -339,15 +324,13 @@ private:
 
   // --- shapes --------------------------------------------------------------
 
-  // The leading axis goes at one function and the trailing one at one point, so
-  // a scalar model at a point answers with a float, an (n,) gradient and an
-  // (n, n) Hessian rather than three arrays with 1s in them.  Computed before
-  // the array is built, so the array is built at this shape and never reshaped.
+  // Drops the function axis for one output and the batch axis for one point,
+  // so a scalar model gives a float, an (n,) gradient and an (n, n) Hessian.
   [[nodiscard]] Shape shape_of(std::initializer_list<pyb::ssize_t> base,
                                const Point &at) const {
     const std::span axes{base};
-    // A count and not a flag: drop() takes a difference_type, and libstdc++
-    // 14.2 refuses the bool under clang where 14.3 accepts it.
+    // A count rather than a bool, which libstdc++ 14.2's drop() rejects under
+    // clang.
     const auto lead =
         static_cast<std::ptrdiff_t>(height() == 1 && !axes.empty());
     Shape dims;
@@ -358,8 +341,7 @@ private:
     return dims;
   }
 
-  // A block indexed by symbol rather than by function, so shape_of's leading
-  // axis -- which it drops at one output -- is not one this has.
+  // The shape of a block indexed by symbol, which has no function axis.
   [[nodiscard]] Shape symbol_shape(const Point &at) const {
     Shape dims{ssize(width())};
     if (at.batched()) {
@@ -368,14 +350,12 @@ private:
     return dims;
   }
 
-  // Exactly the case where the values block is one double and the answer is a
-  // Python float, so it needs no array at all.
+  // Whether the value is a single double, returned as a Python float.
   [[nodiscard]] bool scalar(const Point &at) const {
     return height() == 1 && !at.batched();
   }
 
-  // One double on the stack for that case.  The ABI wants a row pointer, and
-  // this is the whole of what it writes.
+  // Stack storage for that single value, with the row pointer the ABI wants.
   struct Cell {
     double value{};
     double *row{&value};
@@ -384,8 +364,7 @@ private:
     }
   };
 
-  // A float at one point, an array across a batch: only the first can skip the
-  // allocation, and every derivative call serves both.
+  // The values array, or nothing when the value is a single float.
   [[nodiscard]] std::optional<Block> values_block(std::size_t columns,
                                                   const Point &at) const {
     return scalar(at) ? std::nullopt
@@ -399,14 +378,13 @@ private:
     return f ? std::move(*f).array() : pyb::object{pyb::float_(cell.value)};
   }
 
-  // A direction is over the symbols; a point over every input.
+  // A direction covers the symbols; a point covers every input.
   Symbols symbols_;
   Symbols inputs_;
 };
 
-// Equation.restrict(names): the Jacobian narrowed to those symbols' columns,
-// in symbol order, with pipelines of its own.  Spelled as the equation is, and
-// kept alive past it by pyb::keep_alive on the factory.
+// Equation.restrict(names), which narrows the Jacobian to those symbols'
+// columns, with pipelines of its own.
 class PyRestricted {
 public:
   using Want = rt::Want;
@@ -422,9 +400,8 @@ public:
     return view_.jacobian_columns();
   }
 
-  // (value, J) and (value, J, dJ/dv), J outputs x the kept symbols, scattered
-  // through the view's own pattern -- it keeps a subset of the columns.  `v`
-  // is over every symbol.
+  // Returns (value, J) or (value, J, dJ/dv), where J covers only the kept
+  // symbols and `v` covers every symbol.
   [[nodiscard]] pyb::tuple jacobian(const pyb::handle &x) const {
     return run<Want::Jacobian>(x);
   }
@@ -446,25 +423,21 @@ private:
         view_.jacobian_pattern(), nullptr, x, v);
   }
 
-  const PyEquation *eq_; // outlived by the equation: keep_alive on the factory
+  const PyEquation *eq_; // kept alive by keep_alive on the factory
   rt::Restricted<PyCore> view_;
 };
 
-// A call bound to its buffers: the point's columns, the output arrays and the
-// row pointers are taken once, so a repeat is a pipeline lookup and the sweep.
-// Owning them rather than binding the caller's is what leaves no shape, dtype
-// or stride to check.
+// A call bound to its own buffers, set up once, so each repeat is a pipeline
+// lookup and a sweep with no shape, dtype or stride checks.
 class PyCall {
 public:
-  // The equation outlives the call through pyb::keep_alive on the factory,
-  // never through a member: the binding states the lifetime once.
+  // The equation outlives the call through pyb::keep_alive on the factory.
   PyCall(PyEquation &eq, PyEquation::Want want, const pyb::handle &x)
       : eq_(&eq), want_(want), x_(pyb::cast<Array>(x)), at_(x_, eq.inputs_) {
-    // A system's Hessian is read off the arena a point at a time, so there is
-    // no pipeline to bind; the pipeline's own gate says so.
+    // Refuses wants with no pipeline to bind, such as a system's Hessian.
     unwrap(eq_->ready(want_));
-    // No direction columns and no dense Hessian block are bound here, so a
-    // want needing either is refused once rather than on every call.
+    // Direction columns and dense Hessian blocks are not bound, so wants that
+    // need them are refused here.
     if (const auto &w = rt::want_info(want_);
         w.direction != rt::Direction::None ||
         (w.hessian != rt::BlockShape::None &&
@@ -474,14 +447,14 @@ public:
     const auto l = eq_->pipeline(want_);
     const auto outputs = ssize(eq_->height());
     const auto n = eq_->width();
-    // Each block the pipeline carries, as the graph says: the values, the
-    // Jacobian's cells, and -- compressed by colour -- the Hessian's.
+    // The blocks the pipeline fills: values, Jacobian cells, and the Hessian
+    // compressed by colour.
     const auto blocks = l->graph->output_blocks();
     if (!blocks.values.empty()) {
       f_.emplace(eq_->shape_of({outputs}, at_), blocks.values.size(),
                  at_.size());
     }
-    // A pattern of no cells is still a block, of zeros.
+    // An empty pattern still yields a block, of zeros.
     if (!blocks.jacobian.empty() ||
         rt::want_info(want_).jacobian == rt::BlockShape::Cells) {
       partials_.emplace(blocks.jacobian.size(), at_.size());
@@ -493,9 +466,8 @@ public:
     }
   }
 
-  // The pipeline is looked up per call, never cached: adopt() swaps a kernel
-  // in, and a call holding the old one interprets on with every answer still
-  // right.
+  // The pipeline is looked up on each call rather than cached, so a kernel
+  // swapped in by adopt() is picked up.
   void operator()() {
     const auto l = eq_->pipeline(want_);
     eq_->run(
@@ -532,8 +504,7 @@ private:
                 eq_->width(), at_.size());
   }
 
-  // A rank-0 block is the scalar case, where the allocating calls answer with
-  // a float; matching them costs a PyFloat only when the value is read.
+  // A rank-0 block is returned as a float, matching the allocating calls.
   template <typename B>
   [[nodiscard]] static pyb::object read(const std::optional<B> &b) {
     if (!b) {
@@ -543,14 +514,14 @@ private:
     return a.ndim() == 0 ? pyb::object{pyb::float_(*a.data())} : pyb::object{a};
   }
 
-  PyEquation *eq_; // outlived by the equation: keep_alive on the factory
+  PyEquation *eq_; // kept alive by keep_alive on the factory
   PyEquation::Want want_;
   Array x_; // declared before at_, which points into it
   Point at_;
   std::optional<Block> f_;
-  std::optional<Scratch> partials_; // the pattern's cells, on their way to g_
+  std::optional<Scratch> partials_; // Jacobian cells, scattered into g_
   std::optional<Dense> g_;
-  std::optional<Scratch> compressed_; // the colouring's, on their way to h_
+  std::optional<Scratch> compressed_; // coloured Hessian, scattered into h_
   std::optional<Dense> h_;
 };
 

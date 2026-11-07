@@ -1,8 +1,8 @@
 #pragma once
 
-#include "dual/taylor_dual.hpp" // the univariate sweep's scalar
+#include "dual/taylor_dual.hpp"
 #include "md/md.hpp"
-#include "ops/numeric.hpp" // compile_time_factorial
+#include "ops/numeric.hpp"
 #include "rt/coupling.hpp"
 #include "rt/dense.hpp"
 #include "rt/derivative.hpp"
@@ -11,16 +11,16 @@
 #include "rt/interpret.hpp"
 #include "rt/pipeline.hpp"
 #include "rt/rebalance.hpp"
-#include "symbolic/entry.hpp" // CEntry
+#include "symbolic/entry.hpp"
 #include "util/config.hpp"
 #include "util/export.hpp"
-#include "util/ranges.hpp" // to<C>() and append(), ours
+#include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>
 
 #include "jit/options.hpp"
 
-#include <mutex> // call_once, unique_lock
+#include <mutex>
 #include <shared_mutex>
 
 #include <algorithm>
@@ -39,9 +39,8 @@
 
 namespace ddx::rt::detail {
 
-// A point keyed by name at run time: any range of (name, value), which is the
-// map spelling of the names rt::var(name) reads.  Entry keys off a FixedString
-// and so cannot say a name the program only learns while it runs.
+// A point keyed by run-time names: any range of (name, value) pairs. Entry
+// keys off a FixedString, so it cannot carry a name learned at run time.
 template <typename R>
 concept CNamedRange =
     std::ranges::input_range<R> &&
@@ -57,50 +56,47 @@ concept CPointArg =
     (std::ranges::input_range<A> &&
      impl::Numeric<std::remove_cvref_t<std::ranges::range_value_t<A>>>);
 
-// CPointArg admits any input_range, so without this a span of columns would try
-// to become a scalar.
+// CPointArg admits any input_range, so without this concept a span of columns
+// would be read as a point.
 template <typename R, typename Ptr>
 concept CColumns = std::ranges::contiguous_range<R> &&
                    std::convertible_to<std::ranges::range_value_t<R>, Ptr>;
 
-// What a sweep gives up around itself where the caller holds nothing.  Visible,
-// since an instantiation is no more visible than its arguments: Core<T>.
+// The default Yield, which releases nothing. Exported so that Core<T>
+// instantiations are visible too.
 struct DDX_API Nothing {};
 
 template <typename C> class DDX_TEMPLATE_API Restricted;
 
-// The Jacobian spellings an equation and its restrict() view share.  `D`
-// supplies at<W>(), dispatch(), unit() and jacobian_sparsity(), the pattern
-// its cells are laid out by.
+// The Jacobian spellings an equation and its restrict() view share. D supplies
+// at<W>(), dispatch(), unit() and jacobian_sparsity().
 template <typename D, impl::Numeric T> class DDX_TEMPLATE_API JacobianSurface {
   using Want = rt::Want;
   using Blocks = PerBlock<std::vector<T>>;
 
 public:
-  // Dense row-major m x n; at m == 1 the leading axis goes and this is n long.
-  // The graph holds only the cells the pattern names, so the zeros go back in
-  // here and this spelling never meets the compression.
+  // Dense row-major m x n, or n long when m == 1. The graph stores only the
+  // pattern's cells, so the zeros are put back here.
   [[nodiscard]] constexpr result<std::vector<T>>
   jacobian(const rt::detail::CPointArg auto &...args) const {
     return dense_at<Want::Jacobian, &Blocks::jacobian>({}, args...);
   }
 
-  // The Jacobian alone, from a graph with no value block: whatever only the
-  // value needs is not swept, which on a model whose derivative is simpler
-  // than its function is most of the graph.
+  // The Jacobian alone, from a graph with no value block, so work that only the
+  // value needs is never swept.
   [[nodiscard]] constexpr result<std::vector<T>>
   gradient(const rt::detail::CPointArg auto &...args) const {
     return dense_at<Want::Gradient, &Blocks::jacobian>({}, args...);
   }
 
-  // dJ/dv, dense row-major m x n: the derivative of every Jacobian cell along
-  // `direction`, one forward sweep however many functions there are.
+  // dJ/dv as dense row-major m x n: every Jacobian cell differentiated along
+  // `direction`, in one forward sweep.
   [[nodiscard]] result<std::vector<T>>
   jacobian_jvp(std::span<const T> direction,
                const rt::detail::CPointArg auto &...args) const {
     return dense_at<Want::JacobianJvp, &Blocks::hessian>(direction, args...);
   }
-  // Along one symbol's basis vector: d/dx_j of the whole Jacobian.
+  // The whole Jacobian differentiated along one symbol's basis vector.
   [[nodiscard]] result<std::vector<T>>
   jacobian_jvp(std::string_view along,
                const rt::detail::CPointArg auto &...args) const {
@@ -110,7 +106,7 @@ public:
   }
 
   // --- batch ---------------------------------------------------------------
-  // `g` and `dg` have jacobian_columns() columns and read with
+  // The `g` and `dg` blocks have jacobian_columns() columns, laid out by
   // jacobian_pattern().
   [[nodiscard]] result<void>
   jacobian(const rt::detail::CColumns<const T *> auto &xs,
@@ -119,8 +115,8 @@ public:
     return batch<Want::Jacobian>(xs, n, f, g);
   }
 
-  // Its own pipeline, not jacobian()'s with the partials dropped: on a coupled
-  // model the gradient is most of the graph.
+  // Runs its own pipeline rather than jacobian()'s, because on a coupled model
+  // the gradient is most of the graph.
   [[nodiscard]] result<void>
   gradient(const rt::detail::CColumns<const T *> auto &xs,
            const rt::detail::CColumns<T *> auto &g, std::size_t n) const {
@@ -138,7 +134,7 @@ public:
   }
 
 protected:
-  // A batch call for W, `outs` being its blocks in the table's order.
+  // A batch call for W, with `outs` given in the want table's block order.
   template <Want W>
   [[nodiscard]] result<void> batch(const auto &xs, std::size_t n,
                                    const auto &...outs) const {
@@ -165,9 +161,8 @@ protected:
     return std::span<Ptr const>{std::ranges::data(r), std::ranges::size(r)};
   }
 
-  // The point and the direction, in one array -- values or columns: the
-  // named inputs first, then the seeds, which is the order the ABI takes and
-  // input_column() states.
+  // The point followed by the direction in one array, as values or columns.
+  // Named inputs come first, as the ABI and input_column() expect.
   [[nodiscard]] static auto widen(const auto &xs, const auto &seeds) {
     boost::container::small_vector<std::ranges::range_value_t<decltype(xs)>, 64>
         out;
@@ -177,8 +172,7 @@ protected:
     return out;
   }
 
-  // Row-major rows x columns from the cells the pattern names, the zeros put
-  // back.
+  // Row-major rows x columns from the pattern's cells, with the zeros put back.
   [[nodiscard]] static constexpr std::vector<T>
   dense(const Sparsity &pattern, std::span<const T> cells) {
     std::vector<T> out(pattern.size() * pattern.columns, T{0});
@@ -192,7 +186,7 @@ private:
   [[nodiscard]] constexpr const D &self() const {
     return static_cast<const D &>(*this);
   }
-  // One block of W's answer, the zeros put back.
+  // One block of W's answer, with the zeros put back.
   template <Want W, auto Block>
   [[nodiscard]] constexpr result<std::vector<T>>
   dense_at(std::span<const T> along, const auto &...args) const {
@@ -204,76 +198,65 @@ private:
   }
 };
 
-// A sweep built on first ask and kept: the flag beside its value, so neither
-// travels without the other.
+// A sweep built on first ask and then kept, with its once_flag beside it.
 template <typename V> class Lazy {
 public:
   const V &get(auto &&build) {
     std::call_once(flag_, [&] { value_ = build(); });
     return value_;
   }
-  // Read only after get(): what a freeze reads of the sweeps.
-  [[nodiscard]] const V &peek() const noexcept { return value_; }
 
 private:
   std::once_flag flag_;
   V value_;
 };
 
-#ifdef DDX_HAS_JIT
 // The roots and Jacobian a kernel is lowered from; see rt/rebalance.hpp.
 struct Rebalanced {
   std::vector<NodeId> roots;
   Jacobian derivative;
 };
-#endif
 
-// The arena's lock and every sweep built on first ask.  On the heap: neither
-// moves, and constant evaluation never reaches them.
-//
-// Lock order: a pipeline's lock, then the arena's.  A sweep appends to the
-// arena, so it writes; an interpreter reads.  Nothing under the arena's lock
-// touches a pipeline, and nothing under either reacquires what a Yield gave up.
+// The arena's lock and every lazily built sweep, kept on the heap because a
+// mutex cannot move and constant evaluation never needs them.
+// Lock order: a pipeline's lock, then the arena's. Nothing under the arena's
+// lock touches a pipeline, and nothing reacquires what a Yield released.
 struct Sweeps {
   std::shared_mutex arena_mutex;
   Lazy<std::vector<Hessian>> hessians;
   Lazy<DenseHessian> dense;
-  // By Want: the block a directional want adds -- Hvp, Vjp, Jvp, JacobianJvp.
+  // Indexed by Want: the extra block of Hvp, Vjp, Jvp and JacobianJvp.
   std::array<Lazy<std::vector<NodeId>>, want_count> products;
-  Lazy<ArenaWalk> walk; // a system's hessian() at a point
+  Lazy<ArenaWalk> walk; // Serves a system's hessian() at a point.
 #ifdef DDX_HAS_JIT
   Lazy<Rebalanced> rebalanced;
 #endif
 };
 
-// What a thread sweeps into, per scalar type: kept between calls, since two
-// threads may be inside one equation at once and resize() on a kept vector
-// allocates only when a sweep outgrows the last.  One set per call site.
-// release_tapes() gives them back.
+// Per-thread sweep buffers, since two threads may be inside one equation at
+// once. Kept between calls, so resize() allocates only when a sweep grows.
 template <impl::Numeric T> struct TapeSet {
   std::vector<T> point, tape, vtape;
 };
 template <impl::Numeric T> struct ThreadTapes {
-  TapeSet<T> values;           // a system's hessian() at a point
-  TapeSet<T> one;              // a batch, one point at a time
-  TapeSet<T> block;            // a batch, block_lanes at once
-  std::vector<T> kernel_tapes; // a kernel's tensor steps
-  // A point call's output addresses: a dense block is n^2 of them, and a fresh
-  // array that size is a page fault per page on every call.
+  TapeSet<T> values;           // For a system's hessian() at a point.
+  TapeSet<T> one;              // For a batch swept one point at a time.
+  TapeSet<T> block;            // For a batch swept block_lanes points at once.
+  std::vector<T> kernel_tapes; // For a kernel's tensor steps.
+  // A point call's output addresses, kept because a dense block is n^2 of them
+  // and a fresh array that size page-faults on every call.
   std::vector<T *> addresses;
 };
-// Block scope: GCC 15 never registers the destructor of a thread_local variable
-// template named from a template, so every thread exit leaked its tapes.
+// Block scope, because GCC 15 never registers the destructor of a thread_local
+// variable template named from a template, which leaked tapes on thread exit.
 template <impl::Numeric T>
 [[nodiscard]] DDX_TEMPLATE_API ThreadTapes<T> &thread_tapes() {
   thread_local ThreadTapes<T> kept;
   return kept;
 }
 
-// A sweep's tapes for the length of the sweep.  An extern may sweep another
-// equation on this thread, which keeps its tapes in the same place, so a sweep
-// that can call one takes the thread's set away and puts it back after: the
-// inner sweep finds none and grows its own.
+// Lends a thread's tapes to one sweep. A sweep that may call an extern takes
+// them away meanwhile, so a nested sweep on this thread grows its own set.
 template <impl::Numeric T> class TapeLease {
 public:
   explicit TapeLease(bool calls_out) : thread_(thread_tapes<T>()) {
@@ -297,13 +280,11 @@ private:
   std::optional<ThreadTapes<T>> taken_;
 };
 
-// An equation: an arena of its own, its roots, the Jacobian swept up front and
-// every other sweep on first ask, a pipeline per Want.  Equation, System and
-// the Python Equation are this plus the spellings their callers want.  `Yield`
-// is what a sweep gives up while it runs: the GIL, on the Python side.
+// An equation's engine: its own arena and roots, every sweep, and a pipeline
+// per Want. `Yield` is what a sweep releases while it runs, e.g. Python's GIL.
 template <impl::Numeric T, std::default_initializable Yield = Nothing>
 class DDX_TEMPLATE_API Core : public JacobianSurface<Core<T, Yield>, T> {
-  // Freezes its own pipelines through checked(), over cells of this Jacobian.
+  // Restricted runs its own pipelines through dispatch_in() and at_in().
   friend class Restricted<Core>;
   using Surface = JacobianSurface<Core, T>;
   friend Surface;
@@ -319,15 +300,15 @@ public:
     return bad_;
   }
 
-  // Optional, not a degenerate 0: a literal-only graph legitimately has none.
+  // Optional rather than 0 on poison, since a literal-only graph has arity 0.
   [[nodiscard]] constexpr std::optional<std::size_t> arity() const {
     return unless_poisoned([this] { return symbol_count(); });
   }
   [[nodiscard]] constexpr std::optional<std::size_t> outputs() const {
     return unless_poisoned([this] { return roots_.size(); });
   }
-  // Declaration order, which is the order of a positional point and of every
-  // derivative's columns.
+  // In declaration order, which is the order of a positional point and of
+  // every derivative's columns.
   [[nodiscard]] constexpr std::optional<std::span<const std::string>>
   symbols() const {
     return unless_poisoned(
@@ -338,8 +319,8 @@ public:
     return unless_poisoned(
         [this] { return std::span<const std::string>{arena_->params()}; });
   }
-  // Everything a point supplies, in the order a positional one is read: the
-  // symbols, then the parameters.
+  // Everything a point supplies, in positional order: the symbols, then the
+  // parameters.
   [[nodiscard]] constexpr std::optional<std::size_t> input_count() const {
     return unless_poisoned([this] { return arena_->inputs().named(); });
   }
@@ -347,7 +328,7 @@ public:
     return unless_poisoned([this] { return arena_->names(); });
   }
 
-  // The input list exists only at run time, so every spelling can refuse.
+  // The input list is known only at run time, so every spelling can fail.
   template <rt::detail::CPointArg... Args>
   [[nodiscard]] constexpr result<std::vector<T>>
   point(const Args &...args) const {
@@ -362,8 +343,8 @@ public:
                                    static_cast<T>(args.value)}...});
     } else if constexpr (sizeof...(Args) == 1 &&
                          (rt::detail::CNamedRange<Args> && ...)) {
-      // Before the plain range: a map is an input_range too, and its elements
-      // are pairs rather than the numbers assign_range would read.
+      // Checked before the plain range, since a map is also an input_range but
+      // its elements are pairs.
       ok = assign_named(at, args...);
     } else if constexpr (sizeof...(Args) == 1 &&
                          (std::ranges::input_range<Args> && ...)) {
@@ -375,39 +356,38 @@ public:
     return ok.transform([&at] { return std::move(at); });
   }
 
-  // H(x)v, n long.  The direction leads and is a span, so it cannot be read as
-  // a point value however the point itself is spelled.
+  // H(x)v, n long. The direction comes first as a span, so it can never be
+  // read as part of the point.
   [[nodiscard]] result<std::vector<T>>
   hvp(std::span<const T> direction,
       const rt::detail::CPointArg auto &...args) const {
     return block_at<Want::Hvp, &Blocks::hessian>(direction, args...);
   }
 
-  // The j-th Hessian column, named and not indexed: the symbol list exists
-  // only at run time.
+  // The j-th Hessian column, chosen by name since the symbol list exists only
+  // at run time.
   [[nodiscard]] result<std::vector<T>>
   hvp(std::string_view along, const rt::detail::CPointArg auto &...args) const {
     return unit(along).and_then(
         [&](const auto &e) { return hvp(std::span<const T>{e}, args...); });
   }
 
-  // w'J, n long: one weight per function.
+  // w'J, n long, with one weight per function.
   [[nodiscard]] result<std::vector<T>>
   vjp(std::span<const T> weights,
       const rt::detail::CPointArg auto &...args) const {
     return block_at<Want::Vjp, &Blocks::jacobian>(weights, args...);
   }
 
-  // J v, m long: the mirror of vjp().
+  // Jv, m long, the mirror of vjp().
   [[nodiscard]] result<std::vector<T>>
   jvp(std::span<const T> direction,
       const rt::detail::CPointArg auto &...args) const {
     return block_at<Want::Jvp, &Blocks::jacobian>(direction, args...);
   }
 
-  // A view with only the named symbols' Jacobian columns, in symbol order: the
-  // cells of the others are neither frozen nor swept.  It reads this
-  // equation's arena and sweeps, so it must not outlive it.
+  // A view keeping only the named symbols' Jacobian columns, so the other cells
+  // are never swept. It reads this equation and must not outlive it.
   template <std::ranges::input_range R>
     requires std::convertible_to<std::ranges::range_reference_t<R>,
                                  std::string_view>
@@ -425,15 +405,15 @@ public:
     return restrict(std::span{names});
   }
 
-  // F(z, x) for each implicit's closure, at a point: zero, to rounding, where
-  // the caller's root is one.  ddx never solves for z; this is the check.
+  // F(z, x) for each implicit's closure, which is zero to rounding where the
+  // caller's z is a root. ddx never solves for z; this only checks it.
   [[nodiscard]] result<std::vector<T>>
   residual(const rt::detail::CPointArg auto &...args) const {
     return point(args...).transform([this](const auto &at) {
       [[maybe_unused]] const auto held = reading();
       const auto closures = arena_->closures();
-      const auto values =
-          evaluate_reachable(*arena_, closures, at, tensor_kernels());
+      const auto values = evaluate_reachable(*arena_, closures, at,
+                                             tensor_kernels(), contraction());
       return closures |
              std::views::transform([&values](NodeId f) { return values[f]; }) |
              impl::to<std::vector<T>>();
@@ -444,8 +424,8 @@ public:
   [[nodiscard]] result<std::vector<T>>
   hessian(const rt::detail::CPointArg auto &...args) const {
     if (!poisoned() && is_system()) {
-      // Off the arena, one output's Hessian at a time: no pipeline holds m
-      // colourings.  The gate is the pipeline's, asked without one.
+      // A system is walked off the arena one output at a time, since no
+      // pipeline holds m colourings; orders() applies the pipeline's gate.
       DDX_TRY(at, point(args...));
       DDX_CHECK(orders(Want::Hessian));
       const std::size_t m = roots_.size();
@@ -457,8 +437,7 @@ public:
       return out;
     }
     return at<Want::Hessian>({}, args...).transform([this](const auto &b) {
-      // Only the cells the colouring stores; `out` is already zero, which is
-      // what every other column of that colour is.
+      // Scatter only the colouring's stored cells; the rest of `out` stays 0.
       const std::size_t n = symbol_count();
       std::vector<T> out(n * n);
       scatter(
@@ -469,17 +448,14 @@ public:
     });
   }
 
-  // The same n x n, dense and row-major, from one O(n^2) sweep: the gradient's
-  // cone walked with matrix tangents, where hessian() colours and sweeps n + 1
-  // times over a dense term.  One output only.
+  // The same n x n Hessian from one O(n^2) sweep with matrix tangents, where
+  // hessian() colours and sweeps n + 1 times. One output only.
   [[nodiscard]] result<std::vector<T>>
   dense_hessian(const rt::detail::CPointArg auto &...args) const {
     return block_at<Want::DenseHessian, &Blocks::hessian>({}, args...);
   }
-  // How many terms the sweep kept quadratic, and how many fell back to a dense
-  // product: a model's structure defeated the algebra where the second is not
-  // zero -- still right, not O(n^2).  Refused as dense_hessian() would be:
-  // tensor_shape for a block the sweep refused, not_single_output for a system.
+  // Terms the dense sweep kept O(n^2) and terms that fell back to a dense
+  // product, which is still correct. Refuses exactly as dense_hessian() would.
   struct DenseCost {
     std::size_t n2_terms = 0;
     std::size_t n3_terms = 0;
@@ -491,8 +467,8 @@ public:
     });
   }
 
-  // Whether to compile at all, and how; discards anything already compiled.
-  // The one non-const member: a call overlapping it is the caller's race.
+  // Whether and how to compile, discarding anything already compiled. This is
+  // the one non-const member, so a call overlapping it is the caller's race.
   auto &options(this auto &self, const jit::Options &opt) {
     return replaced(self, self.options_, opt);
   }
@@ -500,9 +476,8 @@ public:
     return options_;
   }
 
-  // What computes the tensor nodes: the process default
-  // (rt::use_tensor_kernels) unless this equation is handed a table of its own.
-  // A table decides the last bits, so the pipelines go with the old one.
+  // The table computing tensor nodes, rt::use_tensor_kernels by default.
+  // Setting one drops the pipelines, since a table decides the last bits.
   auto &tensor_kernels(this auto &self, const TensorKernelTable<T> &table) {
     return replaced(self, self.kernels_, &table);
   }
@@ -511,16 +486,16 @@ public:
     if (kernels_ != nullptr) {
       return *kernels_;
     }
-    // The process default lives in libddx, which constant evaluation cannot
-    // reach; a constant-evaluated equation computes no tensor row anyway.
+    // The process default lives in libddx, out of constant evaluation's reach,
+    // and a constant-evaluated equation computes no tensor row anyway.
     if consteval {
       return reference_table<T>;
     }
     return rt::tensor_kernels<T>();
   }
 
-  // Sweep and freeze `wants` now, so the calls that follow -- from any number
-  // of threads -- find their pipelines built and never take a write lock.
+  // Sweeps and freezes `wants` now, so later calls from any number of threads
+  // find their pipelines built and never take a write lock.
   [[nodiscard]] result<void> prepare(std::initializer_list<Want> wants) const {
     for (const Want want : wants) {
       DDX_CHECK(ready(want));
@@ -529,15 +504,14 @@ public:
     return {};
   }
 
-  // Whether a batch call for `want` goes through compiled code, building its
-  // pipeline now: false with no backend, on a refused compile, and under
-  // Interpret.
+  // Whether a batch call for `want` runs compiled code, building its pipeline
+  // now. False with no backend, on a refused compile, and under Interpret.
   [[nodiscard]] bool uses_kernel(Want want = Want::Jacobian) const {
     return compile_status(want).has_value();
   }
 
-  // What one call for `want` steps through, counted on the graph its
-  // pipeline froze; builds that pipeline as prepare() does, and sweeps nothing.
+  // What one call for `want` steps through, counted on its frozen graph. Builds
+  // the pipeline as prepare() does but evaluates nothing.
   [[nodiscard]] result<Census> census(Want want = Want::Jacobian) const {
     return ready(want).transform(
         [&] { return detail::census_of(*pipeline(want)->graph); });
@@ -554,7 +528,8 @@ public:
         .and_then([&] { return pipeline(want)->status; });
   }
 
-  // One Taylor sweep: seed c[0] = x0, c[1] = 1, then un-normalise c[Order].
+  // One Taylor sweep seeded with c[0] = x0 and c[1] = 1; the derivative is
+  // c[Order] times Order!.
   template <std::size_t Order>
     requires(Order > 0)
   [[nodiscard]] result<T> univariate_derivative(T x0) const {
@@ -565,22 +540,23 @@ public:
     using Taylor = impl::TaylorDual<T, Order>;
     const std::span<const NodeId> root{roots_.data(), 1};
     [[maybe_unused]] const auto held = reading();
-    // Refuse rather than sweep: an op the Taylor scalar lacks evaluates to
-    // a zero node, which is a wrong number with nothing to say so.
+    // Refuse rather than sweep, since an op the Taylor scalar lacks would
+    // evaluate to a zero node and give a silently wrong number.
     if (!computes_at<Taylor>(*arena_, root)) {
       return fail(errc::unsupported_scalar);
     }
     const std::array<Taylor, 1> at{Taylor::variable(x0)};
-    // One root out of an arena that may hold a gradient and a Hessian too,
-    // and a Taylor node costs (Order + 1) coefficients.
-    const auto values = evaluate_reachable(*arena_, root, at);
+    // Only root 0's cone is evaluated, since the arena may also hold a gradient
+    // and a Hessian and a Taylor node costs Order + 1 coefficients.
+    const auto values = evaluate_reachable(*arena_, root, at,
+                                           reference_table<T>, contraction());
     return values[roots_[0]].c[Order] *
            static_cast<T>(impl::detail::compile_time_factorial(Order));
   }
 
   // --- batch ---------------------------------------------------------------
-  // `xs[j]` is the column for symbol j; each output span holds one pointer per
-  // output column, every column n long.
+  // `xs[j]` is symbol j's column; each output span holds one pointer per output
+  // column, and every column is n long.
 
   [[nodiscard]] result<void>
   evaluate(const rt::detail::CColumns<const T *> auto &xs,
@@ -596,8 +572,8 @@ public:
     return this->template batch<Want::Hessian>(xs, n, f, g, h);
   }
 
-  // `v` is a second block of input columns, not a second point: one column per
-  // symbol, each n long, spliced behind `xs`.  `g` comes out of the same sweep.
+  // `v` is a second block of input columns, one per symbol and n long, spliced
+  // after `xs`. `g` comes out of the same sweep.
   [[nodiscard]] result<void> hvp(const rt::detail::CColumns<const T *> auto &xs,
                                  const rt::detail::CColumns<const T *> auto &v,
                                  const rt::detail::CColumns<T *> auto &f,
@@ -607,7 +583,7 @@ public:
     return this->template batch<Want::Hvp>(widen(xs, v), n, f, g, hv);
   }
 
-  // `h` is n^2 columns, row-major: H(i, j) is column i n + j.
+  // `h` is n^2 columns, row-major: H(i, j) is column i * n + j.
   [[nodiscard]] result<void>
   dense_hessian(const rt::detail::CColumns<const T *> auto &xs,
                 const rt::detail::CColumns<T *> auto &f,
@@ -632,8 +608,8 @@ public:
     return this->template batch<Want::Jvp>(widen(xs, v), n, f, out);
   }
 
-  // What a caller sizes buffers by.  None builds a pipeline, and only the
-  // Hessian's sweeps anything: its colouring is what fixes the count.
+  // The column counts a caller sizes buffers by. None builds a pipeline; only
+  // the Hessian's counts sweep, since its colouring fixes them.
   [[nodiscard]] constexpr std::optional<std::size_t> value_columns() const {
     return outputs();
   }
@@ -660,17 +636,16 @@ public:
     return outputs();
   }
 
-  // What a batch caller reads the two compressed blocks by: the dense
-  // spellings undo the compression, the batch ones cannot, and without these
-  // the column counts describe a block nobody can index.
+  // The compressed blocks' layouts, which batch callers need because only the
+  // dense spellings undo the compression.
 
-  // `at(i, j)` is nullopt where d f[i] / d x[j] is structurally zero.
+  // at(i, j) is nullopt where df[i]/dx[j] is structurally zero.
   [[nodiscard]] constexpr std::optional<std::reference_wrapper<const Sparsity>>
   jacobian_pattern() const {
     return unless_poisoned([this] { return std::cref(jacobian_.pattern); });
   }
 
-  // Which (row, column) cell each Hessian column holds: Colouring::entries().
+  // The (row, column) cell each Hessian column holds; see Colouring::entries().
   // One output only, and it sweeps the Hessian on first ask.
   [[nodiscard]] std::optional<std::reference_wrapper<const Colouring>>
   hessian_pattern() const {
@@ -695,17 +670,16 @@ protected:
   using Pipeline = detail::Pipeline<T>;
   using Pipelines = std::array<Pipeline, want_count>;
 
-  // Poisoned: arena_ null, roots_ empty, no pipelines or sweeps, and every
-  // accessor short-circuiting first.
+  // Poisoned: no arena, no roots, no pipelines or sweeps, and every accessor
+  // returns early.
   constexpr explicit Core(error why) : bad_(why) { settle(); }
 
-  // The arena is the equation's own from here: one it was lent is copied, so
-  // nothing another equation or the caller builds can move a node under it.
+  // The equation owns its arena from here; a lent one was copied, so nothing
+  // outside can move a node under it.
   constexpr Core(std::unique_ptr<Arena<T>> arena, std::vector<NodeId> roots)
       : arena_(std::move(arena)), roots_(std::move(roots)) {
-    // An implicit no derivative could carry refuses the whole equation, as a
-    // poisoned output would; so does a vector where an output must be a
-    // scalar -- spell a system over its elements.
+    // An implicit no derivative can carry, or a vector output where a scalar is
+    // required, poisons the whole equation.
     if (const auto why = unclosed(*arena_)) {
       poison(error{*why});
     } else if (std::ranges::any_of(roots_, [this](NodeId r) {
@@ -715,8 +689,8 @@ protected:
     } else if (no_kernel_for_tensors()) {
       poison(error{errc::unsupported_scalar});
     } else {
-      // One reverse sweep per output is cheap, and it is what the column
-      // counts, the pattern and constant evaluation read.
+      // One reverse sweep per output is cheap, and the column counts, the
+      // pattern and constant evaluation all read it.
       jacobian_ = derive_jacobian(*arena_, roots_);
     }
     settle();
@@ -734,15 +708,15 @@ protected:
     }
   }
 
-  // Refused: by the code it carries, with nothing left to read.  poisoned()
-  // <=> arena_ == nullptr from here.
+  // Refuses with `why` and drops everything else, so from here on poisoned()
+  // holds exactly when arena_ is null.
   constexpr void poison(error why) {
     bad_ = why;
     arena_.reset();
     roots_.clear();
   }
-  // Every equation's tail: what the gates read of the arena, and the pipelines
-  // and sweeps, which constant evaluation and a poisoned equation never reach.
+  // Every constructor's tail: the gates' flags, then the pipelines and sweeps,
+  // which constant evaluation and a poisoned equation never reach.
   constexpr void settle() {
     if (!arena_) {
       return;
@@ -755,8 +729,8 @@ protected:
     }
   }
 
-  // Poison first, and by the code it carries: a clashing name or an absent
-  // arena is a different mistake from a literal that reached no graph.
+  // The first poison reason, by code: a clashing name or a missing arena is a
+  // different mistake from a literal that reached no graph.
   [[nodiscard]] static constexpr std::optional<error>
   why_not(std::span<const Expression<T>> outputs) noexcept {
     for (const Expression<T> &e : outputs) {
@@ -770,8 +744,8 @@ protected:
     return std::nullopt;
   }
 
-  // The arena the outputs will be read in -- `owned`, or a copy of the one
-  // they were built in -- and their roots there.
+  // The arena the outputs are read in (`owned`, or a copy of the one they were
+  // built in), and their roots there.
   [[nodiscard]] static constexpr std::pair<std::unique_ptr<Arena<T>>,
                                            std::vector<NodeId>>
   rooted(std::span<const Expression<T>> outputs,
@@ -786,7 +760,8 @@ protected:
     return {std::move(arena), std::move(roots)};
   }
 
-  // The three ways an equation comes to be, for whichever class wraps this.
+  // Builds a poisoned or a live D from `outputs`, for whichever class wraps
+  // Core.
   template <typename D>
   [[nodiscard]] static constexpr D make(std::span<const Expression<T>> outputs,
                                         std::unique_ptr<Arena<T>> owned) {
@@ -797,8 +772,7 @@ protected:
     return D{std::move(arena), std::move(roots)};
   }
 
-  // Past the poison guard, so the arena is known good; arity() is the checked
-  // spelling.
+  // Assumes a live arena; arity() is the checked spelling.
   [[nodiscard]] constexpr std::size_t symbol_count() const {
     return arena_->symbols().size();
   }
@@ -809,11 +783,11 @@ protected:
     return jacobian_;
   }
 
-  // Which Jacobian cells a set of pipelines is frozen over: every one, for the
-  // equation's own, or the cells a restrict() kept, as indices into them.
+  // The Jacobian cells a set of pipelines is frozen over: all of them for the
+  // equation's own, or the indices a restrict() kept.
   struct Cells {
     const Jacobian &jacobian;
-    // Unset is all of them; a restriction can keep none.
+    // Unset means all cells; a restriction may keep none.
     std::optional<std::span<const std::size_t>> kept{};
   };
   [[nodiscard]] constexpr Cells every_cell() const {
@@ -853,31 +827,28 @@ protected:
           std::span<const T *const> xs, const Columns<T> &out) const {
     DDX_CHECK(ready(want));
     auto c = pipeline_in(pipelines, cells, want);
-    // Columns, not nodes: a vector output is one column per element.
-    const bool fits =
-        xs.size() == c->graph->arity() &&
-        std::ranges::none_of(zip_blocks(out, c->graph->layout()),
-                             [](const auto &pair) {
-                               const auto &[columns, count] = pair;
-                               return columns.size() != count;
-                             });
+    // Count columns, not nodes, since a vector output is one column per
+    // element.
+    const bool fits = xs.size() == c->graph->arity() &&
+                      std::ranges::none_of(zip_blocks(out, c->graph->layout()),
+                                           [](const auto &pair) {
+                                             const auto &[columns, count] =
+                                                 pair;
+                                             return columns.size() != count;
+                                           });
     if (!fits) {
       return fail(errc::wrong_column_count);
     }
     return c;
   }
 
-  // A system's Hessians, read off the arena a point at a time: a frozen graph
-  // carries one colouring, so no pipeline holds m of them.  `f` is m long, `g`
-  // the dense m x n and `h` the dense m x n x n.
+  // A system's Hessians read off the arena one point at a time, since a frozen
+  // graph carries one colouring. `f` is m long, `g` m x n and `h` m x n x n.
   void walk(std::span<const T> at, std::span<T> f, std::span<T> g,
             std::span<T> h) const {
     const auto &blocks = hessians();
-    // What the three blocks read -- values, partials and Hessian::at's
-    // compressed cells -- settled on first ask, since it depends only on the
-    // sweeps.  Appended block by block rather than through views::join, whose
-    // inner iterator GCC 15 calls maybe-uninitialized under -Wall; reachable()
-    // reads a set, so the order is free.
+    // The nodes the three blocks read, planned once. Appended per block rather
+    // than via views::join, which GCC 15 flags maybe-uninitialized under -Wall.
     const auto &walk = sweeps_->walk.get([&] {
       std::vector<NodeId> wanted{roots_.begin(), roots_.end()};
       std::ranges::for_each(blocks, [&wanted](const Hessian &b) {
@@ -886,11 +857,12 @@ protected:
         wanted.push_back(b.zero);
       });
       [[maybe_unused]] const auto held = reading();
-      return ArenaWalk{*arena_, live_ids(reachable(*arena_, wanted))};
+      return ArenaWalk{*arena_, live_ids(reachable(*arena_, wanted)),
+                       contraction()};
     });
     const std::size_t n = symbol_count();
-    // The tape is thread-kept; every id read below is scheduled, so it is
-    // written this call.
+    // The tape is thread-kept and not cleared; every id read below is
+    // scheduled, so this call writes it first.
     TapeLease<T> lease{calls_out_};
     ThreadTapes<T> &kept = lease.tapes();
     std::vector<T> &values = kept.values.tape;
@@ -914,14 +886,14 @@ protected:
     }
   }
 
-  // nullopt on a poisoned equation, `value()` otherwise.
+  // Nullopt on a poisoned equation, `value()` otherwise.
   [[nodiscard]] constexpr auto unless_poisoned(auto &&value) const {
     using V = std::remove_cvref_t<std::invoke_result_t<decltype(value)>>;
     return poisoned() ? std::optional<V>{} : std::optional<V>{value()};
   }
 
-  // As unless_poisoned, and nullopt too for a system: the answer is about one
-  // output's Hessian.
+  // As unless_poisoned, but also nullopt for a system, since the answer is
+  // about a single output's Hessian.
   [[nodiscard]] auto unless_system(auto &&value) const {
     return is_system() ? decltype(unless_poisoned(value)){}
                        : unless_poisoned(value);
@@ -934,7 +906,7 @@ protected:
   }
 
 private:
-  // Run `build` once, under the arena's write lock: every sweep appends.
+  // Runs `build` once under the arena's write lock, since every sweep appends.
   template <typename V> const V &sweep(Lazy<V> &slot, auto &&build) const {
     return slot.get([&] {
       [[maybe_unused]] const auto held = writing();
@@ -955,8 +927,8 @@ private:
       return derive_dense_hessian(*arena_, roots_.front());
     });
   }
-  // The product a directional want adds.  Hvp is root 0's only: a system
-  // refuses it before it gets here.
+  // The product a directional want adds. Hvp is root 0's only, since a system
+  // refuses it earlier.
   [[nodiscard]] const std::vector<NodeId> &product(Want want) const {
     return sweep(sweeps_->products[std::to_underlying(want)], [&] {
       switch (want) {
@@ -978,7 +950,7 @@ private:
   [[nodiscard]] constexpr const Sparsity &jacobian_sparsity() const {
     return jacobian_.pattern;
   }
-  // e_j for a symbol named `along`, or unknown_symbol.
+  // e_j for the symbol named `along`, or unknown_symbol.
   [[nodiscard]] result<boost::container::small_vector<T, 64>>
   unit(std::string_view along) const {
     return alive()
@@ -991,13 +963,8 @@ private:
   }
 
 protected:
-  // The gates, in the order a call meets them.  alive(): not poisoned.
-  // single(): one function's, which a system refuses.  orders(): second order
-  // is refused where a reachable extern supplies first partials only, rather
-  // than answered with the zeros a missing component would read.  blocked():
-  // the dense Hessian has no block where a matrix the symbols move is
-  // multiplied (rt/dense.hpp).  ready() is the one gate every batch and point
-  // call passes, off the want's row.
+  // The gates, in the order a call meets them; ready() is the one every batch
+  // and point call passes.
   [[nodiscard]] constexpr bool is_system() const noexcept {
     return roots_.size() != 1;
   }
@@ -1009,11 +976,15 @@ protected:
       return is_system() ? fail(errc::not_single_output) : result<void>{};
     });
   }
+  // Second order is refused where a reachable extern supplies only first
+  // partials, rather than answered with zeros.
   [[nodiscard]] constexpr result<void> orders(Want want) const {
     return want_info(want).second_order && first_order_
                ? fail(errc::extern_order)
                : result<void>{};
   }
+  // The dense Hessian has no block where a matrix the symbols move is
+  // multiplied (see rt/dense.hpp).
   [[nodiscard]] constexpr result<void> blocked(Want want) const {
     return want == Want::DenseHessian && symbol_count() != 0 &&
                    dense_sweep().block == no_node
@@ -1036,7 +1007,7 @@ private:
       return std::move(b.*Block);
     });
   }
-  // `member` set to `value`, and whatever was compiled for the old one gone.
+  // Sets `member` to `value` and drops whatever was compiled for the old one.
   static auto &replaced(auto &self, auto &member, const auto &value) {
     if (!(member == value)) {
       member = value;
@@ -1050,8 +1021,8 @@ private:
   [[nodiscard]] auto writing() const {
     return std::unique_lock{sweeps_->arena_mutex};
   }
-  // What a sweep holds and gives up: Yield first, so the lock is never waited
-  // for -- or held -- while reacquiring what Yield let go.
+  // What a sweep holds. Yield is released first, so the lock is never waited
+  // for or held while reacquiring what Yield let go.
   struct Sweeping {
     [[no_unique_address]] Yield yielded{};
     std::shared_lock<std::shared_mutex> held;
@@ -1060,9 +1031,8 @@ private:
     return Sweeping{.held = reading()};
   }
 
-  // The three blocks' column counts at one point of `want`: the table's shape
-  // columns in this equation's numbers, the Jacobian cells being the view's
-  // where a restrict() kept some.
+  // The three blocks' column counts for `want`, taking the Jacobian cells from
+  // a restrict() view where it kept some.
   [[nodiscard]] constexpr Layout sizes(Want want, const Cells &cells) const {
     const std::size_t m = roots_.size();
     const std::size_t n = symbol_count();
@@ -1096,11 +1066,8 @@ private:
                                        : 0;
   }
 
-  // One point of `W`: the blocks sized by the table, and where the pipeline
-  // takes a direction -- one value per symbol or per function, as the table
-  // says -- the point widened by it.  `pipelines` and `cells` are the
-  // equation's or a restrict() view's; constant evaluation takes gather()'s
-  // arena walk.
+  // One point of `W`, widened by `along` where the want takes a direction.
+  // Constant evaluation takes gather()'s arena walk instead of a pipeline.
   template <Want W>
   [[nodiscard]] constexpr result<PerBlock<std::vector<T>>>
   at_in(Pipelines *pipelines, const Cells &cells, std::span<const T> along,
@@ -1130,9 +1097,8 @@ private:
     return at_in<W>(pipelines_.get(), every_cell(), along, args...);
   }
 
-  // Name by name.  Naming a point is not the same as giving one: a symbol no
-  // entry reaches would otherwise be read as zero, which is a value and not a
-  // refusal.
+  // Assigns name by name, refusing a point that leaves an input unnamed rather
+  // than reading it as zero.
   [[nodiscard]] constexpr result<void>
   assign_named(std::vector<T> &at,
                const rt::detail::CNamedRange auto &entries) const {
@@ -1162,15 +1128,10 @@ private:
     return {};
   }
 
-  // One point through the batch path at n = 1, not the arena walk, so the
-  // batch gate is the point gate.  Constant evaluation keeps it, having no
-  // pipeline and nothing to refuse.
-  //
-  // The arena walk is the tail, not an `else` on the `if !consteval`: that
-  // branch would be an immediate function context, and what GCC then escalates
-  // under P2564 is not what either path says.  MSVC sees the tail as dead code
-  // instead -- it is, at run time -- hence the pragma, which has to sit outside
-  // the body: a code-generation warning takes the state at the opening brace.
+  // One point through the batch path at n = 1, so the batch gate is the point
+  // gate. Constant evaluation, having no pipelines, takes the arena walk.
+  // The walk is a tail, not an `else`, which GCC would escalate under P2564.
+  // MSVC calls it dead (C4702, read at the brace), so the pragma sits outside.
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4702) // unreachable code
@@ -1181,7 +1142,7 @@ private:
                                               std::span<T> f, std::span<T> g,
                                               std::span<T> h) const {
     if !consteval {
-      // At one point every column is one value, its address.
+      // At one point, every column is a single value's address.
       const auto address = [](auto &v) { return std::addressof(v); };
       const auto xs = at | std::views::transform(address) |
                       impl::to<boost::container::small_vector<const T *, 32>>();
@@ -1198,8 +1159,8 @@ private:
     }
     auto wanted = roots_;
     impl::append(wanted, jacobian_.partial);
-    const auto values =
-        evaluate_reachable(*arena_, wanted, at, tensor_kernels());
+    const auto values = evaluate_reachable(*arena_, wanted, at,
+                                           tensor_kernels(), contraction());
     const auto pick = [&values](std::span<T> out, const auto &nodes) {
       std::ranges::transform(nodes | std::views::take(out.size()), out.begin(),
                              [&values](NodeId v) { return values[v]; });
@@ -1222,11 +1183,8 @@ private:
 
   // The graphs a pipeline computes.
   [[nodiscard]] Compiled frozen_for(Want want, const Cells &cells) const {
-    // What the want adds past the values and the Jacobian, swept before the
-    // freeze takes the lock.  Vjp and Jvp replace the Jacobian block rather
-    // than add to it -- n columns instead of the pattern's nonzeros is the
-    // whole point of asking.  A restriction keeps the cells it chose, of dJ/dv
-    // too.
+    // The blocks the want adds, swept before the freeze takes the lock. Vjp
+    // and Jvp replace the Jacobian block rather than add to it.
     OutputBlocks added;
     Colouring colouring;
     switch (want) {
@@ -1251,7 +1209,7 @@ private:
       break;
     }
     case Want::DenseHessian:
-      // No symbols, no block.
+      // With no symbols there is no dense block.
       if (dense_sweep().block != no_node) {
         added.hessian = {dense_sweep().block};
       }
@@ -1261,10 +1219,8 @@ private:
     case Want::Gradient:
       break;
     }
-    // `roots` and `partials` differ between the swept graph and the kernel's
-    // rebalanced one.  Gradient differentiates the roots without computing
-    // them; every direction column the call hands counts, whether or not the
-    // product reads it: y's never reaches H(x*x + y) v.
+    // `roots` and `partials` differ between the swept graph and the rebalanced
+    // kernel graph. Every direction column counts, even an unread one.
     const WantInfo &info = want_info(want);
     const auto freeze = [&](std::span<const NodeId> roots,
                             const Jacobian &partials, bool for_kernel) {
@@ -1281,20 +1237,19 @@ private:
                            pattern ? partials.pattern : Sparsity{}, contracts(),
                            extent(info.direction), for_kernel));
     };
-    [[maybe_unused]] const bool rebalance = !cells.kept && rebalances(want);
+    [[maybe_unused]] const Rebalanced *over =
+        cells.kept ? nullptr : rebalanced(want);
     [[maybe_unused]] const auto held = reading();
     auto swept = freeze(roots_, cells.jacobian, false);
     auto compiled = swept;
 #ifdef DDX_HAS_JIT
-    // The kernel's own graph where it differs: over rebalanced roots, or with
-    // a tensor's elementwise rows fused into their readers.
-    if (rebalance || (swept->has_tensors() && compiling())) {
-      const Rebalanced *over =
-          rebalance ? &sweeps_->rebalanced.peek() : nullptr;
+    // The kernel gets its own graph where it differs: over rebalanced roots, or
+    // with a tensor's elementwise rows fused into their readers.
+    if (over || (swept->has_tensors() && compiling())) {
       auto own = freeze(over ? over->roots : roots_,
                         over ? over->derivative : cells.jacobian, true);
-      // Calls are checked against the swept graph, and a rebalanced sum can
-      // fold where the swept one did not.  Same layout, or no second graph.
+      // Calls are checked against the swept graph and a rebalanced sum may fold
+      // differently, so the kernel graph is kept only if its layout matches.
       if (in_order(own->layout()) == in_order(swept->layout()) &&
           own->jacobian_pattern().rowptr == swept->jacobian_pattern().rowptr &&
           own->jacobian_pattern().col == swept->jacobian_pattern().col) {
@@ -1307,15 +1262,13 @@ private:
             .kernels = &tensor_kernels()};
   }
 
-  // Whether the kernel for `want` is lowered from rebalanced roots, which are
-  // swept here on first ask.
-  [[nodiscard]] bool rebalances([[maybe_unused]] Want want) const {
+  // The rebalanced roots the kernel for `want` is lowered from, swept on first
+  // ask; null where the kernel is lowered from the equation's own roots.
+  [[nodiscard]] const Rebalanced *rebalanced([[maybe_unused]] Want want) const {
 #ifdef DDX_HAS_JIT
     if constexpr (jit::CKernelScalar<T>) {
-      // A tensor step is the sweep's own, so its graph is never rebalanced.
-      // The roots' cone, not the arena: a dense Hessian swept earlier leaves
-      // tensor nodes no scalar root reads.  Read under the lock, as a sweep on
-      // another thread may be appending.
+      // A graph with tensor steps is never rebalanced. The roots' cone is read,
+      // not the whole arena, and under the lock since another sweep may append.
       const auto tensors = [this] {
         [[maybe_unused]] const auto held = reading();
         const auto live = detail::reachable(*arena_, roots_);
@@ -1325,32 +1278,32 @@ private:
       };
       if (!rebalanceable(want) || !compiling() ||
           detail::shared_compiler() == nullptr || tensors()) {
-        return false;
+        return nullptr;
       }
-      (void)sweep(sweeps_->rebalanced, [this] {
+      return &sweep(sweeps_->rebalanced, [this] {
         Rebalanced over{.roots = detail::rebalance(*arena_, roots_),
                         .derivative = {}};
         over.derivative = derive_jacobian(*arena_, over.roots);
         return over;
       });
-      return true;
     }
 #endif
-    return false;
+    return nullptr;
   }
 
-  // How wide to emit, from the batch the caller stated: a wide kernel computes
-  // `w` points to answer for one, so a short batch emits scalar -- the same
-  // threshold the sweep uses.  A stated `lanes` is honoured.
+  // The emission width for the caller's batch: a short batch emits scalar, the
+  // same threshold the sweep uses. An explicit `lanes` is honoured.
   [[nodiscard]] jit::Options effective_options() const noexcept {
     return jit::for_batch(options_, block_lanes);
   }
 
-  // Decided in the *graph*, so every backend folds the same products.  On by
-  // default in a JIT-less build as well -- DDX_JIT_DEFAULT_CONTRACT is the
-  // JIT's -- so an answer does not depend on how the library was configured.
-  [[nodiscard]] bool contracts() const noexcept {
+  // FMA contraction is decided in the graph so every backend folds the same
+  // products; it defaults on even without a JIT, so the build never matters.
+  [[nodiscard]] constexpr bool contracts() const noexcept {
     return options_.codegen.contract;
+  }
+  [[nodiscard]] constexpr Contract contraction() const noexcept {
+    return contracts() ? Contract::on : Contract::off;
   }
 
   // The kernel where one compiled, else the sweep.
@@ -1373,9 +1326,8 @@ private:
     interpret(lease.tapes(), *c.graph, *c.kernels, xs, out, n);
   }
 
-  // The block sweep: within ~1.4x of a kernel on a large graph at a batch of
-  // block_lanes or more, several times off it on a small one.  A short batch
-  // sweeps one point at a time rather than padding out to block_lanes.
+  // The interpreter, within ~1.4x of a kernel on large graphs. A batch shorter
+  // than block_lanes sweeps one point at a time rather than padding.
   void interpret(ThreadTapes<T> &kept, const Graph<T> &graph,
                  const TensorKernelTable<T> &kernels,
                  std::span<const T *const> xs, const Columns<T> &out,
@@ -1385,12 +1337,8 @@ private:
         : sweep_points<block_lanes>(graph, kernels, kept.block, xs, out, n);
   }
 
-  // W points per sweep: the switch is paid once per node per block, and each
-  // operation becomes a lane loop wide enough to vectorise.  A short final
-  // block repeats its last point, and those lanes are never read back.  The
-  // tapes are thread-kept and resized, not assigned: every row read is written
-  // first.  Both are sized by the graph, whose rows are packed by liveness, and
-  // its arity, not the arena's symbol count, is the column count of `xs`.
+  // W points per sweep, so dispatch is paid once per node per block and each op
+  // becomes a vectorisable lane loop. A short block repeats its last point.
   template <std::size_t W>
   void sweep_points(const Graph<T> &graph, const TensorKernelTable<T> &kernels,
                     TapeSet<T> &kept, std::span<const T *const> xs,
@@ -1403,11 +1351,11 @@ private:
     for (const std::size_t base :
          std::views::iota(0uz, n) | std::views::stride(W)) {
       const std::size_t width = std::min(W, n - base);
-      // One point is a gather, which on a small graph is a fair part of it.
+      // At W = 1 the gather is a fair part of the cost on a small graph.
       if constexpr (W == 1) {
-        std::ranges::transform(
-            xs, point.begin(),
-            [base](const T *column) { return column[base]; });
+        std::ranges::transform(xs, point.begin(), [base](const T *column) {
+          return column[base];
+        });
       } else {
         for (const auto [dst, column] :
              std::views::zip(point | std::views::chunk(W), xs)) {
@@ -1427,26 +1375,23 @@ private:
   std::unique_ptr<Arena<T>> arena_;
   std::vector<NodeId> roots_;
   jit::Options options_{};
-  // Null: the process default, read at each freeze.
+  // Null means the process default, read at each freeze.
   const TensorKernelTable<T> *kernels_ = nullptr;
   Jacobian jacobian_;
-  // unique_ptr, not shared: its destructor is constexpr, which is what keeps a
-  // constant-evaluated equation destructible.  Null there; a poisoned equation
-  // reads neither, and settle() leaves it without both.
+  // A unique_ptr, whose constexpr destructor keeps a constant-evaluated
+  // equation destructible. Null there and when poisoned.
   std::unique_ptr<Pipelines> pipelines_;
   // Every other sweep, built once on first ask under the arena's write lock.
   std::unique_ptr<Sweeps> sweeps_;
-  // Set exactly when why_not() refused, so poisoned() <=> arena_ == nullptr.
+  // Set exactly when the equation is poisoned, which is when arena_ is null.
   std::optional<error> bad_{};
-  // A reachable extern supplies first partials only; see orders().
+  // Set when a reachable extern supplies only first partials; see orders().
   bool first_order_ = false;
-  bool calls_out_ = false; // an extern in the arena: see TapeLease
+  bool calls_out_ = false; // Set when the arena holds an extern; see TapeLease.
 };
 
-// restrict()'s answer: the equation's Jacobian narrowed to some symbols'
-// columns, in symbol order, with pipelines of its own -- frozen over the kept
-// cells alone, so the partials of the others are never computed.  It reads the
-// equation it came from and must not outlive it.
+// restrict()'s answer: the Jacobian narrowed to some symbols' columns, with its
+// own pipelines over the kept cells. It must not outlive its equation.
 template <typename C>
 class DDX_TEMPLATE_API Restricted
     : public JacobianSurface<Restricted<C>, typename C::value_type> {
@@ -1484,7 +1429,7 @@ public:
     }
   }
 
-  // The symbols kept, in the order their columns are.
+  // The symbols kept, in column order.
   [[nodiscard]] std::span<const std::string> symbols() const { return names_; }
   [[nodiscard]] std::size_t jacobian_columns() const { return kept_.size(); }
   [[nodiscard]] const Sparsity &jacobian_pattern() const {
@@ -1500,7 +1445,7 @@ private:
   [[nodiscard]] typename C::Cells cells() const {
     return {.jacobian = jacobian_, .kept = std::span{kept_}};
   }
-  // `direction` is still one value per symbol of the equation.
+  // `along` still holds one value per symbol of the whole equation.
   template <Want W>
   [[nodiscard]] result<PerBlock<std::vector<T>>>
   at(std::span<const T> along,
@@ -1517,13 +1462,12 @@ private:
   const C *core_;
   std::vector<std::string> names_;
   Jacobian jacobian_;
-  std::vector<std::size_t> kept_; // indices into the equation's cells
+  std::vector<std::size_t> kept_; // Indices into the equation's cells.
   std::unique_ptr<typename C::Pipelines> pipelines_;
 };
 
-// How many functions an equation has, as its type says: a count fixed there
-// narrows one function's value to a scalar; a run-time count answers a
-// vector.
+// An equation's function count as its type states it: a fixed count of one
+// narrows the value to a scalar, while a run-time count answers a vector.
 template <std::size_t N> struct Fixed {
   static constexpr std::optional<std::size_t> expected = N;
   static constexpr bool scalar = N == 1;
@@ -1550,23 +1494,17 @@ namespace ddx::rt {
 // What Equation::restrict() and System::restrict() answer.
 template <typename C> using Restricted = detail::Restricted<C>;
 
-// Free this thread's sweep tapes: a pool worker that swept something large
-// keeps its tapes at that size until it asks.  The next sweep on the thread
-// grows them again.
+// Frees this thread's sweep tapes, which otherwise stay at their largest size
+// until the thread exits. The next sweep on the thread grows them again.
 template <impl::Numeric T = double> void release_tapes() noexcept {
   detail::thread_tapes<T>() = {};
 }
 } // namespace ddx::rt
 
-// The scalars libddx compiles the engine for once (src/rt/instances.cpp); a TU
-// here only instantiates what it inlines.  Any other T instantiates as before.
-// thread_tapes() is on the list for its thread_local: one set of tapes per
-// thread, not one per binary.  Arena and Graph declare theirs beside the class
-// (DDX_EXTERN_INSTANCE).  The visibility is DDX_TEMPLATE_API's on GCC and
-// Clang and DDX_INSTANCE_API's on MSVC, which refuses dllexport on an extern
-// declaration (C4910): libddx's own TUs skip these there, and instances.cpp
-// exports at the definition.  C4251 is the std:: members of an exported class:
-// both sides of the boundary share one STL.
+// The scalars libddx instantiates once (src/rt/instances.cpp); thread_tapes()
+// is listed so there is one tape set per thread rather than per binary.
+// MSVC refuses dllexport on an extern declaration (C4910), so libddx's own TUs
+// skip these there and instances.cpp exports at the definition.
 #define DDX_RT_INSTANCES(EXTERN, API, T)                                       \
   EXTERN template class API ::ddx::rt::detail::Pipeline<T>;                    \
   EXTERN template class API ::ddx::rt::detail::JacobianSurface<                \
@@ -1577,6 +1515,7 @@ template <impl::Numeric T = double> void release_tapes() noexcept {
   EXTERN template API ::ddx::rt::detail::ThreadTapes<T>                        \
       & ::ddx::rt::detail::thread_tapes<T>();
 
+// C4251 flags std:: members of exported classes; both sides share one STL.
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4251)

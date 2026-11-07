@@ -1,3 +1,4 @@
+#include "graph_builder.hpp"
 #include "energy_models.hpp"
 #include "rt/equation.hpp"
 #include "rt/kernels.hpp"
@@ -20,12 +21,8 @@
 #include <thread>
 #include <vector>
 
-// Tensor nodes against the scalar graph.  The same model written twice -- once
-// as scalars, once over vectors -- must agree on every derivative, and the
-// scalar graph is the oracle: its rules are tested elsewhere.  Nothing here is
-// bit-exact across the two spellings, since a Dot sums in another order; the
-// bit-exactness asked for is between one spelling and itself -- batches,
-// threads, a file.
+// The same model written over scalars and over vectors must agree on every
+// derivative, to rounding only, since a Dot sums in another order.
 namespace {
 
 using RE = ddx::rt::Expression<>;
@@ -50,8 +47,8 @@ std::vector<double> direction(std::size_t n) {
   return d;
 }
 
-// models::uniquac over vectors: phi and theta are elementwise, the inner sum
-// over tau is one transposed Gemv.
+// models::uniquac over vectors: phi and theta are elementwise, and the inner
+// sum over tau is one transposed Gemv.
 RE uniquac_tensor(const RV &x) {
   const std::size_t n = x.size();
   std::vector<double> r(n), q(n), tau(n * n);
@@ -117,14 +114,14 @@ void expect_close(double want, double got, double tol, const char *what) {
   expect_close(std::span{&want, 1}, std::span{&got, 1}, tol, what);
 }
 
-// dense_hessian() at `at` is the coloured hessian(), to `tol`.
+// Checks dense_hessian() at a point against the coloured hessian().
 void expect_dense_matches(const auto &eq, std::span<const double> at,
                           double tol = 1e-10) {
   const auto dense = eq.dense_hessian(at);
   ASSERT_TRUE(dense.has_value()) << dense.error().code;
   expect_close(*eq.hessian(at), *dense, tol, "dense vs coloured");
 }
-// Every derivative the equation answers, both spellings, one point.
+// Compares every derivative the equation answers, for both spellings.
 void expect_same_derivatives(const auto &want, const auto &got,
                              std::span<const double> at, double tol = 1e-12) {
   ASSERT_FALSE(want.poisoned());
@@ -151,8 +148,8 @@ std::vector<double> drifted(std::size_t n, std::size_t p) {
   }
   return at;
 }
-// `points` points, at(p) each, swept as one batch Jacobian: x, f and g column
-// by column, as the batch call takes them.
+// A batch Jacobian over a number of points, with x, f and g stored column by
+// column as the batch call takes them.
 struct Batch {
   std::vector<std::vector<double>> xs;
   std::vector<double> f;
@@ -188,7 +185,7 @@ Batch batch_jacobian(const auto &eq, std::size_t width, std::size_t points,
   EXPECT_TRUE(eq.jacobian(columns, values, gcols, points).has_value());
   return r;
 }
-// Every point of a batch is the point calls' answer, to the bit.
+// Every point of a batch must match the single-point call to the bit.
 void expect_batch_matches(const auto &eq, const Batch &r) {
   for (std::size_t p = 0; p < r.f.size(); ++p) {
     const auto at = r.point(p);
@@ -196,13 +193,13 @@ void expect_batch_matches(const auto &eq, const Batch &r) {
     EXPECT_EQ(r.gradient(p), *eq.gradient(std::span<const double>{at})) << p;
   }
 }
-// Eight threads at once, each answering what `call` answers alone.
+// Eight threads at once, each of which must answer what call answers alone.
 void expect_threads_agree(auto &&call) {
   const auto want = call();
   constexpr std::size_t threads = 8;
   std::latch start{threads};
-  // One byte per thread: vector<bool> packs bits, and eight threads writing one
-  // word is a race the comparison would then report as a moved bit.
+  // One byte per thread, since vector<bool> packs bits and eight threads
+  // writing one word would be a race.
   std::vector<char> ok(threads, 0);
   {
     std::vector<std::jthread> pool;
@@ -288,7 +285,8 @@ TEST(RtTensor, GemvBothWays) {
   each_node(
       cols,
       [&](const std::vector<RE> &x) {
-        // y = M x, then sum_i y_i^2 ; z = M^T (first rows of x), dot with x
+        // sum_i (M x)_i^2, plus M^T applied to the first rows of x, dotted
+        // with x.
         RE acc{0};
         for (std::size_t i = 0; i < rows; ++i) {
           RE y{0};
@@ -317,8 +315,8 @@ TEST(RtTensor, GemvBothWays) {
       });
 }
 
-// Nodes are interned, so the operator and the call agreeing on an id is the
-// same node -- the same kernel, the same bits.
+// Nodes are interned, so an operator and its named call sharing an id means
+// the same node, kernel and bits.
 TEST(RtTensor, OperatorsAreTheCalls) {
   constexpr std::size_t rows = 4, cols = 6;
   const auto m = matrix(rows, cols);
@@ -355,7 +353,7 @@ TEST(RtTensor, GatherAndAddAtRoundTrip) {
   each_node(
       5,
       [](const std::vector<RE> &x) {
-        // v = x with v[2] += x[0]*x[1]; then sum v*v and read v[2] back
+        // v is x with x[0]*x[1] added to v[2]; sum v*v, then read v[2] again.
         std::vector<RE> v = x;
         v[2] = v[2] + x[0] * x[1];
         RE acc{0};
@@ -416,13 +414,12 @@ TEST(RtTensor, RefusesMismatchedWidthsAndVectorRoots) {
   });
   EXPECT_EQ(gemv_shape.status()->code, ddx::errc::tensor_shape);
 
-  // A vector where an output must be a scalar, through the arena directly.
+  // A vector output where a scalar is required, built on the arena directly.
   ddx::rt::Arena<> b;
   const RV v = ddx::rt::vec(b, "x", 3);
   const auto rooted = ddx::rt::equation(RE{b, v.id()});
   EXPECT_EQ(rooted.status()->code, ddx::errc::tensor_shape);
 
-  // No arena to put a vector in.
   EXPECT_EQ(
       ddx::rt::equation([] { return sum(ddx::rt::vec("x", 2)); }).poisoned(),
       false);
@@ -441,7 +438,6 @@ TEST(RtTensor, UnivariateTaylorSweepsRefuseTensors) {
             ddx::errc::unsupported_scalar);
 }
 
-// One graph, one sweep: the batch call and the block sweep read the same bits.
 TEST(RtTensor, BatchesAndThreadsAreBitIdentical) {
   constexpr std::size_t n = 7;
   const auto eq = tensor_mse(n);
@@ -459,8 +455,8 @@ TEST(RtTensor, BatchesAndThreadsAreBitIdentical) {
   });
 }
 
-// A table of one's own: the reference kernels under another name answer the
-// same bits, and the equation says which table it runs on.
+// The reference kernels registered under another table name give the same
+// bits, and the equation reports which table it runs on.
 namespace {
 struct Renamed : ddx::rt::reference::Kernels<> {
   static constexpr std::string_view name = "renamed";
@@ -560,9 +556,8 @@ TEST(RtTensor, EachScalarHasItsOwnDefaultTable) {
   EXPECT_EQ(*own.gradient(std::span<const float>{at_f}), want);
 }
 
-// The point of the exercise: the graph is O(n) nodes and the sweep a few GEMVs
-// where the scalar spelling was O(n^2) nodes.  Counts are asserted; the times
-// are printed.
+// The tensor graph is O(n) nodes and its sweep a few GEMVs, where the scalar
+// spelling is O(n^2) nodes. Counts are asserted and times only printed.
 TEST(RtTensor, StaysSmallAtAThousandSpecies) {
   constexpr std::size_t n = 1000;
   const auto start = std::chrono::steady_clock::now();
@@ -597,16 +592,12 @@ TEST(RtTensor, StaysSmallAtAThousandSpecies) {
               std::chrono::duration<double, std::milli>(t2 - t1).count());
 }
 
-// --- D10b: second order through tensor nodes -------------------------------
-// Nothing new is implemented: hvp is a reverse sweep over the seeded gradient,
-// and every first-order rule emits nodes the second sweep has rules for.  What
-// follows pins that down against the scalar graph, against the coloured
-// Hessian, against differences, and across a pool.
+// hvp is a reverse sweep over the seeded gradient, so second order through
+// tensor nodes needs nothing new; the tests below pin that down.
 
 namespace {
-// Every Hessian column by one batch call of n points, each with its own unit
-// direction: the shape a pool uses.  `from`/`count` pick a column range, so a
-// thread takes a slice and the slices tile the batch.
+// Every Hessian column by one batch call of n points, each with a unit
+// direction; from and count pick a column range so pool threads tile the batch.
 std::vector<double> hessian_by_hvp(const auto &eq, std::span<const double> at,
                                    std::size_t from, std::size_t count) {
   const std::size_t n = at.size();
@@ -631,7 +622,7 @@ std::vector<double> hessian_by_hvp(const auto &eq, std::span<const double> at,
   std::ranges::transform(hv, hcols.begin(), [](auto &c) { return c.data(); });
   double *const fcol[]{f.data()};
   EXPECT_TRUE(eq.hvp(xcols, vcols, fcol, gcols, hcols, count).has_value());
-  // Row-major H(i, j): point k answers column from + k.
+  // Row-major H(i, j), where point k answers column from + k.
   std::vector<double> h(n * count);
   for (std::size_t i = 0; i < n; ++i) {
     for (std::size_t k = 0; k < count; ++k) {
@@ -667,7 +658,7 @@ TEST(RtTensorHvp, ColumnsAssembleTheColouredHessian) {
   const auto by_hvp = hessian_by_hvp(eq, at, 0, n);
   const auto coloured = *eq.hessian(std::span<const double>{at});
   expect_close(coloured, by_hvp, 1e-10, "H by n hvp vs coloured");
-  // Symmetric, as a Hessian is, to the same rounding.
+  // Symmetric, as a Hessian is, to rounding.
   for (std::size_t i = 0; i < n; ++i) {
     for (std::size_t j = 0; j < i; ++j) {
       expect_close(by_hvp[i * n + j], by_hvp[j * n + i], 1e-10, "symmetry");
@@ -755,14 +746,11 @@ TEST(RtTensorHvp, CostAtAThousandSpecies) {
       std::chrono::duration<double, std::milli>(t3 - t2).count() / columns);
 }
 
-// --- D10c: the dense Hessian in O(n^2) ---------------------------------------
-// One forward sweep over the gradient's cone with matrix-valued tangents, in
-// place of n + 1 coloured reverse sweeps.  The oracle is the coloured block
-// itself (tested elsewhere against the scalar graph), and for the scalar
-// spelling the two run over the same nodes.
+// dense_hessian() is one forward sweep with matrix-valued tangents in place of
+// n + 1 coloured reverse sweeps; the coloured block is its oracle.
 
 namespace {
-// hessian() is row-major n x n; so is dense_hessian().
+// hessian() and dense_hessian() are both row-major n x n.
 void expect_dense_matches_coloured(const auto &eq, std::span<const double> at,
                                    double tol) {
   ASSERT_FALSE(eq.poisoned());
@@ -774,9 +762,8 @@ void expect_dense_matches_coloured(const auto &eq, std::span<const double> at,
 }
 } // namespace
 
-// A select over tensors picks the arm taken, by element under a vector
-// condition and whole under a scalar one, so where the other arm is infinite
-// -- log at 0 -- no derivative reads 0 * inf.
+// A select over tensors picks per element under a vector condition and whole
+// under a scalar one, so an infinite unchosen arm never yields 0 * inf.
 TEST(RtTensor, SelectOverTensorsPicksTheArmTaken) {
   const std::vector<double> at{0.0, 0.3, 0.5, 0.2};
   const auto want = ddx::rt::equation([] {
@@ -808,9 +795,8 @@ TEST(RtTensorDense, MatchesTheColouredHessianOnTheVectorModel) {
   for (const std::size_t n : {5uz, 20uz, 50uz}) {
     const auto eq = tensor_mse(n);
     expect_dense_matches_coloured(eq, composition(n), 1e-10);
-    // The UNIQUAC residual is log(tau^T theta), whose Hessian is
-    // tau diag(.) tau^T: one dense product, which no algebra avoids.  The
-    // rest stays quadratic.
+    // The UNIQUAC residual log(tau^T theta) has Hessian tau diag(.) tau^T, one
+    // dense product that no algebra avoids; the rest stays quadratic.
     const auto cost = eq.dense_hessian_cost();
     ASSERT_TRUE(cost.has_value());
     EXPECT_EQ(cost->n3_terms, 1u);
@@ -819,8 +805,8 @@ TEST(RtTensorDense, MatchesTheColouredHessianOnTheVectorModel) {
 }
 
 TEST(RtTensorDense, MatchesTheColouredHessianOnTheScalarModel) {
-  // No vector in the model: every tangent is a row, and the block is the rows
-  // stacked.
+  // With no vector in the model, every tangent is a row and the block is the
+  // rows stacked.
   const auto eq = scalar_mse(12);
   expect_dense_matches_coloured(eq, composition(12), 1e-10);
 }
@@ -854,8 +840,8 @@ TEST(RtTensorDense, EachNodeAlone) {
         ddx::rt::equation([&] { return model(ddx::rt::vec("x", n)); });
     expect_dense_matches_coloured(eq, at, 1e-10);
   }
-  // A quadratic form and a transposed product each stay in the algebra: the
-  // identity through a constant matrix is that matrix, copied.
+  // A quadratic form and a transposed product each stay in the algebra, since
+  // the identity through a constant matrix is that matrix.
   const auto quadratic = ddx::rt::equation([&] {
     const RV x = ddx::rt::vec("x", n);
     const auto C = ddx::rt::mat_constant(n, n, m);
@@ -929,13 +915,11 @@ TEST(RtTensorDense, CostAtManySpecies) {
   EXPECT_EQ(cost.n3_terms, 1u);
 }
 
-// --- Computed matrices -------------------------------------------------------
-// A pair matrix whose every entry is a function of T: arithmetic over a table
-// reads it as its row, so exp(T * B) is a handful of nodes where the scalar
-// spelling is n^2.  The scalar spelling is the oracle.
+// A matrix whose entries are functions of T, like exp(T * B), is a handful of
+// nodes where the scalar spelling, used as the oracle, is n^2.
 
 namespace {
-// B as n^2 scalars, (i, j) at i + j n.
+// B as n^2 scalars, with entry (i, j) at index i + j n.
 std::vector<double> pair_table(std::size_t n, std::size_t seed, double lo,
                                double hi) {
   std::vector<double> m(n * n);
@@ -946,7 +930,7 @@ std::vector<double> pair_table(std::size_t n, std::size_t seed, double lo,
   }
   return m;
 }
-// T first, then x: the order both spellings declare them in.
+// T first, then x, the order both spellings declare them in.
 std::vector<double> at_temperature(std::size_t n, double T) {
   auto at = composition(n);
   at.insert(at.begin(), T);
@@ -962,8 +946,7 @@ void expect_same_with_temperature(const auto &want, const auto &got,
 } // namespace
 
 // select over every pairing of shapes: a scalar choosing a whole matrix, a
-// matrix condition choosing element by element, and a scalar arm -- a literal
-// or a node -- spread to the other's shape.
+// matrix condition per element, and a scalar arm spread to the other's shape.
 TEST(RtMatrix, SelectAcrossShapes) {
   constexpr std::size_t n = 4;
   const auto b1 = pair_table(n, 0, -0.5, 0.5);
@@ -1042,10 +1025,8 @@ TEST(RtMatrix, ExpOfTemperatureTimesATableMatchesTheScalarGraph) {
   }
 }
 
-// The UNIQUAC-type tau_ij = exp(-(A0 + A1 T + A2 T^2) / (R T)), read
-// transposed as sum_j theta_j tau_ji.
-// A matrix chosen by a guard on T: the adjoint reaching T is contracted
-// through the chosen arm and only there.
+// UNIQUAC-type tau_ij = exp(-(A0 + A1 T + A2 T^2) / (R T)) chosen by a guard
+// on T, so T's adjoint flows only through the chosen arm.
 TEST(RtMatrix, AGuardedMatrixMatchesTheScalarGraph) {
   constexpr std::size_t n = 6;
   const auto b1 = pair_table(n, 1, -0.5, 0.5);
@@ -1109,7 +1090,7 @@ TEST(RtMatrix, TemperatureDependentTauMatchesTheScalarGraph) {
 }
 
 // Each rule alone: Scale, Map, Zip, a literal meeting a matrix, a reduction
-// over one, MatVec both ways and Outer.
+// over a matrix, MatVec both ways, and Outer.
 TEST(RtMatrix, EachRuleAlone) {
   constexpr std::size_t n = 5;
   const auto b = pair_table(n, 4, -1.0, 1.0);
@@ -1162,7 +1143,7 @@ TEST(RtMatrix, EachRuleAlone) {
                     ddx::rt::outer(x, x));
        }},
       {[&](const RE &T) {
-         // sum_ij exp(T x_i x_j): x inside the exponential.
+         // sum_ij exp(T x_i x_j), with x inside the exponential.
          const auto x = symbols(n);
          RE acc{0};
          for (std::size_t i = 0; i < n; ++i) {
@@ -1176,7 +1157,7 @@ TEST(RtMatrix, EachRuleAlone) {
          return sum(exp(T * ddx::rt::outer(x, x)));
        }},
       {[&](const RE &T) {
-         // x^T M^T (log x) with M = T B: the transposed product.
+         // x^T M^T log(x) with M = T B, the transposed product.
          const auto x = symbols(n);
          RE acc{0};
          for (std::size_t i = 0; i < n; ++i) {
@@ -1205,8 +1186,8 @@ TEST(RtMatrix, EachRuleAlone) {
   }
 }
 
-// M(T) = B1 + B2 / T + B5 exp(T B6): no x inside, so its tangent is empty and
-// the dense Hessian stays in the algebra, M^T included.
+// M(T) = B1 + B2 / T + B5 exp(T B6) has no x inside, so its tangent is empty
+// and the dense Hessian stays in the algebra.
 TEST(RtMatrix, DenseHessianOverATemperatureDependentMatrix) {
   for (const std::size_t n : {20uz, 100uz}) {
     const auto b1 = pair_table(n, 6, -1.0, 1.0);
@@ -1231,7 +1212,7 @@ TEST(RtMatrix, DenseHessianOverATemperatureDependentMatrix) {
 }
 
 // The same M(T) with T a symbol: the block is (n + 1) x (n + 1), and its x
-// block is the one T held fixed gives.
+// block equals the one with T held fixed.
 TEST(RtMatrix, DenseHessianOverAMatrixThatMovesWithTemperature) {
   for (const std::size_t n : {4uz, 20uz, 50uz, 100uz}) {
     SCOPED_TRACE(n);
@@ -1274,7 +1255,7 @@ TEST(RtMatrix, DenseHessianOverAMatrixThatMovesWithTemperature) {
   }
 }
 
-// UNIQUAC's residual with T and P symbols: tau = exp(-(A0 + T A1 + P AP) /
+// UNIQUAC's residual with T and P as symbols, tau = exp(-(A0 + T A1 + P AP) /
 // (R T)), read transposed.
 TEST(RtMatrix, DenseHessianOverAUniquacResidualInTemperatureAndPressure) {
   constexpr std::size_t n = 15;
@@ -1305,7 +1286,7 @@ TEST(RtMatrix, DenseHessianOverAUniquacResidualInTemperatureAndPressure) {
   EXPECT_LE(eq.dense_hessian_cost()->n3_terms, 1u);
 }
 
-// A scalar that moves with x and T multiplying the matrix's product.
+// A scalar that moves with x and T multiplies the matrix's product.
 TEST(RtMatrix, DenseHessianOverAScaleThatMovesWithBoth) {
   constexpr std::size_t n = 12;
   const auto b = pair_table(n, 16, -0.5, 0.5);
@@ -1321,8 +1302,8 @@ TEST(RtMatrix, DenseHessianOverAScaleThatMovesWithBoth) {
   expect_dense_matches(eq, at);
 }
 
-// Not only matrices: any vector beside a scalar symbol.  At fixed T the
-// double sum's gemv reads the identity, where a stacked tangent was a MatMul.
+// Any vector beside a scalar symbol works too; at fixed T the double sum's gemv
+// reads the identity.
 TEST(RtMatrix, DenseHessianOverAVectorBesideAScalar) {
   constexpr std::size_t n = 30;
   const auto eq = ddx::rt::equation([] {
@@ -1337,7 +1318,7 @@ TEST(RtMatrix, DenseHessianOverAVectorBesideAScalar) {
   EXPECT_EQ(eq.dense_hessian_cost()->n3_terms, 0u);
 }
 
-// Mostly scalars: every symbol is swept, as when none is a vector.
+// Mostly scalars, so every symbol is swept as when none is a vector.
 TEST(RtMatrix, DenseHessianOverMostlyScalars) {
   const auto eq = ddx::rt::equation([] {
     const RV x = ddx::rt::vec("x", 2);
@@ -1350,8 +1331,8 @@ TEST(RtMatrix, DenseHessianOverMostlyScalars) {
   expect_dense_matches(eq, at, 1e-12);
 }
 
-// x inside the exponential: the matrix's tangent is rows x cols x n, so the
-// dense Hessian refuses, and the coloured one and hvp still answer.
+// With x inside the exponential the matrix's tangent is rows x cols x n, so the
+// dense Hessian refuses while the coloured one and hvp still answer.
 TEST(RtMatrix, DenseHessianRefusesACompositionDependentMatrix) {
   constexpr std::size_t n = 20;
   const auto b = pair_table(n, 10, -1.0, 1.0);
@@ -1380,9 +1361,8 @@ TEST(RtMatrix, DenseHessianRefusesACompositionDependentMatrix) {
   expect_same_derivatives(want, got, at, 1e-11);
 }
 
-// No adjoint or tangent is built for what nothing moves: a param, a constant
-// vector, a table.  Counted on the arena, as a node a sweep builds and nobody
-// reads is computed nowhere but costs every later sweep its interning.
+// Sweeps must not build adjoints or tangents for params, constant vectors or
+// tables; a node nobody reads still costs every later sweep its interning.
 TEST(RtTensor, SweepsBuildNothingForWhatHoldsStill) {
   const auto count = [](const ddx::rt::Arena<> &b, ddx::rt::OpCode op) {
     return std::ranges::count(b.nodes(), op, &ddx::rt::Node<double>::op);
@@ -1431,7 +1411,7 @@ TEST(RtMatrix, RefusesMismatchedShapesAndMatrixRoots) {
             ddx::errc::tensor_shape);
 
   // A table has no width, so nothing that counts widths may take it for a
-  // scalar: not as an output, an element, or a moved entry.
+  // scalar, whether as an output, an element or a moved entry.
   const auto table =
       ddx::rt::equation([&] { return ddx::rt::mat_constant(2, 3, six); });
   EXPECT_EQ(table.status()->code, ddx::errc::tensor_shape);
@@ -1467,10 +1447,10 @@ TEST(RtMatrix, BatchesAndThreadsAreBitIdentical) {
   expect_threads_agree([&] { return *eq.hvp(d, std::span<const double>{at}); });
 }
 
-// What the plan claims of the structure, counted rather than timed.
+// Counts the structure the dense plan claims, rather than timing it.
 namespace {
-// The block's own cone, past the gradient's: how many elements a point writes
-// and how many of the row-by-row nodes it holds.
+// The block's own cone beyond the gradient's: how many elements a point writes
+// and how many row-by-row nodes it holds.
 struct Census {
   std::size_t elements = 0;
   std::size_t row_reads = 0; // RowOf: a row read back out of a matrix
@@ -1495,12 +1475,8 @@ Census census(const ddx::rt::Arena<> &b, const ddx::rt::DenseHessian &h) {
 }
 } // namespace
 
-// The gradient of a vector model is the Pack's adjoint read element by
-// element, so the block is that vector's tangent summed as matrices: no row is
-// read back.  Stacking the partials' rows wrote 18.2 n^2 here, 2 n^2 of it
-// strided; the sum writes 7.3 n^2 -- the Dense terms (4: C read in place, C^T
-// copied), the outer products as one low-rank product (1), one add per
-// further matrix (2).
+// A vector model's block is its gradient vector's tangent summed as matrices,
+// so no row is read back; that writes about 7.3 n^2 elements here.
 TEST(RtTensorDense, TheBlockIsSummedNotStacked) {
   constexpr std::size_t n = 200;
   ddx::rt::Arena<> b;
@@ -1516,7 +1492,7 @@ TEST(RtTensorDense, TheBlockIsSummedNotStacked) {
   EXPECT_LE(c.elements, 8 * n * n);
   EXPECT_NE(b.op_of(h.block), ddx::rt::OpCode::StackRows);
 
-  // A scalar model's partials are no vector's elements: rows, stacked.
+  // A scalar model's partials are not vector elements, so its rows are stacked.
   ddx::rt::Arena<> scalar;
   const auto x = std::views::iota(0uz, 6uz) |
                  std::views::transform([&](std::size_t i) {
@@ -1529,11 +1505,8 @@ TEST(RtTensorDense, TheBlockIsSummedNotStacked) {
   EXPECT_EQ(scalar.op_of(hs.block), ddx::rt::OpCode::StackRows);
 }
 
-// exp(T B) is a few nodes whatever n is, and its gradient stays O(n): the
-// matrix is one row, not n^2 scalars.
-// A vector the point brings answers as the same vector baked in -- in the
-// dense sweep too, where its Pack is no term -- and a second vector through
-// the same equation answers for that one.
+// exp(T B) is a few nodes for any n, and a vector supplied with the point
+// answers as if baked in, including in the dense sweep.
 TEST(RtMatrix, AParamVectorIsTheConstantItCarries) {
   constexpr std::size_t n = 7;
   const auto b = pair_table(n, 4, -0.5, 0.5);
@@ -1596,9 +1569,10 @@ TEST(RtMatrix, NodesDoNotGrowWithTheSquare) {
     EXPECT_FALSE(f.poisoned());
     const std::size_t model = b.size() - n; // past the n Var leaves
     const auto row = ddx::rt::build_reverse_jacobian(b, f.id(b));
-    // dT reads the table through gemvs: no n x n adjoint is formed for it.
+    // dT reads the table through gemvs, so no n x n adjoint is formed for it.
     const auto live = ddx::rt::detail::reachable(b, std::span{&row.partial[0], 1});
-    for (const auto v : std::views::iota(0u, static_cast<ddx::rt::NodeId>(b.size()))) {
+    for (const auto v : std::views::iota(ddx::rt::NodeId{0},
+                                         static_cast<ddx::rt::NodeId>(b.size()))) {
       EXPECT_FALSE(live[v] && b[v].op == ddx::rt::OpCode::Outer) << "node " << v;
     }
     return std::pair{model, b.size()};
@@ -1630,8 +1604,8 @@ TEST(RtTensor, ReleasedTapesGrowBackToTheSameBits) {
   EXPECT_EQ(sweep(), before);
 }
 
-// The numbers X2 and X1 are judged by, printed for a release build to read:
-// the dense block without the UNIQUAC gemm, and a matrix of temperature.
+// Prints the dense block's cost without the UNIQUAC gemm, and for a
+// temperature-dependent matrix, for a release build to read.
 TEST(RtMatrix, CostAtAThousandSpecies) {
   constexpr std::size_t n = 1000;
   const auto at = composition(n);
@@ -1701,10 +1675,8 @@ TEST(RtMatrix, CostAtAThousandSpecies) {
               ms(t6, t7) / ms(t2, t3));
 }
 
-// The graph's own simplifications over tensors: a commutative Zip or a Dot is
-// one node either way round, constants fold to the table they are, a gemv of
-// a scaled vector is the scale of the gemv, and the two products of a
-// quadratic form are a pair the schedule runs together.
+// A commutative Zip or Dot is one node either way round, constants fold to a
+// table, and a gemv of a scaled vector becomes the scale of the gemv.
 TEST(RtTensorGraph, CommutativeOpsAreOneNodeEitherWayRound) {
   ddx::rt::Arena<> b;
   const auto arena = ddx::rt::detail::scoped_arena(b);
@@ -1760,7 +1732,7 @@ TEST(RtTensorGraph, AQuadraticFormsTwoProductsAreAPair) {
   const RV x = ddx::rt::vec(b, "x", n);
   const RE f = dot(x, gemv(ddx::rt::mat_constant(n, n, matrix(n, n)), x));
   const auto g =
-      ddx::rt::GraphBuilder{b}.value(f).build_jacobian().finish();
+      ddx::test::GraphBuilder{b}.value(f).build_jacobian().finish();
   const auto steps = g.schedule();
   const auto products = std::views::iota(0uz, steps.size()) |
                         std::views::filter([&](std::size_t p) {
@@ -1774,8 +1746,8 @@ TEST(RtTensorGraph, AQuadraticFormsTwoProductsAreAPair) {
   EXPECT_EQ(g.pairs()[steps[products[1]].node], steps[products[0]].node);
 }
 
-// The chosen arm's tangent through a table that is not square: the block is
-// 2 M^T M, whichever way it is swept.
+// The chosen arm's tangent through a non-square table gives the block 2 M^T M,
+// whichever way it is swept.
 TEST(RtTensorDense, ASelectOverANonSquareTableKeepsItsTangent) {
   const std::array<double, 6> m{1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
   const auto eq = ddx::rt::equation([&] {
@@ -1793,8 +1765,8 @@ TEST(RtTensorDense, ASelectOverANonSquareTableKeepsItsTangent) {
                "2 M^T M");
 }
 
-// A matrix chosen by a select and moved by a symbol has no dense form: refused
-// is an answer and a matching block is an answer; a zero is neither.
+// A matrix chosen by a select and moved by a symbol has no dense form; it must
+// be refused or match, never come back as zero.
 TEST(RtTensorDense, ASelectOverAComputedMatrixRefusesOrAgrees) {
   const std::array<double, 4> m{1.0, 2.0, 3.0, 4.0};
   const auto check = [&](auto arm) {
@@ -1820,8 +1792,8 @@ TEST(RtTensorDense, ASelectOverAComputedMatrixRefusesOrAgrees) {
   check([](const RE &t, const RE &b) { return t * t * b; });
 }
 
-// A symbol read through a vector of one: the row it is scaled into has the
-// shape of a scalar, and is still not one.
+// A symbol read through a vector of one is scaled into a row that has the shape
+// of a scalar but is still not one.
 TEST(RtTensor, AScalarFactorOfAVectorOfOneKeepsItsPartial) {
   const auto eq = ddx::rt::equation([] {
     const RV x = ddx::rt::vec("x", 1);
@@ -1843,8 +1815,36 @@ TEST(RtTensor, DotRefusesHandlesOfTwoArenas) {
   EXPECT_TRUE(dot(ddx::rt::vec(a, "u", 2), ddx::rt::vec(b, "w", 2)).poisoned());
 }
 
-// No symbols, so nothing to differentiate by: an empty block, not a read
-// through an empty list of partials.
+// For x^T A x the block is the table A + A^T itself, with no node over it, yet
+// it still leaves through a row of its own.
+TEST(RtTensorDense, ATableAloneIsTheBlock) {
+  constexpr std::size_t n = 5;
+  const auto a = pair_table(n, 12, -0.5, 1.5);
+  ddx::rt::Arena<> b;
+  const auto arena = ddx::rt::detail::scoped_arena(b);
+  const RV x = ddx::rt::vec(b, "x", n);
+  const RE f = dot(x, gemv(ddx::rt::mat_constant(n, n, a), x));
+  ASSERT_FALSE(f.poisoned());
+  const auto h = ddx::rt::derive_dense_hessian(b, f.id(b));
+  EXPECT_TRUE(ddx::rt::is_table(b, h.block));
+
+  const auto eq = ddx::rt::equation([&] {
+    const RV y = ddx::rt::vec("x", n);
+    return dot(y, gemv(ddx::rt::mat_constant(n, n, a), y));
+  });
+  ASSERT_FALSE(eq.poisoned());
+  const auto at = composition(n);
+  const auto got = eq.dense_hessian(std::span<const double>{at});
+  ASSERT_TRUE(got.has_value()) << got.error().code;
+  ASSERT_EQ(got->size(), n * n);
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, n), std::views::iota(0uz, n))) {
+    EXPECT_DOUBLE_EQ((*got)[i * n + j], a[i + j * n] + a[j + i * n]);
+  }
+  expect_dense_matches(eq, at);
+}
+
+// No symbols means an empty block, not a read through an empty partial list.
 TEST(RtTensorDense, AnEquationOfParamsHasAnEmptyDenseBlock) {
   const auto eq = ddx::rt::equation([] {
     const RE p = ddx::rt::param("p");

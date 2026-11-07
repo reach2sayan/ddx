@@ -24,8 +24,8 @@ template <Numeric T> struct dual_scalar_type<Dual<T>> {
 };
 template <Numeric T> using dual_scalar_t = typename dual_scalar_type<T>::type;
 
-// Unconstrained on purpose: through dual_scalar_type it would ask Numeric<Dual>
-// of the very operators Numeric<Dual> is being decided by.
+// Unconstrained, because asking Numeric<Dual> here would recurse into the
+// operators that Numeric<Dual> is still being decided by.
 template <DualLike X> struct dual_value_type;
 template <Numeric T> struct dual_value_type<Dual<T>> {
   using type = T;
@@ -37,17 +37,9 @@ template <typename A, typename B>
 concept DualCompatible = DualLike<A> && DualLike<B> &&
                          std::same_as<dual_value_t<A>, dual_value_t<B>>;
 
-// N of them nested: 2^N components, one per subset of the ε's, and the all-ones
-// component is the Nth derivative -- what extract_nth reads and
-// make_mixed_seed seeds for.  Ref: Fike & Alonso, AIAA 2011-886;
-// docs/hyperdual_nth_order_by_example.md draws the lattice.
-//
-// A recursion rather than an mp_fold, because every level has to be a
-// *complete* type before the next one names it.  `Dual<T>` asks Numeric<T>,
-// Numeric asks whether T is destructible, and MSVC answers that from a
-// Dual it has not instantiated yet instead of instantiating one: the tower
-// then collapses at depth two, where the inner Dual is the first that had to
-// be built rather than merely named.  sizeof() completes each level in turn.
+// N nested Duals: 2^N components, the all-ones one being the Nth derivative.
+// Ref: Fike & Alonso, AIAA 2011-886.
+// The sizeof() completes each level first, or MSVC breaks the tower at depth 2.
 template <Numeric T, std::size_t N> struct nth_dual {
   using inner = typename nth_dual<T, N - 1>::type;
   static_assert(sizeof(inner) > 0);
@@ -87,7 +79,7 @@ template <Numeric U> struct ConstantEmbedder {
   }
 };
 
-// N levels down along component I: 0 is the value chain, 1 the tangent chain.
+// Descends N levels along component I: 0 follows values, 1 follows tangents.
 template <std::size_t N, std::size_t I>
 constexpr auto component(const Numeric auto &x) noexcept {
   if constexpr (N == 0) {
@@ -101,10 +93,8 @@ constexpr auto get_real_part(const Numeric auto &x) noexcept {
   return component<N, 0>(x);
 }
 
-// `a op= b` spelled as `a = a op b`: the binary operators are the rule, and the
-// gate is the body itself, so whatever they refuse is refused here.  CRTP,
-// which also gives every level of Dual<Dual<T>> its own empty base: the outer
-// and its val_ cannot share one, and a shared base costs 8 bytes of padding.
+// Defines a op= b as a = a op b, available exactly when a op b is. CRTP gives
+// each Dual level a distinct empty base, avoiding 8 bytes of padding.
 template <typename Derived> struct compound_from_binary {
 #define DDX_COMPOUND_FROM_BINARY(OP)                                           \
   template <typename B>                                                        \
@@ -123,16 +113,16 @@ template <typename Derived> struct compound_from_binary {
 template <typename X>
 concept DualOrArithmetic = DualLike<X> || CArithmetic<X>;
 
-// The scalar ends of the recursions dual/dual.hpp continues for a Dual.
+// The scalar cases of the recursions that dual/dual.hpp extends to Dual.
 constexpr auto val(CArithmetic auto x) noexcept { return x; }
 
-// Zero in every component; operator== compares val() alone and cannot say this.
+// Zero in every component, which operator== cannot tell since it reads val().
 constexpr bool all_zero(CArithmetic auto x) noexcept {
   return x == std::remove_cvref_t<decltype(x)>{};
 }
 
-// Equal in every component, which is what makes two constants one;
-// operator== compares val() alone and cannot say this either.
+// Equal in every component, which is what makes two constants one. operator==
+// compares val() alone.
 template <std::equality_comparable T>
 constexpr bool same_value(const T &a, const T &b) noexcept {
   return a == b;

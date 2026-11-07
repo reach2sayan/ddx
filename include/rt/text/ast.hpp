@@ -16,8 +16,7 @@ namespace ddx::rt::text {
 
 inline constexpr std::uint32_t no_term = ~std::uint32_t{0};
 
-// A leaf's index carries which table it names, so a Var cannot be read against
-// the literals.
+// Typed leaf indices, so a name index cannot be used to read the literals.
 struct NameIndex {
   static constexpr OpCode op = OpCode::Var;
   std::uint32_t i = 0;
@@ -28,8 +27,8 @@ struct LiteralIndex {
 };
 using Leaf = std::variant<std::monostate, NameIndex, LiteralIndex>;
 
-// A node before it has a value type: an opcode, the operands its arity names
-// (the rest no_term), and -- for the two leaves -- the index that names it.
+// An untyped parsed node: an opcode, its operand indices (unused ones are
+// no_term), and for leaves the index into the names or literals.
 struct Term {
   OpCode op = OpCode::Const;
   std::array<std::uint32_t, 3> in{no_term, no_term, no_term};
@@ -38,8 +37,8 @@ struct Term {
 
 struct Ast {
   std::vector<Term> terms;
-  std::vector<std::string> names;    // free identifiers, first named first
-  std::vector<std::string> literals; // as written: read at T, never at double
+  std::vector<std::string> names;    // free identifiers in order of first use
+  std::vector<std::string> literals; // kept as text so they are read at T
   std::uint32_t root = no_term;
 
   template <typename Index>

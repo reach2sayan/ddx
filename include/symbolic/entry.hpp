@@ -11,8 +11,8 @@ namespace ddx::impl {
 
 namespace detail {
 
-// sym<"x"> / "x"_s carry it as ::value, var<"x"> as ::label; undefined
-// elsewhere, which is what CSymbolTag tests.
+// The symbol name of sym<"x">, "x"_s or var<"x">. Other types have no value,
+// which is what CSymbolTag tests.
 template <typename T> struct tag_key_of {};
 template <auto S> struct tag_key_of<symbol_type<S>> {
   static constexpr auto value = S;
@@ -30,13 +30,8 @@ template <typename T> using tag_key_t = tag_key_of<std::remove_cvref_t<T>>;
 template <typename T>
 concept CSymbolTag = requires { detail::tag_key_t<T>::value; };
 
-// One keyword argument: a label bound to a value, the label a template
-// parameter.
-//
-//   named<"x">(1.5)      Entry{"x"_s, 1.5}      Entry{var<"x">, 1.5}
-//
-// V is any object type: a named value is one entry of a point, and
-// the numeric entry points constrain V to Numeric where they take it.
+// A value bound to a symbol name, one entry of a point: named<"x">(1.5),
+// Entry{"x"_s, 1.5} or Entry{var<"x">, 1.5}.
 template <FixedString Sym, typename V>
   requires std::is_object_v<V>
 struct Entry {
@@ -64,7 +59,7 @@ struct Entry {
 template <CSymbolTag Tag, typename V>
 Entry(const Tag &, V) -> Entry<detail::tag_key_t<Tag>::value, V>;
 
-// named<"x">(1.25) -- bind a value to a symbol by name.
+// named<"x">(1.25) binds a value to a symbol by name.
 template <FixedString Sym, typename V>
   requires std::is_object_v<V>
 [[nodiscard]] constexpr Entry<Sym, V>
@@ -72,7 +67,7 @@ named(V v) noexcept(std::is_nothrow_move_constructible_v<V>) {
   return {std::move(v)};
 }
 
-// named("x"_s, 1.25) / named(var<"x">, 1.25) -- keyed by a tag in hand.
+// named("x"_s, 1.25) or named(var<"x">, 1.25), keyed by a symbol value.
 template <CSymbolTag Tag, typename V>
   requires std::is_object_v<V>
 [[nodiscard]] constexpr auto
@@ -80,7 +75,7 @@ named(const Tag &, V v) noexcept(std::is_nothrow_move_constructible_v<V>) {
   return Entry<detail::tag_key_t<Tag>::value, V>{std::move(v)};
 }
 
-// "x"_s = 1.25, declared back in expressions.hpp where symbol_type is.
+// "x"_s = 1.25, declared in expressions.hpp with symbol_type.
 template <auto S>
 template <typename V>
   requires std::is_object_v<V>

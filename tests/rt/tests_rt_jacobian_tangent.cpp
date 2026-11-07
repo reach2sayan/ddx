@@ -12,17 +12,14 @@
 #include <string>
 #include <vector>
 
-// dJ/dv: the derivative of every Jacobian cell along a direction, from one
-// forward sweep over the Jacobian's cone -- and a view that keeps only some
-// of the Jacobian's columns.
+// dJ/dv is the derivative of every Jacobian cell along a direction, from one
+// forward sweep; restrict is a view that keeps only some Jacobian columns.
 namespace {
 
 using RE = ddx::rt::Expression<>;
 
-// f = {x^2 y, sin(xy)}, so
-//   J     = [[2xy, x^2], [y cos(xy), x cos(xy)]]
-//   dJ/dx = [[2y, 2x], [-y^2 sin(xy), cos(xy) - xy sin(xy)]]
-//   dJ/dy = [[2x, 0], [cos(xy) - xy sin(xy), -x^2 sin(xy)]]
+// f = {x^2 y, sin(xy)}. d_dx and d_dy below are the Jacobian's derivatives
+// along x and y, worked by hand, in row-major cell order.
 [[nodiscard]] auto pair() {
   return ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
@@ -69,7 +66,7 @@ TEST(RtJacobianJvp, AlongAnyDirectionIsTheCombination) {
   }
   expect_near_all(got, want, 1e-14);
 
-  // And a central difference of the Jacobian along v.
+  // Also checked against a central difference of the Jacobian along v.
   constexpr double h = 1e-6;
   const auto ahead = *eq.jacobian(px + h * v[0], py + h * v[1]);
   const auto behind = *eq.jacobian(px - h * v[0], py - h * v[1]);
@@ -147,10 +144,8 @@ TEST(RtJacobianJvp, AWrongDirectionOrNameIsRefused) {
             ddx::errc::unknown_symbol);
 }
 
-// --- restrict ---------------------------------------------------------------
-
-// T, P and the mole fractions: the Jacobian of the MSE-shaped model, and the
-// view a flash at fixed composition wants -- d/dT and d/dP only.
+// The MSE-shaped model over T, P and mole fractions; a flash at fixed
+// composition wants only the d/dT and d/dP columns.
 [[nodiscard]] auto mse(std::size_t species) {
   return ddx::rt::equation([species] {
     const auto t = ddx::rt::var("T");
@@ -177,7 +172,7 @@ TEST(RtRestrict, KeepsOnlyTheChosenColumns) {
   const auto eq = mse(species);
   const auto tp = eq.restrict({"P", "T"});
   ASSERT_TRUE(tp.has_value());
-  // Symbol order, however the names were given.
+  // Columns come in symbol order, whatever order the names were given in.
   EXPECT_TRUE(std::ranges::equal(tp->symbols(),
                                  std::array<std::string_view, 2>{"T", "P"}));
 
@@ -201,8 +196,7 @@ TEST(RtRestrict, KeepsOnlyTheChosenColumns) {
   EXPECT_EQ(part_dt[1], full_dt[1]);
 }
 
-// A restriction that keeps no cell keeps none, not all of them: y's column is
-// there, and zero.
+// A restriction that keeps no cell has no columns, rather than all of them.
 TEST(RtRestrict, KeepingNoCellIsNoColumns) {
   const auto eq = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");

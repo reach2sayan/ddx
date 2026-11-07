@@ -16,7 +16,7 @@
 
 namespace ddx::impl {
 
-// A compile-time label-keyed map: one slot per symbol.
+// A compile-time map from symbol name to value, with one slot per symbol.
 template <Numeric Scalar, CSymbolList SymList> struct ValueMap {
   using symbols = SymList;
   using value_type = Scalar;
@@ -26,7 +26,7 @@ template <Numeric Scalar, CSymbolList SymList> struct ValueMap {
 
   std::array<Scalar, arity> slots{};
 
-  // get<"x">() and the subscript spelling m["x"_s] = v.
+  // Read or write a slot as get<"x">() or m["x"_s].
   template <FixedString S>
   [[nodiscard]] constexpr decltype(auto) get(this auto &&self) noexcept {
     constexpr auto idx = symbol_index<S, SymList>();
@@ -55,7 +55,7 @@ concept CValueMap = requires {
 
 namespace detail {
 
-// For each canonical slot, which argument position supplies it.
+// For each canonical slot, the argument position that supplies it.
 template <CSymbolList SymList, std::size_t N, CSymbol... ArgSyms>
 consteval std::array<std::size_t, N> arg_of_canonical() noexcept {
   const std::array<std::size_t, N> canonical_of_arg{
@@ -69,7 +69,7 @@ consteval std::array<std::size_t, N> arg_of_canonical() noexcept {
 
 } // namespace detail
 
-// values(named<"x">(1.0), named<"y">(0.5))
+// Builds a ValueMap, as in values(named<"x">(1.0), named<"y">(0.5)).
 template <FixedString... Syms, Numeric... Vs>
 [[nodiscard]] constexpr auto values(Entry<Syms, Vs>... nv) noexcept {
   using SymList = unique_tuple_t<mp::mp_list<symbol_type<Syms>...>>;
@@ -86,7 +86,7 @@ template <FixedString... Syms, Numeric... Vs>
   });
 }
 
-// The value-array APIs take CANONICAL (alphabetical) order.
+// The canonical (alphabetical) symbol order that positional points use.
 template <CExpression Expr>
 [[nodiscard]] consteval auto symbol_order() noexcept {
   using SymList = detail::expr_symbols_t<std::remove_cvref_t<Expr>>;
@@ -102,19 +102,19 @@ template <CExpression Expr>
 
 namespace detail {
 
-// The one spelling whose length is not known until it arrives.  Every other is
-// counted by a static_assert, so this is the only one answering with an error.
+// A point given as a runtime range, the only spelling whose length is checked
+// at run time and so the only one that can return an error.
 template <typename... Args>
 concept CDynamicPoint =
     sizeof...(Args) == 1 && (std::ranges::input_range<Args> && ...) &&
     !(CTupleLike<Args> && ...);
-// The first N of a range, counted, so a short one can be told from a whole one.
+// Copies the first N values of a range and returns how many it saw.
 template <Numeric U, std::size_t N>
 [[nodiscard]] constexpr std::pair<std::array<U, N>, std::size_t>
 take_point(const std::ranges::input_range auto &r) noexcept {
   std::array<U, N> vals{};
   std::size_t i = 0;
-  // One past N, to tell a range that was too long; that value is not kept.
+  // Reads one past N to detect a range that is too long.
   std::ranges::for_each(r | std::views::take(N + 1), [&](const auto &v) {
     if (i < N) {
       vals[i] = static_cast<U>(v);
@@ -124,8 +124,7 @@ take_point(const std::ranges::input_range auto &r) noexcept {
   return {vals, i};
 }
 
-// Every spelling of "a point" reduced to an array of N values in canonical
-// symbol order.  Against a symbol list, since Equation supplies its own.
+// Reduces every spelling of a point to N values in canonical symbol order.
 template <CSymbolList Syms, Numeric U, std::size_t N, CEvalArg... Args>
   requires(!CDynamicPoint<Args...>)
 [[nodiscard]] constexpr std::array<U, N>
@@ -138,7 +137,7 @@ make_point(const Args &...args) noexcept {
     return {};
   }
 
-  // point(map) / point(named<"x">(..), ..) -- read by name.
+  // point(map) or point(named<"x">(..), ..), read by name.
   else if constexpr ((CValueMap<Args> && ...) || (is_entry_v<std::remove_cvref_t<Args>> && ...)) {
     const auto map = [&] {
       if constexpr ((CValueMap<Args> && ...)) {
@@ -155,7 +154,7 @@ make_point(const Args &...args) noexcept {
     return vals;
   }
 
-  // point(tuple-like range) -- the size is in the type, so it is a diagnostic.
+  // point(tuple-like range), whose size is in the type and checked statically.
   else if constexpr (sizeof...(Args) == 1 && (std::ranges::input_range<Args> && ...)) {
     return [&](const auto &r) {
       static_assert(
@@ -166,7 +165,7 @@ make_point(const Args &...args) noexcept {
     }(args...);
   }
 
-  // point(x, y, z) -- positional, in canonical order
+  // point(x, y, z), positional in canonical order.
   else {
     static_assert(sizeof...(Args) == N,
                   "eval: supply exactly one value per symbol, in canonical "
@@ -176,8 +175,7 @@ make_point(const Args &...args) noexcept {
   //clang-format on
 }
 
-// point(range) -- the length arrives with the range, so a wrong one is the one
-// wrong point that cannot be caught at compile time.
+// point(range), whose length is only known at run time and may be an error.
 template <CSymbolList Syms, Numeric U, std::size_t N, CEvalArg... Args>
   requires(CDynamicPoint<Args...>)
 [[nodiscard]] constexpr result<std::array<U, N>>
@@ -194,9 +192,8 @@ make_point(const Args &...args) noexcept {
   }(args...);
 }
 
-// Array or error is settled here and nowhere else, so every numeric member
-// below reads as though it were always an array -- and returns result<T>
-// exactly when its caller spelled the point as a range.
+// Runs body on the point array, returning result<T> exactly when the point was
+// given as a runtime range. The only place that decision is made.
 template <CSymbolList Syms, Numeric U, std::size_t N>
 [[nodiscard]] constexpr auto
 with_point(auto &&body, const CEvalArg auto &...args) noexcept {
@@ -217,8 +214,8 @@ template <CExpression Expr, CEvalArg... Args>
       args...);
 }
 
-// The ordinary seeded sweep with Dual<VT>, so there is no separate forward
-// engine.  Slot k gets a unit tangent when symbol k is the one differentiated.
+// Forward mode is the ordinary seeded sweep over Dual<VT>, with a unit tangent
+// on the symbol being differentiated.
 template <auto Seed, CExpression Expr, CEvalArg... Args>
 [[nodiscard]] constexpr auto tangent_dispatch(const Expr &e,
                                               const Args &...args) {

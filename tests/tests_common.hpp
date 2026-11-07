@@ -1,6 +1,6 @@
 #pragma once
-// Dual-free by construction: what the suite that builds without forward mode
-// includes.
+// Common includes for the suite that builds without forward mode, so nothing
+// here may pull in Dual.
 #include "ddx.hpp"
 
 #include "md/layouts.hpp"
@@ -28,10 +28,10 @@
 #include <tuple>
 
 using namespace ddx::impl;
-using namespace ddx::literals; // "x"_s
+using namespace ddx::literals;
 
-// The drivers answer with result<T> wherever the point is a span or a range,
-// so every accessor below takes either.
+// The drivers return result<T> when the point is a span or a range, so every
+// accessor below accepts either.
 template <typename T>
 [[nodiscard]] constexpr const T &deref(const T &x) noexcept {
   return x;

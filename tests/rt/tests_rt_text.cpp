@@ -16,17 +16,15 @@
 #include <string>
 #include <string_view>
 
-// An equation written down instead of built.  The property under all of it is
-// that text is a second spelling and not a second implementation: the same
-// model reaches the same arena, node for node, whichever way it was said.
+// Text is a second spelling of a model, not a second implementation: the same
+// model reaches the same arena, node for node, however it was written.
 namespace {
 
 using ddx::errc;
 using ddx::rt::text::lower;
 using ddx::rt::text::parse;
 
-// The value of a one-line model at a point, which is what most of the
-// precedence questions below reduce to.
+// The value of a one-line model at a point.
 template <typename... Ts>
 [[nodiscard]] double value_of(const std::string_view source, const Ts... at) {
   const auto eq = ddx::rt::equation(source);
@@ -40,28 +38,27 @@ template <typename... Ts>
 }
 
 TEST(RtText, ReadsPythonsPrecedenceAndAssociativity) {
-  // Sums and products fold to the left...
+  // Sums and products fold to the left, and multiplication binds tighter.
   EXPECT_DOUBLE_EQ(value_of("a - b - c", 10.0, 3.0, 2.0), 5.0);
   EXPECT_DOUBLE_EQ(value_of("a / b / c", 12.0, 3.0, 2.0), 2.0);
-  // ...and multiplication binds tighter than addition.
   EXPECT_DOUBLE_EQ(value_of("a + b * c", 1.0, 2.0, 3.0), 7.0);
 }
 
 TEST(RtText, RaisesToAPowerTheWayPythonDoes) {
-  // Right-associative, unlike every other binary operator here: left would
-  // be 64.
+  // ** is right-associative, unlike every other binary operator; left
+  // associativity would give 64.
   EXPECT_DOUBLE_EQ(value_of("x ** y ** z", 2.0, 3.0, 2.0), 512.0);
-  // Tighter than unary minus on its left...
+  // ** binds tighter than a unary minus on its left, and looser than one on its
+  // right, which lets an exponent carry a sign.
   EXPECT_DOUBLE_EQ(value_of("-x ** 2", 3.0), -9.0);
-  // ...and looser on its right, which is what makes an exponent signable.
   EXPECT_DOUBLE_EQ(value_of("x ** -2", 2.0), 0.25);
-  // A run of signs is a parity, as it is in Python and unlike C++, where the
-  // same two characters are an operator.
+  // A run of signs is a parity, as in Python, whereas in C++ the same two
+  // characters form an operator.
   EXPECT_DOUBLE_EQ(value_of("--x", 4.0), 4.0);
   EXPECT_DOUBLE_EQ(value_of("-+-x", 4.0), 4.0);
 }
 
-// Past the range is what Python reads: the infinity or the zero.
+// A literal past the range reads as Python reads it, as infinity or zero.
 TEST(RtText, ALiteralPastTheRangeRounds) {
   EXPECT_EQ(value_of("x + 1e999", 1.0),
             std::numeric_limits<double>::infinity());
@@ -71,10 +68,8 @@ TEST(RtText, ALiteralPastTheRangeRounds) {
 }
 
 TEST(RtText, BuildsTheSameArenaAsTheCppSpelling) {
-  // One subexpression per name, in the order the text reduces them: C++ leaves
-  // the order of an operator's operands unspecified, and an arena records the
-  // order it was built in, so `exp(x) * sin(y) + x * 2.0` written as one line
-  // is the same graph under whichever numbering the compiler happened to pick.
+  // One statement per subexpression, since C++ leaves operand order unspecified
+  // and the arena records build order; this fixes the numbering the text uses.
   ddx::rt::Arena<> written;
   const auto x = var(written, "x");
   const auto y = var(written, "y");
@@ -90,8 +85,8 @@ TEST(RtText, BuildsTheSameArenaAsTheCppSpelling) {
   const auto lowered = lower(parsed, *ast);
   ASSERT_TRUE(lowered.has_value());
 
-  // Node for node: interning makes the arena a function of the model, so equal
-  // models are the same bytes and not merely the same answers.
+  // Interning makes the arena a function of the model, so equal models are the
+  // same bytes and not merely the same answers.
   const auto same = [](const auto &l, const auto &r) {
     return l.op == r.op && l.in == r.in && l.payload == r.payload &&
            l.value == r.value;
@@ -102,7 +97,7 @@ TEST(RtText, BuildsTheSameArenaAsTheCppSpelling) {
 }
 
 // The four comparisons the graph does not carry are compositions, and the text
-// makes the same ones the operators do -- node for node, `1` included.
+// builds the same ones the operators do, node for node.
 TEST(RtText, ComposesEqualityAsTheOperatorsDo) {
   const auto same_arena = [](const std::string_view source, auto &&build) {
     ddx::rt::Arena<> written;
@@ -142,7 +137,8 @@ TEST(RtText, ReadsEveryLiteralAtTheScalarType) {
   EXPECT_DOUBLE_EQ(value_of(".5 + x", 1.0), 1.5);
   EXPECT_DOUBLE_EQ(value_of("2. * x", 3.0), 6.0);
 
-  // Read at T rather than at double and narrowed: 0.1f is not float(0.1).
+  // Read at T rather than read as double and narrowed, since 0.1f is not
+  // float(0.1).
   ddx::rt::Arena<float> arena;
   const auto ast = parse("0.1");
   ASSERT_TRUE(ast.has_value());
@@ -159,16 +155,15 @@ TEST(RtText, FoldsWhatNeverNeededAGraph) {
   ASSERT_TRUE(lowered.has_value());
 
   // A literal that has met no symbol stays pending, so a constant expression
-  // costs no node at all -- exactly as `rt::Expression{3.0} + 4.0` does.
+  // costs no node, exactly as rt::Expression{3.0} + 4.0 does.
   EXPECT_EQ(arena.size(), 0U);
   EXPECT_TRUE(lowered->pending());
   EXPECT_DOUBLE_EQ(lowered->literal(), 7.0);
 }
 
 TEST(RtText, SpellsEveryOpcodeTheTablesName) {
-  // The parser has no function table of its own; this is the assertion that
-  // says so.  A transcendental added to the opcode tables becomes callable from
-  // text with no edit to the grammar, and this test would notice if it did not.
+  // The parser has no function table of its own, so every callable op in the
+  // opcode tables must be callable from text with no edit to the grammar.
   const auto callable = [](const std::string_view label) {
     return std::ranges::all_of(label, [](const char c) {
       return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
@@ -179,8 +174,8 @@ TEST(RtText, SpellsEveryOpcodeTheTablesName) {
   for (const auto &label : ddx::rt::opcode_labels()) {
     const auto op = ddx::rt::opcode_of(label);
     ASSERT_TRUE(op.has_value()) << label;
-    // What the library says text may not name -- leaves, externs, tensor rows
-    // -- and the operators, which have their own syntax.
+    // Skips what text may not name (leaves, externs and tensor rows) and the
+    // operators, which have their own syntax.
     if (!ddx::rt::callable(*op) || !callable(label)) {
       continue;
     }
@@ -193,14 +188,14 @@ TEST(RtText, SpellsEveryOpcodeTheTablesName) {
     EXPECT_EQ(ast->terms[ast->root].op, *op) << source;
     ++named;
   }
-  // The transcendentals alone are eighteen; a table that stopped being read
+  // The transcendentals alone are eighteen, so a table that stopped being read
   // would leave this at zero.
   EXPECT_GT(named, 18U);
 }
 
 TEST(RtText, LowersADifferenceAsTheSumOfANegation) {
-  // There is no Sub opcode -- the label "-" is unary Neg -- so this is the one
-  // place the grammar and the opcode table do not line up one to one.
+  // There is no Sub opcode (the label "-" is unary Neg), so this is the one
+  // place where the grammar and the opcode table do not line up one to one.
   const auto ast = parse("x - y");
   ASSERT_TRUE(ast.has_value());
   const auto &root = ast->terms[ast->root];
@@ -209,8 +204,8 @@ TEST(RtText, LowersADifferenceAsTheSumOfANegation) {
 }
 
 TEST(RtText, RefusesWhatItCannotMean) {
-  // Python's spellings: `^` is not exponentiation, there is no ternary --
-  // `select` is a call -- and a comparison is one per expression.
+  // Python's spellings: ^ is not exponentiation, select is a call rather than a
+  // ternary, and an expression holds at most one comparison.
   EXPECT_EQ(parse("x ^ 2").error().code, errc::bad_syntax);
   EXPECT_EQ(parse("x > 0 ? x : -x").error().code, errc::bad_syntax);
   EXPECT_EQ(parse("x % y").error().code, errc::bad_syntax);
@@ -219,19 +214,18 @@ TEST(RtText, RefusesWhatItCannotMean) {
   EXPECT_EQ(parse("x = y").error().code, errc::bad_syntax);
   EXPECT_EQ(parse("x <> y").error().code, errc::bad_syntax);
 
-  // Malformed rather than unmeanable.
   EXPECT_EQ(parse("x +").error().code, errc::bad_syntax);
   EXPECT_EQ(parse("(x").error().code, errc::bad_syntax);
   EXPECT_EQ(parse("").error().code, errc::bad_syntax);
   EXPECT_EQ(parse("2 x").error().code, errc::bad_syntax);
 
-  // Named, but not by the opcode tables.  Its own code, not unknown_symbol:
-  // that one is about a point's symbols and would describe the wrong thing.
+  // Unknown to the opcode tables. This has its own code rather than
+  // unknown_symbol, which is about a point's symbols.
   EXPECT_EQ(parse("nope(x)").error().code, errc::unknown_function);
-  // Named by them, and not callable: a leaf has no argument list.
+  // Known to the opcode tables but not callable, since a leaf has no arguments.
   EXPECT_EQ(parse("const(x)").error().code, errc::unknown_function);
   EXPECT_EQ(parse("var(x)").error().code, errc::unknown_function);
-  // Callable, and asked for the wrong number.
+  // Callable, but with the wrong number of arguments.
   EXPECT_EQ(parse("sin(x, y)").error().code, errc::wrong_argument_count);
   EXPECT_EQ(parse("pow(x)").error().code, errc::wrong_argument_count);
 }
@@ -241,7 +235,7 @@ TEST(RtText, TakesOneStringPerFunction) {
   ASSERT_TRUE(sys.has_value());
   EXPECT_EQ(sys->arity(), 2U);
 
-  // The same system tests/rt/tests_rt_newton.cpp builds by hand.
+  // The same system that tests_rt_newton.cpp builds by hand.
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
@@ -255,8 +249,8 @@ TEST(RtText, TakesOneStringPerFunction) {
 }
 
 TEST(RtText, NamesSymbolsWhicheverFunctionFirstUsesThem) {
-  // Every source is read before any of them is an equation, so a symbol the
-  // second function introduces still gets a slot.
+  // Every source is read before any becomes an equation, so a symbol that only
+  // the second function introduces still gets a slot.
   const auto sys = ddx::rt::equation("x + 1", "y + 2");
   ASSERT_TRUE(sys.has_value());
   EXPECT_EQ(sys->arity(), 2U);
@@ -267,15 +261,14 @@ TEST(RtText, NamesSymbolsWhicheverFunctionFirstUsesThem) {
 }
 
 TEST(RtText, RefusesAModelThatNamesNoSymbol) {
-  // A bare constant folds to a pending literal, which names no arena -- the
-  // same refusal `ddx::rt::equation(rt::Expression{7.0})` earns.
+  // A bare constant folds to a pending literal, which names no arena, and is
+  // refused as rt::equation(rt::Expression{7.0}) is.
   const auto eq = ddx::rt::equation("3 + 4");
   ASSERT_TRUE(eq.has_value());
   EXPECT_TRUE(eq->poisoned());
   EXPECT_EQ(eq->status()->code, errc::no_graph);
 }
 
-// An out-of-range literal rounds by its magnitude, however it is spelled.
 TEST(RtText, AnOutOfRangeLiteralRoundsByItsMagnitude) {
   const std::string zeros(400, '0');
   const auto inf = std::numeric_limits<double>::infinity();
@@ -298,8 +291,8 @@ TEST(RtText, AnOutOfRangeLiteralRoundsByItsMagnitude) {
   return out;
 }
 
-// Parentheses, calls and ** are what recurse, and a stack overflow cannot be
-// refused: too deep is a syntax error before it is that.
+// Parentheses, calls and ** recurse, and a stack overflow cannot be refused,
+// so nesting that is too deep is reported as a syntax error first.
 TEST(RtText, TextNestedTooDeepIsRefused) {
   constexpr std::size_t deep = 200'000;
   const auto refused = [](const std::string &source) {
@@ -313,8 +306,8 @@ TEST(RtText, TextNestedTooDeepIsRefused) {
   EXPECT_TRUE(refused(repeated("(x**", deep) + "x" + repeated(")", deep)));
 }
 
-// Long is not deep: a flat sum or a run of signs recurses no further for its
-// length, and a model nested as far as anyone writes one still reads.
+// A flat sum or a run of signs does not recurse with its length, and a model
+// nested as deeply as anyone writes one still reads.
 TEST(RtText, LongTextThatIsNotDeepIsRead) {
   constexpr std::size_t shallow = 100;
   const std::string nested =

@@ -23,7 +23,7 @@ namespace ddx::impl::detail {
     }                                                                          \
     EXTRA                                                                      \
   };
-// MSVC's default preprocessor has no __VA_OPT__,
+// Separate macros because MSVC's default preprocessor has no __VA_OPT__.
 #define DDX_UNARY_MATH_DESC(NAME, VAL, DERIV)                                  \
   DDX_UNARY_MATH_DESC_(NAME, VAL, DERIV, )
 #define DDX_UNARY_MATH_DESC_FV(NAME, VAL, DERIV, FV)                           \
@@ -39,18 +39,18 @@ namespace ddx::impl::detail {
 DDX_UNARY_MATH_DESC(SineOpFn,    sin(u), cos(u))
 DDX_UNARY_MATH_DESC(CosineOpFn,  cos(u), -sin(u))
 DDX_UNARY_MATH_DESC_FV(ExpOpFn,  exp(u), exp(u), fu)
-// sec^2 = 1 + tan^2 — reassociates, so not bit-identical to 1/cos^2.
+// The derivative from the value, 1 + tan^2, is not bit-identical to 1/cos^2.
 DDX_UNARY_MATH_DESC_FV(TanOpFn,  tan(u),  T{1} / (cos(u) * cos(u)), T{1} + fu * fu)
 DDX_UNARY_MATH_DESC(LogOpFn,     log(u),  T{1} / u)
 DDX_UNARY_MATH_DESC_FV(SqrtOpFn, sqrt(u), T{1} / (T{2} * sqrt(u)), T{1} / (T{2} * fu))
-// (1-u)(1+u), not 1-u*u: near |u| = 1 the subtraction cancels against a
-// rounded square and costs half the significand.  Likewise acosh and atanh.
+// (1-u)(1+u) rather than 1-u*u avoids cancellation near |u| = 1, which would
+// lose half the significand. acosh and atanh do the same.
 DDX_UNARY_MATH_DESC(AsinOpFn,    asin(u), T{1} / sqrt((T{1} - u) * (T{1} + u)))
 DDX_UNARY_MATH_DESC(AcosOpFn,    acos(u), T{-1} / sqrt((T{1} - u) * (T{1} + u)))
 DDX_UNARY_MATH_DESC(AtanOpFn,    atan(u), T{1} / (T{1} + u * u))
 DDX_UNARY_MATH_DESC(SinhOpFn,    sinh(u), cosh(u))
 DDX_UNARY_MATH_DESC(CoshOpFn,    cosh(u), sinh(u))
-// sech^2 = 1 - tanh^2 — reassociates, so not bit-identical to 1/cosh^2.
+// The derivative from the value, 1 - tanh^2, is not bit-identical to 1/cosh^2.
 DDX_UNARY_MATH_DESC_FV(TanhOpFn, tanh(u),  T{1} / (cosh(u) * cosh(u)), T{1} - fu * fu)
 DDX_UNARY_MATH_DESC(Log10OpFn,   log10(u), T{1} / (u * static_cast<T>(std::numbers::ln10)))
 DDX_UNARY_MATH_DESC_FV(CbrtOpFn, cbrt(u),  T{1} / (T{3} * cbrt(u) * cbrt(u)), T{1} / (T{3} * fu * fu))
@@ -64,12 +64,8 @@ DDX_UNARY_MATH_DESC(ErfOpFn,     erf(u),   static_cast<T>(2.0 * std::numbers::in
 #undef DDX_UNARY_MATH_FNS
 // clang-format on
 
-// A descriptor's `deriv` needs strictly more of T than its value does (sin
-// needs cos, asin needs sqrt), and that is not expressible as a constraint:
-// `deriv` returns auto, so a failure hard-errors rather than SFINAE-ing.  log10
-// and erf are the exception -- their irrational constants need
-// static_cast<T>(double), which constructible_from<T, int> does not give, and
-// that IS a constraint.
+// log10 and erf need static_cast<T>(double) for their irrational constants, so
+// their ops are constrained on it.
 template <typename Fn> inline constexpr bool needs_real_constants_v = false;
 template <Numeric T>
 inline constexpr bool needs_real_constants_v<Log10OpFn<T>> = true;
@@ -82,8 +78,8 @@ inline constexpr bool has_deriv_from_value_v =
 
 } // namespace ddx::impl::detail
 
-// The two-argument functions every front end spells, as rt's binary rows:
-// (factory, enumerator, label, value functor, ops/adjoints.hpp descriptor).
+// The binary math functions, as rows of (factory, enumerator, label, value
+// functor, adjoints.hpp descriptor).
 #define DDX_BINARY_MATH_TABLE(X)                                               \
   X(pow, Pow, "pow", impl::detail::pow_impl, PowOpFn)                          \
   X(atan2, Atan2, "atan2", impl::detail::atan2_impl, Atan2OpFn)                \
@@ -91,7 +87,7 @@ inline constexpr bool has_deriv_from_value_v =
   X(max, Max, "max", impl::detail::max_impl, MaxOpFn)                          \
   X(min, Min, "min", impl::detail::min_impl, MinOpFn)
 
-// `abs` is absent: its derivative is a sign, not a function of the primal.
+// abs is absent because its derivative is a sign, not a function of the primal.
 #define DDX_UNARY_MATH_TABLE(X)                                                \
   X(sin, SineOp, "sin")                                                        \
   X(cos, CosineOp, "cos")                                                      \

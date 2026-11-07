@@ -49,10 +49,8 @@ if (DDX_BUILD_JIT)
     endif ()
 endif ()
 
-# --- packaging ---------------------------------------------------------------
-# tests/package consumed out of tree, against the build tree and an install prefix.
-# A consumer's glue for other libraries, each built when that library is found;
-# none is fetched.  Eigen: batches through its matrices, and a kernel table.
+# The out-of-tree package test, plus optional consumer glue for Eigen and CBLAS,
+# each built only when that library is found.
 find_package(Eigen3 3.3 QUIET CONFIG ${DDX_FIND_NO_REGISTRY})
 if (TARGET Eigen3::Eigen)
     add_executable(tests_eigen eigen/tests_eigen.cpp)
@@ -80,7 +78,7 @@ if (DDX_TEST_PACKAGE AND DDX_INSTALL AND DDX_SANITIZE STREQUAL "off")
     if (DDX_BUILD_JIT)
         list(APPEND DDX_PACKAGE_COMPONENTS jit)
     endif ()
-    # $<SEMICOLON>: an escaped separator does not survive add_test()'s expansion.
+    # $<SEMICOLON> is used because an escaped ; does not survive add_test().
     string(JOIN "$<SEMICOLON>" DDX_PACKAGE_COMPONENTS_ARG ${DDX_PACKAGE_COMPONENTS})
 
     set(DDX_PACKAGE_COMMON_OPTIONS
@@ -104,7 +102,8 @@ if (DDX_TEST_PACKAGE AND DDX_INSTALL AND DDX_SANITIZE STREQUAL "off")
             --build-options -Dddx_DIR=${PROJECT_BINARY_DIR} ${DDX_PACKAGE_COMMON_OPTIONS}
             --test-command ${CMAKE_CTEST_COMMAND} ${DDX_PACKAGE_CONFIG} --output-on-failure)
 
-    # Emptied first: an install takes nothing out of a prefix, and all_headers globs it.
+    # Emptied first, because an install never removes files and all_headers
+    # globs the prefix.
     set(DDX_PACKAGE_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/package/prefix")
     add_test(NAME package.install_clean
             COMMAND ${CMAKE_COMMAND} -E rm -rf ${DDX_PACKAGE_PREFIX})

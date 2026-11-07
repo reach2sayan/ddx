@@ -16,15 +16,13 @@
 #include <utility>
 #include <vector>
 
-// to_graph lowers a compile-time expression into the graph, so the same
-// function can be differentiated by Equation and by the sweep, and the two
-// must agree.
+// to_graph lowers a compile-time expression into the graph, so Equation and the
+// sweep can differentiate the same function and must agree.
 
 namespace {
 
-// A pointer per element, which is the shape every batch call takes its columns
-// in.  Two spellings because the inputs are read and the outputs written, and
-// one overload taking both would be ambiguous for a non-const vector.
+// Batch calls take one pointer per column. Inputs and outputs need separate
+// overloads, since one taking both is ambiguous for a non-const vector.
 [[nodiscard]] std::vector<double *> out_columns(std::vector<double> &values) {
   return values | std::views::transform([](double &v) { return &v; }) |
          ddx::impl::to<std::vector<double *>>();
@@ -35,8 +33,8 @@ namespace {
          ddx::impl::to<std::vector<const double *>>();
 }
 
-// An overflow is an answer, and the two engines have to reach the same one:
-// EXPECT_NEAR cannot say that, since inf - inf is NaN.
+// An overflow is an answer both engines must reach, which EXPECT_NEAR cannot
+// check because inf - inf is NaN.
 void expect_close(double got, double want) {
   if (std::isfinite(want) && std::isfinite(got)) {
     EXPECT_NEAR(got, want, 1e-12 * std::max(1.0, std::abs(want)));
@@ -48,8 +46,8 @@ void expect_close(double got, double want) {
   }
 }
 
-// to_graph declares the symbols in the compile-time Equation's canonical order
-// before lowering, so the two sides' columns line up by name.
+// to_graph declares symbols in the compile-time Equation's canonical order, so
+// the columns of both sides line up by name.
 template <ddx::impl::CExpression E, std::size_t N>
 void expect_agrees_with_ddx(const E &e, std::array<double, N> pt) {
   ddx::rt::Arena<> b;
@@ -64,15 +62,14 @@ void expect_agrees_with_ddx(const E &e, std::array<double, N> pt) {
   const auto expected_grad = std::apply(
       [&](auto... a) { return ddx::Equation{e}.jacobian(a...); }, pt);
 
-  // Both sides number their symbols the same way, so slot i is partial i.
   for (std::size_t i = 0; i < b.symbols().size(); ++i) {
     SCOPED_TRACE("partial d/d" + std::string{b.symbols()[i]});
     expect_close(values[g.partial[i]], expected_grad[i]);
   }
 }
 
-// A namespace of its own so the runtime tests below can call their variables
-// x, y and z too without hiding these.
+// A separate namespace so the runtime tests below can also name their
+// variables x, y and z.
 namespace sym {
 
 constexpr auto x = ddx::var<"x">;
@@ -92,9 +89,8 @@ template <typename E>
 constexpr bool bridges =
     requires(ddx::rt::Arena<> &b, const E &e) { ddx::rt::to_graph(b, e); };
 
-// rt has no leaf that reads a symbol and differentiates to zero, so a frozen
-// one is refused rather than lowered live.  A Jacobian row comes back thawed,
-// and bridges like any other tree.
+// rt has no leaf that reads a symbol but differentiates to zero, so a frozen
+// leaf is refused; a Jacobian row comes back thawed and lowers normally.
 TEST(RtJacobian, BridgeRefusesFrozenLeaves) {
   using ddx::impl::FixedString;
   const auto column =
@@ -132,8 +128,8 @@ TEST(RtJacobian, SharedAndNested) {
                          std::array{0.3, 0.7, 1.4});
 }
 
-// max, min and abs have no entry in the compile-time derivative table, so they
-// are checked against central differences on the interpreter instead.
+// max, min and abs have no compile-time derivative entry, so they are checked
+// against central differences on the interpreter.
 TEST(RtJacobian, SelectingOpsAgainstFiniteDifferences) {
   using ddx::rt::Arena;
   using ddx::rt::Expression;
@@ -164,7 +160,7 @@ TEST(RtJacobian, SelectingOpsAgainstFiniteDifferences) {
 }
 
 TEST(RtJacobian, DerivFromValueReusesThePrimalNode) {
-  // exp's derivative is the primal, so the sweep must not build a second exp.
+  // exp's derivative is its primal, so the sweep must not build a second exp.
   ddx::rt::Arena<> b;
   const auto vx = var(b, "x");
   const auto f = exp(vx);
@@ -172,10 +168,8 @@ TEST(RtJacobian, DerivFromValueReusesThePrimalNode) {
   EXPECT_EQ(g.partial[0], f.id(b));
 }
 
-// Every row of both tables must name a rule that instantiates at the number
-// *and* at the graph.  That is the whole of ops/adjoints.hpp's contract: add an
-// op without a shared rule and this stops compiling, which is what keeps a
-// second spelling from being written for one of them.
+// Every op must have one shared rule in ops/adjoints.hpp that instantiates for
+// both double and the graph; a missing rule stops this from compiling.
 #define DDX_TEST_UNARY_RULE(fn, Op, label, functor, Desc)                      \
   static_assert(requires(const double &a) {                                    \
     ddx::impl::detail::adjoints_of<ddx::impl::detail::Desc>(a, a);             \
@@ -196,16 +190,13 @@ DDX_RT_UNARY_TABLE(DDX_TEST_UNARY_RULE)
 DDX_RT_BINARY_TABLE(DDX_TEST_BINARY_RULE)
 #undef DDX_TEST_BINARY_RULE
 
-// The comparison operators answer expressions, nothing boolean-testable, so
-// neither concept holds: that is why ExtremumOp keeps a rule of its own, and
-// why AbsOpFn's unqualified sign() reaches rt::Expression's hidden friend
-// rather than the one in ops/adjoints.hpp.  If either ever becomes true both
-// facts go stale silently.
+// Comparisons return expressions, so ExtremumOp needs its own rule and
+// AbsOpFn's sign() resolves to rt::Expression's hidden friend.
 static_assert(!std::totally_ordered<ddx::rt::Expression<>>);
 static_assert(!std::equality_comparable<ddx::rt::Expression<>>);
 
-// A node stands for a double, so it answers the commutativity question the way
-// a double does -- which is what picks DivideOpFn's branch.
+// A node stands for a double, so it is commutative the way a double is, which
+// selects DivideOpFn's branch.
 static_assert(ddx::impl::CCommutativeMultiply<ddx::rt::Expression<>>);
 
 TEST(RtJacobian, UnusedSymbolHasZeroPartial) {
@@ -219,10 +210,8 @@ TEST(RtJacobian, UnusedSymbolHasZeroPartial) {
   (void)vy;
 }
 
-// Wider coverage of the ops that now read their rule from ops/adjoints.hpp,
-// including the points the spellings were chosen for: hypot and atan2 are
-// written to divide by the hypotenuse first so they survive where x*x + y*y
-// overflows, and pow's left partial has to stay finite at a == 0.
+// hypot and atan2 divide by the hypotenuse first so they survive where
+// x*x + y*y overflows, and pow's left partial must stay finite at a == 0.
 TEST(RtJacobian, SharedRulesAgreeAcrossTheScaleRange) {
   for (const auto &[a, b] : std::vector<std::pair<double, double>>{
            {1.3, 2.1}, {1e200, 1e200}, {1e-200, 1e-200}, {3.0, 1e-8}}) {
@@ -238,8 +227,8 @@ TEST(RtJacobian, SharedRulesAgreeAcrossTheScaleRange) {
   }
 }
 
-// neg had no cross-check against Equation at all; abs only had one against
-// finite differences, which cannot see a sign convention that is wrong at 0.
+// Finite differences cannot see a sign convention that is wrong at 0, so abs
+// and neg are checked against Equation.
 TEST(RtJacobian, UnaryRulesAgree) {
   for (const double a : {1.3, -1.3, 1e-300, 4.0}) {
     expect_agrees_with_ddx(-x, std::array{a});
@@ -247,10 +236,8 @@ TEST(RtJacobian, UnaryRulesAgree) {
   }
 }
 
-// build_symbolic_jacobian is a selectable public mode that nothing in the tree
-// instantiated before this test: DiffMode::Symbolic carries a tangent up the
-// graph rather than an adjoint down it, so it is the one caller that wants the
-// bare partial.  It reads it from the same rules, seeded with a unit adjoint.
+// DiffMode::Symbolic carries a tangent up the graph rather than an adjoint down
+// it, reading the same rules seeded with a unit adjoint.
 TEST(RtJacobian, ForwardModeAgreesWithReverse) {
   const auto check = [](auto build, std::array<double, 2> pt) {
     ddx::rt::Arena<> b;
@@ -283,10 +270,8 @@ TEST(RtJacobian, ForwardModeAgreesWithReverse) {
 } // namespace sym
 } // namespace
 
-// A banded system, where the pattern is most of the point: residual i touches
-// x[i-1], x[i] and x[i+1] and nothing else, so the Jacobian is tridiagonal and
-// 16 of its 36 cells exist.  Everything the batch API hands a caller is sized
-// by that, and the dense spelling has to put the other 20 back.
+// Residual i touches only x[i-1], x[i] and x[i+1], so 16 of the 36 Jacobian
+// cells exist and the dense form must fill in the other 20.
 TEST(RtJacobian, ABandedSystemKeepsOnlyTheCellsThatExist) {
   static constexpr std::size_t n = 6;
   ddx::rt::Arena<> b;
@@ -296,9 +281,8 @@ TEST(RtJacobian, ABandedSystemKeepsOnlyTheCellsThatExist) {
   for (const std::size_t i : std::views::iota(0uz, n)) {
     x.push_back(var(b, name(i)));
   }
-  // r_i = x_i^2 + x_{i-1} x_{i+1}, so the band is three wide and the ends are
-  // two.  Squares rather than plain sums, or every partial would be constant
-  // and the sweep would fold the whole row away.
+  // Squares rather than plain sums, since otherwise every partial would be a
+  // constant and the sweep would fold the whole row away.
   std::vector<ddx::rt::Expression<double>> rows;
   for (const std::size_t i : std::views::iota(0uz, n)) {
     auto r = x[i] * x[i];
@@ -322,8 +306,8 @@ TEST(RtJacobian, ABandedSystemKeepsOnlyTheCellsThatExist) {
   EXPECT_EQ(pattern.nonzeros(), j.partial.size());
   EXPECT_LT(pattern.nonzeros(), n * n) << "a dense pattern tests nothing here";
 
-  // Exactly the band: |i - j| <= 1 for an interior row, the diagonal alone at
-  // the ends, and no_column everywhere else.
+  // Exactly the band: |i - j| <= 1 for interior rows, the diagonal alone at the
+  // ends, and no_column everywhere else.
   for (const std::size_t i : std::views::iota(0uz, n)) {
     for (const std::size_t k : std::views::iota(0uz, n)) {
       const bool interior = i > 0 && i + 1 < n;
@@ -338,15 +322,12 @@ TEST(RtJacobian, ABandedSystemKeepsOnlyTheCellsThatExist) {
   EXPECT_NE(j.at(0, 0), j.zero);
 }
 
-// The three ways to read one Jacobian -- dense, compressed-plus-pattern, and a
-// sweep of the nodes -- are the same numbers.
 TEST(RtJacobian, DenseCompressedAndTheNodesAllAgree) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto z = var(b, "z");
-  // z appears in one row only, x in two, y in two: no row is dense and no
-  // column is empty.
+  // No row is dense and no column is empty.
   const auto eq = ddx::rt::equation(x * log(x) + y, y * y + z, exp(x * z));
 
   const std::vector<double> at{0.6, 1.4, 0.9};
@@ -375,11 +356,8 @@ TEST(RtJacobian, DenseCompressedAndTheNodesAllAgree) {
   }
 }
 
-// A partial that *folds* to zero is as structural as one that never existed.
-// In `a*b - a*b + c` the two adjoint contributions reaching `a*b` are 1 and -1,
-// which constant-fold to zero before a node is built, so add_to refuses them
-// and a and b get no column at all -- the pattern is exact here where a support
-// walk would have called them live.
+// In a*b - a*b + c the adjoints reaching a*b fold to zero before a node is
+// built, so a and b get no column, as if the partial never existed.
 TEST(RtJacobian, AFoldedPartialIsAStructuralHole) {
   ddx::rt::Arena<> b;
   const auto a = var(b, "a");
@@ -395,7 +373,7 @@ TEST(RtJacobian, AFoldedPartialIsAStructuralHole) {
   const ddx::rt::Sparsity &pattern = eq.jacobian_pattern()->get();
   EXPECT_EQ(pattern.size(), 3u);
   EXPECT_EQ(pattern.columns, 6u);
-  // Row 0 keeps c alone, row 1 keeps d alone, row 2 is a constant.
+  // Row 0 keeps c alone, row 1 keeps d alone, and row 2 is a constant.
   EXPECT_EQ(pattern.nonzeros(), 2u);
   const auto widths =
       pattern.rows() |
@@ -406,7 +384,6 @@ TEST(RtJacobian, AFoldedPartialIsAStructuralHole) {
   EXPECT_FALSE(pattern.at(0, 0).has_value()); // a
   EXPECT_FALSE(pattern.at(0, 1).has_value()); // b
 
-  // And the dense spelling still answers for every cell, with zeros.
   const std::vector<double> at{0.3, 0.7, 1.1, 0.5, 0.2, 0.9};
   const auto dense = *eq.jacobian(std::span<const double>{at});
   ASSERT_EQ(dense.size(), 18u);
@@ -419,9 +396,8 @@ TEST(RtJacobian, AFoldedPartialIsAStructuralHole) {
   EXPECT_EQ(dense[0 * 6 + 1], 0.0);
 }
 
-// An arrow Hessian: x0 couples with every other symbol and nothing else
-// couples, so 16 of 36 cells exist.  hessian_cell is the only way a batch
-// caller can place a column of the compressed block it is handed.
+// x0 couples with every other symbol and nothing else couples, so 16 of 36
+// cells exist and hessian_cell must place each compressed column.
 TEST(RtJacobian, HessianCellPlacesEveryCompressedColumn) {
   static constexpr std::size_t n = 6;
   ddx::rt::Arena<> b;
@@ -469,11 +445,8 @@ TEST(RtJacobian, HessianCellPlacesEveryCompressedColumn) {
   EXPECT_LT(placed, n * n) << "an arrow leaves cells unplaced";
 }
 
-// --- select ------------------------------------------------------------------
-
-// Both arms are evaluated and the condition picks one, so the derivative is the
-// arm's derivative and the condition contributes nothing.  Checked either side
-// of the switch, where a rule that leaked the other arm would show.
+// The condition contributes nothing to the derivative. Checked on both sides of
+// the switch, where a rule that leaked the other arm would show.
 TEST(RtJacobian, SelectDifferentiatesTheArmTheConditionTakes) {
   const auto eq = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
@@ -491,7 +464,6 @@ TEST(RtJacobian, SelectDifferentiatesTheArmTheConditionTakes) {
     EXPECT_DOUBLE_EQ(g[0], takes_x ? 2 * px : 0.0) << "d/dx at " << px;
     EXPECT_DOUBLE_EQ(g[1], takes_x ? 0.0 : 3 * py * py) << "d/dy at " << px;
 
-    // Second order too: the condition still contributes nothing.
     const auto h = *eq.hessian(std::span<const double>{at});
     EXPECT_DOUBLE_EQ(h[0], takes_x ? 2.0 : 0.0);
     EXPECT_DOUBLE_EQ(h[3], takes_x ? 0.0 : 6 * py);
@@ -499,7 +471,7 @@ TEST(RtJacobian, SelectDifferentiatesTheArmTheConditionTakes) {
 }
 
 // The unchosen arm's adjoint is a runtime zero, and log' and sqrt' are infinite
-// at 0: without the guard the arm's contribution is 0 * inf = NaN.
+// at 0, so without the guard its contribution would be 0 * inf = NaN.
 TEST(RtJacobian, SelectDiscardsTheUnchosenArmsPartials) {
   const auto clamp = [](auto arm) {
     return ddx::rt::equation([arm] {
@@ -524,7 +496,7 @@ TEST(RtJacobian, SelectDiscardsTheUnchosenArmsPartials) {
   EXPECT_DOUBLE_EQ((*log_arm.jacobian(2.0))[0], 0.5);
   EXPECT_DOUBLE_EQ((*log_arm.hessian(2.0))[0], -0.25);
 
-  // Both arms chosen inside one batch.
+  // Both arms are chosen within one batch.
   const std::array<double, 3> xs{-1.0, 0.0, 1.0};
   std::array<double, 3> f{};
   std::array<double, 3> g{};
@@ -535,8 +507,8 @@ TEST(RtJacobian, SelectDiscardsTheUnchosenArmsPartials) {
   EXPECT_EQ(g, (std::array{0.0, 0.0, 1.0}));
 }
 
-// The guard hides the arm that was not taken, never a singularity on the arm
-// that was: u is reached both ways, and at 0 the chosen arm is u itself.
+// The guard hides the arm not taken, never a singularity on the chosen arm; u
+// is reached both ways, and at 0 the chosen arm is u itself.
 TEST(RtJacobian, SelectKeepsTheChosenArmsSingularity) {
   const auto eq = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
@@ -547,7 +519,7 @@ TEST(RtJacobian, SelectKeepsTheChosenArmsSingularity) {
   EXPECT_DOUBLE_EQ((*eq.jacobian(4.0))[0], 0.125);
 }
 
-// A condition is any nonzero value, as in C -- there is no separate boolean.
+// A condition is true for any nonzero value, as in C; there is no boolean type.
 TEST(RtJacobian, SelectReadsAnyNonzeroConditionAsTrue) {
   const auto eq = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
@@ -562,12 +534,11 @@ TEST(RtJacobian, SelectReadsAnyNonzeroConditionAsTrue) {
   EXPECT_DOUBLE_EQ(*eq.evaluate(std::span<const double>{negative}), 7.0);
 }
 
-// gt/ge/eq/ne are lt and le read the other way round, so there are two
-// comparison opcodes and not six.  eq is `a <= b && b <= a`, which answers 0 at
-// a NaN operand where `1 - lt - lt` would have called two NaNs equal.
+// eq is a <= b && b <= a, which gives 0 when an operand is NaN, where
+// 1 - lt - lt would have called two NaNs equal.
 TEST(RtJacobian, ComparisonsComposeFromTheTwoOpcodes) {
-  // Equation is move-only, so each spelling is built and read where it is made
-  // rather than handed back out of a helper.
+  // Equation is move-only, so each one is built and read in place rather than
+  // returned from a helper.
   const auto value = [](auto build, double a, double b) {
     const auto eq = ddx::rt::equation([&build] {
       const auto x = ddx::rt::var("x");
@@ -598,10 +569,8 @@ TEST(RtJacobian, ComparisonsComposeFromTheTwoOpcodes) {
       << "an ordered comparison is false at a NaN";
 }
 
-// A select node has three operands, so every walker that rebuilds a node has to
-// carry all three: one that rebuilt it as a pair left the third `no_node` for
-// the next walker to dereference.  The compiled path exercises rebalance, the
-// colouring and codegen in one call.
+// A select node has three operands, and every walker that rebuilds a node must
+// carry all three. The compiled path runs rebalance, colouring and codegen.
 TEST(RtJacobian, SelectSurvivesEveryWalkerThatRebuildsANode) {
   auto eq = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
@@ -622,10 +591,8 @@ TEST(RtJacobian, SelectSurvivesEveryWalkerThatRebuildsANode) {
 }
 
 #ifdef DDX_HAS_JIT
-// The interpreter and the kernel have to answer alike at every value, and a
-// comparison is where they most easily do not: `<=` written as `!(b < a)` calls
-// a NaN less-or-equal to itself where `fcmp ole` says false.  A model that
-// never sees a NaN would never notice.
+// Writing <= as !(b < a) calls NaN less-or-equal to itself where fcmp ole says
+// false, so interpreter and kernel are compared at NaN.
 TEST(RtJacobian, ComparisonsAgreeWithTheKernelAtNaN) {
   const double nan = std::numeric_limits<double>::quiet_NaN();
   const double inf = std::numeric_limits<double>::infinity();
@@ -633,7 +600,7 @@ TEST(RtJacobian, ComparisonsAgreeWithTheKernelAtNaN) {
   auto model = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
     const auto y = ddx::rt::var("y");
-    // Every spelling, so one wrong predicate cannot hide behind the others.
+    // Every operator is used, so one wrong predicate cannot hide.
     return (x < y) + (x <= y) * 2.0 + (x > y) * 4.0 + (x >= y) * 8.0 +
            (x == y) * 16.0 + (x != y) * 32.0 + select(x <= y, x, y) * 64.0;
   });
@@ -646,13 +613,11 @@ TEST(RtJacobian, ComparisonsAgreeWithTheKernelAtNaN) {
                                                      {nan, nan},
                                                      {inf, inf}}};
 
-  // A raw value as the condition, which is the only way a NaN reaches one: a
-  // comparison's output is 1.0 or 0.0 and never NaN, so the model above cannot
-  // tell an ordered `fcmp` from an unordered one.  C's `!=` is unordered, so a
-  // NaN condition is true; the kernel has to say the same.
+  // A comparison never yields NaN, so a raw value is used as the condition. C's
+  // != is unordered, so a NaN condition is true, and the kernel must agree.
   {
-    // Declared one statement each: the order of a call's arguments is
-    // unspecified, and the symbols take the order they are named in.
+    // One declaration per statement, because argument evaluation order is
+    // unspecified and symbols take the order they are named in.
     auto raw = ddx::rt::equation([] {
       const auto c = ddx::rt::var("c");
       const auto f = ddx::rt::var("f");
@@ -663,8 +628,8 @@ TEST(RtJacobian, ComparisonsAgreeWithTheKernelAtNaN) {
     const double interpreted = *raw.evaluate(std::span<const double>{at});
     raw.options({.backend = ddx::jit::Backend::Compile, .points = 1});
     ASSERT_TRUE(raw.uses_kernel());
-    // Through jacobian(), not evaluate(): uses_kernel() builds the
-    // Jacobian lane, and the values lane would still be interpreting.
+    // Through jacobian() rather than evaluate(): uses_kernel() builds the
+    // Jacobian lane, while the values lane would still be interpreting.
     double value = 0.0;
     std::vector<double> cells(*raw.jacobian_columns());
     const auto gs = out_columns(cells);
@@ -697,17 +662,8 @@ TEST(RtJacobian, ComparisonsAgreeWithTheKernelAtNaN) {
 }
 #endif
 
-// Two selects over one subexpression, with both conditions false at the first
-// point and both true at the second -- so each arm is exercised over the same
-// nodes, and the shared `s` collects an adjoint through whichever arms are
-// live.
-//
-// This does *not* test a select whose two arms are the same node: `make` folds
-// that to the arm before a node exists
-// (RtArena.SelectFoldsWhereABinaryWould), so a test built through the
-// factories would be checking the fold.  The rule still has to handle it -- see
-// SharedArmsThroughTheLoaderStillSum below, which reaches it the one way that
-// bypasses `make`.
+// Both conditions are false at the first point and true at the second, so the
+// shared s collects its adjoint through each pair of arms over the same nodes.
 TEST(RtJacobian, BothArmsOfASelectOverASharedSubexpression) {
   const auto eq = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
@@ -717,7 +673,7 @@ TEST(RtJacobian, BothArmsOfASelectOverASharedSubexpression) {
     return s * s + select(le(x, y), s * s, -s);
   });
 
-  // Condition false: f = s*s - s.
+  // With the condition false, f = s*s - s.
   {
     const std::array<double, 3> at{0.7, 0.3, 1.9};
     const double s = std::sin(at[0] * at[1]) + at[2];
@@ -736,7 +692,7 @@ TEST(RtJacobian, BothArmsOfASelectOverASharedSubexpression) {
     EXPECT_DOUBLE_EQ(h[8], 2.0) << "d2f/dz2, the arms being linear in z";
   }
 
-  // Condition true, same nodes, other arm: f = 2 s*s.
+  // With the condition true, the same nodes take the other arm: f = 2 s*s.
   {
     const std::array<double, 3> at{0.3, 0.7, 1.9};
     const double s = std::sin(at[0] * at[1]) + at[2];
@@ -746,18 +702,16 @@ TEST(RtJacobian, BothArmsOfASelectOverASharedSubexpression) {
     EXPECT_DOUBLE_EQ((*eq.hessian(span))[8], 4.0);
   }
 
-  // x and y reach f through `s`, never only through the condition, so no
-  // column is missing -- and s*s couples all three, so nothing compresses.
+  // x and y reach f through s and not only through the condition, so no column
+  // is missing, and s*s couples all three so nothing compresses.
   const ddx::rt::Sparsity &pattern = eq.jacobian_pattern()->get();
   EXPECT_EQ(pattern.nonzeros(), 3u)
       << "a condition-only symbol would be absent";
   EXPECT_EQ(*eq.hessian_colours(), 3u);
 }
 
-// pow's exponent partial is a^b * log(a), 0 * -inf at a == 0, and its base
-// partial b * a^(b-1) is 0 * inf there at b == 0.  On the graph the rule guards
-// both with a select; with a literal exponent the arena folds the guard away
-// and the partial is the node it always was.
+// At a == 0 both pow partials are 0 * inf, so the graph guards them with a
+// select; a literal exponent lets the arena fold the guard away.
 TEST(RtJacobian, PowAtAZeroBaseIsGuardedOnTheGraph) {
   const auto eq = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
@@ -769,18 +723,18 @@ TEST(RtJacobian, PowAtAZeroBaseIsGuardedOnTheGraph) {
   EXPECT_EQ(at_zero_base[1], 0.0);
   const auto origin = *eq.jacobian(0.0, 0.0);
   EXPECT_EQ(origin[0], 0.0);
-  // Away from zero the guard chooses the partial it always computed.
+  // Away from zero, the guard chooses the partial it always computed.
   const auto plain = *eq.jacobian(2.0, 3.0);
   EXPECT_DOUBLE_EQ(plain[0], 12.0);
   EXPECT_DOUBLE_EQ(plain[1], 8.0 * std::log(2.0));
-  // The condition is not differentiated, so the Hessian is the arm's.
+  // The condition is not differentiated, so the Hessian is the chosen arm's.
   const auto H = *eq.hessian(2.0, 3.0);
   EXPECT_NEAR(H[0], 12.0, 1e-12);
   EXPECT_NEAR(H[1], 4.0 * (1.0 + 3.0 * std::log(2.0)), 1e-12);
   EXPECT_NEAR(H[3], 8.0 * std::log(2.0) * std::log(2.0), 1e-12);
 
-  // A literal exponent: equal(3, 0) folds to 0, the product to 0, and the
-  // select to its false arm -- 3 * (x * x), no Select node anywhere in it.
+  // With a literal exponent, equal(3, 0) folds to 0 and the select to its false
+  // arm, 3 * (x * x), so no Select node remains.
   ddx::rt::Arena<> b;
   const auto x = ddx::rt::var(b, "x");
   const auto cubic = ddx::rt::derive_jacobian<ddx::impl::DiffMode::Reverse>(
@@ -796,8 +750,8 @@ TEST(RtJacobian, PowAtAZeroBaseIsGuardedOnTheGraph) {
                    12.0);
 }
 
-// A partial taken during construction is a node to build on: Proton's frozen-
-// argument shape, d h/d Tr at the reference with the pressure moving with T.
+// A partial taken during construction can be built on, as in Proton's
+// d h/d Tr at the reference with the pressure moving with T.
 TEST(RtJacobian, DerivativeBuildsOnTheGraph) {
   using RE = ddx::rt::Expression<>;
   const auto eq = ddx::rt::equation([] {

@@ -17,7 +17,8 @@
 #include <string>
 #include <vector>
 
-// NumPy and the kernel ABI already agree: a C-contiguous (symbols, points)
+// A C-contiguous NumPy array of shape (symbols, points) already matches the
+// kernel ABI's column layout, so inputs and outputs are used without copying.
 namespace ddx::py {
 
 namespace pyb = pybind11;
@@ -33,12 +34,11 @@ using Array = pyb::array_t<double, pyb::array::c_style | pyb::array::forcecast>;
 }
 
 // Rank is at most (function, symbol, symbol) plus a batch axis, so a shape
-// never leaves the stack.
+// fits on the stack.
 using Shape = boost::container::static_vector<pyb::ssize_t, 4>;
 
-// The symbol list as text and as the interned Python strings a dict lookup
-// keys on: Interned, so CPython's dict probe hits pointer identity before it
-// compares characters.
+// The symbol names as text and as interned Python strings, so that dict
+// lookups match by pointer before comparing characters.
 class Symbols {
 public:
   explicit Symbols(std::span<const std::string> text)
@@ -60,8 +60,7 @@ public:
   [[nodiscard]] std::span<const pyb::object> keys() const noexcept {
     return keys_;
   }
-  // A fresh list over the keys already built, so an access costs increfs and
-  // never a PyUnicode.
+  // A fresh list over the existing keys, so no new strings are created.
   [[nodiscard]] pyb::list listed() const {
     return pyb::reinterpret_steal<pyb::list>(PySequence_List(listed_.ptr()));
   }
@@ -70,7 +69,7 @@ public:
 private:
   std::vector<std::string> text_;
   std::vector<pyb::object> keys_;
-  pyb::tuple listed_; // the keys again, as one sequence to copy per access
+  pyb::tuple listed_; // the keys as one tuple, copied into each listed()
 };
 
 class Point {
@@ -87,8 +86,8 @@ public:
     }
   }
 
-  // columns_ points into scalars_ and filled_, whose inline storage moves with
-  // the object; a Point stays where it was built.
+  // Not copyable, since columns_ points into the inline storage of scalars_ and
+  // filled_.
   Point(const Point &) = delete;
   Point &operator=(const Point &) = delete;
 
@@ -97,12 +96,11 @@ private:
   friend class PyCall;
   friend class PyRestricted;
 
-  // A direction, by position only: a covector is indexed by function, and
-  // functions have no names for a dict to key on.
+  // A direction given by position only, since functions have no names for a
+  // dict to key on.
   Point(const pyb::handle &x, std::size_t count) : columns_(count, nullptr) {
     from_array(x, count);
   }
-  // Not constexpr: boost::container::small_vector is not a constexpr container.
 
   [[nodiscard]] std::span<const double *const> columns() const {
     return {columns_.data(), columns_.size()};
@@ -110,14 +108,8 @@ private:
   [[nodiscard]] constexpr std::size_t size() const noexcept { return n_; }
   [[nodiscard]] constexpr bool batched() const noexcept { return batched_; }
 
-  // The common case: a dict of plain numbers at one point.  One lookup per
-  // symbol against an interned key, the value read as a double, and no numpy
-  // object anywhere -- where the general path below builds an Array per
-  // symbol.  np.float64 subclasses float, so it lands here too.
-  //
-  // False means "not this shape", not "bad input": anything else falls through
-  // to from_dict, which is what reports the errors.  A size mismatch is
-  // settled there too, so the two paths cannot disagree.
+  // Fast path for a dict of plain numbers at one point, with no NumPy objects.
+  // Returns false for any other input, leaving from_dict to report errors.
   [[nodiscard]] bool scalars_from_dict(const pyb::dict &d,
                                        std::span<const pyb::object> names) {
     if (d.size() != names.size()) {
@@ -137,7 +129,7 @@ private:
         slot = PyLong_AsDouble(v);
         if (slot == -1.0 && PyErr_Occurred()) {
           PyErr_Clear();
-          return false; // an int too big for a double: report from from_dict
+          return false; // too big for a double; from_dict reports it
         }
       } else {
         return false;
@@ -150,9 +142,8 @@ private:
     return true;
   }
 
-  // The general dict: arrays, batches, and everything the fast path declined.
-  // No prescan -- every symbol found plus a size match is already "every key
-  // is a symbol", the same argument the fast path makes.
+  // The general dict path, for arrays, batches and anything the fast path
+  // declined.
   void from_dict(const pyb::dict &d, const Symbols &symbols) {
     const auto names = symbols.keys();
     held_.reserve(names.size());
@@ -173,10 +164,10 @@ private:
       held_.push_back(std::move(a));
     }
     if (found != d.size()) {
-      fail_with(errc::unknown_symbol); // a key no symbol answers to
+      fail_with(errc::unknown_symbol); // a key that names no symbol
     }
     if (found != names.size()) {
-      fail_with(errc::wrong_arity); // a name is missing, which is not a typo
+      fail_with(errc::wrong_arity); // a symbol is missing
     }
 
     std::size_t spread = 0;
@@ -193,7 +184,8 @@ private:
       }
     }
 
-    // One flat run per broadcast scalar, sized before any pointer is taken.
+    // Each scalar broadcast over the batch gets a run in filled_, which is
+    // sized before any pointer into it is taken.
     filled_.resize(batched_ ? spread * n_ : 0);
     double *fill = filled_.data();
     for (auto [column, a] : std::views::zip(columns_, held_)) {
@@ -207,7 +199,7 @@ private:
     }
   }
 
-  // Rows are in symbol order
+  // An array whose rows are the symbols, in order.
   void from_array(const pyb::handle &x, std::size_t arity) {
     auto a = pyb::cast<Array>(x);
     if (a.ndim() != 1 && a.ndim() != 2) {
@@ -226,16 +218,15 @@ private:
   }
 
   boost::container::small_vector<const double *, 16> columns_;
-  boost::container::small_vector<double, 16> scalars_; // a dict of floats
-  boost::container::small_vector<Array, 2> held_;      // what columns_ reads
-  boost::container::small_vector<double, 16> filled_; // scalars over a batch
+  boost::container::small_vector<double, 16> scalars_; // fast-path values
+  boost::container::small_vector<Array, 2> held_;      // arrays columns_ reads
+  boost::container::small_vector<double, 16> filled_; // broadcast scalars
   std::size_t n_ = 1;
   bool batched_ = false;
 };
 
-// The pointer table the kernel ABI takes: one per output column, `n` apart.
-// The pointers go into the array's heap storage, so the table itself moving is
-// harmless.
+// The table of output column pointers the kernel ABI takes, `n` apart. They
+// point into heap storage, so moving the table is safe.
 class Columns {
 public:
   [[nodiscard]] std::span<double *const> rows() {
@@ -258,17 +249,15 @@ private:
   boost::container::small_vector<double *, 32> rows_;
 };
 
-// The ABI writes (columns, n) row-major, which is the same memory as the shape
-// the caller wants -- so the array is built at that shape once and never
-// reshaped.
+// The ABI writes (columns, n) row-major, which is already the memory of the
+// caller's shape, so the array is never reshaped.
 class Block : public Columns {
 public:
   Block(const Shape &shape, std::size_t columns, std::size_t n)
       : Block{Array{shape}, columns, n} {}
 
   [[nodiscard]] pyb::object array() && { return std::move(array_); }
-  // A bound call reads the same array on every call, where the allocating ones
-  // hand theirs over once and are done with it.
+  // A bound call reuses this array on every call instead of handing it over.
   [[nodiscard]] const Array &bound() const noexcept { return array_; }
 
 private:
@@ -277,8 +266,8 @@ private:
   Array array_;
 };
 
-// A dense output block.  Nothing hands its rows to the ABI, so the column
-// table is arithmetic rather than storage.
+// A dense output block. Its rows never go to the ABI, so column addresses are
+// computed rather than stored.
 class Dense {
 public:
   Dense(const Shape &shape, std::size_t n) : array_{Array{shape}}, n_{n} {

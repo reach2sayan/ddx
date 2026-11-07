@@ -25,26 +25,18 @@ namespace ddx::rt {
 
 inline constexpr std::size_t no_column = static_cast<std::size_t>(-1);
 
-// boost::dynamic_bitset, not vector<bool>: the colouring's pairwise overlap
-// test is the hot loop, and `intersects` is a word-at-a-time AND.
+// A dynamic_bitset because the colouring's hot loop is the pairwise
+// intersects() test, which ANDs a word at a time.
 using SymbolSet = boost::dynamic_bitset<>;
 using CouplingRows = std::vector<SymbolSet>;
 
-// `find_first`/`find_next`/`npos` is `begin`/`++`/`end` and dynamic_bitset
-// ships no iterator for it, so this is the one walk in the tree that has to be
-// written out.  Not `iota | filter`: that tests every clear bit the word skip
-// exists to skip, which is what SymbolSet was chosen over vector<bool> for.
-// Forward only -- there is no find_prev, and nothing walks backwards.
-//
-// `v2` -- the CRTP flavour -- and never the unqualified name or `v3`
 class SetBits : public boost::stl_interfaces::v2::proxy_iterator_interface<
                     SetBits, std::forward_iterator_tag, std::size_t> {
   using Interface = boost::stl_interfaces::v2::proxy_iterator_interface<
       SetBits, std::forward_iterator_tag, std::size_t>;
 
 public:
-  // Declaring the prefix form hides the postfix one the interface derives from
-  // it, and without that this is not even an input_iterator.
+  // Re-exposes the derived postfix ++, which the prefix declaration hides.
   using Interface::operator++;
 
   constexpr SetBits() noexcept = default;
@@ -55,7 +47,7 @@ public:
     at_ = bits_->find_next(at_);
     return *this;
   }
-  // A spent iterator is npos, which is what a default-constructed one holds.
+  // An exhausted iterator holds npos, which equals the default-constructed end.
   [[nodiscard]] bool operator==(const SetBits &other) const noexcept {
     return at_ == other.at_;
   }
@@ -66,41 +58,34 @@ private:
 };
 static_assert(std::forward_iterator<SetBits>);
 
-// The symbols a row couples, ascending.
+// The indices of the set bits, in ascending order.
 [[nodiscard]] inline auto set_bits(const SymbolSet &s) {
   return std::ranges::subrange{SetBits{s}, SetBits{}};
 }
 
-// Always colours-major and n wide, said once so `c * n + i` is not respelled.
+// Views a flat colour-major block as a colours x n matrix.
 [[nodiscard]] constexpr auto by_colour(auto &&flat, std::size_t colours,
                                        std::size_t n) {
   return impl::md::mdspan{std::ranges::data(flat),
                           impl::md::dextents<std::size_t, 2>{colours, n}};
 }
 
-// A stored cell of a derivative block: where it belongs in the dense matrix,
-// and where it is actually kept.  CSR by row and colour-major are two ways of
-// leaving cells out, and both answer this.
+// A stored cell of a derivative block: its dense (row, column) position and
+// the slot where its value is kept in the compressed block.
 struct Cell {
   std::size_t row;
   std::size_t column;
   std::size_t slot;
 };
 
-// Which cells of a derivative block exist, CSR by row.  Read off a swept row
-// rather than propagated: a partial the sweep folded to the zero constant *is*
-// structurally zero, so this is exact where `coupling_pattern` is conservative.
-//
-// The block is its rows: `for (const Row &r : pattern.rows())`, and
-// `cells(values)` zips those rows against a value block.  Nothing outside reads
-// `rowptr`.
+// The nonzero cells of a derivative block in CSR form, read off a swept row.
+// It is exact, whereas coupling_pattern is conservative.
 struct Sparsity {
   std::vector<std::size_t> rowptr; // rows() + 1, or empty for no rows
   std::vector<std::uint32_t> col;  // nonzeros(), ascending within a row
   std::size_t columns = 0;
 
-  // One row: the columns it holds, and where their values sit in a block laid
-  // out the way `col` is.
+  // One row's columns and the offset of its first value in the value block.
   struct Row : std::ranges::view_interface<Row> {
     std::span<const std::uint32_t> cols;
     std::size_t offset = 0; // this row's first cell in the value block
@@ -125,8 +110,7 @@ struct Sparsity {
     return col.size();
   }
 
-  // Every stored cell, row-major -- the walk the call sites used to rebuild
-  // from a count and a subscript.
+  // Every stored cell, in row-major order.
   [[nodiscard]] constexpr auto entries() const {
     const auto stored = [](const Row &r) {
       return std::views::zip(std::views::iota(r.offset), r.cols) |
@@ -138,13 +122,11 @@ struct Sparsity {
     };
     return rows() | std::views::transform(stored) | std::views::join;
   }
-  // The same walk against a block laid out the way `col` is: (row, column,
-  // value), which is what a caller scattering one back to a dense matrix wants.
+  // Every stored cell as a (row, column, value) tuple read from a value block.
   [[nodiscard]] constexpr auto
   cells(std::ranges::random_access_range auto &&values) const {
-    // Into the closure by value, never by reference.  `views::all` copies a
-    // view and binds a container, so both spellings own their way back to the
-    // block.
+    // Captured through views::all so that a view is copied and a container
+    // is referenced, never dangling either way.
     return entries() |
            std::views::transform(
                [block = std::views::all(DDX_FWD(values))](const Cell &c) {
@@ -152,9 +134,8 @@ struct Sparsity {
                });
   }
 
-  // Where (i, j) sits in the compressed block, or nullopt for a cell the
-  // structure says cannot be nonzero.  A search, not a walk: the one thing the
-  // rows above do not answer.
+  // The slot of (i, j) in the compressed block, or nullopt for a structural
+  // zero.
   [[nodiscard]] constexpr std::optional<std::size_t>
   at(std::size_t i, std::size_t j) const noexcept {
     const auto present = rows()[i];
@@ -167,20 +148,19 @@ struct Sparsity {
   }
 };
 
-// Two columns share a colour only when no row couples them, so one sweep can
-// seed all of a colour's columns and the results still separate.
+// Columns share a colour only when no row couples them, so one sweep can seed
+// a whole colour and the results still separate.
 struct Colouring {
   std::vector<std::size_t> colour;  // per symbol
   std::vector<std::size_t> scatter; // count() * n; column a (colour, row) owns
-  // count() * n again, but the other question: *where* (colour, row) is stored,
-  // or no_column for a cell no column of that colour owns.  Those are the ones
-  // a sweep computes for nobody, so they get no storage and no output column.
+  // count() * n; the storage slot of (colour, row), or no_column when no
+  // column of that colour owns the cell, so it gets no storage.
   std::vector<std::size_t> cell;
 
   [[nodiscard]] constexpr std::size_t count() const noexcept {
     return colour.empty() ? 0 : scatter.size() / colour.size();
   }
-  // The compressed block's width: how many cells any column owns.
+  // The compressed block's width, which is the number of owned cells.
   [[nodiscard]] constexpr std::size_t width() const noexcept {
     return static_cast<std::size_t>(std::ranges::count_if(
         cell, [](std::size_t k) { return k != no_column; }));
@@ -188,14 +168,13 @@ struct Colouring {
   [[nodiscard]] constexpr auto colours() const noexcept {
     return std::views::iota(0uz, count());
   }
-  // The symbols one sweep of colour `c` seeds together.
   [[nodiscard]] constexpr auto columns_of(std::size_t c) const {
     return std::views::iota(0uz, colour.size()) |
            std::views::filter(
                [this, c](std::size_t j) { return colour[j] == c; });
   }
-  // The cells colour `c` owns -- what one sweep's result goes into.  A row of
-  // that colour that no column owns is computed for nobody, and is absent.
+  // The cells that one sweep of colour c fills; rows no column owns are
+  // skipped.
   [[nodiscard]] constexpr auto owned_cells(std::size_t c) const {
     const auto n = colour.size();
     const auto owner = by_colour(scatter, count(), n);
@@ -207,15 +186,14 @@ struct Colouring {
            std::views::filter(
                [](const Cell &owned) { return owned.column != no_column; });
   }
-  // Every stored cell, colour-major.  What a caller scatters a compressed block
-  // back to (i, j) with, rather than asking `cell_of` about every pair.
+  // Every stored cell, in colour-major order.
   [[nodiscard]] constexpr auto entries() const {
     return colours() | std::views::transform([this](std::size_t c) {
              return owned_cells(c);
            }) |
            std::views::join;
   }
-  // Where H(i, j) is stored, or nullopt for a cell the colouring calls zero.
+  // The slot where H(i, j) is stored, or nullopt for a cell known to be zero.
   [[nodiscard]] constexpr std::optional<std::size_t>
   cell_of(std::size_t i, std::size_t j) const {
     const auto n = colour.size();
@@ -229,17 +207,8 @@ struct Colouring {
 
 namespace detail {
 
-// `rows` is never `a` or `b` -- the supports live in their own vector -- so
-// setting bits as the sets are walked cannot disturb the walk.
-//
-// Nested, not `cartesian_product(set_bits(a), set_bits(b))`: measured on this
-// box, the product view costs 7-21% over 64 to 1024 symbols at every density,
-// where the nested walk is a wash against the callback it replaced.  The
-// composed spelling reads better and this is `coupling_pattern`'s hot loop.
-//
-// Ranges of symbol indices only: Boost 1.92's dynamic_bitset is a range too,
-// of bools, and a non-const SymbolSet would bind here over the overload below
-// and read every bit as symbol 0 or 1.
+// Nested loops, as views::cartesian_product measured 7-21% slower here. The
+// size_t constraint keeps a dynamic_bitset, a range of bools, out of this one.
 template <std::ranges::forward_range A, std::ranges::forward_range B>
   requires std::same_as<std::ranges::range_value_t<A>, std::size_t> &&
            std::same_as<std::ranges::range_value_t<B>, std::size_t>
@@ -258,9 +227,8 @@ static_assert(![]<typename S = SymbolSet>() {
   return requires(CouplingRows &r, S &s) { couple<S &, S &>(r, s, s); };
 }());
 
-// One element's support, sorted: a vector built element by element has one
-// of these per element, a few symbols each, where a SymbolSet per element
-// would be n bits each.
+// One vector element's sorted support. Usually a few symbols, so this is
+// smaller than an n-bit SymbolSet per element.
 using Indices = boost::container::small_vector<std::size_t, 2>;
 
 [[nodiscard]] inline Indices indices_of(const SymbolSet &s) {
@@ -274,37 +242,35 @@ using Indices = boost::container::small_vector<std::size_t, 2>;
 
 } // namespace detail
 
-// rows[i][j] is true when d2f/dxi dxj may be nonzero.  Conservative and
-// symmetric, as hessian_pattern is: a superset costs sweeps, never correctness.
+// rows[i][j] is true when d2f/dxi dxj may be nonzero. The pattern is
+// symmetric and conservative: a superset costs sweeps, never correctness.
 template <impl::Numeric T>
 [[nodiscard]] CouplingRows coupling_pattern(const Arena<T> &b, NodeId root) {
   const std::size_t n = b.symbols().size();
   CouplingRows rows(n, SymbolSet(n));
 
-  // Only what the root reaches: another expression sharing the arena would
-  // otherwise contribute couplings this one does not have.
+  // Restrict to nodes the root reaches, ignoring other expressions in the
+  // arena.
   const auto live = detail::reachable(b, std::span{&root, 1});
 
-  // One set per node of the cone, by rank among its ids; operands come first,
-  // so theirs are always ranked by the time a node reads them.
+  // One support set per reachable node, indexed by rank. Operands precede
+  // their users, so they are always ranked first.
   std::vector<NodeId> rank(b.size(), no_node);
   std::vector<SymbolSet> support;
   support.reserve(static_cast<std::size_t>(std::ranges::count(live, true)));
   const auto of = [&](NodeId u) -> const SymbolSet & {
     return support[rank[u]];
   };
-  // By rank, a vector's support element by element where its elements are
-  // built one by one -- a Pack, a constant, an elementwise Map or Zip of
-  // such -- and empty where only the union is known.  A Gather reads one
-  // element, so x[i] * x[j] couples i and j, not all of x.
+  // Per-element supports of a vector where they are known, or empty. They let
+  // x[i] * x[j] couple only i and j rather than all of x.
   using Elements = std::vector<detail::Indices>;
   std::vector<Elements> elements;
   elements.reserve(support.capacity());
   const auto each = [&](NodeId u) -> const Elements & {
     return elements[rank[u]];
   };
-  // What a field op couples between the supports of its operands; false
-  // for any other op, which couples their union with itself.
+  // Couples the operands of a field op and returns true. Returns false for any
+  // other op, whose caller then couples the union with itself.
   const auto step = [&rows](OpCode op, const auto &l, const auto &r) {
     if (op == OpCode::Mul) {
       detail::couple(rows, l, r);
@@ -314,7 +280,7 @@ template <impl::Numeric T>
     }
     return op == OpCode::Add || op == OpCode::Mul || op == OpCode::Div;
   };
-  // A binary op element by element, coupling as the Binary arm below does.
+  // Applies a binary op element by element, coupling like the Binary arm.
   const auto zipped = [&](OpCode op, const Elements &l,
                           const Elements &r) -> std::optional<Elements> {
     if (l.empty() || r.size() != l.size()) {
@@ -332,7 +298,7 @@ template <impl::Numeric T>
     }
     return out;
   };
-  // Element by element, or nullopt to take the arms below.
+  // Per-element supports for node v, or nullopt to use the whole-node arms.
   const auto elementwise = [&](NodeId v, const Node<T> &node,
                                OpCode op) -> std::optional<Elements> {
     switch (node.op) {
@@ -351,22 +317,29 @@ template <impl::Numeric T>
       }
       return each(node.in[0]).empty() ? std::nullopt
                                       : std::optional{each(node.in[0])};
-    case OpCode::Zip:
-      return zipped(op, each(node.in[0]), each(node.in[1]));
-    case OpCode::Scale: // s * v: s against each element
+    case OpCode::Zip: {
+      const auto [left, right] = detail::operands<OpCode::Zip>(node);
+      return zipped(op, each(left), each(right));
+    }
+    case OpCode::Scale: { // s * v: s against each element
+      const auto [scalar, vec] = detail::operands<OpCode::Scale>(node);
       return zipped(OpCode::Mul,
-                    Elements(each(node.in[1]).size(),
-                             detail::indices_of(of(node.in[0]))),
-                    each(node.in[1]));
-    case OpCode::VSelect: // chooses, as linear as an Add
-      return zipped(OpCode::Add, each(node.in[1]), each(node.in[2]));
+                    Elements(each(vec).size(), detail::indices_of(of(scalar))),
+                    each(vec));
+    }
+    case OpCode::VSelect: { // a selection couples like an Add
+      const auto [cond, then, otherwise] =
+          detail::operands<OpCode::VSelect>(node);
+      return zipped(OpCode::Add, each(then), each(otherwise));
+    }
     case OpCode::AddAt: { // linear: v with element i plus a scalar
-      if (each(node.in[0]).empty()) {
+      const auto [vec, scalar] = detail::operands<OpCode::AddAt>(node);
+      if (each(vec).empty()) {
         return std::nullopt;
       }
-      Elements out = each(node.in[0]);
+      Elements out = each(vec);
       auto &e = out[detail::get<Element>(node).value];
-      e = detail::united(e, detail::indices_of(of(node.in[1])));
+      e = detail::united(e, detail::indices_of(of(scalar)));
       return out;
     }
     default:
@@ -384,8 +357,7 @@ template <impl::Numeric T>
       std::ranges::for_each(ids, [&](NodeId u) { here |= of(u); });
     };
     const auto &node = b[v];
-    // A Map or Zip couples as its inner op does, element by element where
-    // its operands' elements are known, else over the whole vector.
+    // A Map or Zip couples as its inner op does.
     const OpCode op = detail::effective_op(node);
     // u . w couples each element of u with the same element of w only.
     if (node.op == OpCode::Dot && !each(node.in[0]).empty() &&
@@ -413,9 +385,8 @@ template <impl::Numeric T>
       if (node.op == OpCode::Var) {
         here.set(detail::get<Slot>(node).value);
       } else if (node.op == OpCode::Implicit) {
-        // Whatever its residual reads, and nonlinearly: z is a root, not a
-        // sum.  The sweep's dz/dx nodes are not in the arena yet, so the
-        // closure is read here rather than discovered.
+        // An implicit root depends nonlinearly on every symbol its residual
+        // reads, so that whole set is coupled with itself.
         const NodeId f = b.closures()[detail::get<Slot>(node).value];
         const auto through = detail::reachable(b, std::span{&f, 1});
         for (const auto [u, leaf] : b.nodes() | std::views::enumerate) {
@@ -428,19 +399,16 @@ template <impl::Numeric T>
       break;
     case Kind::Unary:
       here = of(node.in[0]);
-      // Negation is linear; anything else couples its argument with itself.
       if (op != OpCode::Neg) {
         detail::couple(rows, here, here);
       }
       break;
     case Kind::Extern:
-      // Nonlinear in every argument.
       unite(arguments(b, v));
       detail::couple(rows, here, here);
       break;
     case Kind::Nary:
-      // The chain's couplings, step by step: the running value's support
-      // against each term's.  A sum's steps couple nothing.
+      // Each step couples the running support with the next term's.
       for (const auto [k, t] : arguments(b, v) | std::views::enumerate) {
         if (k > 0) {
           step(fold_op(op), here, of(t));
@@ -449,14 +417,16 @@ template <impl::Numeric T>
       }
       break;
     case Kind::Ternary:
-      // As linear as an Add: it chooses between two derivatives rather than
-      // combining them.
-      here = of(node.in[1]);
-      here |= of(node.in[2]);
+      // A select couples like an Add, since it only chooses between branches.
+      {
+        const auto [cond, then, otherwise] =
+            detail::operands<OpCode::Select>(node.in);
+        here = of(then);
+        here |= of(otherwise);
+      }
       break;
     case Kind::Binary:
-      // Zero derivative everywhere it exists, so no support and no coupling --
-      // the conservative arm below cost a colour or two per tested quantity.
+      // Comparisons have zero derivative, so they get no support or coupling.
       if (op == OpCode::Lt || op == OpCode::Le) {
         break;
       }
@@ -467,10 +437,8 @@ template <impl::Numeric T>
       }
       break;
     case Kind::Tensor:
-      // One support for the whole row, conservatively: the union of what its
-      // operands read, a table's empty.  Scale, Dot, MatVec and Outer couple
-      // as a product does, the rest are linear; a Map or Zip took its inner
-      // op's arm above.
+      // Conservatively the union of the operands' supports. Products couple
+      // their two operands; the remaining tensor ops are linear.
       detail::for_each_operand(b, v, [&](NodeId u) { here |= of(u); });
       if (op == OpCode::Scale || op == OpCode::Dot || op == OpCode::MatVec ||
           op == OpCode::Outer) {
@@ -482,11 +450,8 @@ template <impl::Numeric T>
   return rows;
 }
 
-// The cells a layout stores -- a Sparsity's or a Colouring's, each answering
-// entries() -- into a dense row-major block n wide, each cell `points` long:
-// cell(slot) is where a stored cell's values start, dense(i * n + j) where
-// they go.  The zeros are the caller's fill.  The one scatter the point calls
-// and the Python arrays share.
+// Copies each stored cell of a Sparsity or Colouring, points values long, into
+// a dense row-major n-wide block. The caller zero-fills the block first.
 constexpr void scatter(const auto &layout, auto &&cell, auto &&dense,
                        std::size_t n, std::size_t points) {
   for (const Cell &c : layout.entries()) {
@@ -495,9 +460,10 @@ constexpr void scatter(const auto &layout, auto &&cell, auto &&dense,
   }
 }
 
-// Columns j and k conflict iff their coupling rows overlap: the CPR colouring,
-// smallest-last ordered.  Ref: Curtis, Powell & Reid, J. Inst. Math. Appl.
-// 13(1) (1974) 117; Coleman & Moré, SIAM J. Numer. Anal. 20(1) (1983) 187.
+// CPR column colouring in smallest-last order; columns conflict when their
+// coupling rows overlap.
+// Ref: Curtis, Powell & Reid, J. Inst. Math. Appl. 13(1) (1974) 117.
+// Ref: Coleman & Moré, SIAM J. Numer. Anal. 20(1) (1983) 187.
 [[nodiscard]] DDX_API Colouring colour_columns(const CouplingRows &rows);
 
 } // namespace ddx::rt

@@ -42,7 +42,8 @@
 namespace ddx::jit {
 namespace {
 
-// Global LLVM state, and a process may hold more than one Compiler.
+// Target initialisation is global LLVM state, and a process may hold more than
+// one Compiler, so it runs once.
 void init_native_target_once() {
   [[maybe_unused]] static const bool once = [] {
     llvm::InitializeNativeTarget();
@@ -51,7 +52,7 @@ void init_native_target_once() {
   }();
 }
 
-// The one seam between LLVM's error model and ours.
+// Converts an llvm::Error into a compile_error.
 [[nodiscard]] compile_error as_error(const errc code, const llvm::Twine &what,
                                      llvm::Error e) {
   return compile_error{.code = code,
@@ -59,8 +60,8 @@ void init_native_target_once() {
                            (what + ": " + llvm::toString(std::move(e))).str()};
 }
 
-// An llvm::Expected or llvm::Error as a compile_result, its failure described
-// by `what`: what DDX_TRY and DDX_CHECK read LLVM's answers through.
+// Converts an llvm::Expected or llvm::Error into a compile_result, so that
+// DDX_TRY and DDX_CHECK can consume LLVM results.
 template <typename X>
 [[nodiscard]] compile_result<X> lifted(llvm::Expected<X> x, const errc code,
                                        const llvm::Twine &what) {
@@ -77,9 +78,8 @@ template <typename X>
   return {};
 }
 
-// A Call row of the opcode tables as the runtime symbol its spelling names at
-// T, through the functor the row carries; a row spelled any other way defines
-// nothing.  A template, so the other arity's lambda is never formed.
+// Defines the runtime symbol for a Call opcode using the opcode's functor.
+// Opcodes of any other form define nothing.
 template <CKernelScalar T, rt::OpCode Op, typename Functor>
 void define_call(auto &def) {
   if constexpr (rt::spelling_of(Op).form == rt::Form::Call) {
@@ -95,13 +95,13 @@ void define_call(auto &def) {
   }
 }
 
-// A kernel over tensor rows is emitted at a power of two up to this, the
+// Tensor kernels use a power-of-two width up to this limit, matching the
 // widths the interpreter's tensor step is instantiated at.
 constexpr std::size_t tensor_widths = 5;
 constexpr unsigned widest_tensor_lanes = 1u << (tensor_widths - 1);
 
-// The interpreter's step for node v, over the kernel's tapes: the TapeView
-// Core::interpret builds, at the kernel's width.
+// Runs the interpreter's step for node v on the kernel's tapes, at the
+// kernel's width.
 template <CKernelScalar T>
 void tensor_step(const rt::detail::TensorCall<T> &c, rt::NodeId v,
                  std::size_t lanes, T *tape, T *vtape) {
@@ -117,7 +117,7 @@ void tensor_step(const rt::detail::TensorCall<T> &c, rt::NodeId v,
       });
 }
 
-// The sweep's scatter of every output block, `live` of the kernel's lanes.
+// Scatters every output block for the first `live` of the kernel's lanes.
 template <CKernelScalar T>
 void tensor_store(const rt::detail::TensorCall<T> &c, T *const *f, T *const *g,
                   T *const *h, std::size_t i, std::size_t live,
@@ -133,7 +133,7 @@ void tensor_store(const rt::detail::TensorCall<T> &c, T *const *f, T *const *g,
                      i, lanes, live);
 }
 
-// Every name a T kernel calls out to: sin for double, sinf for float.
+// Defines every runtime symbol a kernel over T calls, such as sin or sinf.
 template <CKernelScalar T> void define_scalar(auto &def) {
 #define DDX_JIT_RUNTIME(fn, Op, label, functor, ...)                           \
   define_call<T, rt::OpCode::Op, functor>(def);
@@ -177,11 +177,8 @@ template <CKernelScalar T> void define_scalar(auto &def) {
       });
 }
 
-// What a kernel calls that is not an intrinsic: every Call row of the
-// spelling table, through the functor its opcode row names, and the extern
-// trampoline.  Defined outright: GetForCurrentProcess resolves whatever a
-// loaded module exports, which need not be the libm this TU was compiled
-// against.
+// Defines every non-intrinsic callee explicitly, because the process symbol
+// search could resolve to a different libm than this file was compiled with.
 [[nodiscard]] llvm::Error define_runtime(llvm::orc::ExecutionSession &es,
                                          llvm::orc::JITDylib &jd,
                                          const llvm::DataLayout &dl) {
@@ -199,8 +196,8 @@ template <CKernelScalar T> void define_scalar(auto &def) {
   return jd.define(llvm::orc::absoluteSymbols(std::move(syms)));
 }
 
-// In *this process*, not whether the target could have one: promising a vector
-// sin that cannot be called fails at link.
+// `have` says whether libmvec loaded in this process; promising a vector sin
+// that cannot be resolved fails at link time.
 [[nodiscard]] bool want_veclib(const Options &opt, const bool have) {
   return have && opt.codegen.veclib == VecLib::Libmvec;
 }
@@ -216,9 +213,8 @@ llvm::TargetLibraryInfoImpl target_library_info(const llvm::Triple &triple,
   return tlii;
 }
 
-// The widest fixed width the vector library serves a transcendental at T: LLVM
-// 20's libmvec table stops at four doubles, so an AVX-512 host's eight-wide
-// intrinsic has no library form and unrolls to scalar calls.
+// The widest vector width libmvec provides for T. LLVM 20 stops at four
+// doubles, so wider AVX-512 calls would fall back to scalar libm.
 template <CKernelScalar T>
 [[nodiscard]] unsigned library_lanes(const llvm::Triple &triple) {
   const auto tlii = target_library_info(
@@ -229,8 +225,8 @@ template <CKernelScalar T>
   return std::max(1u, static_cast<unsigned>(fixed.getFixedValue()));
 }
 
-// Asked of the target's cost model rather than a feature list, so
-// prefer-256-bit parts answer 256 as the backend would split them anyway.
+// Asks the target's cost model rather than a feature list, so CPUs that
+// prefer 256-bit vectors report 256.
 [[nodiscard]] unsigned vector_bits(llvm::orc::JITTargetMachineBuilder machine) {
   auto tm = machine.createTargetMachine();
   if (!tm) {
@@ -248,9 +244,8 @@ template <CKernelScalar T>
   return std::max(64u, static_cast<unsigned>(bits.getFixedValue()));
 }
 
-// One straight-line block the graph has already shared, so all the middle end
-// can do is fold.  A vector library rewrites the lane intrinsics to its own
-// entry points here; with none the backend unrolls them into scalar libm calls.
+// Runs the optimisation pipeline. With libmvec, vector intrinsics are rewritten
+// to its entry points; otherwise the backend unrolls them into scalar calls.
 void optimize(llvm::Module &m, llvm::TargetMachine &tm, const Options &opt,
               const bool have_libmvec) {
   const llvm::Triple &triple = tm.getTargetTriple();
@@ -262,16 +257,15 @@ void optimize(llvm::Module &m, llvm::TargetMachine &tm, const Options &opt,
   llvm::CGSCCAnalysisManager cgam;
   llvm::ModuleAnalysisManager mam;
 
-  // The loop is already emitted `lanes` wide, and the loop vectoriser pays for
-  // an alias check between every pair of columns and then declines.  False is
-  // "only where forced": a tensor loop's metadata still asks for it.
+  // The point loop is already vectorised, so the loop vectoriser runs only on
+  // tensor loops whose metadata forces it.
   llvm::PipelineTuningOptions pto;
   pto.SLPVectorization = opt.codegen.slp_vectorize;
   pto.LoopVectorization = false;
 
   llvm::PassBuilder pb(&tm, pto);
-  // Before registerFunctionAnalyses, which would otherwise install the default
-  // llvm::TargetLibraryAnalysis and with it an empty vector-function table.
+  // Must precede registerFunctionAnalyses, which would otherwise install a
+  // TargetLibraryAnalysis with an empty vector-function table.
   fam.registerPass([&] { return llvm::TargetLibraryAnalysis(tlii); });
   pb.registerModuleAnalyses(mam);
   pb.registerCGSCCAnalyses(cgam);
@@ -279,7 +273,6 @@ void optimize(llvm::Module &m, llvm::TargetMachine &tm, const Options &opt,
   pb.registerLoopAnalyses(lam);
   pb.crossRegisterProxies(lam, fam, cgam, mam);
 
-  // Not constexpr in LLVM, so a static table rather than a switch.
   static const std::array levels{
       llvm::OptimizationLevel::O0, llvm::OptimizationLevel::O1,
       llvm::OptimizationLevel::O2, llvm::OptimizationLevel::O3};
@@ -297,8 +290,8 @@ void optimize(llvm::Module &m, llvm::TargetMachine &tm, const Options &opt,
   mpm.run(m, mam);
 }
 
-// A tensor loop is marked for the vectoriser, which says so on stderr when it
-// declines one; that is the loop running scalar, not an error.
+// Silences the vectoriser's stderr notes when it declines a tensor loop, since
+// the loop then simply runs scalar.
 void quiet_vectoriser(llvm::LLVMContext &ctx) {
   ctx.setDiagnosticHandlerCallBack(
       [](const llvm::DiagnosticInfo *d, void *) {
@@ -317,36 +310,33 @@ void quiet_vectoriser(llvm::LLVMContext &ctx) {
 
 } // namespace
 
-// `self` is what a Kernel holds a share of, so the code outlives every
-// Compiler that named it.
+// Each Kernel holds a shared_ptr to Impl, so its code outlives the Compiler.
 struct Compiler::Impl {
   std::unique_ptr<llvm::orc::LLJIT> jit;
-  // A recipe, not a machine: TargetMachine caches subtargets in an
-  // unsynchronised map, so every compile stamps its own.
+  // A builder rather than a TargetMachine, which caches subtargets in an
+  // unsynchronised map; each compile creates its own machine.
   std::optional<llvm::orc::JITTargetMachineBuilder> machine;
-  // The only shared mutable state: LLJIT is synchronised, but two threads
-  // naming a module alike would hand it a duplicate symbol.
+  // Gives each kernel a unique name, so that concurrent compiles never define
+  // the same symbol twice.
   std::atomic<unsigned> counter{0};
-  bool libmvec = false; // Whether the vector forms resolve here
-  unsigned bits = 64;   // The host's vector register, in bits
-  // The widest the vector library serves: double's, then float's.
+  bool libmvec = false; // Whether libmvec loaded in this process
+  unsigned bits = 64;   // The host's vector register width in bits
+  // The widest libmvec width for double, then for float.
   std::array<unsigned, 2> veclib_lanes{1, 1};
 
   [[nodiscard]] static compile_result<std::shared_ptr<Impl>> bring_up() {
     init_native_target_once();
     auto impl = std::make_shared<Impl>();
 
-    // Parity with the project's -march=native.
+    // Targets the host CPU, matching the project's -march=native.
     DDX_TRY(jtmb, lifted(llvm::orc::JITTargetMachineBuilder::detectHost(),
                          errc::jit_target, "detecting the host"));
     impl->bits = vector_bits(*jtmb);
     impl->veclib_lanes = {library_lanes<double>(jtmb->getTargetTriple()),
                           library_lanes<float>(jtmb->getTargetTriple())};
 
-    // Not setNumCompileThreads: the backend runs on the thread that asked, and
-    // no idle pool is spawned.  The recipe is copied once the builder has set
-    // what its linker needs -- JITLink's small code model and PIC; the JIT
-    // default is the large model, a 64-bit load per constant.
+    // Copy the builder after prepareForConstruction sets JITLink's small code
+    // model; the default large model costs a 64-bit load per constant.
     llvm::orc::LLJITBuilder builder;
     builder.setJITTargetMachineBuilder(std::move(*jtmb));
     DDX_CHECK(lifted(builder.prepareForConstruction(), errc::jit_target,
@@ -360,7 +350,7 @@ struct Compiler::Impl {
     const llvm::DataLayout &dl = impl->jit->getDataLayout();
     const char prefix = dl.getGlobalPrefix();
 
-    // Before the generators: a definition here beats anything they would find.
+    // Defined before the generators are added, so these definitions win.
     DDX_CHECK(lifted(define_runtime(impl->jit->getExecutionSession(), jd, dl),
                      errc::jit_target, "defining libm"));
 
@@ -371,23 +361,21 @@ struct Compiler::Impl {
                errc::jit_target, "opening the process symbols"));
     jd.addGenerator(std::move(*procs));
 
-    // Not loaded in a program that never called it, so the generator above
-    // cannot see it -- and loaded even where the default declines to use it.
+    // libmvec is loaded explicitly, since the process search cannot see it
+    // unless the program already uses it.
     if (auto vec = llvm::orc::DynamicLibrarySearchGenerator::Load(
             "libmvec.so.1", prefix)) {
       jd.addGenerator(std::move(*vec));
       impl->libmvec = true;
     } else {
-      // Not an error: it leaves the transcendentals scalar, nothing more.
+      // Without libmvec the transcendentals simply stay scalar.
       llvm::consumeError(vec.takeError());
     }
     return impl;
   }
 
-  // A derived width is the host's, or under a vector library the widest it
-  // serves, so it never asks for a call that is not there; a stated width is
-  // taken as stated.  Every width gives the same bits, so a tensor graph
-  // rounds down to one its step is instantiated at.
+  // A stated width is used as is; otherwise the host width, capped by libmvec.
+  // Tensor graphs round down to a width the tensor step is instantiated at.
   template <CKernelScalar T>
   [[nodiscard]] unsigned lanes(const Options &opt, const bool tensors) const {
     const unsigned host = bits / unsigned{8 * sizeof(T)};
@@ -398,7 +386,6 @@ struct Compiler::Impl {
     return tensors ? std::bit_floor(std::min(w, widest_tensor_lanes)) : w;
   }
 
-  // Emitted and optimised.
   template <CKernelScalar T>
   [[nodiscard]] compile_result<std::unique_ptr<llvm::Module>>
   module(llvm::LLVMContext &ctx, const rt::Graph<T> &g, const Options &opt,
@@ -409,7 +396,7 @@ struct Compiler::Impl {
                                  jit->getDataLayout(),
                                  (*tm)->getTargetTriple().str());
     if (!m) {
-      // The emitter has already written the verifier's own diagnosis.
+      // The verifier has already printed its diagnosis.
       return std::unexpected{
           compile_error{.code = errc::jit_verify,
                         .detail = "the emitted module failed verification"}};
@@ -418,13 +405,13 @@ struct Compiler::Impl {
     return m;
   }
 
-  // At the codegen level for the backend, and at the default for the IR
-  // pipeline, whose cost model reads the machine's level.
+  // The backend uses the requested codegen level; the IR pipeline uses the
+  // default, since its cost model reads the machine's level.
   [[nodiscard]] compile_result<std::unique_ptr<llvm::TargetMachine>>
   target(const std::optional<OptLevel> codegen = {}) const {
     auto recipe = *machine;
     if (codegen) {
-      // OptLevel is LLVM's own 0..3 scale.
+      // OptLevel uses LLVM's own 0 to 3 scale.
       recipe.setCodeGenOptLevel(
           llvm::CodeGenOpt::getLevel(std::to_underlying(*codegen))
               .value_or(llvm::CodeGenOptLevel::Default));

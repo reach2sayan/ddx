@@ -15,13 +15,12 @@
 #include <string_view>
 #include <vector>
 
-// Any CBLAS under the tensor nodes -- OpenBLAS, MKL, Accelerate, the reference
-// netlib -- as a consumer writes it.  A table's matrices are column-major with
-// contiguous columns, so the leading dimension is the row count.
+// Any CBLAS under the tensor nodes, as a consumer writes it; table matrices are
+// column-major and contiguous, so the leading dimension is the row count.
 namespace {
 
-// The reference rows, with the three BLAS has a routine for replaced: the d
-// routines at double, the s ones at float.
+// The reference rows with BLAS routines swapped in where BLAS has one, using
+// the d routines for double and the s routines for float.
 template <typename T> struct CblasKernels : ddx::rt::reference::Kernels<T> {
   using typename ddx::rt::reference::Kernels<T>::In;
   using typename ddx::rt::reference::Kernels<T>::Out;
@@ -67,7 +66,7 @@ template <typename T> struct CblasKernels : ddx::rt::reference::Kernels<T> {
 template <typename T>
 constexpr auto cblas_table = ddx::rt::tensor_kernel_table<CblasKernels<T>, T>();
 
-// Relative to the scalar's own rounding.
+// The tolerance is relative to the scalar's own rounding.
 template <typename T> constexpr double tolerance = 1e-13;
 template <> constexpr double tolerance<float> = 1e-4;
 
@@ -88,8 +87,8 @@ std::vector<T> filled(std::size_t count, std::size_t seed) {
          std::ranges::to<std::vector<T>>();
 }
 
-// The same numbers as the reference table to rounding, through both products
-// and the transposed one the reverse sweep reads.
+// CBLAS matches the reference table to rounding through both products and the
+// transposed one that the reverse sweep reads.
 template <typename T> void cblas_agrees_with_the_reference_table() {
   constexpr std::size_t n = 30;
   const auto m = filled<T>(n * n, 3);
@@ -121,7 +120,7 @@ TEST(RtCblas, FloatKernelsAgreeWithTheReferenceTable) {
   cblas_agrees_with_the_reference_table<float>();
 }
 
-// gemm is reached only where the dense Hessian's shape algebra runs out, so it
+// gemm is only reached where the dense Hessian's shape algebra runs out, so it
 // is checked against the reference row directly.
 template <typename T> void gemm_agrees_with_the_reference_row() {
   constexpr std::size_t r = 7, k = 5, c = 4;

@@ -12,14 +12,12 @@
 #include <type_traits>
 #include <utility>
 
-// The type-level half of the simplifier: ops/algebra.hpp's predicates answered
-// with type traits, run by the operator factories in values.hpp so a tree is
-// born folded.  rt/arena.hpp answers the same predicates by node id.
+// The type-level simplifier, answering ops/algebra.hpp's predicates with type
+// traits so that values.hpp builds trees already folded.
 namespace ddx::impl::detail {
 
-// Type identity is structural identity only for a stateless tree.  A Lit<T>
-// holds its number at run time and is one type whatever it holds, so x*3.0 and
-// x*5.0 are the same type and must not cancel.
+// Type identity means tree identity only for an empty type. A Lit<T> stores a
+// run-time number, so x*3.0 and x*5.0 share a type but must not cancel.
 template <typename A, typename B>
 inline constexpr bool same_tree_v = std::same_as<A, B> && std::is_empty_v<A>;
 
@@ -29,7 +27,7 @@ template <Numeric T, CExpression N, CExpression D, typename X>
 inline constexpr bool is_over_v<Expression<DivideOp<T>, N, D>, X> =
     same_tree_v<D, X>;
 
-// Only a Lit carries its value in the type; a Constant<T> never folds.
+// Only a Lit carries its value in the type, so a Constant<T> never folds.
 template <CExpression E> consteval bool lit_equals(int n) {
   if constexpr (CLit<E>) {
     return E::value == typename E::value_type(n);
@@ -41,9 +39,7 @@ template <CExpression E> inline constexpr bool is_zero_v = lit_equals<E>(0);
 template <CExpression E> inline constexpr bool is_one_v = lit_equals<E>(1);
 template <CExpression E> inline constexpr bool is_two_v = lit_equals<E>(2);
 
-// The predicates, answered structurally: a stateless tree is an empty type
-// carrying its whole shape, so type identity *is* structural identity -- no
-// walk needed.
+// Answers each predicate from the operand types alone, with no tree walk.
 template <COperation Op, CExpression A, CExpression B>
 [[nodiscard]] constexpr bool holds(algebra::Pred p) noexcept {
   switch (p) {
@@ -69,15 +65,14 @@ template <COperation Op, CExpression A, CExpression B>
   std::unreachable();
 }
 
-// First match wins, as the table is ordered.
+// The first matching rule wins, since the table is ordered.
 template <COperation Op, CExpression A, CExpression B>
 [[nodiscard]] consteval std::optional<algebra::Rule> match_rule() noexcept {
   constexpr auto kind = Op::rule_op;
   if constexpr (!kind.has_value()) {
     return std::nullopt;
   } else {
-    // The enum rather than the optional: read by value it is a constant, so
-    // the lambda names it without capturing it.
+    // Unwrapped to the enum, a constant the lambda can use without capturing.
     constexpr algebra::RuleOp op = *kind;
     static_assert(algebra::arity_of(op) == 2,
                   "a binary node's identities read two operands");
@@ -118,7 +113,7 @@ template <COperation Op, CExpression A, CExpression B>
   }
 }
 
-// -(-x) is x; literal cases are folded by the caller in values.hpp.
+// Folds -(-x) to x; values.hpp folds the literal cases first.
 template <COperation Op, CExpression A>
 [[nodiscard]] constexpr auto simplify_mono(const A &a) noexcept {
   constexpr auto kind = Op::rule_op;
@@ -133,12 +128,11 @@ template <COperation Op, CExpression A>
   }
 }
 
-// Fixing the operand order of a commutative node makes x+y and y+x the same
-// type.  Sums always reorder, products only under CCommutativeMultiply.  Swaps
-// operands of one node, never reassociates.
+// Ordering commutative operands makes x+y and y+x one type. Sums always swap,
+// products only under CCommutativeMultiply, and nothing reassociates.
 
-// Leaves before branches, symbols by name, branches by size then op; ties
-// compare equal, so the order is stable.
+// Constants, then symbols by name, then nodes by size and op. Ties compare
+// equal, so the order is stable.
 struct order_key {
   int kind{};
   std::size_t nodes{};
@@ -174,14 +168,14 @@ template <COperation Op, CExpression A, CExpression B>
   }
 }
 
-// A select has no identities and no operand order.
+// A select has no identities and keeps its operand order.
 template <COperation Op, CExpression C, CExpression A, CExpression B>
 [[nodiscard]] constexpr auto ordered_node(const C &c, const A &a,
                                           const B &b) noexcept {
   return Expression<Op, C, A, B>{c, a, b};
 }
 
-// Bottom-up, one pass: no rule leaves a fresh redex behind.
+// One bottom-up pass suffices, since no rule leaves a new match behind.
 template <CExpression E>
 [[nodiscard]] constexpr auto canonicalise(const E &e) noexcept {
   if constexpr (CExpressionNode<E>) {

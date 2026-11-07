@@ -1,3 +1,4 @@
+#include "graph_builder.hpp"
 #include "ddx.hpp"
 #include "jit/kernel.hpp"
 #include "jit/tests_jit_common.hpp"
@@ -8,21 +9,20 @@
 
 #include <vector>
 
-// The seed columns are the first inputs codegen loads that are not symbols, so
-// what these pin is that the kernel and the sweep agree on which column is
-// which -- getting it wrong is silent wrong arithmetic, not a crash.
+// The kernel and the sweep must agree on which input column holds each seed,
+// because a mix-up gives silently wrong arithmetic rather than a crash.
 
 namespace {
 using ddx::rt::Arena;
 using ddx::rt::Graph;
 
 
-// x, y, then v0, v1 -- the order input_column() states.
+// The inputs are x, y, then v0, v1, the order input_column() states.
 Graph<> seeded_graph(Arena<> &b) {
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * x * seed(b, 0) + exp(y) * seed(b, 1);
-  return ddx::rt::GraphBuilder{b}.value(f).finish();
+  return ddx::test::GraphBuilder{b}.value(f).finish();
 }
 
 TEST(JitSeed, KernelArityCountsTheSeeds) {
@@ -37,8 +37,8 @@ TEST(JitSeed, MatchesTheInterpreterToTheBit) {
   const auto graph = seeded_graph(b);
   const auto kernel = must_compile(graph);
 
-  // Enough points to cross the lane width, and a tail that is not a multiple
-  // of it: the masked loads on the direction columns are their own path.
+  // Enough points to cross the lane width with a ragged tail, since the masked
+  // loads on the direction columns are their own code path.
   static constexpr std::size_t n = 37;
   std::vector<std::vector<double>> columns(4, std::vector<double>(n));
   for (const auto [j, column] : columns | std::views::enumerate) {
@@ -65,14 +65,14 @@ TEST(JitSeed, MatchesTheInterpreterToTheBit) {
   }
 }
 
-// A seed slot is not a symbol slot: reading the direction out of the symbol
-// half of `xs` would still typecheck and still run.
+// Reading the direction out of the symbol half of `xs` would still compile and
+// run, so the seed slot is checked directly.
 TEST(JitSeed, DirectionIsNotReadAsASymbol) {
   Arena<> b;
   const auto graph = seeded_graph(b);
   const auto kernel = must_compile(graph);
 
-  // v0 = 1, v1 = 0 selects the first term alone: x*x, and nothing of exp(y).
+  // v0 = 1, v1 = 0 selects only the x*x term and nothing of exp(y).
   const std::array<double, 1> x{3.0};
   const std::array<double, 1> y{2.0};
   const std::array<double, 1> v0{1.0};

@@ -11,9 +11,8 @@
 #include <optional>
 #include <string>
 
-// What a caller says about compiling, and nothing that compiles: header types
-// in every build, so an Equation has one shape whether or not a backend was
-// compiled in.  jit/kernel.hpp holds the LLVM side.
+// Compile options only, present in every build so an Equation has one shape
+// with or without the JIT. jit/kernel.hpp holds the LLVM side.
 namespace ddx::rt {
 template <impl::Numeric T> class Graph;
 namespace detail {
@@ -23,7 +22,7 @@ template <impl::Numeric T> struct TensorCall;
 
 namespace ddx::jit {
 
-// Off: glibc's vector routines are ~4 ULP where the scalar ones are ~0.5.
+// Off by default, since glibc's vector routines are ~4 ULP against ~0.5 scalar.
 enum class VecLib : std::uint8_t { None, Libmvec };
 BOOST_DESCRIBE_ENUM(VecLib, None, Libmvec)
 
@@ -41,7 +40,7 @@ template <typename T> using compile_result = std::expected<T, compile_error>;
 #define DDX_JIT_DEFAULT_CONTRACT 1
 #endif
 
-// LLVM's -O0 to -O3, for the IR pipeline and for codegen.
+// LLVM's -O0 to -O3, used for both the IR pipeline and codegen.
 enum class OptLevel : std::uint8_t { O0, O1, O2, O3 };
 BOOST_DESCRIBE_ENUM(OptLevel, O0, O1, O2, O3)
 
@@ -50,15 +49,14 @@ inline constexpr OptLevel default_opt_level =
     static_cast<OptLevel>(DDX_JIT_DEFAULT_OPT);
 inline constexpr bool default_contract = DDX_JIT_DEFAULT_CONTRACT != 0;
 
-// Points per loop iteration.  Derived is the host's register width in doubles
-// -- scalar for a batch too short to fill one, and under a vector library the
-// widest it serves.  Every width gives the same bits.
+// Points per loop iteration; derived means the host's register width. Every
+// width gives the same bits.
 class Lanes {
 public:
   constexpr Lanes() = default;
   [[nodiscard]] static constexpr Lanes derived() noexcept { return {}; }
   [[nodiscard]] static constexpr Lanes scalar() noexcept { return Lanes{1}; }
-  // A stated width holds at least a point; nullopt otherwise.
+  // A stated width must be at least 1; zero gives nullopt.
   [[nodiscard]] static constexpr std::optional<Lanes>
   exactly(unsigned width) noexcept {
     return width > 0 ? std::optional{Lanes{width}} : std::nullopt;
@@ -73,43 +71,41 @@ private:
   unsigned width_ = 0;
 };
 
-// Compile builds each kernel on the first call that needs it, and that call
-// waits for it.
+// Compile builds each kernel on the first call that needs it, which waits.
 enum class Backend : std::uint8_t { Interpret, Compile };
 BOOST_DESCRIBE_ENUM(Backend, Interpret, Compile)
 
-// What decides the machine code, and nothing else.
+// Everything that decides the machine code, and nothing else.
 struct Codegen {
   Lanes lanes = Lanes::derived();
   OptLevel opt_level = default_opt_level;
-  // Selection and register allocation are ~95% of a compile.
+  // Kept low, since selection and register allocation are ~95% of a compile.
   OptLevel codegen_level = OptLevel::O1;
-  // Within one point; model-dependent, hence off.
+  // Vectorises within one point; off because the gain depends on the model.
   bool slp_vectorize = false;
-  // With one, a derived `lanes` is the widest width the library serves -- four
-  // doubles for libmvec -- whatever the host's registers hold.
+  // With a vector library, derived lanes become the widest width it serves,
+  // four doubles for libmvec.
   VecLib veclib = VecLib::None;
-  bool contract = default_contract; // Follows DDX_FP_FLAGS
+  bool contract = default_contract; // follows DDX_FP_FLAGS
 
   friend bool operator==(const Codegen &, const Codegen &) = default;
 };
 
-// The identity, and around it the policy: whether to compile, and for what
-// batch.  None of the policy reaches the emitter.
+// Codegen plus the policy of whether to compile and for what batch. The policy
+// never reaches the emitter.
 struct Options {
   // Read by Equation, never by Compiler::compile().
   Backend backend = Backend::Interpret;
-  // The batch one call will carry.  Stated, not inferred: the kernel is built
-  // before any call exists to read an `n` from.  Sets the lane width only.
+  // The batch size one call will carry, stated up front because the kernel is
+  // built before any call. It only sets the lane width.
   std::size_t points = 1;
   Codegen codegen{};
 
   friend bool operator==(const Options &, const Options &) = default;
 };
 
-// The options a lane compiles under: a batch too short to fill one block of
-// the sweep emits scalar, so kernel and sweep agree on where a batch stops
-// being a batch.  A stated width is honoured.
+// A batch too short to fill one sweep block compiles scalar, so kernel and
+// sweep agree. A stated lane width is kept.
 [[nodiscard]] constexpr Options for_batch(Options opt,
                                           std::size_t block_lanes) noexcept {
   if (!opt.codegen.lanes.stated() && opt.points < block_lanes) {
@@ -118,19 +114,15 @@ struct Options {
   return opt;
 }
 
-// The column counts a kernel is called with, read off the graph it was
-// compiled from.  One value, so the four cannot be handed over transposed.
-// Flat, rather than holding the `rt::Layout` it is copied from: jit is core,
-// and the core may not include rt/ -- which is why `rt::Graph` is only
-// forward-declared above and `of` is a template.  The three names repeat here
-// because the layering says they must, not because nobody noticed.
+// The column counts a kernel is called with, read off its graph. A flat copy of
+// rt::Layout, because jit may not include rt/.
 struct KernelShape {
   std::size_t arity = 0;
   std::size_t values = 0;
   std::size_t jacobian = 0;
   std::size_t hessian = 0;
-  // Elements of T in the interpreter's two tapes, `lanes` wide, which a
-  // kernel's tensor steps sweep through.  Zero for a scalar graph.
+  // Elements of T in the interpreter's two tapes, lanes wide, for the tensor
+  // steps. Zero for a scalar graph.
   std::size_t tapes = 0;
 
   template <impl::Numeric T>

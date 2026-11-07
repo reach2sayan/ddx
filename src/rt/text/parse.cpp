@@ -16,7 +16,7 @@
 #include <utility>
 #include <vector>
 
-// Python's arithmetic grammar
+// A parser for Python's arithmetic grammar.
 namespace ddx::rt::text {
 namespace {
 
@@ -24,31 +24,30 @@ namespace bp = boost::parser;
 static_assert(BOOST_PARSER_USE_STD_TUPLE,
               "rt::text: Boost.Parser must use std::tuple, not Hana");
 
-// The name and arguments of a call, which the grammar reads as one sequence and
-// an aggregate attribute takes apart.
+// The name and arguments of a function call, as one aggregate attribute.
 struct Call {
   std::string name;
   std::vector<std::uint32_t> args;
 };
 
-// What the actions build.  Carried through with_globals rather than captured:
-// BOOST_PARSER_DEFINE_RULES wants its rules at namespace scope, where a lambda
-// has nothing to capture.
+// The state the actions build. It is passed through with_globals because the
+// rules live at namespace scope, where a lambda has nothing to capture.
 struct Building {
   Ast ast;
-  errc why = errc::bad_syntax; // what the refusing action meant, if one did
-  std::uint32_t depth = 0;     // of the nesting the grammar recurses for
+  errc why = errc::bad_syntax; // the error a refusing action reported
+  std::uint32_t depth = 0;     // the current nesting depth
 };
 
-// CPython's own limit on nested parentheses: deep enough for anything written
-// by hand, and shallow enough for a thread's stack in a debug build.
+// CPython's limit on nested parentheses, shallow enough for a thread's stack
+// in a debug build.
 inline constexpr std::uint32_t deepest = 200;
 
 [[nodiscard]] constexpr std::uint32_t append(Ast &ast, const Term t) {
   ast.terms.push_back(t);
   return static_cast<std::uint32_t>(ast.terms.size() - 1);
 }
-// An `Op` term over its operands, the arity checked as it compiles.
+// Appends an `Op` term over its operands, with the arity checked at compile
+// time.
 template <OpCode Op, std::same_as<std::uint32_t>... Ids>
   requires(sizeof...(Ids) == arity_of(Op))
 [[nodiscard]] constexpr std::uint32_t
@@ -58,7 +57,7 @@ append(Ast &ast, std::integral_constant<OpCode, Op>, const Ids... in) {
   return append(ast, t);
 }
 
-// Where `word` sits in `table`, putting it there if it does not yet.
+// The index of `word` in `table`, appending it if it is not there yet.
 [[nodiscard]] constexpr std::uint32_t intern(std::vector<std::string> &table,
                                              const std::string_view word) {
   const auto at = std::ranges::find(table, word);
@@ -70,32 +69,24 @@ append(Ast &ast, std::integral_constant<OpCode, Op>, const Ids... in) {
 }
 
 // --- the actions ------------------------------------------------------------
-//
-// Generic where the grammar repeats itself: every binary operator folds the
-// same way and differs only in its opcode, and the two leaves differ only in
-// which of the Ast's tables names them.  What is left is the handful of places
-// the grammar and the opcode tables genuinely do not line up.
 namespace act {
 
-// _val is everything read so far and _attr the operand just read, which is what
-// makes a left-associative fold one line.  Exponentiation folds the same way;
-// it is the grammar, not the action, that makes it right-associative.
+// Folds the operand just read (_attr) into everything read so far (_val). The
+// grammar, not this action, makes exponentiation right-associative.
 template <OpCode Op>
 constexpr auto fold = [](auto &ctx) {
   _val(ctx) = append(_globals(ctx).ast, opcode<Op>, _val(ctx), _attr(ctx));
 };
 
-// `a > b` is `b < a` and `a >= b` is `b <= a`: only two comparison opcodes
-// exist, and the other two spellings are those read the other way round -- the
-// same composition rt::gt and rt::ge make in expressions.hpp.
+// `a > b` is built as `b < a` and `a >= b` as `b <= a`, since only Lt and Le
+// opcodes exist. rt::gt and rt::ge do the same.
 template <OpCode Op>
 constexpr auto fold_swapped = [](auto &ctx) {
   _val(ctx) = append(_globals(ctx).ast, opcode<Op>, _attr(ctx), _val(ctx));
 };
 
-// `a == b` is `le(a,b) * le(b,a)` -- both ways round, so a NaN operand answers
-// 0 `a != b` is `1 - (a == b)`: the compositions operator== and operator!= make
-// in expressions.hpp
+// `a == b` is `le(a, b) * le(b, a)`, so a NaN operand gives 0, and `a != b` is
+// `1 - (a == b)`, matching operator== and operator!= in expressions.hpp.
 constexpr auto equal = [](auto &ctx) {
   Ast &ast = _globals(ctx).ast;
   const std::uint32_t l = _val(ctx);
@@ -114,8 +105,8 @@ constexpr auto unequal = [](auto &ctx) {
   _val(ctx) = append(ast, opcode<OpCode::Add>, one, negated);
 };
 
-// There is no Sub opcode -- the label "-" is unary Neg -- so a difference is
-// the sum of a negation, which is what the C++ operator- builds as well.
+// There is no Sub opcode, so `a - b` is built as `a + (-b)`, as the C++
+// operator- does.
 constexpr auto subtract = [](auto &ctx) {
   Ast &ast = _globals(ctx).ast;
   const auto negated = append(ast, opcode<OpCode::Neg>, _attr(ctx));
@@ -132,22 +123,20 @@ constexpr auto leaf = [](auto &ctx) {
 
 constexpr auto assign = [](auto &ctx) { _val(ctx) = _attr(ctx); };
 
-// A stack overflow cannot be refused, so too deep is a syntax error before it
-// is that.  A failed branch never ascends and the count stays high, which costs
-// nothing: nothing parses after a `(` or a `**` that failed.
+// Rejects nesting deeper than `deepest` before it can overflow the stack. A
+// failed branch never ascends, which is harmless since the parse fails anyway.
 constexpr auto descend = [](auto &ctx) {
   _pass(ctx) = ++_globals(ctx).depth <= deepest;
 };
 constexpr auto ascend = [](auto &ctx) { --_globals(ctx).depth; };
 
-// A token is a span of the source, and raw[] says so: the attribute of a
-// sequence of char parsers is a merge rule per shape, and a number's shape has
-// an optional exponent in it.
+// Copies a raw[] span of the source into a string. raw[] avoids the attribute
+// merge rules for a number's optional exponent.
 constexpr auto capture = [](auto &ctx) {
   _val(ctx) = std::string(_attr(ctx).begin(), _attr(ctx).end());
 };
 
-// A run of signs is one bit -- `- -x` is x -- kept in the rule's local.
+// A run of signs reduces to one bit kept in the rule's local, so `- -x` is x.
 constexpr auto flip = [](auto &ctx) { _locals(ctx) = !_locals(ctx); };
 constexpr auto signed_operand = [](auto &ctx) {
   _val(ctx) = _locals(ctx)
@@ -155,13 +144,8 @@ constexpr auto signed_operand = [](auto &ctx) {
                   : _attr(ctx);
 };
 
-// The whole of the function table is opcode_of, callable and arity_of, so a
-// transcendental added to the opcode tables becomes callable from text with no
-// edit here.
-//
-// Its own two codes rather than unknown_symbol and wrong_arity: those speak
-// about a *point* -- its symbols and how many values it carries -- and reading
-// either one back for a misspelt call describes the wrong thing entirely.
+// Function calls are resolved through the opcode tables, so a new opcode is
+// callable from text with no edit here.
 constexpr auto apply = [](auto &ctx) {
   Building &building = _globals(ctx);
   const Call &invocation = _attr(ctx);
@@ -184,10 +168,8 @@ constexpr auto apply = [](auto &ctx) {
 } // namespace act
 
 // --- the grammar ------------------------------------------------------------
-//
-// Python's readings and its spellings: `**` is exponentiation and `^` is not.
-// power's right operand reaches over unary, which is what makes `2**-1` legal;
-// unary sitting below power is what makes `-x**2` mean -(x**2).
+// As in Python, `**` is exponentiation, `2**-1` is legal and `-x**2` is
+// -(x**2).
 
 constexpr bp::rule<struct identifier_tag, std::string> identifier =
     "identifier";
@@ -200,7 +182,7 @@ constexpr bp::rule<struct group_tag, std::uint32_t> group =
     "parenthesised expression";
 constexpr bp::rule<struct operand_tag, std::uint32_t> operand = "operand";
 constexpr bp::rule<struct power_tag, std::uint32_t> power = "power";
-// The bool is the rule's local: how many signs it has read, modulo two.
+// The bool local counts the signs read so far, modulo two.
 constexpr bp::rule<struct unary_tag, std::uint32_t, bool> unary =
     "unary expression";
 constexpr bp::rule<struct product_tag, std::uint32_t> product = "term";
@@ -211,8 +193,8 @@ constexpr bp::rule<struct expression_tag, std::uint32_t> expression =
 constexpr auto letter =
     bp::char_('a', 'z') | bp::char_('A', 'Z') | bp::char_('_');
 constexpr auto digits = +bp::char_('0', '9');
-// Decimal only: no hex, no suffix, no digit separator, so from_chars reads back
-// exactly what was matched.  lexeme[] or the skipper would pass "1 . 5".
+// Decimal only, so from_chars reads back exactly what was matched. Without
+// lexeme[] the skipper would accept "1 . 5".
 constexpr auto exponent = (bp::char_('e') | bp::char_('E')) >>
                           -(bp::char_('+') | bp::char_('-')) >> digits;
 constexpr auto mantissa =
@@ -227,26 +209,24 @@ constexpr auto literal_def =
 
 constexpr auto number_def = literal[act::leaf<LiteralIndex>];
 constexpr auto symbol_def = identifier[act::leaf<NameIndex>];
-// One argument at least; the action below checks the count against
-// arity_of, which is 1, 2 or -- for select -- 3.
+// At least one argument; the apply action checks the count against arity_of.
 constexpr auto call_text_def = identifier >> '(' >> bp::eps[act::descend] >>
                                (expression % ',') >> bp::eps[act::ascend] >>
                                ')';
 constexpr auto call_def = call_text[act::apply];
 constexpr auto group_def = '(' >> bp::eps[act::descend] >> expression >>
                            bp::eps[act::ascend] >> ')';
-// call before symbol: both open with an identifier.
+// call is tried before symbol because both start with an identifier.
 constexpr auto operand_def = number | call | symbol | group;
 
-// Each action rides the operand it consumes, never the sequence that reaches
-// it: a sequence pairing a literal with one attribute answers _attr with none.
+// Each action is attached to the operand it consumes, not to the sequence,
+// whose _attr would be empty.
 constexpr auto power_def =
     operand[act::assign] >>
     -(bp::lit("**") >> bp::eps[act::descend] >> unary[act::fold<OpCode::Pow>] >>
       bp::eps[act::ascend]);
-// The signs iterate rather than recurse: a rule that names itself inside its
-// own definition reports no attribute back to the reference, and ("-"|"+")*
-// power is the same language as Python's right-recursive u_expr anyway.
+// Signs are iterated rather than recursed, because a self-recursive rule loses
+// its attribute. The language is the same as Python's u_expr.
 constexpr auto unary_def =
     *(bp::lit('-')[act::flip] | bp::lit('+')) >> power[act::signed_operand];
 constexpr auto product_def = unary[act::assign] >>
@@ -255,11 +235,8 @@ constexpr auto product_def = unary[act::assign] >>
 constexpr auto sum_def = product[act::assign] >>
                          *((bp::lit('+') >> product[act::fold<OpCode::Add>]) |
                            (bp::lit('-') >> product[act::subtract]));
-// One comparison and no more.  Python chains `a < b < c` into a conjunction and
-// C folds it into `(a < b) < c`; refusing it says so, where either reading
-// would have been a silent choice between two languages.  The two-character
-// tokens before the one-character ones, or the shorter token wins and leaves
-// an `=` nobody can parse.
+// At most one comparison, since Python and C read `a < b < c` differently.
+// Two-character tokens are tried first so that `<` does not shadow `<=`.
 constexpr auto
     expression_def = sum[act::assign] >>
                      -((bp::lit("<=") >> sum[act::fold<OpCode::Le>]) |
@@ -277,10 +254,8 @@ BOOST_PARSER_DEFINE_RULES(identifier, literal, number, symbol, call_text, call,
 
 result<Ast> parse(const std::string_view source) {
   Building building;
-  // No expectation points in the grammar, so nothing above throws; the catch is
-  // what keeps that a property of this file rather than of every caller.
-  // With no callbacks it says only that the parse failed, and leaves the errc
-  // to say what about it did.
+  // The grammar has no expectation points, so nothing should throw; the catch
+  // guarantees it. The silent handler leaves building.why to report the error.
   const bp::callback_error_handler quiet;
   const auto root = [&]() noexcept -> std::optional<std::uint32_t> {
     try {

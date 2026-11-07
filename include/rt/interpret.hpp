@@ -8,26 +8,24 @@
 #include <boost/container/small_vector.hpp>
 
 #include <cassert>
-#include <cmath> // std::fma
+#include <cmath>
 #include <concepts>
 #include <functional>
 #include <ranges>
 #include <span>
-#include <type_traits> // std::bool_constant
-#include <utility>     // std::unreachable
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace ddx::rt {
 
-// Points per block sweep: two AVX2 registers of doubles.
+// Points per block sweep, which is two AVX2 registers of doubles.
 inline constexpr std::size_t block_lanes = 8;
 
-// W points per node instead of one
 namespace detail {
 
-// One counted loop for every arity: the operand columns are the pack, and the
-// body is apply()'s per element.  `supported` is what keeps the loop compiling
-// at a scalar the op has no meaning for.
+// Applies one op across W lanes for any arity. supported() keeps the loop
+// compiling at scalars where the op is undefined.
 template <std::size_t W, typename Fn, impl::Numeric T, bool Ok,
           std::same_as<T>... Ts>
 constexpr void lanes(T *DDX_RESTRICT out,
@@ -37,14 +35,13 @@ constexpr void lanes(T *DDX_RESTRICT out,
   }
 }
 
-// x * y + z rounded once, which is what the kernel's llvm.fma lowers to.
+// x * y + z rounded once, matching what the kernel's llvm.fma lowers to.
 template <impl::Numeric T>
 [[nodiscard]] constexpr T fused_multiply_add(const T &x, const T &y,
                                              const T &z) noexcept {
   if constexpr (std::floating_point<T>) {
-    // <cmath> is constexpr only in C++26 and folding a libm call before that is
-    // a GCC extension, so clang takes the arithmetic unfused here.  The probe
-    // asks the compiler rather than the version macros.
+    // Constant-evaluating std::fma before C++26 is a GCC extension, so Clang
+    // falls back to unfused arithmetic. The probe asks the compiler directly.
     if consteval {
       if constexpr (!requires {
                       std::bool_constant<(std::fma(T{2}, T{3}, T{4}) ==
@@ -66,7 +63,7 @@ template <typename Sign> struct fma_fn {
   }
 };
 
-// The sign is hoisted out of the lane loop rather than tested in it.
+// Hoists the sign test out of the lane loop.
 template <std::size_t W, impl::Numeric T>
 constexpr void
 lanes_fma_signed(bool negated, const T *DDX_RESTRICT x, const T *DDX_RESTRICT y,
@@ -78,8 +75,8 @@ lanes_fma_signed(bool negated, const T *DDX_RESTRICT x, const T *DDX_RESTRICT y,
   }
 }
 
-// Out of line past one lane.  Inlined into the sweep's switch, GCC hoists the
-// two arms' shared loads above the branch and then packs only half of each.
+// Kept out of line for W > 1: inlined, GCC hoists the shared loads above the
+// branch and then vectorizes only half of each arm.
 template <std::size_t W, impl::Numeric T>
 DDX_NOINLINE constexpr void
 lanes_fma_block(bool negated, const T *DDX_RESTRICT x, const T *DDX_RESTRICT y,
@@ -98,35 +95,29 @@ lanes_fma(bool negated, const T *DDX_RESTRICT x, const T *DDX_RESTRICT y,
   }
 }
 
-// The tape row an id names, W points wide.
+// Maps a tape row to a pointer to its W lanes.
 template <std::size_t W, impl::Numeric U>
 [[nodiscard]] constexpr auto lanes_of(std::span<U> tape) {
-  return [tape](NodeId v) { return tape.data() + std::size_t{v} * W; };
+  return [tape](TapeRow r) { return tape.data() + std::size_t{r} * W; };
 }
 
-// Where a sweep's rows are and what computes them: the scalar tape's layout,
-// the tensor tape -- `extent` elements per lane, laid out lane-major so each
-// lane's vector is contiguous -- and the kernel table, at the sweep's scalar
-// and null where that is not the arena's.  Empty tensor rows is a sweep with
-// no tensor in it.
+// The tape layout of a sweep and the tensor kernel table. The tensor tape is
+// lane-major, and kernels is null when the sweep scalar is not the arena's.
 template <typename U> struct TapeView {
-  // By id, the tape row a node's value sits in; empty is the ids themselves,
-  // which is what an arena walk's schedule says.  The hot path reads rows off
-  // the Step; this is for the reads a Step cannot carry -- an extern's or a
-  // Pack's argument list.
-  std::span<const std::uint32_t> scalar_rows{};
+  // The tape row of each node id, or empty when rows equal ids. Only list
+  // operands use it; the hot path reads rows from the Step.
+  std::span<const TapeRow> scalar_rows{};
   std::span<const TensorRow> tensor_rows{};
   U *vtape = nullptr;
   const TensorKernelTable<U> *kernels = nullptr;
-  // By id, a product's pair (Graph::pairs), which its step forms too; empty
-  // is every product on its own.
+  // Each product's paired partner from Graph::pairs, or empty for no pairing.
   std::span<const NodeId> pairs{};
 
-  [[nodiscard]] constexpr std::uint32_t row(NodeId v) const noexcept {
-    return scalar_rows.empty() ? v : scalar_rows[v];
+  [[nodiscard]] constexpr TapeRow row(NodeId v) const noexcept {
+    return scalar_rows.empty() ? TapeRow{v} : scalar_rows[v];
   }
 
-  // A frozen graph's view, over a tensor tape of the caller's.
+  // A view of a frozen graph over a tensor tape the caller owns.
   [[nodiscard]] static constexpr TapeView
   of(const auto &graph, U *vtape, const TensorKernelTable<U> *kernels) {
     return {.scalar_rows = graph.rows(),
@@ -137,11 +128,8 @@ template <typename U> struct TapeView {
   }
 };
 
-// An extern node, W lanes of it: the function is called once per lane and
-// the component this node names is kept.  Opaque to every scalar but the
-// function's own, which computes_at() tells a sweep before it gets here.
-// `lane` by value here and in the two below, for the reason lanes_apply
-// gives.
+// Calls an extern function once per lane and keeps this node's component.
+// lane is taken by value here and below, for the reason lanes_apply gives.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_NOINLINE constexpr void lanes_extern(const Arena<T> &b, NodeId v, U *out,
                                          auto lane, const TapeView<U> &t) {
@@ -163,11 +151,8 @@ DDX_NOINLINE constexpr void lanes_extern(const Arena<T> &b, NodeId v, U *out,
   }
 }
 
-// A tensor node, W lanes of it: each lane's vector is one contiguous span
-// handed to the kernel table, except the copies -- Pack, Gather, AddAt, a
-// VecConst -- which the interpreter does itself.  At any scalar but the
-// arena's the rows are zero: computes_at() keeps such a sweep away.  So are
-// they at a field-like arena, which has no table to compute them.
+// Computes a tensor node for W lanes through the kernel table, except copies
+// done here. Other scalars, or a field-like arena, produce zeros.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
                                          const Node<T> &n, U *out, auto lane,
@@ -180,12 +165,10 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
       return std::pair{t.vtape + std::size_t{t.tensor_rows[u].at} * W,
                        std::size_t{t.tensor_rows[u].width}};
     };
-    // A table's MatRow is the table, read in place rather than copied out
-    // per sweep; only its transpose is a row of its own.
+    // A plain MatRow of a table is read in place rather than copied.
     const auto table = [&b](NodeId u) {
       return is_table(b, u) && get<Orientation>(b[u]) == Orientation::plain;
     };
-    // Lane k of node u, as the kernels read it.
     const auto in = [&](NodeId u, std::size_t k) {
       if (table(u)) {
         return std::span<const U>{
@@ -199,14 +182,13 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
       return std::span<U>{self + k * w, w};
     };
     const TensorKernelTable<U> &kt = *t.kernels;
-    // Lane k of a scalar operand.
     const auto at = [&](NodeId s, std::size_t k) { return lane(t.row(s))[k]; };
     const bool paired =
         n.op == OpCode::MatVec && !t.pairs.empty() && t.pairs[v] != no_node;
     for (std::size_t k = 0; k < W; ++k) {
       const auto to = mine(k);
-      // The arithmetic first, in one dispatch: on a short row a second switch
-      // in front of it is a fair part of the step.
+      // Arithmetic rows go first through one dispatch, since a second switch
+      // is costly on short rows.
       if (!paired &&
           tensor_row(
               b, v, [&](std::size_t i) { return in(n.in[i], k); },
@@ -222,23 +204,23 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         std::ranges::transform(arguments(b, v), to.begin(),
                                [&](NodeId s) { return at(s, k); });
         break;
-      // The matrix rows.  Shapes come off the arena, as the widths do; a
-      // matrix is column-major.
-      case OpCode::MatRow: { // a table transposed, or a computed matrix
-        if (table(v)) {      // read in place by in(), copied only for an output
+      // Matrices are column-major.
+      case OpCode::MatRow: {
+        if (table(v)) { // read in place by in(), copied only for an output
           if (w != 0) {
             std::ranges::copy(in(v, k), to.begin());
           }
           break;
         }
-        // Every other MatRow is a transpose: of the table, or of a row.
+        // Every other MatRow is a transpose of a table or of a row.
         const Shape m = shape_of(b, v); // cols x rows of the source
+        const NodeId source = operands<OpCode::MatRow>(n).source;
         const std::span<const U> from =
-            b.op_of(n.in[0]) == OpCode::MatConst
+            b.op_of(source) == OpCode::MatConst
                 ? std::span<
-                      const U>{b.tensors()[get<TensorRef>(b[n.in[0]]).value]
+                      const U>{b.tensors()[get<TensorRef>(b[source]).value]
                                    .data}
-                : in(n.in[0], k);
+                : in(source, k);
         for (std::size_t i = 0; i < m.cols; ++i) {
           for (std::size_t j = 0; j < m.rows; ++j) {
             to[j + i * m.rows] = from[i + j * m.cols];
@@ -246,7 +228,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         }
         break;
       }
-      case OpCode::StackRows: { // item i is row i: (i, j) at i + j rows
+      case OpCode::StackRows: { // item i is row i, so (i, j) is at i + j * rows
         const auto items = arguments(b, v);
         for (const auto [i, item] : items | std::views::enumerate) {
           const auto r = in(item, k);
@@ -256,38 +238,38 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         }
         break;
       }
-      case OpCode::VSelect: { // copied, so the arm not taken never meets a 0
+      case OpCode::VSelect: { // copied, so the untaken arm is never scaled
         const auto chosen = [](U c) { return c != U{0}; }; // as select_impl
-        const auto on = in(n.in[1], k);
-        const auto off = in(n.in[2], k);
-        if (!is_tensor(b[n.in[0]])) {
-          std::ranges::copy(chosen(at(n.in[0], k)) ? on : off, to.begin());
+        const auto [cond, then, otherwise] = operands<OpCode::VSelect>(n);
+        const auto on = in(then, k);
+        const auto off = in(otherwise, k);
+        if (!is_tensor(b[cond])) {
+          std::ranges::copy(chosen(at(cond, k)) ? on : off, to.begin());
           break;
         }
-        const auto c = in(n.in[0], k);
+        const auto c = in(cond, k);
         for (std::size_t j = 0; j < to.size(); ++j) {
           to[j] = chosen(c[j]) ? on[j] : off[j];
         }
         break;
       }
-      case OpCode::MatConst: // a table its MatRow reads in place
+      case OpCode::MatConst: // read in place through its MatRow
         break;
-      case OpCode::MatVec: // paired
+      case OpCode::MatVec: // only paired products reach here
         if (const NodeId mate = t.pairs[v]; mate > v) {
-          // The pair's first, so both: one pass over the matrix.
+          // The first of a pair computes both in one pass over the matrix.
           const auto [other_at, other_w] = row(mate);
           const std::span<U> other{other_at + k * other_w, other_w};
           const bool transposed =
               get<Orientation>(n) == Orientation::transposed;
+          const auto [matrix, vec] = operands<OpCode::MatVec>(n);
           if (kt.gemv_pair != nullptr) {
-            kt.gemv_pair(shape_of(b, n.in[0]).rows, in(n.in[0], k),
-                         in(n.in[1], k), transposed ? other : to,
-                         transposed ? to : other);
+            kt.gemv_pair(shape_of(b, matrix).rows, in(matrix, k), in(vec, k),
+                         transposed ? other : to, transposed ? to : other);
           } else {
-            const Shape m = shape_of(b, n.in[0]);
-            kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), to,
-                    transposed);
-            kt.gemv(m.rows, m.cols, in(n.in[0], k), in(n.in[1], k), other,
+            const Shape m = shape_of(b, matrix);
+            kt.gemv(m.rows, m.cols, in(matrix, k), in(vec, k), to, transposed);
+            kt.gemv(m.rows, m.cols, in(matrix, k), in(vec, k), other,
                     !transposed);
           }
         }
@@ -299,11 +281,8 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
   }
 }
 
-// A fold, W lanes of it: the terms in list order into the running value --
-// the same arithmetic the chain it replaces took, one node and one dispatch
-// for every term.  In a sum a product term is one fma where the step is
-// fused.  The first term's product is formed, not fused: fma(x, y, 0) would
-// turn its -0.0 into +0.0.
+// Folds the terms in list order, matching the binary chain it replaces. The
+// first product is not fused, since fma(x, y, 0) would turn -0.0 into +0.0.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_NOINLINE constexpr void lanes_fold(const Arena<T> &b, NodeId v, OpCode op,
                                        bool fused, U *DDX_RESTRICT out,
@@ -347,9 +326,8 @@ DDX_NOINLINE constexpr void lanes_fold(const Arena<T> &b, NodeId v, OpCode op,
   }
 }
 
-// The rows apply.hpp hands the interpreter whole: an extern's, a fold's and a
-// tensor's.  The kind test sits here, past the opcode switch, where it costs
-// a sweep of scalars nothing.
+// Extern, fold and tensor rows, which apply.hpp leaves to the interpreter.
+// Testing the kind after the opcode switch costs scalar sweeps nothing.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_ALWAYS_INLINE constexpr void
 lanes_opaque(const Arena<T> &b, NodeId v, const Node<T> &n, bool fused, U *out,
@@ -363,10 +341,8 @@ lanes_opaque(const Arena<T> &b, NodeId v, const Node<T> &n, bool fused, U *out,
   }
 }
 
-// Every op's lane loop, off apply.hpp's one dispatch.  A row with nothing to
-// call answers true and is called past the switch: called from inside the
-// visitor, GCC keeps those instances out of line, the closure goes to memory,
-// and the tape base with it -- reloaded on every step of the sweep.
+// Opaque rows return true and run after the dispatch: called inside it, GCC
+// spills the closure and reloads the tape base on every step.
 template <std::size_t W, impl::Numeric T, typename U>
 DDX_ALWAYS_INLINE constexpr void
 lanes_apply(const Arena<T> &b, NodeId i, const Node<T> &n, U *DDX_RESTRICT out,
@@ -379,13 +355,11 @@ lanes_apply(const Arena<T> &b, NodeId i, const Node<T> &n, U *DDX_RESTRICT out,
     } else {
       if constexpr (std::same_as<Fn, impl::detail::select_impl>) {
         if (is_tensor(n)) {
-          return true; // a Select over tensor rows: the tensor arm's
+          return true; // a tensor Select is handled by lanes_tensor
         }
       }
-      // The arities the tables spell.  A `std::unreachable()` in a trailing
-      // `else` would leave the `return false` below it unreachable on the
-      // instance that took it, which MSVC reports as C4702; the assert says
-      // the same thing where it costs no code.
+      // A static_assert rather than an else with std::unreachable(), which
+      // would trigger MSVC warning C4702 on the return below.
       static_assert(R::arity >= 1 && R::arity <= 3);
       if constexpr (R::arity == 1) {
         lanes<W, Fn, U, R::ok>(out, lane(in[0]));
@@ -402,10 +376,8 @@ lanes_apply(const Arena<T> &b, NodeId i, const Node<T> &n, U *DDX_RESTRICT out,
   }
 }
 
-// The only place that turns a Step into numbers: rows by the Step's slots, the
-// op and a leaf's column by the node.  `nodes` is b.nodes(), taken
-// once by the caller: read through `b`, every opaque call -- a libm one, an
-// extern -- makes the compiler reload the arena's base on the next step.
+// Executes one Step. nodes is b.nodes() taken once by the caller, because
+// reading through b reloads the arena base after every opaque call.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_ALWAYS_INLINE constexpr void
 sweep_step(const Arena<T> &b, std::span<const Node<T>> nodes,
@@ -419,17 +391,15 @@ sweep_step(const Arena<T> &b, std::span<const Node<T>> nodes,
                          lane(s.in[2]), out);
     return;
   }
-  // Not a switch on kind_of(): the shape below is 1.3.6's, and on a
-  // libm-heavy graph (compare/'s swap) a kind test ahead of lanes_apply's own
-  // switch costs 1.4x in mispredicted dispatch.
+  // Not a switch on kind_of(): a kind test before lanes_apply's own switch
+  // measured 1.4x slower on libm-heavy graphs from branch mispredictions.
   if (s.op == OpCode::Const) {
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = static_cast<U>(n.value);
     }
   } else if (is_leaf(s.op)) {
-    const auto src =
-        at + static_cast<std::ptrdiff_t>(
-                 input_column(inputs, s.op, get<Slot>(n).value) * W);
+    const auto src = at + static_cast<std::ptrdiff_t>(
+                              input_column(inputs, s.op, get<Slot>(n)) * W);
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }
@@ -440,12 +410,8 @@ sweep_step(const Arena<T> &b, std::span<const Node<T>> nodes,
 
 } // namespace detail
 
-// The nodes of `schedule`, for W points at once.  `point_lanes` is
-// symbol-major (symbol s, lane k at s * W + k) and `tape` node-major, so every
-// lane loop is contiguous in both.  Same constraints on the schedule as
-// evaluate_into; a batch's tail repeats a point, and those lanes are not read.
-// `tensors` is the second tape, sized for this schedule; a schedule with no
-// tensor op needs none.
+// Evaluates schedule at W points at once. point_lanes is symbol-major (s * W +
+// k) and tape is node-major, so every lane loop is contiguous.
 template <std::size_t W, impl::Numeric T, std::ranges::random_access_range R,
           impl::Numeric U>
   requires impl::Numeric<std::ranges::range_value_t<R>>
@@ -461,9 +427,8 @@ constexpr void evaluate_block(const Arena<T> &b, const R &point_lanes,
   }
 }
 
-// Whether every op the roots reach computes at U.  What a sweep at a scalar
-// other than the graph's asks first: apply() answers U{} for an op the scalar
-// lacks, and a zero node is a wrong number with nothing to say so.
+// Whether every op the roots reach is supported at U. Check this first, since
+// apply() silently returns U{} for an unsupported op.
 template <impl::Numeric U, impl::Numeric T>
 [[nodiscard]] constexpr bool computes_at(const Arena<T> &b,
                                          std::span<const NodeId> roots) {
@@ -479,11 +444,8 @@ template <impl::Numeric T, std::ranges::random_access_range R>
   return evaluate_all(b, point)[root];
 }
 
-// The nodes of `schedule`, one point at a time, into caller-owned scratch
-// indexed by node id.  The schedule must be topological and closed under
-// operands; detail::schedule_of over id order and Graph::schedule() are both.
-// Entries outside it are left alone.  The width-one block sweep, not a second
-// implementation of it.
+// Evaluates schedule at one point into scratch indexed by node id. The schedule
+// must be topological and closed under operands.
 template <impl::Numeric T, std::ranges::random_access_range R, impl::Numeric U>
   requires impl::Numeric<std::ranges::range_value_t<R>>
 constexpr void evaluate_into(const Arena<T> &b, const R &point,
@@ -493,18 +455,17 @@ constexpr void evaluate_into(const Arena<T> &b, const R &point,
 }
 
 namespace detail {
-// What a walk over `ids` takes from the graph alone -- the nodes in order, as
-// evaluate_into leaves them, and where their tensor rows sit -- kept once and
-// swept at one point after another.  The tapes are the caller's: `values` by
-// id and arena-sized, `vtape` extent() long.  The reference table unless told
-// otherwise, which is what a walk outside any equation computes with.
+// A cached schedule and tensor layout for walking ids at many points. values
+// is id-indexed and arena-sized, and vtape is extent() long.
 class ArenaWalk {
 public:
   constexpr ArenaWalk() = default;
   template <impl::Numeric T>
-  constexpr ArenaWalk(const Arena<T> &b, auto ids)
-      : schedule_{schedule_of(b, ids)}, layout_{tensor_layout(b, schedule_)} {}
-  // Every node, in id order: a child always precedes its parent.
+  constexpr ArenaWalk(const Arena<T> &b, auto ids,
+                      Contract contract = Contract::on)
+      : schedule_{schedule_of(b, ids, contract)},
+        layout_{tensor_layout(b, schedule_)} {}
+  // Walks every node in id order, where children precede parents.
   template <impl::Numeric T>
   constexpr explicit ArenaWalk(const Arena<T> &b)
       : ArenaWalk{b,
@@ -519,20 +480,19 @@ public:
   operator()(const Arena<T> &b, const auto &point, std::span<U> values,
              std::span<U> vtape,
              const TensorKernelTable<T> &kernels = reference_table<T>) const {
-    // At a scalar other than the arena's, an op U lacks answers U{}: the
-    // caller asks computes_at() first, as univariate_derivative() does.
+    // At another scalar, callers must have checked computes_at() first.
     assert((std::same_as<U, T> ||
             std::ranges::all_of(schedule_, [&b](const Step &s) {
               return supports<U>(b[s.node].op);
             })));
-    // No table at a scalar other than the arena's: no tensor row computes.
+    // Only the arena's own scalar has a kernel table for tensor rows.
     TapeView<U> tensors{.tensor_rows = layout_.rows, .vtape = vtape.data()};
     if constexpr (std::same_as<U, T>) {
       tensors.kernels = &kernels;
     }
     evaluate_into(b, point, schedule_, values, tensors);
   }
-  // Into tapes of its own; the values come back.
+  // Allocates its own tapes and returns the values.
   template <impl::Numeric T>
   [[nodiscard]] constexpr auto
   operator()(const Arena<T> &b,
@@ -550,23 +510,21 @@ private:
 };
 } // namespace detail
 
-// evaluate_all narrowed to what `roots` reach.  Still id-indexed and
-// arena-sized, with the entries the roots miss left value-initialised and not
-// to be read.  Worth the extra pass: a derivative sweep leaves a whole Hessian
-// in the arena that one root's walk has no use for.
+// evaluate_all restricted to the nodes the roots reach. The result is still
+// id-indexed; entries the roots do not reach must not be read.
 template <impl::Numeric T, std::ranges::random_access_range R>
   requires impl::Numeric<std::ranges::range_value_t<R>>
 [[nodiscard]] constexpr auto
 evaluate_reachable(const Arena<T> &b, std::span<const NodeId> roots,
                    const R &point,
-                   const TensorKernelTable<T> &kernels = reference_table<T>) {
-  return detail::ArenaWalk{b, detail::live_ids(detail::reachable(b, roots))}(
-      b, point, kernels);
+                   const TensorKernelTable<T> &kernels = reference_table<T>,
+                   Contract contract = Contract::on) {
+  return detail::ArenaWalk{b, detail::live_ids(detail::reachable(b, roots)),
+                           contract}(b, point, kernels);
 }
 
-// Every node once, in id order: a child always precedes its parent, and the
-// reference the JIT is checked against.  The point's element type chooses the
-// arithmetic, so Dual<double> carries derivatives through the same walk.
+// Evaluates every node in id order; this is the reference the JIT is checked
+// against. The point's element type picks the arithmetic, so duals work too.
 template <impl::Numeric T, std::ranges::random_access_range R>
   requires impl::Numeric<std::ranges::range_value_t<R>>
 [[nodiscard]] constexpr auto

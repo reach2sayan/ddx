@@ -1,4 +1,4 @@
-# The floor the toolchain must clear.
+# Rejects compilers older than the minimum supported versions.
 include_guard(GLOBAL)
 
 if ((CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 14)

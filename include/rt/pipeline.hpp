@@ -8,55 +8,48 @@
 
 #include <concepts>
 #include <memory>
-#include <mutex> // unique_lock, which <shared_mutex> does not carry
+#include <mutex> // unique_lock, which <shared_mutex> does not provide
 #include <optional>
 #include <shared_mutex>
 
-// One shape of graph per Want, and the kernel compiled from it.  An equation
-// keeps an array of these.
+// One graph per Want and the kernel compiled from it. An equation keeps an
+// array of these.
 namespace ddx::rt::detail {
 
 #ifdef DDX_HAS_JIT
-// One LLJIT for the process -- a static in a class template would be per
-// specialisation -- reached only from a compiling backend, so an interpret-only
-// program never brings LLVM up.  Defined in libddx, so a program and the
-// library share it.  Null on a host with no JIT.
+// The process-wide LLJIT, created on first use so interpret-only programs
+// never start LLVM. Defined in libddx; null on a host with no JIT.
 [[nodiscard]] DDX_API jit::Compiler *shared_compiler();
 #endif
 
-// What a kernel's tensor steps compute with: the sweep's own arena, the graph
-// the kernel was lowered from, and the table.  Read under the arena's lock.
+// The context a kernel's tensor steps run with. Read under the arena's lock.
 template <impl::Numeric T> struct TensorCall {
   const Arena<T> *arena = nullptr;
   const Graph<T> *graph = nullptr;
   const TensorKernelTable<T> *kernels = nullptr;
 };
 
-// Published, never written.
+// Immutable once published.
 template <impl::Numeric T> struct Compiled {
-  // Shared, so a reader holds the graph for the whole call.
   std::shared_ptr<const Graph<T>> graph;
-  // Not what the sweep walks: spines are blocked for the kernel, where the
-  // chain is latency, and left alone for the sweep, where the same rewrite
-  // costs tape locality.  Aliases `graph` where they agree.
+  // The kernel's graph, with reduction spines blocked; it aliases graph when
+  // the two agree. The sweep skips blocking because it costs tape locality.
   std::shared_ptr<const Graph<T>> compile_graph{};
   jit::Kernel<T> kernel{};
-  // What the sweep computes tensor rows with: resolved when the pipeline froze,
-  // so a table the equation is handed later means a new pipeline.
+  // The tensor kernel table, fixed when the pipeline froze; a new table needs a
+  // new pipeline.
   const TensorKernelTable<T> *kernels = nullptr;
-  // Why `kernel` is empty, or nothing when it is not.
+  // The reason kernel is empty, or success when it is compiled.
   jit::compile_result<void> status = std::unexpected{
       jit::compile_error{.code = errc::not_compiling, .detail = {}}};
 };
 
-// Frozen and compiled on first ask, by whichever caller asks first; every
-// caller after it runs what that one built.
+// Frozen and compiled by the first caller of snapshot(); later callers reuse
+// that result.
 template <impl::Numeric T> class DDX_TEMPLATE_API Pipeline {
 public:
-  // Ownership, not a reference: a reader holds its share for the whole call.
-  // No options is a pipeline that never compiles.  A reader that finds the
-  // lock taken lets `Yield` go before it waits, so a compile never holds it;
-  // `freeze` is called at most once, under the write lock.
+  // Without options the pipeline never compiles. A blocked reader constructs
+  // Yield before waiting; freeze runs at most once, under the write lock.
   template <std::default_initializable Yield>
   [[nodiscard]] std::shared_ptr<const Compiled<T>>
   snapshot(const std::optional<jit::Options> &compiling, auto &&freeze) {
@@ -73,8 +66,8 @@ public:
   }
 
 private:
-  // A refused compile leaves the kernel empty, the sweep in its place, and the
-  // refusal in `status`.
+  // A refused compile leaves the kernel empty, so the sweep runs instead, and
+  // records the reason in status.
   [[nodiscard]] static Compiled<T>
   compiled(const std::optional<jit::Options> &compiling, Compiled<T> held) {
     if (!compiling) {
@@ -85,9 +78,8 @@ private:
       jit::Compiler *const c = shared_compiler();
       held.status =
           c ? c->compile(*held.compile_graph, *compiling)
-                  .transform([&held](jit::Kernel<T> k) {
-                    held.kernel = std::move(k);
-                  })
+                  .transform(
+                      [&held](jit::Kernel<T> k) { held.kernel = std::move(k); })
             : std::unexpected{jit::compile_error{
                   .code = errc::jit_target, .detail = "no JIT on this host"}};
     }

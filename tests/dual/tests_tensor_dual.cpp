@@ -17,8 +17,8 @@ TEST(BitExactness, EveryDriverIsBitStableAcrossBuilds) {
     const auto g1 = Equation{e}.template derivative_tensor<1>(p);
     for (std::size_t k = 0; k < 3; ++k)
       feed(g1.data()[k]);
-    // Packed symmetric storage -- a 3x3 second-order tensor stores 6 elements,
-    // not 9 -- so walk the index space, not the buffer.
+    // Second-order tensors use packed symmetric storage, so walk the index
+    // space rather than the buffer.
     const auto g2 = Equation{e}.template derivative_tensor<2>(p);
     for (std::size_t r = 0; r < 3; ++r)
       for (std::size_t cc = 0; cc < 3; ++cc)
@@ -31,7 +31,7 @@ TEST(BitExactness, EveryDriverIsBitStableAcrossBuilds) {
     feed(Equation{u}.template univariate_derivative<2>(a));
     feed(Equation{u}.template univariate_derivative<4>(a));
   }
-  // Always reported, so an A/B is a matter of reading two runs.
+  // The hash is always printed, so comparing two builds means reading two runs.
   const std::uint64_t bits = feed.value();
   std::printf("[ BIT HASH ] %016llx\n", static_cast<unsigned long long>(bits));
 #ifdef DDX_PIN_BIT_HASH
@@ -39,7 +39,7 @@ TEST(BitExactness, EveryDriverIsBitStableAcrossBuilds) {
       << "a derivative moved in the last bit -- see the note above this test";
 #endif
 }
-// detail::max_impl/min_impl spell `a < b`, so a univariate_derivative sweep
+// max_impl and min_impl compare with `a < b`, so a univariate_derivative sweep
 // through max or min needs TaylorDual to be ordered.
 TEST(UnivariateDerivative, MaxAndMinAreDifferentiable) {
   auto x = var<"x">;
@@ -50,8 +50,8 @@ TEST(UnivariateDerivative, MaxAndMinAreDifferentiable) {
   EXPECT_DOUBLE_EQ(
       Equation{max(x * x, 1.0)}.template univariate_derivative<2>(2.0), 2.0);
 }
-// The tripwire for anything -- a foreign matrix type, a std::vector, an
-// allocation -- leaking into the symbolic core: it fails to compile here.
+// Anything non-constexpr leaking into the symbolic core, such as a std::vector
+// or an allocation, fails to compile here.
 TEST(ConstexprContract, DifferentiationEntryPointsAreConstantEvaluated) {
   constexpr Variable<double, FixedString{"x"}> x;
   constexpr Variable<double, FixedString{"y"}> y;
@@ -68,21 +68,20 @@ TEST(ConstexprContract, DifferentiationEntryPointsAreConstantEvaluated) {
   static_assert((H[0, 1]) == 1.0 && (H[1, 0]) == 1.0 && (H[0, 0]) == 0.0,
                 "d2(x*y)/dxdy == 1");
 
-  // TaylorDual path: multiply-only, so it stays within the constexpr subset.
+  // The TaylorDual path only multiplies, so it stays within constexpr.
   constexpr auto d2 =
       Equation{x * x * x}.template univariate_derivative<2>(2.0);
   static_assert(d2 == 12.0, "d2(x^3)/dx2 at x=2");
 
-  // A three-variable Jacobian, which also has to be usable in constant
-  // evaluation.
+  // A three-variable Jacobian must be usable in constant evaluation too.
   constexpr Variable<double, FixedString{"z"}> z;
   constexpr auto g3 = Equation{x * y * z}.template derivative_tensor<1>(
       std::array{2.0, 3.0, 4.0});
   static_assert(g3[0] == 12.0 && g3[1] == 8.0 && g3[2] == 6.0,
                 "forward Jacobian path is constexpr");
 
-  // The reverse Hessian colours through libddx, so it runs; its numbers are
-  // the tensor's.
+  // The reverse Hessian colours through libddx, so it runs at run time and is
+  // compared with the tensor.
   const auto Hr = Equation{x * y}.hessian(std::array{3.0, 4.0});
   EXPECT_EQ((Hr[0, 1]), 1.0);
   EXPECT_EQ((Hr[0, 0]), 0.0);
@@ -94,13 +93,13 @@ TEST(SeededEval, CarriesDualsThroughTheTree) {
   using Syms = ddx::impl::detail::expr_symbols_t<decltype(e)>;
 
   using D = Dual<double>;
-  const std::array<D, 2> seed{D{3.0, 1.0}, D{4.0, 0.0}}; // seed d/dx
+  const std::array<D, 2> seed{D{3.0, 1.0}, D{4.0, 0.0}};
   const auto r = e.template eval_seeded<Syms>(seed);
   EXPECT_DOUBLE_EQ(r.get<0>(), 13.0);
-  EXPECT_DOUBLE_EQ(r.get<1>(), 6.0); // d/dx (x² + y) = 2x = 6
+  EXPECT_DOUBLE_EQ(r.get<1>(), 6.0);
 }
 TEST(MdLayout, LeadingSimplexKeepsOutputsApart) {
-  // Two outputs, each a symmetric 3x3 Hessian: 2 * 6 cells, not 2 * 9.
+  // Two outputs, each a symmetric 3x3 Hessian, take 2 * 6 cells, not 2 * 9.
   using T = ddx::impl::md_tensor<double, ddx::impl::stacked_extents_t<2, 3, 2>,
                                  ddx::impl::layout_leading_simplex<1>>;
   EXPECT_EQ(T::size(), 12u);
@@ -108,13 +107,13 @@ TEST(MdLayout, LeadingSimplexKeepsOutputsApart) {
   T t{};
   t[0, 1, 2] = 5.0;
   t[1, 1, 2] = 9.0;
-  EXPECT_DOUBLE_EQ((t[0, 2, 1]), 5.0); // symmetric within an output
+  EXPECT_DOUBLE_EQ((t[0, 2, 1]), 5.0);
   EXPECT_DOUBLE_EQ((t[1, 2, 1]), 9.0);
-  EXPECT_NE((t[0, 1, 2]), (t[1, 1, 2])); // but outputs never alias
+  EXPECT_NE((t[0, 1, 2]), (t[1, 1, 2]));
 }
 TEST(DerivativeTensorTest, ForwardAndReverseHessiansAgree) {
-  // Forward-over-forward and forward-over-reverse: two algorithms, same
-  // tensor and same type, so a caller picks on cost alone.
+  // Forward-over-forward and forward-over-reverse give the same tensor and
+  // type, so a caller chooses on cost alone.
   using D = ddx::impl::Dual<double>;
   using ddx::impl::FixedString;
   {

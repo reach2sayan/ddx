@@ -10,25 +10,25 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <concepts> // std::same_as
+#include <concepts>
 #include <cstdint>
-#include <functional> // std::invoke
+#include <functional>
 #include <memory>
 #include <optional>
 #include <ranges>
 #include <span>
 #include <string_view>
-#include <type_traits> // std::remove_cvref_t
-#include <utility>     // std::move
+#include <type_traits>
+#include <utility>
+#include <variant>
 
 namespace ddx::rt {
 
 template <impl::Numeric T = double> class Expression;
 
 namespace detail {
-// Befriended below: an equation is the one thing that takes an expression's
-// arena over, and the only reader of the poison an absent arena leaves; the
-// tensor factories in rt/tensor.hpp are the other way to a poisoned handle.
+// A friend of Expression that gives equations and the tensor factories access
+// to an expression's arena and poison.
 struct Router {
   template <impl::Numeric T>
   [[nodiscard]] static constexpr Arena<T> *
@@ -44,12 +44,12 @@ struct Router {
   [[nodiscard]] static constexpr Expression<T> poison(errc why) noexcept {
     return Expression<T>::poison(why);
   }
-  // A table has no width, so size() alone takes it for a scalar.
+  // A table has size() zero, so it must be excluded explicitly.
   template <impl::Numeric T>
   [[nodiscard]] static constexpr bool scalar(const Expression<T> &e) noexcept {
     return e.size() == 0 && !e.is_matrix();
   }
-  // The arena of the first expression that names one; a literal names none.
+  // The arena of the first expression that has one; literals have none.
   template <impl::Numeric T>
   [[nodiscard]] static constexpr Arena<T> *
   first_arena(std::span<const Expression<T>> es) noexcept {
@@ -60,26 +60,16 @@ struct Router {
 };
 } // namespace detail
 
-// Declared ahead of Expression, which befriends it: `named` is where a
-// missing arena, or a name another kind of input holds, turns into a poisoned
-// expression.
+// Declared before Expression, which befriends it. A missing arena or a
+// clashing input kind makes named() return a poisoned expression.
 template <impl::Numeric T = double>
 [[nodiscard]] Expression<T> named(OpCode op, std::string_view name) noexcept;
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> named(Arena<T> &b, OpCode op,
                                             std::string_view name);
 
-// A handle onto one node, plus the arithmetic surface that builds more.  A null
-// arena is a literal not yet given to a graph, which is what lets
-// Expression{1} exist for CFieldLike's constructible_from<int>.
-//
-// The node may be a vector or a matrix: `size()` elements per point, and the
-// same arithmetic then builds one elementwise node -- a Map or Zip carrying
-// the scalar opcode, a Scale for a scalar times one.  A literal meeting a
-// vector or a matrix takes its shape, so every derivative rule in
-// ops/adjoints.hpp reads elementwise and no rule is written twice.  A
-// mat_constant table taking part is its row.  rt/tensor.hpp holds the
-// factories and reductions.
+// A handle to one graph node with arithmetic that builds more nodes. A null
+// arena means a pending literal; tensor nodes get elementwise arithmetic.
 template <impl::Numeric T> class Expression {
 public:
   using value_type = T;
@@ -87,52 +77,58 @@ public:
 
   constexpr Expression() = default;
 
-  // By value: Expression is itself Numeric, and a Numeric&& would out-match
-  // the copy constructor for a non-const lvalue.  Prevent circular check
-  // clang diagnoses the cycle where GCC accepts it.
+  // Taken by value, since a Numeric&& would beat the copy constructor for a
+  // non-const lvalue. The exclusion stops a constraint cycle Clang rejects.
   template <typename V>
     requires(!std::same_as<std::remove_cvref_t<V>, Expression> &&
              impl::Numeric<V>)
   constexpr Expression(V v) : lit_{static_cast<T>(std::move(v))} {}
 
   constexpr Expression(Arena<T> &b, NodeId id) noexcept
-      : arena_{&b}, id_{id},
-        shape_{detail::is_tensor(b[id]) ? shape_of(b, id) : Shape{0, 0}} {}
+      : arena_{&b}, at_{id},
+        shape_{detail::is_tensor(b[id]) ? shape_of(b, id)
+                                        : Shape{.rows = 0, .cols = 0}} {}
 
   [[nodiscard]] constexpr bool pending() const noexcept {
     return arena_ == nullptr;
   }
-  // Elements per point: zero for a scalar node or a pending literal.
+  // Elements per point, which is zero for a scalar or a pending literal.
   [[nodiscard]] constexpr std::uint32_t size() const noexcept {
     return shape_.size();
   }
   [[nodiscard]] constexpr Shape shape() const noexcept { return shape_; }
 
-  // Whether the input named no leaf -- no arena current, or a name another
-  // kind of input has -- which surfaces as an errc out of equation() rather
-  // than as a zero.
+  // Whether building failed, for example outside an equation callback. The
+  // error surfaces from equation() rather than as a silent zero.
   [[nodiscard]] constexpr bool poisoned() const noexcept {
     return why_.has_value();
   }
   [[nodiscard]] constexpr const T &literal() const noexcept { return lit_; }
 
-  // Give the node an identity in `b`, materialising a pending literal -- a
-  // constant, or the row of `shape` it meets -- or a fold `op=` is still
-  // accumulating.
-  [[nodiscard]] constexpr NodeId id(Arena<T> &b, Shape shape = {0, 0}) const {
+  // The node id in arena b, materialising a pending literal or an unfinished
+  // op= fold first.
+  [[nodiscard]] constexpr NodeId
+  id(Arena<T> &b, Shape shape = {.rows = 0, .cols = 0}) const {
     assert(!why_ && "a refusal has no identity: it would read as a constant");
     if (arena_ == nullptr) {
       return shape.size() ? b.filled(shape, lit_) : b.constant(lit_);
     }
-    // b may be a copy of arena_
-    return fold_ == OpCode::Const ? id_ : b.fold_of(fold_, id_);
+    // b may be a copy of arena_.
+    return std::visit(
+        [&b]<typename H>(const H &at) {
+          if constexpr (std::same_as<H, NodeId>) {
+            return at;
+          } else {
+            return b.fold_of(at);
+          }
+        },
+        at_);
   }
-  // The identity it has in its own arena; no_node for a pending literal.
+  // The node id in its own arena, or no_node for a pending literal.
   [[nodiscard]] constexpr NodeId id() const {
     return arena_ ? id(*arena_) : no_node;
   }
 
-  // One element of a vector, as a scalar.
   [[nodiscard]] constexpr Expression operator[](std::size_t i) const {
     if (why_) {
       return poison(*why_);
@@ -148,17 +144,8 @@ public:
                          Element{static_cast<std::uint32_t>(i)}, id())};
   }
 
-  // One node of `op` over its operands.  Pending literals fold without
-  // reaching a graph, so the constants the derivative rules produce never
-  // become nodes; a table is read as its MatRow.  A tensor operand makes the
-  // node elementwise:
-  //  - unary, a Map carrying `op`;
-  //  - binary, a Zip of two rows at one shape, a literal taking the row's.  A
-  //    scalar *node* meets a row only as a factor -- a Scale, one node rather
-  //    than a broadcast and a Zip -- so anything else is a shape error;
-  //  - a Select copies the arm taken, so the one not taken never meets a 0 --
-  //    0 * inf is NaN where log or sqrt is infinite.  A tensor condition, of
-  //    the arms' shape, chooses element by element.
+  // Builds one op node, folding pending literals without touching a graph.
+  // Tensor operands give a Map, a Zip, a Scale or a VSelect instead.
   [[nodiscard]] static constexpr Expression
   form(OpCode op, const std::same_as<Expression> auto &...xs) {
     std::optional<errc> why;
@@ -171,7 +158,7 @@ public:
     if (b == nullptr) {
       return Expression{apply<T>(op, xs.literal()...)};
     }
-    // Ids mean nothing outside their own arena.
+    // Node ids are meaningless outside their own arena.
     if (((xs.arena() != nullptr && xs.arena() != b) || ...)) {
       return poison(errc::tensor_shape);
     }
@@ -200,17 +187,21 @@ private:
     const Expression &other = l.size() ? r : l;
     if (other.size() == 0) {
       if (op == OpCode::Mul) {
-        return {b, b.make(OpCode::Scale, other.id(b), vec.id(b))};
+        return {b, b.make(opcode<OpCode::Scale>,
+                          {.scalar = other.id(b), .vec = vec.id(b)})};
       }
       if (op == OpCode::Div && &other == &r) {
-        return {b, b.make(OpCode::Scale, (Expression{1} / r).id(b), vec.id(b))};
+        return {
+            b, b.make(opcode<OpCode::Scale>,
+                      {.scalar = (Expression{1} / r).id(b), .vec = vec.id(b)})};
       }
       if (!other.pending()) {
         return poison(errc::tensor_shape);
       }
     }
-    return {b, b.make(opcode<OpCode::Zip>, op, l.id(b, vec.shape_),
-                      r.id(b, vec.shape_))};
+    return {
+        b, b.make(opcode<OpCode::Zip>, op,
+                  {.left = l.id(b, vec.shape_), .right = r.id(b, vec.shape_)})};
   }
   [[nodiscard]] static constexpr Expression picked(Arena<T> &b,
                                                    const Expression &c,
@@ -224,19 +215,20 @@ private:
     if (!fits(c) || !fits(t) || !fits(f)) {
       return poison(errc::tensor_shape);
     }
-    // A scalar arm spread to the shape: a literal as its row, a node as
-    // s * 1, which is s exactly.
+    // Broadcasts a scalar arm to the shape; a node becomes s * 1, which is
+    // exactly s.
     const auto arm = [&](const Expression &e) {
       return e.size() || e.pending()
                  ? e.id(b, shape)
-                 : b.make(OpCode::Scale, e.id(b), b.ones(shape));
+                 : b.make(opcode<OpCode::Scale>,
+                          {.scalar = e.id(b), .vec = b.ones(shape)});
     };
-    return {b, b.make(OpCode::VSelect, c.id(b), arm(t), arm(f))};
+    return {b, b.make(opcode<OpCode::VSelect>,
+                      {.cond = c.id(b), .then = arm(t), .otherwise = arm(f)})};
   }
 
 public:
-  // Hidden friends: ordinary functions for a given Expression<T>, so `x * 2`
-  // and `2 * x` both convert.
+  // Hidden friends, so that both x * 2 and 2 * x convert the literal.
   friend constexpr Expression operator+(const Expression &l,
                                         const Expression &r) {
     return form(OpCode::Add, l, r);
@@ -257,35 +249,26 @@ public:
     return l + (-r);
   }
 
-  // `+=`, `*=` and `/=` on a scalar node accumulate: the terms are kept on
-  // the arena and become one node -- a fold past two terms, the binary op at
-  // two -- when the result is first read, so a loop of `op=` is one node of k
-  // terms where the operator would be k.  A copy of an accumulator shares the
-  // terms so far and keeps its value.  The op's identity on the right is
-  // dropped, as `x + 0` and `x * 1` fold.  Everything else -- poison, a vector
-  // or a matrix, a pending literal on the left -- goes through the operator,
-  // which propagates poison and folds literals where an in-place version
-  // would take a poisoned accumulator, adopt the other side's arena and
-  // answer instead of refusing.  The parameter is the class type rather than
-  // a Numeric auto, so `op=` accepts exactly what the operator accepts.
+  // On a scalar node, op= collects terms into one n-ary node built on first
+  // read, so a loop of k updates is one node. Other cases use the operator.
   constexpr Expression &operator+=(const Expression &o) {
-    return accumulate(OpCode::SumN, o);
+    return accumulate<OpCode::SumN>(o);
   }
   constexpr Expression &operator-=(const Expression &o) { return *this += -o; }
   constexpr Expression &operator*=(const Expression &o) {
-    return accumulate(OpCode::ProdN, o);
+    return accumulate<OpCode::ProdN>(o);
   }
   constexpr Expression &operator/=(const Expression &o) {
-    return accumulate(OpCode::QuotN, o);
+    return accumulate<OpCode::QuotN>(o);
   }
 
 private:
-  constexpr Expression &accumulate(OpCode fold, const Expression &o) {
+  template <OpCode Fold> constexpr Expression &accumulate(const Expression &o) {
     if (why_ || o.why_ || pending() || size() || o.size() || is_matrix() ||
         o.is_matrix() || (!o.pending() && o.arena_ != arena_)) {
-      return *this = form(fold_op(fold), *this, o);
+      return *this = form(fold_op(Fold), *this, o);
     }
-    const T identity = fold == OpCode::SumN ? T{0} : T{1};
+    const T identity = Fold == OpCode::SumN ? T{0} : T{1};
     if constexpr (std::equality_comparable<T>) {
       using impl::same_value;
       if (o.pending() && same_value(o.lit_, identity)) {
@@ -296,11 +279,12 @@ private:
     if (arena_->is_constant(t, identity)) {
       return *this;
     }
-    if (fold_ != fold) {
-      id_ = arena_->push_term(no_node, id(*arena_));
-      fold_ = fold;
-    }
-    id_ = arena_->push_term(id_, t);
+    using Folding = detail::Folding<Fold>;
+    const auto *folding = std::get_if<Folding>(&at_);
+    const detail::PendingEntry last =
+        folding ? folding->entry
+                : arena_->push_term(detail::no_entry, id(*arena_));
+    at_ = Folding{arena_->push_term(last, t)};
     return *this;
   }
 
@@ -321,11 +305,8 @@ public:
   DDX_RT_COMPARE_TABLE(DDX_RT_BINFN)
 #undef DDX_RT_BINFN
 
-  // Operators that answer an expression, not a bool.  That is what keeps
-  // Expression outside std::totally_ordered -- every comparison there must be
-  // boolean-testable -- so adjoints.hpp's numeric `sign` never outranks the
-  // node-building one.  Only `<` and `<=` are nodes; the rest are those two
-  // read the other way round.
+  // Comparisons return expressions, not bools, which keeps Expression out of
+  // std::totally_ordered so the numeric sign() never outranks the node one.
   friend constexpr Expression operator<(const Expression &l,
                                         const Expression &r) {
     return lt(l, r);
@@ -348,21 +329,20 @@ public:
     const Expression forward = le(l, r);
     return forward * le(r, l);
   }
-  // rewritten `!(l == r)` is ill-formed when `==` is not bool.
+  // Needed because the rewritten !(l == r) is ill-formed when == is not bool.
   friend constexpr Expression operator!=(const Expression &l,
                                          const Expression &r) {
     return Expression{1} - (l == r);
   }
 
-  // Both arms evaluate; `c` is a condition in the C sense, any nonzero value.
+  // Both arms are evaluated; any nonzero c selects t.
   friend constexpr Expression select(const Expression &c, const Expression &t,
                                      const Expression &f) {
     return form(OpCode::Select, c, t, f);
   }
 
 private:
-  // What an Equation needs of an expression: which arena it names, and --
-  // through poison() -- that it names none.
+  // The accessors an Equation needs: the arena and the poison state.
   friend struct detail::Router;
   template <impl::Numeric U> friend class ExternFunction;
   template <impl::Numeric U>
@@ -372,8 +352,8 @@ private:
 
   [[nodiscard]] constexpr Arena<T> *arena() const noexcept { return arena_; }
 
-  // Not a pending literal, which would materialise into the first graph it
-  // meets and put a zero where a symbol should be.
+  // A poisoned expression is not a pending literal, which would otherwise turn
+  // into a zero node in the first graph it meets.
   [[nodiscard]] static constexpr Expression poison(errc why) noexcept {
     Expression e;
     e.why_ = why;
@@ -383,42 +363,41 @@ private:
   [[nodiscard]] constexpr std::optional<errc> why() const noexcept {
     return why_;
   }
-  // A mat_constant table, which is no row: arithmetic reads it as its
-  // MatRow, gemv() in place.
+  // Whether this is a mat_constant table, which arithmetic reads through
+  // row().
   [[nodiscard]] constexpr bool is_matrix() const noexcept {
-    return arena_ != nullptr && fold_ == OpCode::Const &&
-           arena_->op_of(id_) == OpCode::MatConst;
+    const auto *node = std::get_if<NodeId>(&at_);
+    return arena_ != nullptr && node &&
+           arena_->op_of(*node) == OpCode::MatConst;
   }
   [[nodiscard]] constexpr Expression row() const {
     return is_matrix()
                ? Expression{*arena_, arena_->make(opcode<OpCode::MatRow>,
-                                                  Orientation::plain, id_)}
+                                                  Orientation::plain,
+                                                  std::get<NodeId>(at_))}
                : *this;
   }
 
   Arena<T> *arena_ = nullptr;
-  NodeId id_ = no_node; // a node, or while folding the arena's pending entry
+  // A node id, or the fold that op= is still accumulating.
+#define DDX_RT_FOLDING(fn, Op, ...) , detail::Folding<OpCode::Op>
+  std::variant<NodeId DDX_RT_NARY_TABLE(DDX_RT_FOLDING)> at_{no_node};
+#undef DDX_RT_FOLDING
   Shape shape_{0, 0};
-  OpCode fold_ = OpCode::Const; // the Nary op `op=` is accumulating, if any
   T lit_{};
   std::optional<errc> why_;
 };
 
-// The one way a named input enters a graph.  A Var is differentiated; a Param
-// is read and never differentiated, no Jacobian column and a value in every
-// call; an Implicit is one the caller solved for -- a value in every call,
-// like a parameter, and a root of the residual implicit() names, so no
-// derivative treats it as fixed and every one carries dz/dx = -F_x / F_z.
+// Adds a named input: a Var is differentiated, a Param never is, and an
+// Implicit is differentiated through its residual as dz/dx = -F_x / F_z.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> named(Arena<T> &b, OpCode op,
                                             std::string_view name) {
-  const NodeId id = b.input(op, name);
-  return id == no_node ? Expression<T>::poison(errc::name_clash)
-                       : Expression<T>{b, id};
+  const auto id = b.input(op, name);
+  return id ? Expression<T>{b, *id} : Expression<T>::poison(errc::name_clash);
 }
-// The implicit input `name` and the residual `residual(z)` it is a root of:
-// F(z, x) = 0 at every point the caller supplies.  ddx never solves it; it
-// differentiates as though it held.
+// An implicit input z with residual F(z, x) = 0 at every supplied point. ddx
+// never solves F; it differentiates as though F held.
 template <impl::Numeric T, std::invocable<const Expression<T> &> F>
 [[nodiscard]] constexpr Expression<T>
 implicit(Arena<T> &b, std::string_view name, F &&residual) {
@@ -426,22 +405,23 @@ implicit(Arena<T> &b, std::string_view name, F &&residual) {
   if (!detail::Router::why(z)) {
     const Expression<T> f = std::invoke(DDX_FWD(residual), z);
     const auto why = detail::Router::why(f);
-    b.close(z.id(b), why ? no_node : f.id(b), why);
+    b.close(z.id(b), why ? std::expected<NodeId, errc>{std::unexpect, *why}
+                         : std::expected<NodeId, errc>{f.id(b)});
   }
   return z;
 }
-// The direction a seeded product is taken along
+// The direction a seeded product is taken along.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> seed(Arena<T> &b, std::uint32_t slot) {
-  return Expression<T>{b, b.seed_node(slot)};
+  return Expression<T>{b, b.seed_node(Slot{slot})};
 }
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> lit(Arena<T> &b, const T &v) {
   return Expression<T>{b, b.constant(v)};
 }
 
-// extern_fn()'s answer: called on expressions, it puts the function into their
-// graph, and every derivative through it reads the partials it supplies.
+// A user function returned by extern_fn(). Calling it adds a node whose
+// derivatives use the partials the function supplies.
 template <impl::Numeric T> class ExternFunction {
 public:
   constexpr ExternFunction(Arena<T> *b, std::uint32_t index) noexcept
@@ -483,12 +463,10 @@ private:
   std::optional<errc> why_;
 };
 
-// A function of `record.arity` arguments the caller computes, with its
-// partials: `fn(in, out)` writes the value, then the first partials, then --
-// at order 2 -- the upper triangle of the second, row-major.  ddx calls it
-// from any thread that sweeps, as often as it needs, so it must be re-entrant
-// and must not throw.  It may sweep another equation; not the one calling it,
-// whose lock this thread already holds.
+// fn(in, out) writes the value, the first partials, then at order 2 the
+// row-major upper triangle of the second. It must be re-entrant, must not
+// throw, and must not sweep the equation calling it, whose lock is already
+// held.
 template <impl::Numeric T>
 [[nodiscard]] ExternFunction<T>
 extern_fn(Arena<T> &b, ExternRecord record,
@@ -502,18 +480,17 @@ extern_fn(Arena<T> &b, ExternRecord record,
                : ExternFunction<T>{errc::extern_shape};
 }
 
-// The arena var() registers into while an equation() callback runs.  Thread-
-// local, and held by the same guard the drivers seed derivatives with.
 namespace detail {
 
-// Spell one type N times in a pack expansion.
+// Repeats Expression<T> once per element of a pack expansion.
 template <std::size_t, impl::Numeric T> using Repeat = Expression<T>;
 
+// The thread-local arena that var() registers into during an equation()
+// callback.
 template <impl::Numeric T>
 inline thread_local Arena<T> *current_arena = nullptr;
 
-// A scoped_value over the current arena; the arena is not a constant, so it
-// comes in as an argument.
+// Sets the current arena for the lifetime of the returned guard.
 template <impl::Numeric T>
 [[nodiscard]] auto scoped_arena(Arena<T> &b) noexcept {
   return impl::scoped_value<Arena<T> *>{current_arena<T>, &b};
@@ -521,7 +498,7 @@ template <impl::Numeric T>
 
 } // namespace detail
 
-// The spelling a model uses: named in the arena its callback runs in.
+// Names an input in the current callback's arena.
 template <impl::Numeric T>
 [[nodiscard]] Expression<T> named(OpCode op, std::string_view name) noexcept {
   return (detail::current_arena<T> == nullptr)
@@ -537,8 +514,7 @@ extern_fn(ExternRecord record, std::type_identity_t<ExternFn<T>> fn) {
                          std::move(fn));
 }
 
-// var() and param(), in both spellings, off the table of named kinds; an
-// implicit is named with its residual, above.
+// var() and param(), with and without an explicit arena.
 #define DDX_RT_INPUT(fn, Op, ...)                                              \
   template <impl::Numeric T>                                                   \
     requires(OpCode::Op != OpCode::Implicit)                                   \

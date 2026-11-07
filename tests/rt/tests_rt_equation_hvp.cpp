@@ -6,14 +6,12 @@
 
 #include <vector>
 
-// The Equation surface for H(x)v: the same product the dense hessian() gives,
-// reached without building the matrix, and the same answer whether the lane is
-// swept or compiled.
+// Equation::hvp gives the dense Hessian's product without building the
+// matrix, with the same answer whether the lane is swept or compiled.
 
 namespace {
 
-// The dense Hessian this is checked against, read as a matrix rather than as
-// an index expression.
+// The reference product: the dense Hessian times v, read as a row-major matrix.
 std::vector<double> dense_product(const std::vector<double> &h, std::size_t n,
                                   std::span<const double> v) {
   const ddx::impl::md::mdspan m{h.data(),
@@ -71,8 +69,7 @@ TEST(RtEquationHvp, ANamedSymbolIsThatHessianColumn) {
   }
 }
 
-// A seed the product never reads still has its column: y's is dead in
-// H(x*x + y), and the call takes the full direction all the same.
+// y's seed is dead in H(x*x + y), but the call still takes the full direction.
 TEST(RtEquationHvp, ASeedTheProductDropsKeepsItsColumn) {
   const auto eq = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
@@ -170,14 +167,13 @@ TEST(RtEquationHvp, BatchAgreesWithThePointSpelling) {
         *eq.hvp(std::span<const double>{v}, std::array{xs[0][i], xs[1][i]});
     EXPECT_NEAR(hv[0][i], want[0], 1e-10 * std::max(1.0, std::abs(want[0])));
     EXPECT_NEAR(hv[1][i], want[1], 1e-10 * std::max(1.0, std::abs(want[1])));
-    // The gradient rides along in the same sweep.
     const auto grad = *eq.jacobian(std::array{xs[0][i], xs[1][i]});
     EXPECT_NEAR(g[0][i], grad[0], 1e-10 * std::max(1.0, std::abs(grad[0])));
   }
 }
 
-// The lane is exempted from the rebalanced compile graph, so the kernel and the
-// sweep are the same arithmetic in the same order and bit equality is honest.
+// The HVP lane is exempt from the rebalanced compile graph, so kernel and sweep
+// do the same arithmetic in the same order and bit equality is a fair test.
 #ifdef DDX_HAS_JIT
 TEST(RtEquationHvp, TheKernelAgreesWithTheSweepToTheBit) {
   ddx::rt::Arena<> b;

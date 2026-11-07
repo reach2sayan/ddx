@@ -1,8 +1,6 @@
 #pragma once
-// The scalar vocabulary the whole library is written against.  Nothing here
-// knows what an expression tree is: `Numeric` admits a double, a dual, a matrix
-// or a quaternion alike, which is what lets the compile-time graph, the runtime
-// graph and the JIT share one set of operation descriptors.
+// The scalar concepts the library is written against. Numeric admits a double,
+// a dual, a matrix or a quaternion alike.
 
 #include "util/config.hpp"
 
@@ -19,9 +17,9 @@ template <typename T>
 concept CArithmetic = std::integral<std::remove_cvref_t<T>> ||
                       std::floating_point<std::remove_cvref_t<T>>;
 
-// Closed under the four arithmetic operators and negation.
+// Closed under the four arithmetic operators and negation, and constructible
+// from int because differentiation creates the constants 0 and 1.
 template <typename T>
-// constructible_from<T, int>: differentiation manufactures exactly 0 and 1.
 concept CFieldLike = std::default_initializable<T> &&
                      std::constructible_from<T, int> && requires(T a, T b) {
                        { a + b } -> std::convertible_to<T>;
@@ -34,8 +32,8 @@ concept CFieldLike = std::default_initializable<T> &&
 template <typename T>
 concept Numeric = CArithmetic<T> || CFieldLike<T>;
 
-// Declared, not deduced: Numeric admits matrices and quaternions, and the
-// default is the safe answer.
+// Declared rather than deduced, since Numeric admits matrices and quaternions;
+// only arithmetic types commute by default.
 template <typename T>
 inline constexpr bool is_commutative_multiply_v = CArithmetic<T>;
 
@@ -43,7 +41,7 @@ template <typename T>
 concept CCommutativeMultiply =
     is_commutative_multiply_v<std::remove_cvref_t<T>>;
 
-// Decomposable into {value, derivative} via std::tuple_size / get<I>.
+// Decomposable into {value, derivative} through std::tuple_size and get<I>.
 template <typename T>
 concept CTupleLike =
     requires { std::tuple_size<std::remove_cvref_t<T>>::value; };
@@ -62,8 +60,8 @@ inline constexpr bool pack_invocable_v<F, std::index_sequence<Is...>> =
     requires(F &&f) { DDX_FWD(f).template operator()<Is...>(); };
 } // namespace detail
 
-// static_for  : hands over one index at a time, for a fold of statements;
-// index_apply : hands over the whole pack at once,
+// static_for calls f once per index; index_apply passes the whole index pack
+// to f at once.
 template <std::size_t N>
 constexpr void static_for(auto &&f) noexcept
   requires detail::index_invocable_v<decltype(f), std::make_index_sequence<N>>
@@ -92,7 +90,7 @@ concept CExpression = is_expression_type_v<std::remove_cvref_t<T>>;
 
 template <COperation Op, CExpression... Children> class Expression;
 
-// Expression's storage base, and the CRTP `Derived`.
+// Expression's storage base, which holds operands unless they are all empty.
 template <bool Stateless, COperation Op, CExpression... Children>
 class ExpressionImpl;
 
@@ -103,7 +101,6 @@ template <Numeric T, auto... V> class Lit;
 template <Numeric T> using Constant = Lit<T>;
 
 namespace detail {
-// Same fold as binomial() in md/layouts.hpp.
 template <CArithmetic T> consteval T compile_time_factorial(T Order) {
   return std::ranges::fold_left(std::views::iota(T{1}, T(Order + 1)), T{1},
                                 std::multiplies{});

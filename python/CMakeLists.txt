@@ -1,8 +1,7 @@
-# The extension module, a consumer of libddx.  The wheel is these two files:
-#   ddx/_ddx.cpython-*.so   these bindings
-#   ddx/libddx.so.1         the library they link
+# The Python extension module. The wheel ships it as ddx/_ddx.cpython-*.so,
+# next to the libddx it links, ddx/libddx.so.1.
 
-# Anything but MSVC links a runtime a Windows wheel does not carry.
+# Other Windows compilers link a runtime that a Windows wheel does not carry.
 if (WIN32 AND NOT MSVC)
     message(FATAL_ERROR "the Python module on Windows needs MSVC, not "
                         "${CMAKE_CXX_COMPILER_ID}; run from a developer prompt")
@@ -25,7 +24,7 @@ install(TARGETS ddx_rt
         LIBRARY DESTINATION ddx NAMELINK_SKIP
         RUNTIME DESTINATION ddx
         ARCHIVE DESTINATION ddx EXCLUDE_FROM_ALL)
-# A wheel holds no symlinks: the real file takes the soname.
+# A wheel cannot hold symlinks, so the real file is renamed to the soname.
 if (NOT WIN32)
     install(CODE "file(RENAME
             \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/ddx/$<TARGET_FILE_NAME:ddx_rt>\"
@@ -33,7 +32,7 @@ if (NOT WIN32)
 endif ()
 
 # --- the package, in the build tree ------------------------------------------
-# $<1:...> keeps a multi-config generator from appending Release/.
+# $<1:...> stops multi-config generators from appending a Release/ directory.
 set(DDX_PYTHON_PACKAGE "${CMAKE_CURRENT_BINARY_DIR}/ddx")
 set_target_properties(ddx_python PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY "$<1:${DDX_PYTHON_PACKAGE}>")
@@ -55,7 +54,7 @@ set_tests_properties(python.pytest PROPERTIES
         ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR};PYTHONDONTWRITEBYTECODE=1;DDX_PACKAGE_DIR=${CMAKE_CURRENT_BINARY_DIR}")
 
 # --- stubs --------------------------------------------------------------------
-# On request; the result is checked in.
+# Built only on request; the generated stub is checked in.
 add_custom_target(ddx_python_stubs
         COMMAND ${CMAKE_COMMAND} -E env "PYTHONPATH=${DDX_PYTHON_PACKAGE}"
         "${Python_EXECUTABLE}" -m pybind11_stubgen _ddx

@@ -1,7 +1,6 @@
 #pragma once
 #include "symbolic/values.hpp"
-// CFixedString appears only as a constrained-auto NTTP placeholder, which
-// include-cleaner does not count as a reference -- hence the pragma.
+// include-cleaner misses CFixedString used as a constrained auto parameter.
 #include "symbolic/symbol.hpp"
 #include "util/fixed_string.hpp" // IWYU pragma: keep
 #include <cstdint>
@@ -10,10 +9,8 @@
 
 namespace ddx::impl {
 
-// Rebuilding a node from rewritten children, leaving any other leaf alone, is
-// one walk, and a pure type transform, so the symbolic Jacobian stays made of
-// empty types.  `Hold` is one Jacobian column: every symbol but `symbol` is
-// held.  Otherwise every hold is lifted.
+// Rebuilds the tree with each variable's Freeze reset, as a pure type change.
+// With Hold, every symbol but `symbol` is held; without it, all are released.
 template <bool Hold, CFixedString auto symbol = FixedString{""}, CExpression T>
 constexpr auto refreeze(const T &e) noexcept {
   if constexpr (CVariable<T>) {
@@ -37,18 +34,18 @@ constexpr auto make_all_constant_except(const E &e) noexcept {
   return refreeze<true, symbol>(e);
 }
 
-// A partial tree is differentiable again: what held the other symbols while it
-// was formed is lifted, so d/dy of a stored d/dx is not zero.
+// Releases the holds used to form a partial, so d/dy of a stored d/dx is not
+// zero.
 template <CExpression E> constexpr auto thaw_partials(const E &e) noexcept {
   return refreeze<false>(e);
 }
 
-// Alphabetical by name; a metafunction because that is what mp_sort takes.
+// Orders symbols alphabetically, as a metafunction for mp_sort.
 template <CSymbol A, CSymbol B>
 struct symbol_less : std::bool_constant<(A::name < B::name)> {};
 
-// mp_sort is stable, so a tie -- two symbols of the same name, collapsed by
-// mp_unique below -- does not reorder the rest.
+// mp_sort is stable, so duplicate names, which mp_unique then collapses, do
+// not reorder the rest.
 template <CSymbolList List> using sort_tuple_t = mp::mp_sort<List, symbol_less>;
 
 template <CSymbolList List>
@@ -75,7 +72,7 @@ template <CExpression T>
 using extract_symbols_from_expr_t =
     typename decltype(extract_symbols_impl<T>())::type;
 
-// Whether any leaf differentiates to zero, for either reason.
+// Whether any variable in the tree is frozen.
 template <CExpression T> consteval bool holds_frozen() {
   if constexpr (CVariable<T>) {
     return T::frozen;
@@ -91,8 +88,7 @@ template <CExpression T> consteval bool holds_frozen() {
 
 namespace detail {
 
-// The two things every driver asks of an expression: its canonical symbol list
-// and how long that is.
+// An expression's canonical symbol list and its length.
 template <CExpression Expr>
 using expr_symbols_t = extract_symbols_from_expr_t<std::remove_cvref_t<Expr>>;
 

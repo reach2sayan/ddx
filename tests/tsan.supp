@@ -1,7 +1,4 @@
-# ThreadSanitizer suppressions.
-#
-# LLVM sits inside libddx uninstrumented, so TSan sees its writes but not the
-# synchronisation guarding them, and ignore_noninstrumented_modules cannot tell
-# it from the instrumented module around it; these name it by frame instead.
+# LLVM inside libddx is uninstrumented, so TSan sees its writes but not their
+# synchronisation; these suppressions name it by frame.
 race:llvm::
 deadlock:llvm::

@@ -22,27 +22,21 @@
 #include <utility>
 #include <vector>
 
-// A compile-time expression and its numbers.  The tree is the type: what is
-// kept here is the canonicalised expressions and, on demand, their symbolic
-// partial trees.  Every number comes from the runtime graph the expressions
-// lower to -- one arena per call, swept at whatever scalar the point is
-// spelled in: a dual for a derivative tensor, a truncated polynomial for the
-// univariate derivative.  A model swept in a loop is written against rt::
-// directly, whose equation lowers once and keeps its kernels.
+// A compile-time equation. Each call lowers the expressions into a fresh rt
+// arena, so a model evaluated in a loop belongs in rt::Equation instead.
 namespace ddx::impl {
 
 namespace detail {
 
-// The expressions are final by now, so this is where commutative operands get
-// ordered; folding already happened as they were built.
+// Commutative operands are ordered here, once the expressions are final.
 template <CExpression E>
 using canonical_t = decltype(canonicalise(std::declval<const E &>()));
 
 template <CSymbol... Syms>
 constexpr auto make_derivatives(mp::mp_list<Syms...>,
                                 const CExpression auto &expr) noexcept {
-  // thaw_partials: the hold that made the column is lifted again, or the row
-  // it returns would differentiate to zero -- see Freeze in expressions.hpp.
+  // thaw_partials lifts the hold that made each column, or the returned row
+  // would differentiate to zero. See Freeze in expressions.hpp.
   return std::tuple(canonicalise(thaw_partials(
       make_all_constant_except<Syms::value>(expr).derivative()))...);
 }
@@ -58,8 +52,8 @@ constexpr auto make_jac_rows(const std::tuple<Exprs...> &es,
       es);
 }
 
-// A dual-valued row carries the seed in its dual part; the derivative proper
-// is the real part.
+// A dual-valued row carries the seed in its dual part, so the derivative is
+// the real part.
 template <Numeric T, std::size_t N>
 [[nodiscard]] constexpr auto
 strip_seed(const std::array<T, N> &grads) noexcept {
@@ -96,9 +90,8 @@ constexpr nth_dual_t<S, Depth> make_mixed_seed(S value,
   }
 }
 
-// One representative per permutation class: by Schwarz only C(N+Order-1, Order)
-// of the N^Order entries are distinct.  A consteval table, not a filtered view
-// or lazy iterator: both measured 4x slower.
+// One sorted multi-index per symmetry class, since by Schwarz only
+// C(N+Order-1, Order) entries differ. A lazy view measured 4x slower.
 // Ref: Neidinger, ACM TOMS 18(2) (1992) 159.
 template <std::size_t N, std::size_t Order>
   requires(N > 0 && Order > 0)
@@ -108,7 +101,7 @@ consteval auto simplex_index_table() noexcept {
   std::array<std::size_t, Order> idx{};
   for (auto &slot : out) {
     slot = idx;
-    // Raise the rightmost position that can be, and collapse the rest onto it.
+    // Raise the rightmost index that can grow, and set those after it equal.
     for (std::size_t p = Order; p-- > 0;) {
       if (idx[p] + 1 < N) {
         const std::size_t v = ++idx[p];
@@ -128,7 +121,7 @@ constexpr auto extract_nth(const T &x) noexcept {
   return component<N, 1>(x);
 }
 
-// Every variable lifted to nth_dual_t, with the tangents `idx` names on.
+// Lifts every variable to nth_dual_t, seeding the tangents that idx names.
 template <Numeric S, std::size_t Order, std::size_t N>
 [[nodiscard]] constexpr std::array<nth_dual_t<S, Order>, N>
 mixed_seeds(const std::array<S, N> &values,
@@ -156,13 +149,11 @@ public:
   static constexpr std::size_t number_of_derivatives = input_dim;
 
 private:
-  // The scalar the graph is built over; a dual-valued expression lowers to a
-  // graph over its base and is swept at the dual.
+  // The scalar the graph is built over. A dual-valued expression lowers to a
+  // graph over its base scalar and is swept at the dual.
   using scalar = scalar_base_t<value_type>;
   using S = dual_scalar_t<value_type>;
 
-  // Derived from what the user wrote, so a partial that folds away a symbol
-  // cannot shrink the point.
   using Exprs =
       std::tuple<detail::canonical_t<TFirst>, detail::canonical_t<TRest>...>;
   Exprs expressions;
@@ -171,17 +162,15 @@ private:
   using jacobian_tensor_t =
       md_tensor<S, md::extents<std::size_t, output_dim, input_dim>>;
 
-  // The runtime graph of the expressions: the symbols declared first, in the
-  // Equation's order, so a column is a symbol's slot in the point -- the
-  // canonicalised tree's own list can be shorter, (y*x)/(x*y) folds to 1 and
-  // loses both.
+  // Symbols are declared first, in Equation order, so a column is the symbol's
+  // slot in the point even when a folded tree such as (y*x)/(x*y) loses it.
   struct Lowered {
     rt::Arena<scalar> arena;
     std::array<rt::NodeId, output_dim> roots;
   };
   [[nodiscard]] constexpr Lowered lower() const {
     Lowered l{};
-    // The trees bound the arena; interning only shrinks it.
+    // The tree sizes bound the arena, since interning only shrinks it.
     l.arena.reserve(input_dim +
                         (node_count_v<detail::canonical_t<TFirst>> + ... +
                          node_count_v<detail::canonical_t<TRest>>),
@@ -194,44 +183,42 @@ private:
     return l;
   }
 
-  // The symbolic trees and their partials.  Every other member reduces them to
-  // numbers at a point; the formatter is what wants the trees themselves.
+  // The formatter is the only reader of the symbolic trees themselves.
   friend struct ::std::formatter<Equation<TFirst, TRest...>, char>;
 
   [[nodiscard]] constexpr const Exprs &functions() const noexcept {
     return expressions;
   }
-  // On demand: storing it would instantiate the whole symbolic Jacobian every
-  // time Equation<E> is named.
+  // Built on demand, since storing the rows would instantiate the symbolic
+  // Jacobian every time Equation<E> is named.
   [[nodiscard]] constexpr auto jacobian_rows() const noexcept {
     return detail::make_jac_rows(expressions, symbols{});
   }
 
 public:
-  // Slot 0 is the expression itself; slot k>0 is d/d(k-1 th symbol), in
-  // canonical symbol order, as get<N>() and as the subscript [idx<N>].
+  // get<0> is the expression itself and get<k> its partial in the (k-1)th
+  // symbol, in canonical order. The subscript [idx<N>] is the same.
   template <std::size_t N>
     requires(output_dim == 1 && N <= input_dim)
   [[nodiscard]] constexpr decltype(auto) get(this auto &&self) noexcept {
     if constexpr (N == 0) {
       return std::get<0>(DDX_FWD(self).expressions);
     } else {
-      // Built on demand, so this returns a value, not a dangling reference.
+      // The rows are built on demand, so the partial is returned by value.
       auto row = std::get<0>(self.jacobian_rows());
       std::tuple_element_t<N - 1, decltype(row)> d = std::get<N - 1>(row);
       return d;
     }
   }
 
-  // explicit, or `Equation<E> eq = expr;` is ambiguous with
+  // Explicit, or `Equation<E> eq = expr;` is ambiguous with
   // EquationConvertible's conversion operator.
   constexpr explicit Equation(TFirst first, TRest... rest) noexcept
       : expressions{detail::canonicalise(first),
                     detail::canonicalise(rest)...} {}
 
-  // A point spelled as a range answers with result<T>, its length being unknown
-  // until it arrives; every other spelling is counted by a static_assert.
-  // detail::with_point is the one place that fork lives.
+  // A point given as a range returns result<T>, since its length is only known
+  // at run time; every other spelling is checked by a static_assert.
   template <Numeric U = value_type>
   [[nodiscard]] static constexpr auto
   point(const CEvalArg auto &...args) noexcept {
@@ -262,10 +249,8 @@ public:
     return DDX_FWD(self).template get<N>();
   }
 
-  // Symbolic lowers the stored partial trees beside the function and sweeps
-  // them; Reverse builds the adjoint sweep on the graph and never forms a
-  // tree.  The leading output axis appears only with more than one output, as
-  // in hessian() and derivative_tensor().
+  // Symbolic lowers the partial trees; Reverse builds the adjoint on the graph.
+  // The output axis appears only with several outputs, as in hessian().
   template <DiffMode Mode = DiffMode::Reverse>
   [[nodiscard]] constexpr auto
   jacobian(const CEvalArg auto &...args) const noexcept
@@ -311,9 +296,8 @@ public:
         args...);
   }
 
-  // The reverse-mode Hessian, compressed by the graph's colouring and read
-  // back dense.  The colouring is libddx's, so this is not constant-evaluated;
-  // derivative_tensor<2> is.
+  // The reverse-mode Hessian, compressed by colouring and read back dense. Not
+  // constexpr, because the colouring lives in libddx; derivative_tensor<2> is.
   [[nodiscard]] auto hessian(const CEvalArg auto &...args) const noexcept
     requires(input_dim > 0)
   {
@@ -349,8 +333,8 @@ public:
         args...);
   }
 
-  // Forward mode at a dual nested Order deep: one sweep per distinct
-  // multi-index serves every output, all through one walk.
+  // Forward mode with duals nested Order deep: one sweep per distinct
+  // multi-index serves every output.
   template <std::size_t Order>
   [[nodiscard]] constexpr auto
   derivative_tensor(const CEvalArg auto &...args) const noexcept
@@ -367,8 +351,8 @@ public:
               return nd_stack_t<scalar, output_dim, input_dim, Order>{};
             }
           }();
-          // A fresh arena is little but the roots' cone: walked whole, it
-          // needs no liveness pass.
+          // A fresh arena holds little beyond the roots' cone, so it is walked
+          // whole without a liveness pass.
           const rt::detail::ArenaWalk walk{l.arena};
           std::vector<U> v(l.arena.size()), vtape(walk.extent());
           for (const auto &idx :
@@ -391,9 +375,8 @@ public:
         args...);
   }
 
-  // One Taylor sweep, then undo the 1/Order! normalisation.  A plain number,
-  // not a one-entry tensor.  Ref: Griewank, Utke & Walther, Math. Comp.
-  // 69(231) (2000) 1117.
+  // One Taylor sweep, then the 1/Order! normalisation undone. Returns a scalar.
+  // Ref: Griewank, Utke & Walther, Math. Comp. 69(231) (2000) 1117.
   template <std::size_t Order>
   [[nodiscard]] DDX_ALWAYS_INLINE constexpr auto
   univariate_derivative(scalar x0) const noexcept
@@ -414,7 +397,7 @@ public:
 template <CExpression T, CExpression... Ts>
 Equation(T, Ts...) -> Equation<T, Ts...>;
 
-// Declared back in expr/expressions.hpp, where Equation was still incomplete.
+// Declared in expressions.hpp, where Equation was still incomplete.
 template <typename Derived>
 template <typename Eq>
   requires std::same_as<Eq, Equation<Derived>>
@@ -429,13 +412,13 @@ std::ostream &operator<<(std::ostream &out, const Equation<Ts...> &eq) {
 
 } // namespace ddx::impl
 
-// One block per output: the function, then its Jacobian row in canonical symbol
-// order.  The spec is forwarded to every expression printed.
+// Prints each output and then its Jacobian row, in canonical symbol order. The
+// format spec applies to every expression printed.
 template <ddx::impl::CExpression... Ts>
 struct std::formatter<ddx::impl::Equation<Ts...>, char> {
   constexpr auto parse(std::format_parse_context &ctx) {
-    // (iterator, sentinel): the iterator is const char* on libstdc++ but a
-    // class type on MSVC.
+    // The (iterator, sentinel) constructor, because the iterator is const char*
+    // on libstdc++ but a class type on MSVC.
     spec_ = std::string_view(ctx.begin(), ctx.end());
     if (const auto close = spec_.find('}'); close != std::string_view::npos) {
       spec_ = spec_.substr(0, close);

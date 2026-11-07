@@ -8,25 +8,20 @@
 #include <cstddef>
 #include <utility>
 
-// The reverse-mode rule for every op outside unary_math.hpp's eighteen, one
-// operand at a time: adjoint<I> is what reaches operand I.  The arena
-// instantiates them at rt::Expression and asks only for the operands a
-// derivative moves; Dual instantiates them at its component.  No rule reads
-// its own primal, so pow and hypot recompute it, which costs a graph nothing.
+// Reverse-mode rules for the ops outside unary_math.hpp, shared by the rt graph
+// and Dual. adjoint<I> is what reaches operand I; no rule reads its own primal.
 namespace ddx::impl::detail {
 
-// The number for an arithmetic T, the Sign node for a graph handle: ordinary
-// lookup finds this and ADL finds rt::Expression's hidden friend.  sign(0) is
-// 0, the usual subgradient convention, and a - a reaches only ±0 and NaN.
+// sign(0) is 0, the usual subgradient convention. A graph handle finds its own
+// Sign node through ADL instead.
 template <Numeric T>
   requires std::totally_ordered<T>
 [[nodiscard]] constexpr T sign(const T &a) noexcept {
   return a > T{} ? T{1} : a < T{} ? T{-1} : T{a - a};
 }
 
-// A rule that takes only the adjoint reads no primal, and the sweep derives
-// from that signature which stores it may skip -- a sum, and so a difference,
-// is the biggest source of skippable stores.
+// A rule that takes only the adjoint reads no primal, which tells the sweep it
+// may skip storing the operands.
 template <Numeric T> struct SumOpFn {
   template <std::size_t>
   [[nodiscard]] static constexpr T adjoint(const auto &adj) noexcept {
@@ -34,9 +29,8 @@ template <Numeric T> struct SumOpFn {
   }
 };
 
-// d(a*b) = da*b + a*db, so `a`'s adjoint multiplies on the LEFT of b and `b`'s
-// on the RIGHT of a.  Sided, not complete: a non-commutative scalar would also
-// need a transpose.
+// d(a*b) = da*b + a*db, so a's adjoint sits left of b and b's right of a. A
+// non-commutative scalar would also need a transpose.
 template <Numeric T> struct MultiplyOpFn {
   template <std::size_t I>
   [[nodiscard]] static constexpr T adjoint(const auto &adj, const auto &a,
@@ -56,15 +50,14 @@ template <Numeric T> struct NegateOpFn {
   }
 };
 
-// `a / b` is right division, so the two spellings do not fold into one; see
-// DivideOp::derivative.  A graph handle's branch is decided by its scalar, and
-// the negation's place decides contraction, so the commutative one stays.
+// a / b is right division (see DivideOp::derivative), so a non-commutative
+// scalar needs its own operand order.
 template <Numeric T> struct DivideOpFn {
   template <std::size_t I>
   [[nodiscard]] static constexpr T adjoint(const auto &adj, const auto &a,
                                            const auto &b) noexcept {
-    // Twice by b, never once by b*b: the square overflows past ~1.3e154, and
-    // on a graph a/b is the primal quotient already.
+    // Divides twice by b, because b*b overflows past ~1.3e154 and a/b is
+    // already the primal on a graph.
     if constexpr (I == 0) {
       return adj / b;
     } else if constexpr (CCommutativeMultiply<T>) {
@@ -80,12 +73,8 @@ template <Numeric T> struct PowOpFn {
   [[nodiscard]] static constexpr T adjoint(const auto &adj, const auto &a,
                                            const auto &b) noexcept {
     using std::pow, std::log;
-    // Two 0 * inf at a == 0: b * a^(b-1) with b == 0, where a^0 is the
-    // constant 1, and a^b * log(a) with a^b == 0, where 0^b is the constant 0.
-    // Both are the zero the vanishing factor says.  A number asks with a
-    // comparison; a graph handle's comparison is a node, so it asks with a
-    // select, which the arena folds to the bare partial wherever the
-    // factor is a literal.
+    // At a == 0 each partial is 0·inf, but its vanishing factor makes it an
+    // exact zero. A graph handle tests with a select node instead of a branch.
     const auto unless_vanishing = [&a](const T &d, const T &factor) -> T {
       if constexpr (std::equality_comparable<T>) {
         return a == T{} && factor == T{} ? T{} : d;
@@ -104,13 +93,13 @@ template <Numeric T> struct PowOpFn {
   }
 };
 
-// lhs is y, rhs is x.
+// atan2(y, x): operand 0 is y and operand 1 is x.
 template <Numeric T> struct Atan2OpFn {
   template <std::size_t I>
   [[nodiscard]] static constexpr T adjoint(const auto &adj, const auto &y,
                                            const auto &x) noexcept {
     using std::hypot;
-    // Scaled by hypot: x² + y² overflows past 1e154.
+    // Divides twice by hypot, because x² + y² overflows past 1e154.
     const T h = hypot(x, y);
     if constexpr (I == 0) {
       return adj * (x / h) / h;
@@ -125,7 +114,8 @@ template <Numeric T> struct HypotOpFn {
   [[nodiscard]] static constexpr T adjoint(const auto &adj, const auto &x,
                                            const auto &y) noexcept {
     using std::hypot;
-    // x / h first: the quotient is in [-1, 1] where x * adj can overflow.
+    // x / h first, since that quotient lies in [-1, 1] and x * adj can
+    // overflow.
     return adj * ((I == 0 ? x : y) / hypot(x, y));
   }
 };
@@ -145,15 +135,13 @@ template <Numeric T> struct SignOpFn {
   }
 };
 
-// Branch-free, since a node has no comparisons: the kink is a sign -- exact
-// away from the tie, half to each side at it, as ExtremumOp's symbolic
-// derivative spells the same expansion.
+// Branch-free through sign(l - r): exact away from a tie and half to each side
+// at one, matching ExtremumOp::derivative.
 template <Numeric T, bool IsMax> struct ExtremumOpFn {
   template <std::size_t I>
   [[nodiscard]] static constexpr T adjoint(const auto &adj, const auto &l,
                                            const auto &r) noexcept {
     const T s = sign(l - r);
-    // max's left operand takes the high half, min's the low.
     if constexpr ((I == 0) == IsMax) {
       return adj * ((T{1} + s) / T{2});
     } else {
@@ -165,13 +153,13 @@ template <Numeric T, bool IsMax> struct ExtremumOpFn {
 template <Numeric T> using MaxOpFn = ExtremumOpFn<T, true>;
 template <Numeric T> using MinOpFn = ExtremumOpFn<T, false>;
 
-// Whether a rule reads its operands' primals, read off its signature.
+// Whether a rule reads its operands' primals, judged from its signature.
 template <template <Numeric> class Fn, Numeric T>
 inline constexpr bool reads_primals_v =
     !requires(const T &adj) { Fn<T>::template adjoint<0>(adj); };
 
-// Operand I's adjoint.  The one call shape for both sides: the caller hands
-// every operand and the descriptor's arity decides whether any is read.
+// Operand I's adjoint. The caller passes every operand, and the rule's
+// signature decides whether any is read.
 template <template <Numeric> class Fn, std::size_t I, Numeric T>
 [[nodiscard]] constexpr T
 adjoint_of(const T &adj, [[maybe_unused]] const auto &...operands) noexcept {
@@ -182,7 +170,7 @@ adjoint_of(const T &adj, [[maybe_unused]] const auto &...operands) noexcept {
   }
 }
 
-// Every operand's, in operand order.
+// The adjoints of every operand, in operand order.
 template <template <Numeric> class Fn, Numeric T>
 [[nodiscard]] constexpr auto adjoints_of(const T &adj,
                                          const auto &...operands) noexcept {

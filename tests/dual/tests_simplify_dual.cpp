@@ -2,9 +2,8 @@
 #include "tests_simplify_fixtures.hpp"
 
 TEST(Simplify, DualLiteralPairsStayEmpty) {
-  // A folded dual value cannot go back into the type in general, but 0 and 1
-  // can via the int spelling -- and those are the only values differentiation
-  // makes.  Otherwise the spine above stops being empty.
+  // Differentiation only makes 0 and 1, and those dual values fold back into
+  // the type through the int spelling, so the spine stays empty.
   using D = ddx::impl::Dual<double>;
   static_assert(std::is_empty_v<decltype(ddx::impl::Lit<D, 0>{} +
                                          ddx::impl::Lit<D, 1>{})>);
@@ -14,12 +13,12 @@ TEST(Simplify, DualLiteralPairsStayEmpty) {
                                          ddx::impl::Lit<D, 0>{})>);
   static_assert(std::is_empty_v<decltype(ddx::impl::Lit<double, 0>{} +
                                          ddx::impl::Lit<double, 1>{})>);
-  // A value that is neither 0 nor 1 has nowhere to live but a stored Constant.
+  // Any other value has to live in a stored Constant.
   EXPECT_DOUBLE_EQ(
       (ddx::impl::Lit<D, 1>{} + ddx::impl::Lit<D, 1>{}).get().value(), 2.0);
 }
 TEST(Simplify, DualValuedTreesAreStatelessToo) {
-  // The int spelling works for a T that can never be an NTTP itself, so the
+  // The int spelling works even for a T that cannot be an NTTP, so the
   // dual-valued path never falls back to a stored Constant.
   using D = ddx::impl::Dual<double>;
   ddx::impl::Variable<D, ddx::impl::FixedString{"x"}> dx;
@@ -29,14 +28,14 @@ TEST(Simplify, DualValuedTreesAreStatelessToo) {
   static_assert(sizeof(dx * dy) == 1);
 }
 TEST(Concepts, NumericDemandsWhatTheSweepsActuallyUse) {
-  // Differentiation manufactures exactly 0 and 1, so a type that cannot spell
-  // 1 is rejected by the concept rather than deep inside a sweep.
+  // Differentiation makes 0 and 1, so the concept rejects a type that cannot
+  // spell 1 instead of failing deep inside a sweep.
   static_assert(std::default_initializable<NoIdentity>);
   static_assert(!std::constructible_from<NoIdentity, int>);
   static_assert(!ddx::impl::Numeric<NoIdentity>);
 
-  // Ordering is required only of the three ops that compare their operands:
-  // abs branches on the sign, min and max on which side is larger.
+  // Only abs, min and max compare their operands, so only they require an
+  // ordering.
   static_assert(ddx::impl::Numeric<Undeclared>);
   static_assert(!std::totally_ordered<Undeclared>);
   static_assert(!OpAccepts<ddx::impl::AbsOp, Undeclared>);
@@ -44,20 +43,20 @@ TEST(Concepts, NumericDemandsWhatTheSweepsActuallyUse) {
   static_assert(!OpAccepts<ddx::impl::MinOp, Undeclared>);
   static_assert(OpAccepts<ddx::impl::MultiplyOp, Undeclared>);
   static_assert(OpAccepts<ddx::impl::SumOp, Undeclared>);
-  // Ordered scalars are accepted by all five, so the guard is narrow.
+  // Ordered scalars are accepted by all five ops.
   static_assert(OpAccepts<ddx::impl::AbsOp, double> &&
                 OpAccepts<ddx::impl::MinOp, double>);
 
-  // The scalars that ship satisfy both, so neither constraint narrows the
-  // library's actual surface.
+  // The shipped scalars satisfy both constraints, so neither narrows the
+  // library's surface.
   static_assert(ddx::impl::Numeric<double> && std::totally_ordered<double>);
   static_assert(std::totally_ordered<ddx::impl::Dual<double>>);
   static_assert(std::totally_ordered<ddx::impl::TaylorDual<double, 3>>);
   static_assert(std::totally_ordered<ddx::impl::TaylorDual<double, 3>>);
 }
 TEST(Simplify, MultiplicationCommutesOnlyWhenTheScalarSaysSo) {
-  // A type that says nothing does not commute: that costs a CSE share, never
-  // a wrong result.
+  // A type that says nothing is treated as non-commuting, which can cost a
+  // shared subexpression but never gives a wrong result.
   static_assert(ddx::impl::Numeric<Undeclared> &&
                 !ddx::impl::CCommutativeMultiply<Undeclared>);
   static_assert(ddx::impl::Numeric<Declared>);
@@ -69,16 +68,16 @@ TEST(Simplify, MultiplicationCommutesOnlyWhenTheScalarSaysSo) {
       ddx::impl::CCommutativeMultiply<ddx::impl::TaylorDual<double, 3>>);
   // The dual wrappers defer to the scalar underneath.
   static_assert(!ddx::impl::CCommutativeMultiply<ddx::impl::Dual<Undeclared>>);
-  // DDX_COMMUTATIVE_MULTIPLY is the spelling for a concrete user type.
+  // DDX_COMMUTATIVE_MULTIPLY declares it for a concrete user type.
   static_assert(ddx::impl::CCommutativeMultiply<Declared>);
 
-  // Canonicalisation consults the trait: same shape, reordered for one scalar
-  // and left alone for the other.
+  // Canonicalisation reorders the same shape for one scalar and leaves it
+  // alone for the other.
   ddx::impl::Variable<Undeclared, ddx::impl::FixedString{"x"}> ux;
   ddx::impl::Variable<Undeclared, ddx::impl::FixedString{"y"}> uy;
   static_assert(!std::is_same_v<decltype(canonicalise(ux * uy)),
                                 decltype(canonicalise(uy * ux))>);
-  // Addition needs no opt-in -- a ring's addition commutes by definition.
+  // Addition needs no opt-in, because a ring's addition always commutes.
   static_assert(std::is_same_v<decltype(canonicalise(ux + uy)),
                                decltype(canonicalise(uy + ux))>);
 }

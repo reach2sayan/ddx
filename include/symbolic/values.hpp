@@ -19,16 +19,16 @@ concept CompatibleValueTypes =
     std::convertible_to<typename LHS::value_type, typename RHS::value_type> ||
     std::convertible_to<typename RHS::value_type, typename LHS::value_type>;
 
-// Promote a bare scalar into value_type as a zero-derivative constant;
-// ConstantEmbedder recurses through every Dual<> nesting level.
+// Promotes a bare scalar to a zero-derivative constant of value_type, at any
+// Dual nesting depth.
 template <Numeric VT, CArithmetic S>
 constexpr Constant<VT> promote_scalar(S s) noexcept {
   return Constant<VT>{
       ConstantEmbedder<VT>::embed(static_cast<scalar_base_t<VT>>(s))};
 }
 
-// The three spellings each arithmetic operator serves: two expressions of
-// compatible value type, or an expression and a bare scalar on either side.
+// Two expressions of compatible value type, or an expression and a bare scalar
+// on either side.
 template <typename A, typename B>
 concept CBinaryOperands =
     (CExpression<A> && CExpression<B> && CompatibleValueTypes<A, B>) ||
@@ -36,11 +36,8 @@ concept CBinaryOperands =
 
 namespace detail {
 
-// What every arithmetic operator does before it builds a node: a bare scalar
-// is promoted, two literals fold to a literal, two constants to a constant;
-// anything else is what `build` makes.  A T-valued template argument exists
-// only for structural T, so a dual scalar puts back only 0 and 1.  Fold is a
-// type so that the literal fold is a constant expression.
+// Promotes a bare scalar and folds two literals or two constants; anything
+// else goes to build. A dual scalar can only fold back to the literals 0 and 1.
 template <typename Fold, typename A, typename B>
   requires CBinaryOperands<A, B>
 constexpr auto arithmetic(const A &a, const B &b, auto build) noexcept {
@@ -52,8 +49,8 @@ constexpr auto arithmetic(const A &a, const B &b, auto build) noexcept {
                             build);
   } else {
     using value_type = typename A::value_type;
-    // A literal zero divisor is left to the graph: x / 0 is no constant
-    // expression.
+    // A literal zero divisor is left to the graph, since x / 0 is not a
+    // constant expression.
     if constexpr (CLit<A> && CLit<B> &&
                   !(std::same_as<Fold, std::divides<>> && is_zero_v<B>)) {
       constexpr auto folded = Fold{}(A::value, B::value);
@@ -74,7 +71,7 @@ constexpr auto arithmetic(const A &a, const B &b, auto build) noexcept {
   }
 }
 
-// The node an operator builds once the ladder above has nothing to fold.
+// The node an operator builds when arithmetic() has nothing to fold.
 template <template <Numeric> class Op>
 inline constexpr auto node_of =
     []<CExpression L>(const L &l, const CExpression auto &r) {
@@ -83,7 +80,7 @@ inline constexpr auto node_of =
 
 } // namespace detail
 
-// c ? a : b, which is nothing when neither arm is anything.
+// c ? a : b, which folds to zero when both arms are zero.
 template <CExpression C, CExpression A, CExpression B>
 [[nodiscard]] constexpr auto selected(const C &c, const A &a,
                                       const B &b) noexcept {
@@ -94,7 +91,7 @@ template <CExpression C, CExpression A, CExpression B>
   }
 }
 
-// x == 0, as the graph spells it: both ways round, so a NaN answers no.
+// x == 0 spelled as (x <= 0) * (0 <= x), as the graph does, so NaN gives 0.
 template <CExpression E>
 [[nodiscard]] constexpr auto zero_test(const E &e) noexcept {
   using T = typename E::value_type;
@@ -103,9 +100,8 @@ template <CExpression E>
          Expression<LeOp<T>, Lit<T, 0>, E>{zero, e};
 }
 
-// d, or the zero it stands for where a and factor both vanish.  A literal that
-// is not zero, on either, never vanishes and carries no guard; nor does a
-// scalar with no order to ask.
+// Returns d, guarded to be exactly zero where a and factor both vanish. A
+// nonzero literal or an unordered scalar needs no guard.
 template <CExpression A, CExpression F, CExpression D>
 [[nodiscard]] constexpr auto unless_vanishing(const A &a, const F &factor,
                                               const D &d) noexcept {
@@ -135,8 +131,8 @@ template <typename A, typename B>
 constexpr auto operator/(const A &a, const B &b) noexcept {
   return detail::arithmetic<std::divides<>>(a, b, detail::node_of<DivideOp>);
 }
-// a - b is a + (-b): one adjoint rule instead of two, and both operators get to
-// apply their folding rules.
+// a - b is built as a + (-b), so one adjoint rule serves both and both
+// operators apply their folding.
 template <typename A, typename B>
   requires CBinaryOperands<A, B>
 constexpr auto operator-(const A &a, const B &b) noexcept {
@@ -156,17 +152,17 @@ template <CExpression Expr> constexpr auto operator-(const Expr &a) noexcept {
   }
 }
 
-// One factory per unary math function, generated from the registry.
+// One factory per unary math table row.
 #define DDX_EXPR_UNFN(FN, OP, LABEL)                                           \
   template <CExpression Expr> constexpr auto FN(const Expr &a) noexcept {      \
     return MonoExpression<OP<typename Expr::value_type>, Expr>{a};             \
   }
 DDX_UNARY_MATH_TABLE(DDX_EXPR_UNFN)
-// abs has no descriptor, so its factory is spelled out.
+// abs is outside the math table, so its factory is spelled out.
 DDX_EXPR_UNFN(abs, AbsOp, "abs")
 #undef DDX_EXPR_UNFN
 
-// Function-style binary ops, plus scalar-promotion overloads.
+// Binary math functions, each with overloads that promote a bare scalar.
 #define DDX_EXPR_BINFN(NAME, OP)                                               \
   template <CExpression LHS, CExpression RHS>                                  \
     requires CompatibleValueTypes<LHS, RHS>                                    \
@@ -188,28 +184,28 @@ DDX_BINARY_MATH_TABLE(DDX_EXPR_BINROW)
 
 namespace detail {
 
-// read() is the only member a specialisation supplies.  CRTP rather than a data
-// member: the compile-time form has to stay std::is_empty_v.
+// Shared constant members; a specialisation supplies only read(). CRTP keeps
+// the compile-time Lit an empty type.
 template <typename Derived, Numeric T>
 class ConstantOps : public EquationConvertible<Derived> {
 public:
   using value_type = T;
 
-  // A constant is the one thing that evaluates without a point, so its own
-  // nullary eval() has to be named alongside the base's pack form.
+  // A constant evaluates without a point, so its nullary eval() sits beside
+  // the base's pack form.
   using EquationConvertible<Derived>::eval;
 
   [[nodiscard]] constexpr T get() const noexcept { return this->self().read(); }
   [[nodiscard]] constexpr T eval() const noexcept { return get(); }
   constexpr operator T() const noexcept { return get(); }
 
-  // The int spelling of Lit works for every Numeric T.
+  // Lit with an int value works for every Numeric T.
   [[nodiscard]] constexpr auto derivative() const noexcept {
     return Lit<T, 0>{};
   }
 
-  // At its own type the value passes through; deeper, ConstantEmbedder<U>
-  // embeds it with zero dual parts.
+  // At its own type the value passes through; at a deeper dual it is embedded
+  // with zero dual parts.
   template <CSymbolList Syms, Numeric U, std::size_t N>
   [[nodiscard]] constexpr U
   eval_seeded(const std::array<U, N> &) const noexcept {
@@ -236,9 +232,8 @@ public:
 
 } // namespace detail
 
-// Carried in the type, so the object is empty and derivative()'s 0s and 1s are
-// free.  V is a T, or an int for a T that could never be a template argument
-// itself.
+// A literal carried in the type, so the object is empty. V is a T, or an int
+// when T cannot be a template argument.
 template <Numeric T, auto V>
   requires std::same_as<std::remove_cv_t<decltype(V)>, T> ||
            std::same_as<std::remove_cv_t<decltype(V)>, int>
@@ -250,7 +245,7 @@ public:
   static constexpr T value = T(V);
 };
 
-// The storing form: one type per value_type, so it can hold a runtime number.
+// A literal stored as a member, so it can hold a run-time number.
 template <Numeric T> class Lit<T> : public detail::ConstantOps<Lit<T>, T> {
   friend detail::ConstantOps<Lit<T>, T>;
   T value;
@@ -262,8 +257,8 @@ public:
 
 template <Numeric T> Lit(T) -> Lit<T>;
 
-// Frozen: still reads its slot from the seed array, but differentiates to
-// zero.
+// A symbol. A frozen one still reads its value from the point but
+// differentiates to zero.
 template <Numeric T, CFixedString auto symbol, Freeze Kind>
 class Variable : public EquationConvertible<Variable<T, symbol, Kind>> {
 public:
@@ -277,8 +272,7 @@ public:
     return Lit<T, frozen ? 0 : 1>{};
   }
 
-  // A frozen symbol takes the seed's value and drops its derivative slots.
-  // All three engines guard on Frozen or they disagree.
+  // A frozen symbol keeps the seed's value and drops its derivative parts.
   template <CSymbolList Syms, Numeric U, std::size_t N>
   [[nodiscard]] constexpr U
   eval_seeded(const std::array<U, N> &vals) const noexcept {
@@ -302,7 +296,7 @@ public:
     return ddx::impl::Constant<type>{static_cast<type>(val)};                  \
   }
 
-// The literal's value is unused; only its type selects value_type.
+// The literal's value is unused; only its type picks value_type.
 #define DEFINE_VAR_UDL(type, suffix, label)                                    \
   consteval auto operator""_##suffix(unsigned long long) {                     \
     return ddx::impl::Variable<type, ddx::impl::FixedString{label}>{};         \
@@ -311,22 +305,18 @@ public:
     return ddx::impl::Variable<type, ddx::impl::FixedString{label}>{};         \
   }
 
-// var<"x"> — name a symbol.
 template <FixedString S, Numeric T = double>
 inline constexpr Variable<T, S> var{};
 
-// var_of<"x">(v) — the exemplar supplies the type and is never read, so a
-// run-time value names a symbol as well as a literal does.
+// var_of<"x">(v) takes its type from v and never reads v, so a run-time value
+// works as well as a literal.
 template <FixedString S, Numeric T>
 [[nodiscard]] constexpr auto var_of(const T &) noexcept {
   return Variable<T, S>{};
 }
 
-// The same two, keyed by a symbol in hand rather than a template argument:
-//
-//   variable("x"_s)              // Variable<double, "x">
-//   variable<dual>("x"_s)        // and over another scalar
-//   var_of("x"_s, v)             // exemplar supplies the scalar
+// The same two keyed by a symbol value: variable("x"_s), variable<dual>("x"_s)
+// and var_of("x"_s, v).
 template <Numeric T = double, FixedString S>
 [[nodiscard]] constexpr auto variable(symbol_type<S>) noexcept {
   return Variable<T, S>{};
@@ -337,15 +327,14 @@ template <FixedString S, Numeric T>
   return Variable<T, S>{};
 }
 
-// constant(3.0) — a value stored in the tree; a bare scalar promotes on its
-// own.
+// constant(3.0) stores a value in the tree; a bare scalar is promoted anyway.
 template <Numeric T> [[nodiscard]] constexpr auto constant(T v) noexcept {
   return Lit<T>{v};
 }
 
 } // namespace ddx::impl
 
-// In namespace literals, next to "x"_s: `using namespace ddx::literals;`.
+// Reached with `using namespace ddx::literals;`, like "x"_s.
 namespace ddx::impl::literals {
 
 DEFINE_CONST_UDL(int, ci)

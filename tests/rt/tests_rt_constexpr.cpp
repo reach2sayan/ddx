@@ -9,11 +9,8 @@
 
 #include <gtest/gtest.h>
 
-// "Runtime" names when the *structure* is decided, not when the arithmetic
-// runs, so a graph over constant-visible values is a constant expression.
-// Everything here is a static_assert; the TEST bodies exist so the file
-// reports.  The frozen graph is the boundary -- Boost.Graph's containers are
-// not constexpr, and neither is the JIT.
+// A runtime graph over constant values is a constant expression; the frozen
+// graph is the boundary, since Boost.Graph containers and the JIT are not.
 
 namespace {
 using ddx::rt::Arena;
@@ -39,7 +36,7 @@ consteval bool rewrites_hold() {
 }
 static_assert(rewrites_hold());
 
-// Interning is a compile-time property too: the same subtree twice is one node.
+// Interning holds at compile time too: the same subtree twice is one node.
 consteval std::size_t nodes_for_repeated_subtree() {
   Arena<> b;
   const auto x = var(b, "x");
@@ -61,8 +58,8 @@ consteval double partial_of_product() {
 }
 static_assert(partial_of_product() == 4.0);
 
-// <cmath> is not constexpr; folding a libm call is a GCC extension and clang
-// rejects it outright, so this one sweep is GCC-only.
+// <cmath> calls fold only as a GCC extension and clang rejects them, so this
+// sweep is GCC-only.
 #if defined(__GNUC__) && !defined(__clang__)
 consteval double transcendental_jacobian() {
   Arena<> b;
@@ -75,8 +72,8 @@ consteval double transcendental_jacobian() {
 static_assert(transcendental_jacobian() == 0.0);
 #endif
 
-// Lowering a typed tree into a graph is a constant expression as well, so the
-// two representations can be compared without running anything.
+// Lowering a typed tree into a graph is a constant expression, so the two
+// representations can be compared without running anything.
 consteval bool bridge_agrees_with_equation() {
   constexpr auto x = ddx::var<"x">;
   constexpr auto y = ddx::var<"y">;
@@ -88,8 +85,8 @@ consteval bool bridge_agrees_with_equation() {
 }
 static_assert(bridge_agrees_with_equation());
 
-// Liveness is a property of the arena, so the pass the freeze runs is itself a
-// constant expression -- what the freeze then does with it is not.
+// The liveness pass the freeze runs is a constant expression, though the
+// rest of the freeze is not.
 consteval std::size_t live_from_root() {
   Arena<> b;
   const auto x = var(b, "x");
@@ -102,39 +99,39 @@ consteval std::size_t live_from_root() {
 }
 static_assert(live_from_root() == 2); // x and x * x
 
-// The colouring is Boost.Graph's, so it stops at the boundary -- but reading a
-// Hessian back through one does not.
-consteval ddx::rt::NodeId scatter_reads() {
-  // Not const: the vectors are built during this evaluation, and a constant
-  // evaluation may not write through a const object.
+// The colouring comes from Boost.Graph and so is not constexpr, but reading a
+// Hessian back through one is.
+using ddx::rt::NodeId;
+consteval NodeId scatter_reads() {
+  // Not const, because a constant evaluation may not write through a const
+  // object while its vectors are being built.
   ddx::rt::Hessian h{
-      .value = 0,
+      .value = NodeId{0},
       .partial = {},
-      .compressed = {7, 8},
+      .compressed = {NodeId{7}, NodeId{8}},
       .colouring = {.colour = {0, 0}, .scatter = {0, 1}, .cell = {0, 1}},
-      .zero = 99};
+      .zero = NodeId{99}};
   return h.colours() == 1 && h.at(0, 0) == 7 && h.at(1, 1) == 8 ? h.at(0, 1)
-                                                                : 0;
+                                                                : NodeId{0};
 }
 static_assert(scatter_reads() == 99); // off the pattern: the zero node
 
-// A colour that owns only one of its two rows: the unowned cell gets no
-// storage at all, so `cells()` is short of `count() * n` and at() still
-// answers.
-consteval ddx::rt::NodeId unowned_cell_reads() {
-  ddx::rt::Hessian h{.value = 0,
+// A colour that owns only one of its two rows gives the unowned cell no
+// storage, so cells() is short of count() * n and at() still answers.
+consteval NodeId unowned_cell_reads() {
+  ddx::rt::Hessian h{.value = NodeId{0},
                      .partial = {},
-                     .compressed = {7},
+                     .compressed = {NodeId{7}},
                      .colouring = {.colour = {0, 0},
                                    .scatter = {0, ddx::rt::no_column},
                                    .cell = {0, ddx::rt::no_column}},
-                     .zero = 99};
-  return h.at(0, 0) == 7 && h.at(1, 1) == 99 ? h.at(1, 0) : 0;
+                     .zero = NodeId{99}};
+  return h.at(0, 0) == 7 && h.at(1, 1) == 99 ? h.at(1, 0) : NodeId{0};
 }
 static_assert(unowned_cell_reads() == 99);
 
-// The counts a caller sizes its buffers by come off the constructor's own
-// sweep, so they answer without a frozen graph.
+// The buffer-sizing counts come from the constructor's own sweep, so they are
+// available without a frozen graph.
 consteval std::size_t column_counts() {
   Arena<> b;
   const auto x = var(b, "x");

@@ -9,8 +9,7 @@
 #include <string>
 #include <vector>
 
-// Inputs in declaration order, and parameters: inputs read in every call and
-// never differentiated.
+// Parameters are inputs read in every call but never differentiated.
 namespace {
 
 using namespace ddx::literals;
@@ -23,7 +22,7 @@ TEST(RtParam, SymbolsTakeTheOrderTheyAreNamedIn) {
   });
   EXPECT_TRUE(std::ranges::equal(*eq.symbols(),
                                  std::array<std::string_view, 2>{"b", "a"}));
-  // Positional (1, 2) is b = 1, a = 2; named points do not care.
+  // Positional (1, 2) means b = 1 and a = 2; named points ignore order.
   EXPECT_DOUBLE_EQ(*eq.evaluate(1.0, 2.0), 4.0);
   EXPECT_DOUBLE_EQ(*eq.evaluate("a"_s = 2.0, "b"_s = 1.0), 4.0);
   EXPECT_EQ(*eq.jacobian(1.0, 2.0), (std::vector{4.0, 4.0}));
@@ -59,7 +58,7 @@ TEST(RtParam, AParamIsAnInputWithNoColumn) {
   EXPECT_EQ(*eq.inputs(), (std::vector<std::string>{"x", "a"}));
   EXPECT_EQ(eq.jacobian_columns(), 1u);
 
-  // Two values of `a` at one x, without rebuilding: positional is x then a.
+  // Two values of a at one x without rebuilding; positional order is x then a.
   EXPECT_DOUBLE_EQ(*eq.evaluate(3.0, 2.0), 18.0);
   EXPECT_DOUBLE_EQ(*eq.evaluate(3.0, 5.0), 45.0);
   EXPECT_EQ(*eq.gradient(3.0, 2.0), std::vector{12.0});
@@ -89,7 +88,7 @@ TEST(RtParam, ABatchCarriesAParamColumn) {
   EXPECT_EQ(f, (std::array{2.0, 8.0, 45.0}));
   EXPECT_EQ(g, (std::array{4.0, 8.0, 30.0}));
 
-  // One column short is a refusal, not a zero parameter.
+  // One column short is refused rather than read as a zero parameter.
   const std::array<const double *, 1> short_in{xs.data()};
   EXPECT_EQ(eq.jacobian(short_in, fv, gv, 3).error().code,
             ddx::errc::wrong_column_count);

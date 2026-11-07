@@ -1,3 +1,4 @@
+#include "graph_builder.hpp"
 #include "jit/kernel.hpp"
 #include "rt/equation.hpp"
 
@@ -10,7 +11,7 @@
 #include <vector>
 
 // A compiled kernel calls the program's function back through a trampoline,
-// one call per lane, and answers what the sweep does.
+// once per lane, and must agree with the sweep.
 
 namespace {
 
@@ -42,7 +43,7 @@ TEST(JitExtern, AKernelCallsTheFunctionAndAgreesWithTheSweep) {
   ASSERT_TRUE(compiled.uses_kernel());
   ASSERT_TRUE(compiled.uses_kernel());
 
-  // Enough points for the wide loop and a ragged tail.
+  // Enough points for the wide loop plus a ragged tail.
   constexpr std::size_t n = 37;
   std::vector<double> as(n);
   std::vector<double> bs(n);
@@ -74,9 +75,8 @@ TEST(JitExtern, AKernelCallsTheFunctionAndAgreesWithTheSweep) {
   EXPECT_EQ(*compiled.hessian(0.3, 1.1), *swept.hessian(0.3, 1.1));
 }
 
-// Two registered functions: the kernel's lanes are rebuilt over blocked spines,
-// and every extern node has to come back naming its own function and
-// component, not the first function's value.
+// The kernel's lanes are rebuilt over blocked spines, and each extern node
+// must still name its own function and component.
 TEST(JitExtern, EveryFunctionAndComponentSurvivesTheRebuild) {
   const auto h_of = [](std::span<const double> in, std::span<double> out) {
     out[0] = in[0] * in[1];
@@ -104,8 +104,8 @@ TEST(JitExtern, EveryFunctionAndComponentSurvivesTheRebuild) {
   compiled.options({.backend = ddx::jit::Backend::Compile});
   ASSERT_TRUE(compiled.uses_kernel());
   ASSERT_TRUE(compiled.uses_kernel());
-  // The spine is long enough to be blocked, so the last bits may differ; a
-  // wrong function or component differs in the first.
+  // The spine is long enough to be blocked, so only the last bits may differ;
+  // a wrong function or component would differ in the first.
   constexpr std::array<std::array<double, 2>, 3> at{
       {{0.3, 1.1}, {-0.7, 0.4}, {1.2, -2.0}}};
   for (const auto &[a, b] : at) {
@@ -118,9 +118,8 @@ TEST(JitExtern, EveryFunctionAndComponentSurvivesTheRebuild) {
   }
 }
 
-// The kernel holds the functions it calls and no address of its own: it runs
-// after the graph it was lowered from is gone, and its object is kept like any
-// other.
+// The kernel holds the functions it calls and no address of its own, so it
+// runs after its graph is gone.
 TEST(JitExtern, AKernelOutlivesItsGraphAndKeepsItsObject) {
   auto c = ddx::jit::Compiler::create();
   ASSERT_TRUE(c.has_value()) << c.error().detail;
@@ -129,8 +128,7 @@ TEST(JitExtern, AKernelOutlivesItsGraphAndKeepsItsObject) {
     const auto a = ddx::rt::var(b, "a");
     const auto bb = ddx::rt::var(b, "b");
     const auto g = ddx::rt::extern_fn(b, {.name = "g", .arity = 2}, g_of);
-    const auto graph = ddx::rt::Graph<>::freeze(
-        b, std::array{(g(a, bb) * 2.0).id(b)});
+    const auto graph = ddx::test::freeze_values(b, std::array{(g(a, bb) * 2.0).id(b)});
     auto k = c->compile(graph);
     EXPECT_TRUE(k.has_value()) << (k ? "" : k.error().detail);
     return k ? std::move(*k) : ddx::jit::Kernel<double>{};

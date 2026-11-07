@@ -16,14 +16,12 @@
 #include <string_view>
 #include <vector>
 
-// Eigen on both sides of ddx, as a consumer writes it: batches straight out of
-// and back into Eigen matrices, and Eigen computing the tensor nodes.  ddx takes
+// Eigen on both sides of ddx, as a consumer writes it; ddx itself only takes
 // column pointers and spans, so nothing in ddx knows Eigen.
 namespace {
 
-// A batch's inputs are column pointers, each n long, which is what a
-// column-major n x inputs matrix holds; its output blocks are the same.  A
-// row-major matrix's columns are strided, which no column pointer can say.
+// A batch is column pointers, which a column-major matrix provides; a
+// row-major matrix's columns are strided, which no column pointer can express.
 template <typename D>
   requires(!D::IsRowMajor && D::InnerStrideAtCompileTime == 1)
 std::vector<const double *> columns_of(const Eigen::PlainObjectBase<D> &m) {
@@ -41,8 +39,8 @@ std::vector<double *> columns_of(Eigen::PlainObjectBase<D> &m) {
          std::ranges::to<std::vector<double *>>();
 }
 
-// One point's Jacobian, dense m x symbols, from a jacobian block: one column
-// per pattern cell, every cell the pattern leaves out zero.
+// Expands one point's Jacobian block into a dense m x symbols matrix, with the
+// cells the pattern leaves out set to zero.
 template <typename B, typename J>
 void scatter(const ddx::rt::Sparsity &pattern, const Eigen::MatrixBase<B> &block,
              Eigen::Index point, Eigen::MatrixBase<J> &dense) {
@@ -56,7 +54,7 @@ void scatter(const ddx::rt::Sparsity &pattern, const Eigen::MatrixBase<B> &block
   }
 }
 
-// One point's Hessian, dense symbols x symbols, from a colour-compressed block.
+// Expands one point's colour-compressed Hessian block into a dense matrix.
 template <typename B, typename H>
 void scatter(const ddx::rt::Colouring &colouring,
              const Eigen::MatrixBase<B> &block, Eigen::Index point,
@@ -70,10 +68,8 @@ void scatter(const ddx::rt::Colouring &colouring,
   }
 }
 
-// A kernel table: the reference rows, with the four Eigen helps with replaced.
-// Over an Eigen built with EIGEN_USE_BLAS the products land in that BLAS.
-// map and zip stay the reference rows: a transcendental per element is the same
-// work under any library.  At either scalar, over Eigen's matrices of it.
+// The reference kernel table with Eigen's products swapped in; map and zip stay
+// the reference rows, since per-element transcendentals gain nothing.
 template <typename T>
 struct EigenKernels : ddx::rt::reference::Kernels<T> {
   using typename ddx::rt::reference::Kernels<T>::In;
@@ -188,8 +184,8 @@ TEST(RtEigen, TheHessianBlockScattersDense) {
 
 } // namespace
 
-// The Eigen kernel table under a tensor graph: the same numbers as the
-// reference table to rounding, and the table the equation says it ran on.
+// Under a tensor graph the Eigen table matches the reference table to rounding,
+// and the equation reports that it ran on the Eigen table.
 template <typename T> void eigen_agrees_with_the_reference_table(double tol) {
   constexpr std::size_t n = 30;
   std::vector<T> m(n * n);

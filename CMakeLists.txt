@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.26)
 
-# Newest GCC on PATH, unless the caller chose a compiler.  Must precede project().
+# Prefer the newest GCC on PATH unless a compiler was chosen.
+# This must precede project().
 if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR
         AND NOT DEFINED CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX})
     find_program(DDX_PREFERRED_CXX NAMES g++-15 g++-14)
@@ -9,7 +10,7 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR
     endif ()
 endif ()
 
-project(ddx VERSION 5.2.0 LANGUAGES CXX)
+project(ddx VERSION 5.3.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -24,7 +25,7 @@ include(DdxCompileOptions)
 include(DdxDependencies)
 
 # --- the library ------------------------------------------------------------
-# One INTERFACE target per header directory; ddx_util carries the headers.
+# One INTERFACE target per header directory; ddx_util carries the header set.
 ddx_use_boost()
 find_package(Threads REQUIRED)
 
@@ -49,7 +50,7 @@ target_sources(ddx_util INTERFACE FILE_SET HEADERS
         BASE_DIRS include "${CMAKE_CURRENT_BINARY_DIR}/include"
         FILES ${ddx_headers} "${CMAKE_CURRENT_BINARY_DIR}/include/util/version.hpp")
 
-# Every header compiles on its own: target all_verify_interface_header_sets.
+# Checked by building the all_verify_interface_header_sets target.
 option(DDX_VERIFY_HEADERS "Check that every public header is self-contained" OFF)
 set_property(TARGET ddx_util PROPERTY VERIFY_INTERFACE_HEADER_SETS ${DDX_VERIFY_HEADERS})
 
@@ -72,7 +73,7 @@ if (DDX_INSTALL)
     include(DdxInstall)
 endif ()
 
-# A consumer that add_subdirectory()s us gets the library and nothing else.
+# A consumer using add_subdirectory() gets the library and nothing else.
 if (NOT PROJECT_IS_TOP_LEVEL)
     return ()
 endif ()
@@ -83,7 +84,7 @@ if (DDX_BUILD_TESTS)
     add_subdirectory(tests)
 endif ()
 
-# After enable_testing(): python/ registers a pytest run with it.
+# Must follow enable_testing(), because python/ registers a pytest run.
 option(DDX_BUILD_PYTHON "Build the pybind11 extension module" OFF)
 if (DDX_BUILD_PYTHON)
     ddx_use_pybind11()

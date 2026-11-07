@@ -18,19 +18,19 @@ template <FixedString S, typename V>
   requires std::is_object_v<V>
 struct Entry;
 
-// A symbol-list element: the label lifted to a type.
+// A symbol name lifted to a type, used as a symbol-list element.
 template <auto S> struct symbol_type {
   static constexpr auto value = S;
   static constexpr std::string_view name = S.view();
 
-  // "x"_s = 1.5 -- one entry of a point or a record.  Assignment rather than a
-  // call: a symbol carries no state for a real assignment to overwrite.
+  // "x"_s = 1.5 makes one entry of a point. The symbol has no state, so this
+  // assignment builds an Entry instead of modifying anything.
   template <typename V>
     requires std::is_object_v<V>
   constexpr Entry<S, V> operator=(V v) const;
 };
 
-// The same symbol as a value, for operator[].
+// The symbol as a value, for operator[].
 template <FixedString S> inline constexpr symbol_type<S> sym{};
 
 namespace literals {
@@ -40,9 +40,8 @@ template <FixedString S> [[nodiscard]] consteval auto operator""_s() noexcept {
 
 } // namespace literals
 
-// `partial` is the Jacobian machinery holding the other symbols while one
-// column is differentiated, lifted once that derivative exists -- otherwise a
-// stored partial tree would differentiate to zero a second time.
+// partial holds the other symbols constant while one Jacobian column is taken,
+// then is lifted, or the stored partial would differentiate to zero.
 enum class Freeze : std::uint8_t { none, partial };
 
 template <Numeric T, CFixedString auto, Freeze = Freeze::none> class Variable;
@@ -54,8 +53,8 @@ inline constexpr bool is_variable_v<Variable<T, C, F>> = true;
 template <typename T>
 concept CVariable = is_variable_v<std::remove_cvref_t<T>>;
 
-// Unconstrained, so include/rt can specialise it for a runtime graph; the
-// compile-time definition carries the CExpression constraint itself.
+// Unconstrained so that rt can specialise it; the compile-time definition
+// carries its own CExpression constraint.
 template <typename... Ts> class Equation;
 
 template <Numeric T, auto... V>
@@ -83,7 +82,7 @@ template <Numeric T, auto V> inline constexpr bool is_lit_v<Lit<T, V>> = true;
 template <typename T>
 concept CLit = is_lit_v<std::remove_cvref_t<T>>;
 
-// `children_t` is exactly the branch/leaf discriminator.
+// A node has children_t and a leaf does not.
 template <typename T>
 concept CExpressionNode =
     requires { typename std::remove_cvref_t<T>::children_t; };
@@ -96,7 +95,7 @@ template <CExpression T> consteval std::size_t node_count_fn() {
           return (1 + ... + node_count_fn<std::remove_cvref_t<C>>());
         }(std::type_identity<typename U::children_t>{});
   } else {
-    return 1; // constant / variable
+    return 1;
   }
 }
 
@@ -104,7 +103,7 @@ template <CExpression T>
 inline constexpr std::size_t node_count_v =
     node_count_fn<std::remove_cvref_t<T>>();
 
-// One element of a point: a number, a range, a ValueMap, or a named value.
+// One argument of a point: a number, a range, a ValueMap, or a named value.
 template <typename T>
 concept CEvalArg = Numeric<T> || std::ranges::input_range<T> || requires {
   typename std::remove_cvref_t<T>::symbols;
@@ -120,9 +119,8 @@ template <auto Seed, CExpression Expr, CEvalArg... Args>
                                               const Args &...args);
 } // namespace detail
 
-// Declared here and defined out of line, Equation being incomplete.  Keep the
-// conversion a constrained *template*: a plain operator Equation<Derived>() is
-// a candidate for every is_convertible query, and answering one asks again.
+// The conversion is defined in equation.hpp. It stays a constrained template,
+// since a plain one would recurse through every is_convertible query.
 template <typename Derived> struct EquationConvertible {
   template <typename Eq>
     requires std::same_as<Eq, Equation<Derived>>
@@ -157,8 +155,8 @@ public:
         this->self().expressions());
   }
 
-  // The one seeded sweep.  U is deduced from the point, so the arithmetic
-  // follows whatever was handed in and only the leaves see the difference.
+  // The seeded sweep. U is deduced from the point, so the same tree evaluates
+  // at a plain scalar or a dual.
   template <CSymbolList Syms, Numeric U, std::size_t N>
   [[nodiscard]] constexpr U
   eval_seeded(const std::array<U, N> &vals) const noexcept {
@@ -201,8 +199,7 @@ public:
   }
 };
 
-// Derives rather than aliases, so Expression stays a class template partial
-// specialisations can match.
+// Derives rather than aliases, so partial specialisations can match Expression.
 template <COperation Op, CExpression... Children>
 class Expression : public ExpressionImpl<(std::is_empty_v<Children> && ...), Op,
                                          Children...> {

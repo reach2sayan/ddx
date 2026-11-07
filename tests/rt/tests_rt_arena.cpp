@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+#include <type_traits>
+
 #include <array>
 #include <cmath>
 #include <limits>
@@ -77,8 +79,7 @@ TEST(RtArena, IdentityRewrites) {
   EXPECT_TRUE(b.is_constant((x / x).id(b), 1.0));
   EXPECT_TRUE(b.is_constant(pow(x, RE{0}).id(b), 1.0));
 
-  // (n/d)*d -> n, the DAG form of the compile-time rule: on interned nodes the
-  // denominator match is an id compare.
+  // (n/d)*d folds back to n by comparing the denominator's id.
   EXPECT_EQ(((y / x) * x).id(b), y.id(b));
   EXPECT_EQ((x * (y / x)).id(b), y.id(b));
 }
@@ -104,8 +105,8 @@ TEST(RtArena, ConstantOperandsFold) {
   (void)x;
 }
 
-// Constants intern by their bits, which is what they hash by: the two zeros
-// stay apart whatever was built first, and a NaN is one node.
+// Constants intern by bit pattern, so +0.0 and -0.0 stay apart and a NaN is
+// a single node.
 TEST(RtArena, ConstantsInternByTheirBits) {
   Arena<> b;
   for (int i = 0; i < 64; ++i) {
@@ -127,8 +128,7 @@ TEST(RtArena, SymbolsInternByName) {
   EXPECT_EQ(b.symbols()[0], "x");
 }
 
-// A slot is the order the model named its symbols in, so a symbol named late
-// takes the next slot and moves nothing already built.
+// A symbol named late takes the next slot and moves nothing already built.
 TEST(RtArena, SlotsAreDeclarationOrder) {
   Arena<> b;
   const auto z = var(b, "z");
@@ -141,8 +141,8 @@ TEST(RtArena, SlotsAreDeclarationOrder) {
   EXPECT_EQ(b[s.id(b)].in[0], z.id(b)) << "the subexpression still names z";
 }
 
-// One namespace for every named input: a parameter cannot take a symbol's name,
-// and parameters number their own slots after the symbols' columns.
+// A parameter cannot reuse a symbol's name, and parameters number their slots
+// after the symbols' columns.
 TEST(RtArena, ParamsShareTheNamespaceAndNumberTheirOwnSlots) {
   Arena<> b;
   const auto x = var(b, "x");
@@ -157,15 +157,49 @@ TEST(RtArena, ParamsShareTheNamespaceAndNumberTheirOwnSlots) {
   EXPECT_EQ(ddx::rt::param(b, "k").id(b), k.id(b));
   EXPECT_TRUE(ddx::rt::param(b, "x").poisoned()) << "x is a symbol";
   EXPECT_TRUE(var(b, "k").poisoned()) << "k is a parameter";
-  EXPECT_EQ(ddx::rt::input_column(b.inputs(), ddx::rt::OpCode::Param, 0), 2u);
+  EXPECT_EQ(ddx::rt::input_column(b.inputs(), ddx::rt::OpCode::Param,
+                                  ddx::rt::Slot{0}),
+            2u);
   (void)x;
 }
 
-// Compound assignment rebinds the handle through the same operators, so an
-// accumulator written either way lands on the same node -- which interning
-// makes an id comparison.
-// Two terms are the long form's own Add; the other compound operators build
-// what their operator builds.  Past two terms `+=` is a SumN: tests_rt_fold.
+// Ops whose operands differ in meaning take named operands. Positional
+// operands do not compile, and the names follow the opcode table's order.
+namespace named {
+using ddx::rt::NodeId;
+using ddx::rt::OpCode;
+using ddx::rt::opcode;
+// Detects whether build(arena, u, m) compiles.
+template <typename Build>
+constexpr bool compiles = std::is_invocable_v<Build, Arena<> &, NodeId, NodeId>;
+static_assert(!compiles<decltype([](auto &b, auto u, auto m)
+                                     -> decltype(b.make(
+                                         opcode<OpCode::RowScale>,
+                                         ddx::rt::NoPayload{}, u, m)) {
+  return {};
+})>);
+static_assert(compiles<decltype([](auto &b, auto u, auto m)
+                                    -> decltype(b.make(
+                                        opcode<OpCode::RowScale>,
+                                        {.scale = u, .matrix = m})) {
+  return {};
+})>);
+static_assert(!compiles<decltype([](auto &b, auto u, auto m)
+                                     -> decltype(b.make(
+                                         opcode<OpCode::RowScale>,
+                                         {.matrix = m, .scale = u})) {
+  return {};
+})>);
+static_assert(compiles<decltype([](auto &b, auto u, auto m)
+                                    -> decltype(b.make(
+                                        opcode<OpCode::ColScale>,
+                                        {.matrix = m, .scale = u})) {
+  return {};
+})>);
+} // namespace named
+
+// Compound assignment builds the same node as the long form, which interning
+// makes an id comparison. Past two terms, += builds a SumN instead.
 TEST(RtArena, CompoundAssignmentBuildsWhatTheLongFormBuilds) {
   Arena<> b;
   const auto x = var(b, "x");
@@ -185,8 +219,8 @@ TEST(RtArena, CompoundAssignmentBuildsWhatTheLongFormBuilds) {
       << "the long form built a node the short one did not";
 }
 
-// The right operand converts, as it does for the binary operators, and two
-// pending literals fold without an arena to fold in.
+// The right operand converts as it does for the binary operators, and two
+// literals fold without needing an arena.
 TEST(RtArena, CompoundAssignmentTakesAScalar) {
   Arena<> b;
   const auto x = var(b, "x");
@@ -211,8 +245,8 @@ TEST(RtInterpreter, EvaluatesSharedNodesOnce) {
   EXPECT_NEAR(ddx::rt::evaluate(b, f.id(b), pt), xy + std::sin(xy), 1e-15);
 }
 
-// A literal condition has chosen, NaN reading as true the way select_impl
-// reads it, and equal arms need no choosing.
+// A literal condition picks its arm (NaN reads as true, as in select_impl),
+// and equal arms need no select at all.
 TEST(RtArena, SelectFoldsWhereABinaryWould) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -226,8 +260,8 @@ TEST(RtArena, SelectFoldsWhereABinaryWould) {
   EXPECT_EQ(b[kept.id(b)].op, ddx::rt::OpCode::Select);
 }
 
-// Two comparison opcodes carry six operators: each is `lt` or `le`, some read
-// the other way round, and a bare number converts on either side.
+// The six comparison operators build only lt and le nodes, some with their
+// operands swapped, and a bare number converts on either side.
 TEST(RtArena, ComparisonOperatorsAreTheTwoNodes) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");
@@ -244,8 +278,8 @@ TEST(RtArena, ComparisonOperatorsAreTheTwoNodes) {
   EXPECT_EQ(b[(x >= y).id(b)].op, ddx::rt::OpCode::Le);
 }
 
-// The same at float, whose bits are not a word: its two zeros stay apart too,
-// in a table as in a constant.
+// Float constants also intern by bits, so their two zeros stay apart both as
+// scalars and inside a table.
 TEST(RtArena, FloatConstantsInternByTheirBits) {
   Arena<float> b;
   const auto plus = lit(b, 0.0f).id(b);
@@ -261,8 +295,8 @@ TEST(RtArena, FloatConstantsInternByTheirBits) {
             ddx::rt::vec_constant<float>(b, negative_zeros).id(b));
 }
 
-// Handles of two arenas name two id spaces: a node built from both would read
-// one of them against the wrong table.
+// Handles from two arenas cannot be combined, since a node built from both
+// would read one handle against the wrong arena.
 TEST(RtArena, HandlesOfTwoArenasDoNotCompose) {
   Arena<> a;
   Arena<> b;

@@ -271,6 +271,8 @@ is the spelling.
 | `unknown_function` | a string calls a function that does not exist |
 | `wrong_argument_count` | a string calls one with the wrong arity |
 | `jit_target`, `jit_module`, `jit_verify`, `jit_lookup` | the compiler could not produce or link a kernel |
+| `not_compiling` | `compile_status` on an equation whose backend is `INTERPRET` |
+| `dense_refused` | `dense_hessian` on a model whose matrix the symbols move, such as `gemv(exp(outer(x, x)), x)`; `hessian` and `hvp` answer it |
 
 ## Compiling
 
@@ -281,6 +283,7 @@ kernel, and returns the equation, so a configure-and-use reads in one line:
 ```python
 f.compile(points=batch.shape[1]).jacobian(batch)
 f.uses_kernel()                             # True
+f.compile_status()                          # None: compiled
 f.options = ddx.Options(backend=ddx.Backend.INTERPRET)   # discards the kernel
 ```
 
@@ -316,9 +319,11 @@ by the kernel that number would have built.
 | `options` | property — read or assign an `Options` |
 | `compile(**fields)` | set `Options`, block for the kernel, return self |
 | `uses_kernel(*, want)` | whether a call runs compiled code, building it now — for the Jacobian lane unless `want` names another |
+| `compile_status(*, want)` | `None` when that lane runs compiled code, else `(errc, detail)`: why it interprets |
 | `hessian_colours` | groups in the Hessian's compression; raises on a system |
 | `buffer(x, *, want)` | a `Call` bound to its buffers, for a loop |
 | `nodes(*, want)` | how many nodes a call for `want` evaluates |
+| `census(*, want)` | `{"steps", "values", "by_op"}`: the steps a call takes and the values they write, `by_op` as `(op, steps, values)` rows, most values first; a call costs in proportion to `values` |
 
 ## License
 

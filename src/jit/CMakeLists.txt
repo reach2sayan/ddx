@@ -1,5 +1,5 @@
-# The only LLVM-aware code.  An archive under MSVC, which WINDOWS_EXPORT_ALL_SYMBOLS
-# does not scan; objects elsewhere, since --exclude-libs would hide its exports.
+# The only LLVM-aware code. MSVC needs an archive, which
+# WINDOWS_EXPORT_ALL_SYMBOLS skips; elsewhere --exclude-libs would hide one.
 if (MSVC)
     add_library(ddx_jit_objs STATIC codegen.cpp compiler.cpp)
 else ()
@@ -17,8 +17,8 @@ target_include_directories(ddx_jit_objs SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
 target_link_libraries(ddx_jit_objs PRIVATE ddx Boost::headers ${DDX_LLVM_LIBS})
 ddx_target_flags(ddx_jit_objs)
 
-# RTTI as LLVM has it: a vtable LLVM's headers emit here must not name typeinfo
-# LLVM never built.
+# Match LLVM's RTTI setting, or vtables from LLVM headers reference typeinfo
+# that LLVM never built.
 if (NOT LLVM_ENABLE_RTTI)
     target_compile_options(ddx_jit_objs PRIVATE
             $<IF:$<CXX_COMPILER_ID:MSVC>,/GR-,-fno-rtti>)
@@ -31,8 +31,8 @@ else ()
 endif ()
 add_library(ddx::jit ALIAS ddx_rt)
 
-# PUBLIC: consumers' own TUs read these.  The JIT's defaults follow how libddx
-# was built: its optimisation level (never 0) and its FP contraction.
+# PUBLIC because consumers read these. The JIT defaults follow libddx's own
+# build: its optimisation level (never 0) and its FP contraction.
 string(TOUPPER "${CMAKE_BUILD_TYPE}" build_type)
 set(jit_opt 2)
 if (build_type STREQUAL "DEBUG")
@@ -45,10 +45,11 @@ target_compile_definitions(ddx_rt PUBLIC
         DDX_JIT_DEFAULT_OPT=${jit_opt}
         DDX_JIT_DEFAULT_CONTRACT=$<BOOL:${DDX_FP_FLAGS}>)
 
-# LLVM swallowed and hidden; tests/check_exports.cmake holds that line.
+# LLVM is linked in statically and hidden; tests/check_exports.cmake checks it.
 target_link_libraries(ddx_rt PRIVATE ${DDX_LLVM_LIBS})
 if (NOT MSVC)
-    # --exclude-libs hides LLVM's symbols; the map hides ddx's over LLVM types.
+    # --exclude-libs hides LLVM's symbols; the map hides ddx symbols that
+    # mention LLVM types.
     set(hide_llvm "${CMAKE_CURRENT_SOURCE_DIR}/hide_llvm.map")
     target_link_options(ddx_rt PRIVATE -Wl,--exclude-libs,ALL -Wl,--gc-sections
             "-Wl,--version-script=${hide_llvm}")

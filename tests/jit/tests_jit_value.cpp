@@ -1,3 +1,4 @@
+#include "graph_builder.hpp"
 #include "ddx.hpp"
 #include "jit/kernel.hpp"
 #include "jit/tests_jit_common.hpp"
@@ -19,20 +20,19 @@
 #include <utility>
 #include <vector>
 
-// The interpreter in rt/interpret.hpp is the reference: it and the kernel walk
-// the same graph, so a disagreement is a codegen bug.  Batch shape throughout.
+// The interpreter is the reference: it walks the same graph as the kernel, so
+// a disagreement between them is a codegen bug.
 
 namespace {
 using ddx::rt::Arena;
 using ddx::rt::Graph;
 
-// For a failure message: the stated width, or that there is none.
+// Names the stated lane width for a failure message, or "derived" if none.
 std::string spelled(ddx::jit::Lanes lanes) {
   const auto w = lanes.stated();
   return w ? std::to_string(*w) : "derived";
 }
 
-// Compile `build` and compare a batch against the interpreter.
 void expect_matches_interpreter(auto build, std::size_t nvars,
                                 std::size_t n = 64) {
   Arena<> b;
@@ -42,12 +42,12 @@ void expect_matches_interpreter(auto build, std::size_t nvars,
     vars.push_back(var(b, names[i]));
   }
   const auto root = build(b, vars);
-  const auto graph = Graph<>::freeze(b, std::array{root.id(b)});
+  const auto graph = ddx::test::freeze_values(b, std::array{root.id(b)});
   const auto kernel = must_compile(graph);
   ASSERT_TRUE(static_cast<bool>(kernel));
   ASSERT_EQ(kernel.shape().arity, nvars);
 
-  // Spread the sample points over a range every op in the suite accepts.
+  // The sample points stay in a range that every op in the suite accepts.
   std::vector<std::vector<double>> columns(nvars, std::vector<double>(n));
   for (std::size_t j = 0; j < nvars; ++j) {
     for (std::size_t i = 0; i < n; ++i) {
@@ -74,8 +74,8 @@ void expect_matches_interpreter(auto build, std::size_t nvars,
   }
 }
 
-// A Compiler is the LLJIT and a Kernel points into code it owns: one owner, but
-// it must move -- Equation keeps one in a static.
+// A Kernel points into code its Compiler owns, so the Compiler has one owner,
+// but it must move because Equation keeps one in a static.
 TEST(JitValue, CompilerIsMovableButNotCopyable) {
   static_assert(!std::is_copy_constructible_v<ddx::jit::Compiler>);
   static_assert(!std::is_copy_assignable_v<ddx::jit::Compiler>);
@@ -123,15 +123,14 @@ TEST(JitValue, IntrinsicBackedFunctions) {
       [](Arena<> &, auto &v) { return min(v[0], v[1]); }, 2);
 }
 
-// A constant exponent or base is where LLVM's library-call simplifier would
-// rewrite pow -- sqrt for 0.5, a division for -1, exp2/exp10 for a base -- and
-// libm's pow is not correctly rounded, so any rewrite moves a bit.
+// LLVM's library-call simplifier rewrites pow with a constant exponent or base,
+// and libm's pow is not correctly rounded, so any such rewrite moves a bit.
 TEST(JitValue, PowWithAConstantOperandIsTheSweepsPowToTheBit) {
   const auto bits_agree = [](auto build) {
     Arena<> b;
     const auto x = var(b, "x");
     const auto root = build(b, x);
-    const auto graph = Graph<>::freeze(b, std::array{root.id(b)});
+    const auto graph = ddx::test::freeze_values(b, std::array{root.id(b)});
     const auto kernel = must_compile(graph);
     ASSERT_TRUE(static_cast<bool>(kernel));
     constexpr std::size_t n = 64;
@@ -158,7 +157,7 @@ TEST(JitValue, PowWithAConstantOperandIsTheSweepsPowToTheBit) {
   bits_agree([](Arena<> &b, const auto &x) { return pow(lit(b, 2.0), x); });
 }
 
-// No LLVM intrinsic: these go out as libm calls, a different emitter path.
+// These ops have no LLVM intrinsic and go out as libm calls instead.
 TEST(JitValue, LibmBackedFunctions) {
   expect_matches_interpreter([](Arena<> &, auto &v) { return cbrt(v[0]); },
                              1);
@@ -179,7 +178,7 @@ TEST(JitValue, MaxMinPropagateNaNSymmetrically) {
   Arena<> b;
   const auto root =
       max(var(b, "x"), var(b, "y")) + min(var(b, "x"), var(b, "y"));
-  const auto kernel = must_compile(Graph<>::freeze(b, std::array{root.id(b)}));
+  const auto kernel = must_compile(ddx::test::freeze_values(b, std::array{root.id(b)}));
   ASSERT_TRUE(static_cast<bool>(kernel));
 
   const double qnan = std::numeric_limits<double>::quiet_NaN();
@@ -195,15 +194,14 @@ TEST(JitValue, MaxMinPropagateNaNSymmetrically) {
   EXPECT_DOUBLE_EQ(got[2], 4.0);
 }
 
-// IEEE 754-2019 maximum/minimum order -0 below +0, which is what llvm.maximum
-// and llvm.minimum compute; the interpreter has to say the same, or 1/min(x, y)
-// changes sign between the two.
+// IEEE 754-2019 maximum/minimum order -0 below +0, as llvm.maximum does, so the
+// interpreter must agree or 1/min(x, y) changes sign between the two.
 TEST(JitValue, MaxMinSignedZeroTiesMatchTheInterpreter) {
   Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto graph =
-      Graph<>::freeze(b, std::array{max(x, y).id(b), min(x, y).id(b)});
+      ddx::test::freeze_values(b, std::array{max(x, y).id(b), min(x, y).id(b)});
   const auto kernel = must_compile(graph);
   ASSERT_TRUE(static_cast<bool>(kernel));
 
@@ -226,17 +224,14 @@ TEST(JitValue, MaxMinSignedZeroTiesMatchTheInterpreter) {
   EXPECT_TRUE(std::signbit(got_min[0])) << "min(-0, +0) is -0";
 }
 
-// Every width computes the same bits: a lane is an IEEE operation on its own,
-// and a transcendental is the same scalar libm call per lane.  Every op
-// A graph with no Jacobian block at all, which is what Equation::evaluate()
-// freezes: the kernel takes an empty partials span, and the emitter has to
-// produce a function that stores value columns and nothing else.
+// Equation::evaluate() freezes a graph with no Jacobian block, so the emitter
+// must produce a kernel that stores value columns and nothing else.
 TEST(JitValue, AValuesOnlyGraphCompilesAndStoresNoPartials) {
   Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto graph =
-      ddx::rt::GraphBuilder{b}.value(x * log(x) + exp(x * y)).finish();
+      ddx::test::GraphBuilder{b}.value(x * log(x) + exp(x * y)).finish();
   ASSERT_EQ(graph.layout().jacobian, 0u);
 
   constexpr std::size_t n = 5;
@@ -259,7 +254,8 @@ TEST(JitValue, AValuesOnlyGraphCompilesAndStoresNoPartials) {
   }
 }
 
-// the emitter has, on a batch that is not a multiple of any width.
+// Each lane is its own IEEE operation and libm calls stay scalar per lane, so
+// every width computes the same bits, even on a batch no width divides.
 TEST(JitValue, EveryLaneWidthAgreesToTheBit) {
   Arena<> b;
   const auto x = var(b, "x");
@@ -271,7 +267,7 @@ TEST(JitValue, EveryLaneWidthAgreesToTheBit) {
   f = f + pow(x, y) + atan2(x, y) + hypot(x, y) + abs(x - y) + max(x, y) +
       min(x, y) + sign(x - y);
   const auto graph =
-      ddx::rt::GraphBuilder{b}.value(f).build_jacobian().finish();
+      ddx::test::GraphBuilder{b}.value(f).build_jacobian().finish();
 
   constexpr std::size_t n = 13;
   std::vector<double> cx(n), cy(n);
@@ -312,9 +308,8 @@ TEST(JitValue, EveryLaneWidthAgreesToTheBit) {
   }
 }
 
-// float lowers over its own element type, libm names (sinf) and trampoline:
-// every op of the table and its partials, at every width, against the scalar
-// kernel and the float sweep.
+// float lowers over its own element type, libm names (sinf) and trampoline, so
+// every op is checked at every width against the scalar kernel and the sweep.
 TEST(JitValue, AFloatGraphAgreesAcrossWidthsAndWithTheSweep) {
   Arena<float> b;
   const auto x = var(b, "x");
@@ -326,7 +321,7 @@ TEST(JitValue, AFloatGraphAgreesAcrossWidthsAndWithTheSweep) {
   f = f + pow(x, y) + atan2(x, y) + hypot(x, y) + abs(x - y) + max(x, y) +
       min(x, y) + sign(x - y);
   const auto graph =
-      ddx::rt::GraphBuilder{b}.value(f).build_jacobian().finish();
+      ddx::test::GraphBuilder{b}.value(f).build_jacobian().finish();
   const auto ir = *compiler().ir(graph);
   EXPECT_NE(ir.find("float"), std::string::npos);
   EXPECT_EQ(ir.find("double"), std::string::npos);
@@ -371,7 +366,6 @@ TEST(JitValue, AFloatGraphAgreesAcrossWidthsAndWithTheSweep) {
   }
 }
 
-// Through the equation: Core<float> launches a pipeline and runs its kernel.
 TEST(JitValue, AFloatEquationRunsItsKernel) {
   const auto build = [] {
     Arena<float> b;
@@ -392,19 +386,16 @@ TEST(JitValue, AFloatEquationRunsItsKernel) {
   }
 }
 
-// The codegen level rides on the module, so one JIT serves compiles at several,
-// and all four must agree to the bit -- which is what lets the default be the
-// cheapest.  Level 0 qualifies only because contraction moved into the graph:
-// FastISel forms no FMAs of its own but an llvm.fma it is handed is an
-// operation like any other.
+// All four codegen levels must agree to the bit, which lets the default be the
+// cheapest; level 0 qualifies because FMA contraction happens in the graph.
 TEST(JitValue, EveryCodegenLevelAgreesToTheBit) {
   Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
-  // Multiply-add shapes throughout, so every level that forms an FMA does.
+  // Multiply-add shapes throughout, so every level that can form an FMA does.
   const auto f = x * y + x * x - y + exp(x * y) * (y + 1.0) + log(x) * y;
   const auto graph =
-      ddx::rt::GraphBuilder{b}.value(f).build_jacobian().finish();
+      ddx::test::GraphBuilder{b}.value(f).build_jacobian().finish();
 
   const std::array cx{0.25, 1.5, 2.75, 3.0};
   const std::array cy{1.25, 0.5, 2.0, 0.75};
@@ -440,16 +431,15 @@ TEST(JitValue, EveryCodegenLevelAgreesToTheBit) {
   }
 }
 
-// Both vectorisers pack operations that were already independent and neither is
-// given `reassoc`, so neither may move a bit.  This is the gate on turning
-// either on.
+// Neither vectoriser is given `reassoc`, so neither may move a bit; this test
+// is the gate on turning either one on.
 TEST(JitValue, TheVectorisersDoNotMoveABit) {
   Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * log(x) + y * exp(x * y) + sqrt(x + y) + x * y * (x + y);
   const auto graph =
-      ddx::rt::GraphBuilder{b}.value(f).build_jacobian().finish();
+      ddx::test::GraphBuilder{b}.value(f).build_jacobian().finish();
 
   constexpr std::size_t n = 9;
   std::vector<double> cx(n), cy(n);
@@ -521,7 +511,7 @@ TEST(JitValue, AgreesWithDdxThroughTheBridge) {
   constexpr auto y = ddx::var<"y">;
   Arena<> b;
   const auto root = ddx::rt::to_graph(b, exp(x) * sin(y));
-  const auto graph = Graph<>::freeze(b, std::array{root.id(b)});
+  const auto graph = ddx::test::freeze_values(b, std::array{root.id(b)});
   const auto kernel = must_compile(graph);
 
   const std::array cx{1.0, 0.25, 2.5};
@@ -550,7 +540,7 @@ TEST(JitValue, AnUnbuiltKernelIsFalsyAndCreateAnswersWithAResult) {
 
   Arena<> b;
   const auto x = var(b, "x");
-  auto k = c->compile(Graph<>::freeze(b, std::array{(x + x).id(b)}));
+  auto k = c->compile(ddx::test::freeze_values(b, std::array{(x + x).id(b)}));
   ASSERT_TRUE(k.has_value()) << k.error().detail;
   EXPECT_TRUE(static_cast<bool>(*k));
 }
@@ -558,7 +548,7 @@ TEST(JitValue, AnUnbuiltKernelIsFalsyAndCreateAnswersWithAResult) {
 TEST(JitValue, EmptyBatchWritesNothing) {
   Arena<> b;
   const auto x = var(b, "x");
-  const auto graph = Graph<>::freeze(b, std::array{sin(x).id(b)});
+  const auto graph = ddx::test::freeze_values(b, std::array{sin(x).id(b)});
   const auto kernel = must_compile(graph);
 
   const double *none = nullptr;
@@ -573,7 +563,7 @@ TEST(JitValue, ConstantFoldsToAStore) {
   Arena<> b;
   const auto x = var(b, "x");
   const auto f = x * ddx::rt::Expression<>{0} + ddx::rt::Expression<>{7};
-  const auto graph = Graph<>::freeze(b, std::array{f.id(b)});
+  const auto graph = ddx::test::freeze_values(b, std::array{f.id(b)});
   const auto kernel = must_compile(graph);
 
   const std::array cx{1.0, 2.0};
@@ -588,11 +578,11 @@ TEST(JitValue, ConstantFoldsToAStore) {
 TEST(JitValue, SeparateCompilesCoexist) {
   Arena<> b1;
   const auto x1 = var(b1, "x");
-  const auto k1 = must_compile(Graph<>::freeze(b1, std::array{sin(x1).id(b1)}));
+  const auto k1 = must_compile(ddx::test::freeze_values(b1, std::array{sin(x1).id(b1)}));
 
   Arena<> b2;
   const auto x2 = var(b2, "x");
-  const auto k2 = must_compile(Graph<>::freeze(b2, std::array{cos(x2).id(b2)}));
+  const auto k2 = must_compile(ddx::test::freeze_values(b2, std::array{cos(x2).id(b2)}));
 
   const std::array c{0.5};
   const std::array<const double *, 1> xs{c.data()};
@@ -613,7 +603,7 @@ TEST(JitValue, KernelOutlivesItsCompiler) {
     auto local = *ddx::jit::Compiler::create();
     Arena<> b;
     const auto x = var(b, "x");
-    auto k = local.compile(Graph<>::freeze(b, std::array{(x * x).id(b)}));
+    auto k = local.compile(ddx::test::freeze_values(b, std::array{(x * x).id(b)}));
     ASSERT_TRUE(k.has_value()) << k.error().detail;
     kernel = std::move(*k);
   }

@@ -12,9 +12,8 @@
 #include <cstdint>
 #include <vector>
 
-// A fold is one step in the kernel as in the sweep: the terms into the running
-// value in list order, a product term of a sum as the same fma.  Bit identity,
-// fused and not, value and gradient.
+// A fold is one step in the kernel as in the sweep, in list order with a sum's
+// product terms as the same fma, so value and gradient match bit for bit.
 
 namespace {
 using ddx::rt::Arena;
@@ -43,7 +42,7 @@ RE summed(const std::vector<RE> &x) {
   }
   return acc;
 }
-// Near one, so forty steps stay finite.
+// The factors stay near one, so forty steps stay finite.
 template <bool Quotient> RE multiplied(const std::vector<RE> &x) {
   RE acc = x[0];
   for (std::size_t t = 0; t < 40; ++t) {

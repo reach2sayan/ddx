@@ -18,18 +18,18 @@ template <typename T> struct is_output {
   template <typename U> using fn = std::is_same<U, Expression<T>>;
 };
 
-// Dynamic alone: a count the type does not fix.
+// True when the pack is exactly Dynamic, so the output count is not fixed.
 template <typename T, typename... Rest>
 inline constexpr bool dynamic_outputs =
     std::same_as<boost::mp11::mp_list<Rest...>, boost::mp11::mp_list<Dynamic>>;
 
-// The count's policy: fixed by the pack, or Dynamic as written.
+// The output-count policy: Fixed by the pack size, or Dynamic.
 template <typename T, typename... Rest>
 using policy_of = boost::mp11::mp_if_c<dynamic_outputs<T, Rest...>, Dynamic,
                                        Fixed<1 + sizeof...(Rest)>>;
 
-// Befriended by Equation: the equation() factories, this header's and
-// rt/text's, are the only callers of create().
+// A friend of Equation, so that the equation() factories here and in rt/text
+// are the only callers of create().
 struct Creating {
   template <typename Eq>
   [[nodiscard]] static constexpr Eq create(auto &&...args) {
@@ -39,15 +39,12 @@ struct Creating {
 
 } // namespace ddx::rt::detail
 
-// Keyed on the Expression<T> *pattern*: a `requires` over <TFirst, TRest...>
-// would be ambiguous with the compile-time specialisation.
+// Specialised on the Expression<T> pattern, since a requires clause would be
+// ambiguous with the compile-time specialisation.
 namespace ddx::impl {
 
-// rt::detail::Core with the output count in the type -- evaluate() answers a
-// T for one function -- or, with Dynamic in the pack, a count only known at
-// run time: one function per species read from a database, every value block
-// a vector, and the one-function members refusing with
-// errc::not_single_output.
+// A runtime equation with its output count in the type, or with Dynamic a
+// count known only at run time, where single-output members return an error.
 template <Numeric T, typename... Rest>
   requires(rt::detail::dynamic_outputs<T, Rest...> ||
            boost::mp11::mp_all_of_q<boost::mp11::mp_list<Rest...>,
@@ -58,9 +55,8 @@ class Equation<rt::Expression<T>, Rest...> : public rt::detail::Core<T> {
   friend Base;
   friend struct rt::detail::Creating;
 
-  // A refusal rides on the equation rather than a result at every call site;
-  // see poisoned().  `owned` is null where the outputs' arena is the caller's,
-  // which is then copied.
+  // A null owned arena means the outputs live in the caller's arena, which is
+  // then copied. Build failures are carried by the equation; see poisoned().
   [[nodiscard]] static constexpr Equation
   create(std::unique_ptr<rt::Arena<T>> owned,
          std::span<const rt::Expression<T>> outputs) {
@@ -83,10 +79,10 @@ class Equation<rt::Expression<T>, Rest...> : public rt::detail::Core<T> {
   }
 
 public:
-  // What the type fixes: 0 where it fixes nothing (a System).
+  // The output count fixed by the type, or 0 for a System.
   static constexpr std::size_t output_dim = Outputs::expected.value_or(0);
 
-  // `Outputs` is the one place the count's policy acts.
+  // Returns a single T for one output and a vector otherwise.
   [[nodiscard]] constexpr auto
   evaluate(const rt::detail::CPointArg auto &...args) const {
     return this->values(args...).transform([](std::vector<T> f) {
@@ -111,18 +107,15 @@ using jit::Backend;
 using jit::Lanes;
 using jit::OptLevel;
 
-// One function: what equation() returns for a callback returning one
-// expression, spelled for a member or a parameter.
+// A single-output equation, as returned by equation() for one expression.
 template <impl::Numeric T = double>
 using Equation = impl::Equation<Expression<T>>;
 
-// An equation whose output count is a run-time number.
 template <impl::Numeric T = double>
 using System = impl::Equation<Expression<T>, detail::Dynamic>;
 
-// Over expressions already built in a caller's own arena, which the equation
-// copies: the caller may go on building in it.  Partial
-// specialisations contribute no deduction guides, so this is the whole of CTAD.
+// Builds an equation from expressions in the caller's arena, which is copied
+// so the caller may keep building in it.
 template <impl::Numeric T, typename... Ts>
   requires(std::same_as<Ts, Expression<T>> && ...)
 [[nodiscard]] constexpr auto equation(Expression<T> first, Ts... rest) {
@@ -130,23 +123,10 @@ template <impl::Numeric T, typename... Ts>
       nullptr, first, rest...);
 }
 
-// Build an Equation:
-//
-//   const auto eq = ddx::rt::equation([] {
-//     const auto x = var("x");
-//     const auto y = var("y");
-//     return exp(x) * sin(y);
-//   });
-//
-// A callback returning an array is a system with that many functions in its
-// type; one returning any other range -- a vector built over a species list
-// -- is a System, with the count it held.
-
 namespace detail {
 
-// `make(type_identity<Eq>, roots...)` over the Equation type the build's shape
-// names: one root, a tuple-like of them -- the count lives in the type, so the
-// size must too -- or any other range, whose count is whatever it holds.
+// Picks the Equation type from what the callback built: one root, a fixed-size
+// tuple-like of roots, or any other range, which becomes a System.
 template <impl::Numeric T, typename Built>
 [[nodiscard]] auto over(const Built &built, auto &&make) {
   if constexpr (std::same_as<Built, Expression<T>>) {
@@ -169,6 +149,8 @@ template <impl::Numeric T, typename Built>
 
 } // namespace detail
 
+// Builds an equation from a callback such as [] { return exp(var("x")); }.
+// An array of roots gives a fixed-size system and any other range a System.
 template <impl::Numeric T = double>
 [[nodiscard]] auto equation(std::invocable auto &&assemble) {
   auto [arena, built] = detail::assemble<T>(DDX_FWD(assemble));

@@ -6,8 +6,8 @@
 
 namespace ddx::impl {
 
-// Exactly one guard per slot: a move would leave a second destructor writing
-// back a value that has been carried off.
+// Sets slot to next and restores the old value on scope exit. Not movable, or
+// a second destructor would write back a moved-from value.
 template <typename T>
   requires std::move_constructible<T> && std::assignable_from<T &, T>
 class scoped_value {

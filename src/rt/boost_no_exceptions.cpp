@@ -1,11 +1,8 @@
-// Under BOOST_NO_EXCEPTIONS boost::throw_exception is declared but not defined,
-// and the program must supply it.  Nothing in ddx routes through it -- only
-// Boost's own internals do, where the alternative to terminating is a container
-// in a state Boost will not describe.
+// Under BOOST_NO_EXCEPTIONS the program must define boost::throw_exception.
+// Only Boost internals reach it, and aborting is the only safe response.
 //
-// Default visibility explicitly: libddx is -fvisibility=hidden and Boost's
-// inline code in other objects has to find these.  They live in namespace
-// boost, so DDX_API is not theirs to wear.
+// Visible by default because libddx is -fvisibility=hidden and Boost's inline
+// code in other objects must find these. DDX_API is for ddx's own namespace.
 #include <boost/assert/source_location.hpp>
 #include <boost/throw_exception.hpp>
 

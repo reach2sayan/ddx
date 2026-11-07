@@ -1,6 +1,5 @@
-# No LLVM symbol leaves libddx, and nothing past the C runtime (on Windows, the
-# system DLLs) is needed to load it.
-#   cmake -DNM=<nm> -DDEPS=<readelf|link> -DLIB=<libddx> -P check_exports.cmake
+# Checks that no LLVM symbol leaves libddx and that loading it needs nothing
+# past the C runtime, or the system DLLs on Windows.
 if (LIB MATCHES "\\.dll$")
     set(symbols_cmd "${DEPS}" /dump /nologo /exports "${LIB}")
     set(deps_cmd "${DEPS}" /dump /nologo /dependents "${LIB}")
@@ -10,7 +9,7 @@ else ()
     set(symbols_cmd "${NM}" -D --defined-only "${LIB}")
     set(deps_cmd "${DEPS}" -d "${LIB}")
     set(dep_line "\\(NEEDED\\)[^\n]*\\[([^]\n]*)\\]")
-    # libdl: LLVM's dlopen lives there before glibc 2.34.
+    # libdl is included because LLVM's dlopen lived there before glibc 2.34.
     set(runtime "^(libstdc\\+\\+|libc\\+\\+|libc\\+\\+abi|libunwind|libm|libgcc_s|libc|libdl|ld-linux)[.-]")
 endif ()
 

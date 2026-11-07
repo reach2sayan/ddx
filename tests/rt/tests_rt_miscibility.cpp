@@ -6,11 +6,8 @@
 
 #include <cmath>
 
-// Both derivatives have closed forms, so neither needs finite differences:
-//
-//   f(x)  = c x(1-x) + k( x ln x + (1-x) ln(1-x) )
-//   f'(½) = 0                       by symmetry, for every c and k
-//   f''   = -2c + k/(x(1-x))        exactly
+// f(x) = c x(1-x) + k(x ln x + (1-x) ln(1-x)) has f'(1/2) = 0 by symmetry and
+// f'' = -2c + k/(x(1-x)), so neither needs finite differences.
 
 namespace {
 using ddx::rt::Arena;
@@ -23,9 +20,8 @@ constexpr double second_derivative(double x, double c, double k) {
   return -2.0 * c + k / (x * (1.0 - x));
 }
 
-// Exact in the reals but not in the graph: the reverse sweep sums the halves in
-// node order, which follows unspecified operand evaluation order, so they
-// cancel to rounding rather than to the bit.
+// The reverse sweep sums the two halves in node order, which depends on operand
+// evaluation order, so they cancel to rounding rather than to the bit.
 TEST(RtMiscibility, HalfIsAlwaysStationary) {
   for (const double c : {2.0, 0.4, 0.0, -1.5}) {
     for (const double k : {0.25, -0.25}) {
@@ -49,7 +45,7 @@ TEST(RtMiscibility, HessianMatchesTheClosedForm) {
   }
 }
 
-// c > 2k opens the gap: x = 1/2 turns from a minimum into a maximum.
+// c > 2k opens the gap, turning x = 1/2 from a minimum into a maximum.
 TEST(RtMiscibility, TheGapOpensWhenEnthalpyBeatsEntropy) {
   constexpr double k = 0.25;
   Arena<> b1;
@@ -59,13 +55,13 @@ TEST(RtMiscibility, TheGapOpensWhenEnthalpyBeatsEntropy) {
   EXPECT_GT((*free_energy(b2, 0.4, k).hessian(0.5))[0], 0.0)
       << "c < 2k: a minimum";
 
-  // k < 0 inverts the curvature at the ends, so no interior gap for any c.
+  // k < 0 inverts the curvature at the ends, so there is no gap for any c.
   Arena<> b3;
   const auto inverted = free_energy(b3, 2.0, -k);
   EXPECT_LT((*inverted.hessian(0.02))[0], 0.0) << "concave at the edge";
 }
 
-// Newton on f' with f'' as the derivative: a wrong Hessian fails to converge.
+// Newton on f' with f'' as its derivative fails to converge if f'' is wrong.
 TEST(RtMiscibility, NewtonFindsTwoSymmetricMinima) {
   constexpr double c = 1.0;
   constexpr double k = 0.25; // c > 2k, so the gap is open
@@ -96,7 +92,7 @@ TEST(RtMiscibility, NewtonFindsTwoSymmetricMinima) {
   EXPECT_LT(lower, 0.5);
   EXPECT_GT(upper, 0.5);
 
-  // Mirror images, so this holds to rounding rather than approximately.
+  // The minima are mirror images, so this holds to rounding.
   EXPECT_NEAR(lower + upper, 1.0, 1e-12);
 }
 

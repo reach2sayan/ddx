@@ -6,9 +6,8 @@
 
 #include <vector>
 
-// w'J against the dense jacobian() contracted by hand.  A system is the case
-// that matters: there the product is n columns where the Jacobian is one per
-// structural nonzero.
+// w'J against the dense jacobian() contracted by hand. Systems matter most,
+// since the product has n columns where the Jacobian has one per nonzero.
 
 namespace {
 

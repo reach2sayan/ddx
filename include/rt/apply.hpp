@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ops/operations.hpp" // pow_impl, atan2_impl, hypot_impl, max_impl, min_impl, abs_impl
-#include "ops/unary_math.hpp" // the eighteen descriptors
+#include "ops/unary_math.hpp" // the unary math descriptors
 #include "rt/opcode.hpp"
 #include "util/config.hpp"
 
@@ -11,7 +11,7 @@
 #include <concepts> // std::equality_comparable, std::same_as
 #include <cstddef>
 #include <functional>
-#include <type_traits> // std::plus and friends, for the table's eval column
+#include <type_traits>
 #include <utility>
 
 namespace ddx::rt {
@@ -31,11 +31,8 @@ inline constexpr bool is_field_op_v = boost::mp11::mp_set_contains<
 DDX_UNARY_MATH_TABLE(DDX_RT_PROBE1)
 #undef DDX_RT_PROBE1
 
-// What a binary functor's body reaches for, asked by name rather than by the
-// row's spelling: `max(a, b)` is what a caller writes, and extremum_impl never
-// calls one -- it compares and takes a midpoint.  A probe that asked for the
-// spelling answered false at TaylorDual, and supported() below then handed
-// back a zero node with nothing to say it had.
+// Probes what each binary functor's body calls, not the row's spelling:
+// extremum_impl never calls max(a, b), it compares and takes a midpoint.
 template <typename Fn, impl::Numeric T>
 inline constexpr bool binary_probe_v = false;
 template <impl::Numeric T>
@@ -66,8 +63,7 @@ inline constexpr bool probes_Abs =
     impl::CArithmetic<T> || requires(const T &u) { abs(u); };
 
 template <impl::Numeric T> inline constexpr bool probes_Neg = true;
-// Comparisons need ordering and nothing else; select needs to ask whether the
-// condition is zero.
+// Comparisons need only ordering; select needs only a test against zero.
 template <impl::Numeric T>
 inline constexpr bool probes_Lt =
     impl::CArithmetic<T> || std::totally_ordered<T>;
@@ -80,14 +76,12 @@ inline constexpr bool probes_Select =
 template <impl::Numeric T>
 inline constexpr bool probes_VSelect = probes_Select<T>;
 
-// sign_impl only compares, so ordering is the whole requirement.
 template <impl::Numeric T>
 inline constexpr bool probes_Sign =
     impl::CArithmetic<T> || std::totally_ordered<T>;
 
-// Every row instantiates for every T, so an op the scalar lacks has to compile
-// to *something*; T{} is that, and supports() below is how a sweep finds out
-// before it reads one.
+// Every row instantiates for every T, so an op the scalar lacks returns T{}.
+// Callers check supports() before relying on the result.
 template <typename Fn, impl::Numeric T, bool Ok>
 [[nodiscard]] constexpr T
 supported([[maybe_unused]] const impl::Numeric auto &...args) noexcept {
@@ -98,21 +92,19 @@ supported([[maybe_unused]] const impl::Numeric auto &...args) noexcept {
   }
 }
 
-// One table row as a type: what to call, whether T can, and with how many
-// operands.  A leaf is the row with nothing to call.
+// One table row as a type: the functor, whether T supports it, and its arity.
+// A leaf row has a void functor.
 template <typename Fn, bool Ok, std::size_t Arity> struct Row {
   using functor = Fn;
   static constexpr bool ok = Ok;
   static constexpr std::size_t arity = Arity;
 };
-// A field op is computed at every T; the probe only decides the rest.
+// Field ops (+, *, /, negate) are supported at every T regardless of probe.
 template <typename Fn, bool Probed, std::size_t Arity>
 using row_t = Row<Fn, Probed || is_field_op_v<Fn>, Arity>;
 
-// The one switch over the tables.  Every question asked of an opcode --
-// compute it, can T compute it, sweep W lanes of it -- is a visitor over the
-// Row it names, so the operation set is spelled once here and cannot drift
-// between the askers.
+// The single switch over the opcode tables. Every per-opcode query is a
+// visitor over the Row, so the operation set is spelled out only here.
 template <impl::Numeric T>
 [[nodiscard]] DDX_ALWAYS_INLINE constexpr decltype(auto)
 dispatch(OpCode op, auto &&visit) {
@@ -135,18 +127,15 @@ dispatch(OpCode op, auto &&visit) {
     return visit(Row<void, true, 0>{});
     DDX_RT_LEAF_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
-    // A call is opaque to every scalar: the interpreter calls the function
-    // itself, and supports() saying no is what keeps a Taylor sweep away from
-    // one.  A fold is the interpreter's too, and its op is a field op, computed
-    // at every scalar.
+    // Extern calls are unsupported at every scalar so Taylor sweeps avoid
+    // them. N-ary folds use a field op, so they are supported everywhere.
 #define DDX_RT_DISPATCH(fn, Op, label, arity, kind, ...)                       \
   case OpCode::Op:                                                             \
     return visit(Row<void, Kind::kind == Kind::Nary, arity>{});
     DDX_RT_EXTERN_TABLE(DDX_RT_DISPATCH)
     DDX_RT_NARY_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
-    // A tensor row is the interpreter's as well, through its kernel table, and
-    // at no scalar but the graph's own.
+    // Tensor rows run only through the interpreter's kernel table.
 #define DDX_RT_DISPATCH(fn, Op, label, arity, ...)                             \
   case OpCode::Op:                                                             \
     return visit(Row<void, false, arity>{});
@@ -158,17 +147,15 @@ dispatch(OpCode op, auto &&visit) {
 
 } // namespace detail
 
-// Whether apply<T>(op, ...) computes `op` or answers T{}.  A leaf is always
-// computed.
+// Whether apply<T>(op, ...) computes op or returns T{}. Leaves are always
+// supported.
 template <impl::Numeric T>
 [[nodiscard]] constexpr bool supports(OpCode op) noexcept {
   return detail::dispatch<T>(op, []<typename R>(R) { return R::ok; });
 }
 
-// Templated on the scalar, so the interpreter, constant folding and the arena
-// share one definition: at double it computes, at Expression it builds.  The
-// operand count is the arity asked for; a row of another arity answers T{},
-// as an unsupported one does.
+// Computes op at double and builds a node at Expression, so the interpreter,
+// folding and arena share it. A wrong arity or unsupported op returns T{}.
 template <impl::Numeric T>
 [[nodiscard]] constexpr T apply(OpCode op,
                                 const std::same_as<T> auto &...args) noexcept

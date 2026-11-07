@@ -8,13 +8,11 @@
 
 namespace ddx::impl {
 
-// Boost.Mp11 is the list vocabulary; `mp::` is how the whole library spells it.
 namespace mp = boost::mp11;
 
 template <auto S> struct symbol_type;
 
-// A symbol lifted to a type.  Both spellings are used: the variable by the
-// concept below, the trait by mp_all_of, which takes a metafunction.
+// Whether T is a symbol_type. The trait form exists for mp_all_of.
 template <typename T> inline constexpr bool is_symbol_v = false;
 template <auto S> inline constexpr bool is_symbol_v<symbol_type<S>> = true;
 template <typename T> struct is_symbol : std::bool_constant<is_symbol_v<T>> {};
@@ -25,19 +23,14 @@ concept CSymbol = is_symbol_v<std::remove_cvref_t<T>>;
 template <typename L>
 concept CTypeList = mp::mp_is_list<std::remove_cvref_t<L>>::value;
 
-// mp_list<symbol_type<...>...>, alphabetical by name: the `Syms` threaded
-// through every seeded sweep.  CTypeList first is load-bearing -- mp_all_of
-// over a non-list is ill-formed rather than false.
+// An mp_list of symbol_types in alphabetical order. CTypeList is tested first
+// because mp_all_of over a non-list is ill-formed rather than false.
 template <typename L>
 concept CSymbolList =
     CTypeList<L> && mp::mp_all_of<std::remove_cvref_t<L>, is_symbol>::value;
 
-// Which slot a label names, or the list's length if it names none.
-//
-// `auto S`, not `CFixedString auto S`: on gcc 15 the pattern symbol_type<S>
-// against a *constrained* auto NTTP makes every later deduction of
-// symbol_type<S> fail -- m[sym<"x">] stops finding ValueMap::operator[].
-// Callers keep their constraint.
+// The slot a name occupies in List, or the list's length if absent. S is a
+// plain auto because a constrained one breaks later deductions on GCC 15.
 template <auto S, CTypeList List>
 consteval std::size_t symbol_index() noexcept {
   return mp::mp_find<List, symbol_type<S>>::value;

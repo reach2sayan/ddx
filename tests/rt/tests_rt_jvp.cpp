@@ -7,10 +7,8 @@
 
 #include <vector>
 
-// J v, the one product that is a forward sweep.  Checked two ways: against the
-// dense jacobian() contracted by hand, and against evaluating the arena over
-// Dual<double>, which carries the same directional derivative with no graph
-// machinery at all.
+// J v is checked against the dense jacobian() contracted by hand, and against
+// the arena evaluated over Dual<double>, which needs no graph machinery.
 
 namespace {
 
@@ -47,7 +45,6 @@ TEST(RtJvp, MatchesTheDenseJacobianTimesTheDirection) {
   }
 }
 
-// The independent oracle: a dual point agrees without going near tangent_sweep.
 TEST(RtJvp, AgreesWithADualPointThroughTheInterpreter) {
   using D = ddx::impl::Dual<double>;
   ddx::rt::Arena<> b;
@@ -152,8 +149,8 @@ TEST(RtJvp, CostsOneColumnPerFunction) {
   EXPECT_EQ(*eq.jvp_columns(), 1u) << "one function, one column";
 }
 
-// The refactor gate: DiffMode::Symbolic is now n tangent_sweep calls with unit
-// seeds, and must still emit the same arithmetic reverse mode does.
+// DiffMode::Symbolic runs n tangent sweeps with unit seeds and must emit the
+// same arithmetic as reverse mode.
 TEST(RtJvp, SymbolicModeStillAgreesWithReverse) {
   ddx::rt::Arena<> b;
   const auto x = var(b, "x");

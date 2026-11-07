@@ -7,15 +7,14 @@
 #include <cmath>
 #include <vector>
 
-// Build once, differentiate once, iterate -- the case the runtime path exists
-// for.  A slightly wrong Jacobian still evaluates but converges linearly, so
-// quadratic convergence is the sharp test.
+// A slightly wrong Jacobian still converges, but only linearly, so quadratic
+// convergence is the sharp test.
 
 namespace {
 using ddx::rt::Arena;
 using models::RE;
 
-// By hand: a linear solver would be more machinery than the thing under test.
+// Solved by hand, since a linear solver would be more machinery than the test.
 std::array<double, 2> solve2(const std::vector<double> &J,
                              const std::array<double, 2> &rhs) {
   const double det = J[0] * J[3] - J[1] * J[2];
@@ -24,9 +23,7 @@ std::array<double, 2> solve2(const std::vector<double> &J,
 }
 
 TEST(RtNewton, SolvesASystemBuiltAtRuntime) {
-  //   x^2 + y^2 = 4
-  //   x * y     = 1
-  // so x^2 = 2 + sqrt(3), and the root is (1.93185..., 0.51763...).
+  // x^2 + y^2 = 4 and x y = 1, whose root is (1.93185..., 0.51763...).
   Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
@@ -49,12 +46,11 @@ TEST(RtNewton, SolvesASystemBuiltAtRuntime) {
   const double expected_x = std::sqrt(2.0 + std::sqrt(3.0));
   EXPECT_NEAR(at[0], expected_x, 1e-12);
   EXPECT_NEAR(at[1], 1.0 / expected_x, 1e-12);
-  // Quadratic convergence: a wrong Jacobian needs far more iterations.
   EXPECT_LE(taken, 8);
 }
 
-// Peng-Robinson's cubic solved for Z at a composition read from "data" -- what
-// a flash calculation does.
+// Peng-Robinson's cubic solved for Z at a composition read from data, as a
+// flash calculation does.
 TEST(RtNewton, SolvesPengRobinsonForCompressibility) {
   constexpr std::size_t species = 6;
   Arena<> b;
@@ -80,7 +76,7 @@ TEST(RtNewton, SolvesPengRobinsonForCompressibility) {
     if (std::abs(residual) < 1e-14) {
       break;
     }
-    // Only dF/dZ is wanted; the composition is held fixed.
+    // Only dF/dZ is wanted, since the composition is held fixed.
     at[z_slot] -= residual / (*cubic.jacobian(at))[z_slot];
     ++taken;
   }
@@ -90,7 +86,6 @@ TEST(RtNewton, SolvesPengRobinsonForCompressibility) {
   EXPECT_GT(at[z_slot], 0.0) << "a compressibility factor is positive";
 }
 
-// Build once, solve many: one Equation re-used across a parameter sweep.
 TEST(RtNewton, OneEquationServesAWholeSweep) {
   Arena<> b;
   const auto x = var(b, "x");

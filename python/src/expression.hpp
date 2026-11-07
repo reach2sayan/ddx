@@ -15,16 +15,11 @@
 #include <utility>
 #include <vector>
 
-// The handle Python holds: an rt::Expression that owns its arena.
-// rt::Expression stores a *non-owning* Arena* because in C++ an arena's
-// lifetime is lexical; a Python closure can capture a symbol and outlive
-// everything.  Shared ownership is the whole of what this adds.
+// The Python expression handle: an rt::Expression plus shared ownership of its
+// arena, since a Python closure can outlive any lexical arena scope.
 //
-// It holds one rather than deriving from one: pybind11 describes a bound type
-// as descr<N, PyExpression>, and a base class is an associated class where a
-// member's type is not.  Deriving would put rt::Expression's hidden operator+
-// into the overload set for descr + descr, instantiating Numeric<descr> whose
-// body is `{ a + b }` -- constraint recursion inside pybind11's machinery.
+// It holds an rt::Expression instead of deriving from it, because the base's
+// hidden operator+ would cause constraint recursion inside pybind11's descr.
 namespace ddx::py {
 
 class PyExpression {
@@ -34,9 +29,8 @@ public:
 
   constexpr PyExpression() = default;
 
-  // Implicit, and the reason `2.0 * x` and `x * 2.0` both work: pybind11 is
-  // told about it with implicitly_convertible, and what follows is the base's
-  // own folding -- two pending literals never reach a graph.
+  // Implicit, so that `2.0 * x` and `x * 2.0` both work through pybind11's
+  // implicitly_convertible.
   // NOLINTNEXTLINE(google-explicit-constructor)
   constexpr PyExpression(double v) : expression_(v) {}
   PyExpression(Base e, SharedArena a) noexcept
@@ -46,15 +40,16 @@ public:
     return expression_.poisoned();
   }
 
-  // A factory or reduction raises where it refused -- a shape, a missing
-  // arena -- rather than carrying the poison on to equation().
+  // Raises immediately if the expression is poisoned, instead of carrying the
+  // poison on to equation().
   [[nodiscard]] static PyExpression checked(const Base &e, SharedArena arena) {
     if (const auto why = rt::detail::Router::why(e)) {
       fail_with(*why);
     }
     return {e, std::move(arena)};
   }
-  // The arena the scalars name, else `fallback`: the model running now.
+  // Packs scalars into a vector in their own arena, else in `fallback`, the
+  // model running now.
   [[nodiscard]] static PyExpression pack(std::span<const PyExpression> scalars,
                                          const SharedArena &fallback) {
     SharedArena arena = fallback;
@@ -72,10 +67,8 @@ public:
     return checked(rt::pack(*arena, std::span<const Base>{bases}), arena);
   }
 
-  // The base's accumulating `+=`, `*=` and `/=`, with the arena put back:
-  // what a loop of `acc op= term` builds as one node.  Python's `op=` rebinds
-  // the name to what __iadd__ and its siblings answer, so these are called on
-  // a copy and no other reference to the old handle moves.
+  // Accumulating operators, so a loop of `acc += term` builds one node. The
+  // bindings call them on a copy, so other references to the handle never move.
   PyExpression &operator+=(const PyExpression &o) {
     return accumulate(o, [](Base &l, const Base &r) { l += r; });
   }
@@ -86,12 +79,12 @@ public:
     return accumulate(o, [](Base &l, const Base &r) { l /= r; });
   }
 
-  // Elements per point: zero for a scalar.
+  // The number of elements per point, which is zero for a scalar.
   [[nodiscard]] std::size_t size() const noexcept { return expression_.size(); }
   [[nodiscard]] PyExpression at(std::size_t i) const {
     return checked(expression_[i], arena_);
   }
-  // (), (n,) for a vector, (rows, cols) for a matrix, constant or computed.
+  // () for a scalar, (n,) for a vector, and (rows, cols) for a matrix.
   [[nodiscard]] std::vector<std::size_t> shape() const {
     if (!arena_ || expression_.pending()) {
       return {};
@@ -110,8 +103,8 @@ public:
                        : std::vector<std::size_t>{size()};
   }
 
-  // The id this names in `arena`, or a refusal: an id from another arena would
-  // index this one at random.  A pending literal materialises into it.
+  // The node id in `arena`, refusing a handle from another arena. A pending
+  // literal is materialised into `arena`.
   [[nodiscard]] rt::NodeId root_in(rt::Arena<double> &arena) const {
     if (arena_ && arena_.get() != &arena) {
       fail_with(errc::no_graph);
@@ -132,19 +125,14 @@ public:
       return std::format("Expression({})",
                          arena_->symbols()[rt::detail::get<rt::Slot>(n).value]);
     default:
-      // The op and the identity, not the subtree: an id *is* the identity of a
-      // subexpression here.
+      // Shows the op and node id rather than the whole subtree.
       return std::format("Expression({} #{})", rt::label_of(n.op), v);
     }
   }
 
 private:
-  // The arithmetic surface below is the only thing that puts an arena back on a
-  // new handle, so the two halves of a handle are reachable there and nowhere
-  // else.  Keyed by opcode rather than by name: the module registers every row
-  // of the opcode table through these, so there is no friend per function.
-  // Whichever operand names a graph, mirroring rt::Expression::form: a pending
-  // literal folds against the other rather than materialising into it.
+  // The only functions that build a new handle with an arena. They are keyed by
+  // opcode, so the module registers every operator without a friend each.
   friend PyExpression unary(rt::OpCode op, const PyExpression &u) {
     return {Base::form(op, u.expression_), u.arena_};
   }
@@ -153,15 +141,14 @@ private:
     return {Base::form(op, l.expression_, r.expression_),
             l.arena_ ? l.arena_ : r.arena_};
   }
-  // The base's own composition of two handles, with the arena put back.
+  // Applies the base's own composition of two handles, keeping the arena.
   friend PyExpression combine(const PyExpression &l, const PyExpression &r,
                               auto &&fn) {
     return {fn(l.expression_, r.expression_), l.arena_ ? l.arena_ : r.arena_};
   }
-  // The one ternary.
   friend PyExpression select(const PyExpression &, const PyExpression &,
                              const PyExpression &);
-  // The reductions and the vector factories in module.cpp.
+  // Used by the reductions and vector factories in module.cpp.
   friend PyExpression reduce(const PyExpression &, auto &&);
   friend PyExpression reduce(const PyExpression &, const PyExpression &,
                              auto &&);
@@ -171,7 +158,7 @@ public:
     return expression_;
   }
 
-  // Null exactly while this is a pending literal, which names no graph yet.
+  // Null only while this is a pending literal, which has no graph yet.
   [[nodiscard]] constexpr const SharedArena &arena() const noexcept { return arena_; }
 
 private:
@@ -187,8 +174,8 @@ private:
   SharedArena arena_;
 };
 
-// A reduction to a scalar, or any other composition that may refuse, raises
-// where it is formed; mixed operands take whichever arena is named.
+// A composition that may refuse, such as a reduction, raises where it is
+// formed. Mixed operands take whichever arena is set.
 [[nodiscard]] inline PyExpression reduce(const PyExpression &v, auto &&fn) {
   return PyExpression::checked(fn(v.expression_), v.arena_);
 }
@@ -198,12 +185,12 @@ private:
                                u.arena_ ? u.arena_ : v.arena_);
 }
 
-// transpose(M): rt::transpose's handle, kept as the matrix it reads.
+// The result of transpose(M), kept as the matrix it reads.
 struct PyTransposed {
   PyExpression m;
 };
 
-// The ternary: the arena is whichever operand names one, as above.
+// The arena is taken from whichever operand has one.
 [[nodiscard]] inline PyExpression
 select(const PyExpression &c, const PyExpression &t, const PyExpression &f) {
   const auto arena = c.arena() ? c.arena() : t.arena() ? t.arena() : f.arena();

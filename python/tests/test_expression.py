@@ -10,9 +10,7 @@ import pytest
 
 import ddx
 
-# Every unary the library generates, against math's own.  The list is what the
-# module exports, so an opcode added to the C++ tables is covered without this
-# file changing.
+# Every unary function the module exports, checked against Python's math.
 UNARY = {
     "sin": math.sin,
     "cos": math.cos,
@@ -49,12 +47,11 @@ def test_every_exported_unary_is_covered() -> None:
         if callable(getattr(ddx, name)) and not isinstance(getattr(ddx, name), type)
     }
     binary = {"pow", "atan2", "hypot", "max", "min"}
-    # `select` is the one ternary.
     ternary = {"select"}
-    # Not operations at all: these build, read or run an equation.
+    # These build, read or run an equation rather than being operations.
     not_an_op = {"derivative", "equation", "gradient", "implicit", "param",
                  "release_tapes", "var"}
-    # Vectors and matrices: factories and reductions, not scalar operations.
+    # Vector and matrix factories and reductions.
     vectors = {"mat_constant", "outer", "pack", "sum",
                "transpose", "vec", "vec_constant", "vec_param"}
     assert functions - binary - ternary - not_an_op - vectors == set(UNARY)
@@ -181,6 +178,34 @@ def test_in_place_multiply_and_divide_fold_like_their_chains() -> None:
     assert folded.gradient(at) == pytest.approx(chained.gradient(at), rel=1e-13)
     for got, want in zip(folded.hessian(at), chained.hessian(at), strict=True):
         np.testing.assert_allclose(got, want, rtol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "assign",
+    [operator.iadd, operator.isub, operator.imul, operator.itruediv],
+    ids=["+=", "-=", "*=", "/="],
+)
+def test_reading_the_accumulator_every_step_matches_reading_it_once(
+    assign: Callable[[Any, Any], Any],
+) -> None:
+    """A read mid-loop resumes the fold from what it read: the same number."""
+
+    def build(read_every_step: bool) -> ddx.Equation:
+        def model() -> ddx.Expression:
+            x, y = ddx.var("x"), ddx.var("y")
+            acc = x + 1.0
+            for k in range(500):
+                acc = assign(acc, 1.0 + 0.001 * k * ddx.sin(x * y + k))
+                if read_every_step:
+                    _ = ddx.cos(acc)
+            return acc
+
+        return ddx.equation(model)
+
+    every, once = build(True), build(False)
+    at = [0.7, 1.3]
+    assert every.evaluate(at) == once.evaluate(at)
+    assert every.gradient(at) == pytest.approx(once.gradient(at), rel=1e-12)
 
 
 def test_literals_fold_without_reaching_a_graph() -> None:

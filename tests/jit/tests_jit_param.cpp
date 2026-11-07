@@ -1,3 +1,4 @@
+#include "graph_builder.hpp"
 #include "ddx.hpp"
 #include "jit/kernel.hpp"
 #include "rt/equation.hpp"
@@ -9,9 +10,8 @@
 #include <ranges>
 #include <vector>
 
-// A parameter's column sits between the symbols' and the seeds', and the kernel
-// has to read the same column the sweep does -- the wrong one is silent wrong
-// arithmetic, not a crash.
+// A parameter's column sits between the symbols' and the seeds', and reading
+// the wrong one gives silently wrong arithmetic rather than a crash.
 
 namespace {
 
@@ -20,7 +20,7 @@ TEST(JitParam, ColumnsAreSymbolsThenParamsThenSeeds) {
   const auto x = var(b, "x");
   const auto a = ddx::rt::param(b, "a");
   const auto f = a * x * x + exp(x) * seed(b, 0);
-  const auto graph = ddx::rt::GraphBuilder{b}.value(f).finish();
+  const auto graph = ddx::test::GraphBuilder{b}.value(f).finish();
   ASSERT_EQ(graph.arity(), 3u);
 
   auto compiler = ddx::jit::Compiler::create();
@@ -76,8 +76,8 @@ TEST(JitParam, AnEquationWithAParamCompilesAndAgreesWithTheSweep) {
   }
 }
 
-// A partial taken during construction is ordinary nodes: compiled, every
-// derivative of it is the sweep's.
+// A partial taken during construction is ordinary nodes, so its compiled
+// derivatives match the sweep's.
 TEST(JitParam, ADerivativeBuiltIntoTheGraphCompiles) {
   const auto build = [] {
     return ddx::rt::equation([] {

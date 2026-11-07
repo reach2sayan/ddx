@@ -15,16 +15,8 @@
 #include <utility>
 #include <vector>
 
-// An equation written down rather than built:
-//
-//   const auto eq  = ddx::rt::equation("sin(x)*y + 3");
-//   const auto sys = ddx::rt::equation("x*x + y*y - 4", "x*y - 1");
-//
-// Beside the other spellings of equation(), in a header rt/equation.hpp does
-// not include: text knows what an arena is and the arena does not know that
-// text exists.  One string per function, so the output count is the pack's
-// size -- which is what Equation needs it to be, output_dim being part of the
-// type.
+// Parses an equation from text, one string per function, such as
+// equation("x*x + y*y - 4", "x*y - 1").
 namespace ddx::rt {
 
 template <impl::Numeric T = double, std::convertible_to<std::string_view>... Ss>
@@ -39,9 +31,8 @@ template <impl::Numeric T = double, std::convertible_to<std::string_view>... Ss>
     std::vector<Expression<T>> roots;
     roots.reserve(sources.size());
 
-    // Every source read before any of them is an equation: create() seals the
-    // arena, and a symbol first named by the second function still wants a
-    // slot.
+    // Every source is parsed before create() seals the arena, so symbols
+    // first named in a later function still get a slot.
     for (const std::string_view source : sources) {
       DDX_TRY(ast, text::parse(source));
       DDX_TRY(root, text::lower(*arena, *ast));

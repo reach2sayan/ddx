@@ -1,12 +1,11 @@
-// The Hessian column colouring.  Here rather than in rt/coupling.hpp because it
-// names no `T`: a header would emit one copy of the Boost.Graph machinery per
-// scalar, on every consumer's include path.
+// The Hessian column colouring. It is not templated on T, so it lives here to
+// keep Boost.Graph out of every consumer's includes.
 
 #include "rt/coupling.hpp"
 
 #include <boost/graph/compressed_sparse_row_graph.hpp>
-// First, and not sortable into the block below: smallest_last_ordering.hpp
-// uses make_shared_array_property_map without including it, as of Boost 1.92.
+// Must come first: smallest_last_ordering.hpp uses this header without
+// including it, as of Boost 1.92.
 #include <boost/property_map/shared_array_property_map.hpp>
 
 #include <boost/graph/sequential_vertex_coloring.hpp>
@@ -20,11 +19,8 @@
 namespace ddx::rt {
 namespace {
 
-// The conflict relation is symmetric and CSR has no undirected flavour, so
-// both directions are inserted; the ordering and the colouring read only
-// out_degree and adjacent_vertices, which then answer as the undirected list
-// did -- ascending, which keeps the colours identical.  One-shot from an edge
-// range, as graph.hpp already builds its.
+// CSR has no undirected form, so each conflict is inserted both ways. The
+// adjacency stays ascending, which keeps the colouring deterministic.
 using ConflictGraph = boost::compressed_sparse_row_graph<boost::directedS>;
 
 } // namespace
@@ -35,7 +31,7 @@ Colouring colour_columns(const CouplingRows &rows) {
   }
   const std::size_t n = rows.size();
 
-  // Every pair of columns a row couples conflicts.
+  // Two columns conflict when any row couples both.
   const auto conflicting = [&](const std::size_t j) {
     return std::views::iota(j + 1, n) |
            std::views::filter([&, j](const std::size_t k) {
@@ -54,7 +50,7 @@ Colouring colour_columns(const CouplingRows &rows) {
   const ConflictGraph conflicts{boost::edges_are_unsorted_multi_pass,
                                 edges.begin(), edges.end(), n};
 
-  // Greedy colouring is only as good as the order it walks.
+  // Greedy colouring quality depends on the vertex order, so use smallest-last.
   Colouring out{
       .colour = std::vector<std::size_t>(n, 0), .scatter = {}, .cell = {}};
   const auto order = boost::smallest_last_vertex_ordering(conflicts);
@@ -66,8 +62,8 @@ Colouring colour_columns(const CouplingRows &rows) {
       boost::make_iterator_property_map(out.colour.begin(), boost::get(boost::vertex_index, conflicts))));
   // clang-format on
 
-  // scatter[colour][row] is the column that row's sweep result belongs to; the
-  // colouring guarantees at most one, so the harvest needs no search.
+  // scatter[colour][row] is the column that row's sweep result belongs to. The
+  // colouring guarantees there is at most one.
   out.scatter.assign(count * n, no_column);
   const auto scatter = by_colour(out.scatter, count, n);
   for (const auto [index, row] : rows | std::views::enumerate) {
@@ -77,8 +73,8 @@ Colouring colour_columns(const CouplingRows &rows) {
     }
   }
 
-  // The owned cells numbered in (colour, row) order, so the compressed block
-  // stays deterministic.
+  // Number the owned cells in (colour, row) order, so that the compressed block
+  // is deterministic.
   out.cell.assign(count * n, no_column);
   const auto cell = by_colour(out.cell, count, n);
   std::size_t next = 0;

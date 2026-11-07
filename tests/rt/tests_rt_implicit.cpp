@@ -12,15 +12,14 @@
 #include <string>
 #include <vector>
 
-// An implicit input: a value the caller solved for, differentiated as the root
-// of the residual implicit() names -- dz/dx = -F_x / F_z, and second order by
-// the same rule applied again.
+// An implicit input is a value the caller solved for, differentiated as a root
+// of its residual: dz/dx = -F_x / F_z, applied again for second order.
 namespace {
 
 using RE = ddx::rt::Expression<>;
 using namespace ddx::literals;
 
-// z^2 = a, so z = sqrt(a): dz/da = 1 / (2 sqrt a), d2z/da2 = -1 / (4 a^1.5).
+// z^2 = a, so z = sqrt(a), dz/da = 1 / (2 sqrt a) and d2z/da2 = -1 / (4 a^1.5).
 [[nodiscard]] auto root_of_a() {
   return ddx::rt::equation([] {
     const auto a = ddx::rt::var("a");
@@ -37,7 +36,7 @@ TEST(RtImplicit, FirstAndSecondOrderOfAClosedForm) {
   EXPECT_EQ(*eq.inputs(), (std::vector<std::string>{"a", "z"}));
   EXPECT_EQ(eq.jacobian_columns(), 1u);
 
-  // a = 4, z = 2, as positional (symbols, then implicits) and by name.
+  // a = 4 and z = 2, passed positionally (symbols, then implicits) and by name.
   EXPECT_NEAR((*eq.jacobian(4.0, 2.0))[0], 0.25, 1e-15);
   EXPECT_NEAR((*eq.gradient("z"_s = 2.0, "a"_s = 4.0))[0], 0.25, 1e-15);
   EXPECT_NEAR((*eq.hessian(4.0, 2.0))[0], -0.03125, 1e-15);
@@ -53,8 +52,6 @@ TEST(RtImplicit, ResidualIsZeroAtTheRootTheCallerSupplies) {
   EXPECT_EQ(*eq.residual(4.0, 3.0), std::vector{5.0});
 }
 
-// --- a cubic EoS -------------------------------------------------------------
-
 constexpr std::size_t eos_species = 4;
 
 [[nodiscard]] std::vector<RE> fractions() {
@@ -65,12 +62,12 @@ constexpr std::size_t eos_species = 4;
   return x;
 }
 
-// What a caller differentiates: something of Z and of x directly.
+// The quantity a caller differentiates, depending on Z and directly on x.
 [[nodiscard]] RE output(const std::vector<RE> &x, const RE &z) {
   return log(z) * x[0] + z * z * x[1] + x[2];
 }
 
-// The residual with Z a plain symbol, for the test's own Newton solve.
+// The residual with Z as a plain symbol, for the test's own Newton solve.
 [[nodiscard]] auto cubic() {
   return ddx::rt::equation([] {
     const auto x = fractions();
@@ -88,7 +85,7 @@ constexpr std::size_t eos_species = 4;
   });
 }
 
-// Newton from `z`, on the residual's own value and dF/dZ.
+// Newton iteration from z, using the residual's own value and dF/dZ.
 template <typename Cubic>
 [[nodiscard]] double solve(const Cubic &f, std::vector<double> x, double z) {
   x.push_back(z);
@@ -187,8 +184,6 @@ TEST(RtImplicit, ZIsPartOfThePoint) {
   EXPECT_EQ(eq.gradient(4.0).error().code, ddx::errc::wrong_arity);
 }
 
-// --- refusals ----------------------------------------------------------------
-
 TEST(RtImplicit, APoisonedResidualIsRefused) {
   const auto eq = ddx::rt::equation([] {
     const auto a = ddx::rt::var("a");
@@ -232,7 +227,7 @@ TEST(RtImplicit, AnImplicitWithNoResidualIsRefused) {
   EXPECT_EQ(eq.status()->code, ddx::errc::unclosed_implicit);
 }
 
-// dz/dx = -F_x / F_z is a quotient only for a scalar F.
+// dz/dx = -F_x / F_z is a quotient only when F is a scalar.
 TEST(RtImplicit, AVectorResidualIsRefused) {
   const auto eq = ddx::rt::equation([] {
     const auto a = ddx::rt::var("a");
@@ -253,7 +248,6 @@ TEST(RtImplicit, AnImplicitNamedLikeASymbolIsRefused) {
   EXPECT_EQ(eq.status()->code, ddx::errc::name_clash);
 }
 
-// An output that never reaches z differentiates as if it were not there.
 TEST(RtImplicit, AnOutputNotThroughZIsUnaffected) {
   const auto eq = ddx::rt::equation([] {
     const auto a = ddx::rt::var("a");

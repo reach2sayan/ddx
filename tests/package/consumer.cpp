@@ -1,5 +1,5 @@
-// Headers reached through the imported targets' include paths, and ddx::jit
-// resolved as a real shared object.
+// Headers come through the imported targets' include paths, and ddx::jit
+// resolves as a real shared object.
 #include "ddx.hpp"
 
 #include <array>
@@ -32,7 +32,6 @@ int fail(const char *what) {
 int main() {
   using namespace ddx;
 
-  // f(x, y) = x*y + sin(x); df/dx = y + cos(x), df/dy = x.
   const auto x = var_of<"x">(1.25);
   const auto y = var_of<"y">(0.5);
   const auto eq = Equation(x * y + sin(x));
@@ -55,13 +54,15 @@ int main() {
 #endif
 
 #ifdef DDX_HAS_JIT
-  // The one call that has to resolve out of libddx_jit.so.
+  // This is the one call that must resolve out of libddx_jit.so.
   auto compiler = jit::Compiler::create();
   if (!compiler) {
     return fail(compiler.error().detail.c_str());
   }
-  auto kernel = compiler->compile(
-      rt::GraphBuilder{b}.value(root).build_jacobian().finish());
+  const auto jacobian = rt::derive_jacobian(b, std::array{root.id(b)});
+  auto kernel = compiler->compile(rt::Graph<>::freeze(
+      b, {.values = {root.id(b)}, .jacobian = jacobian.partial},
+      {}, jacobian.pattern));
   if (!kernel) {
     return fail(kernel.error().detail.c_str());
   }
