@@ -98,8 +98,8 @@ public:
 
   constexpr Expression(Arena<T> &b, NodeId id) noexcept
       : arena_{&b}, at_{id},
-        shape_{.rows =
-                   detail::is_tensor(b[id]) ? shape_of(b, id) : Shape{.rows = 0, .cols = 0}} {}
+        shape_{detail::is_tensor(b[id]) ? shape_of(b, id)
+                                        : Shape{.rows = 0, .cols = 0}} {}
 
   [[nodiscard]] constexpr bool pending() const noexcept {
     return arena_ == nullptr;
