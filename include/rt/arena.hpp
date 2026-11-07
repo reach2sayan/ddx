@@ -41,7 +41,9 @@ template <typename Tag> struct Id {
   std::uint32_t value = 0;
 
   constexpr Id() = default;
-  constexpr explicit Id(std::uint32_t v) noexcept : value{v} {}
+  // Ids are built from sizes and enumerate() indices; narrow here, once.
+  constexpr explicit Id(std::convertible_to<std::uint32_t> auto v) noexcept
+      : value{static_cast<std::uint32_t>(v)} {}
   constexpr operator std::uint32_t() const noexcept { return value; }
   constexpr Id &operator++() noexcept {
     ++value;
