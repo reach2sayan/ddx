@@ -11,10 +11,10 @@
 #define DDX_TRY(var, expr)                                                     \
   auto var = (expr);                                                           \
   if (!var) [[unlikely]]                                                       \
-    return std::unexpected{std::move(var).error()}
+    return std::unexpected { std::move(var).error() }
 #define DDX_CHECK(expr)                                                        \
   if (auto ddx_checked_ = (expr); !ddx_checked_) [[unlikely]]                  \
-    return std::unexpected{std::move(ddx_checked_).error()}
+    return std::unexpected { std::move(ddx_checked_).error() }
 
 // The sweep helpers and dual kernels are factored-out code, not calls; GCC
 // stops inlining them once a TU exhausts its inlining budget.

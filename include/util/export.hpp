@@ -31,8 +31,8 @@
 #define DDX_EXTERN_INSTANCE(...)
 #elif defined(_MSC_VER)
 #define DDX_EXTERN_INSTANCE(...)                                               \
-  __pragma(warning(push)) __pragma(warning(disable : 4251))                    \
-      extern template __VA_ARGS__;                                             \
+  __pragma(warning(push))                                                      \
+      __pragma(warning(disable : 4251)) extern template __VA_ARGS__;           \
   __pragma(warning(pop))
 #else
 #define DDX_EXTERN_INSTANCE(...) extern template __VA_ARGS__;

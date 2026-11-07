@@ -185,12 +185,10 @@ public:
   // `fuse` is for a kernel, which forms an elementwise row inside its reader:
   // the operands then live to that reader, which a sweep -- computing every
   // row on its own -- pays for in tape and nothing else.
-  [[nodiscard]] static Graph freeze(const Arena<T> &b, OutputBlocks blocks,
-                                    Colouring colouring = {},
-                                    Sparsity jacobian = {},
-                                    bool contract = true,
-                                    std::size_t directions = 0,
-                                    bool fuse = true) {
+  [[nodiscard]] static Graph
+  freeze(const Arena<T> &b, OutputBlocks blocks, Colouring colouring = {},
+         Sparsity jacobian = {}, bool contract = true,
+         std::size_t directions = 0, bool fuse = true) {
     Graph g;
     // Node counts per block, and the column counts: a vector output is one
     // column per element.
@@ -344,9 +342,7 @@ public:
   }
   // By id, the tape row each scheduled node's value sits in; how many rows the
   // tape has.  Packed by liveness, so the tape is a fraction of the arena.
-  [[nodiscard]] std::span<const TapeRow> rows() const noexcept {
-    return rows_;
-  }
+  [[nodiscard]] std::span<const TapeRow> rows() const noexcept { return rows_; }
   [[nodiscard]] std::size_t tape_rows() const noexcept { return tape_rows_; }
 
   [[nodiscard]] OpCode op_of(NodeId v) const { return properties_[v].op; }

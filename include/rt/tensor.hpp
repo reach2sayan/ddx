@@ -21,9 +21,9 @@
 #include <boost/container/small_vector.hpp>
 
 #include <cstdint>
-#include <limits>
 #include <format>
 #include <initializer_list>
+#include <limits>
 #include <ranges>
 #include <span>
 #include <string_view>
@@ -248,8 +248,7 @@ gemv(const Expression<T> &m, const Expression<T> &v, Orientation orientation) {
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T>
 gemv(const Expression<T> &m, const Expression<T> &v, bool transposed = false) {
-  return gemv(m, v,
-              transposed ? Orientation::transposed : Orientation::plain);
+  return gemv(m, v, transposed ? Orientation::transposed : Orientation::plain);
 }
 
 namespace detail {
@@ -299,7 +298,8 @@ template <impl::Numeric T>
       w.shape().cols != 1) {
     return detail::refused<T>(errc::tensor_shape);
   }
-  return {*b, b->make(opcode<OpCode::Outer>, {.left = u.id(), .right = w.id()})};
+  return {*b,
+          b->make(opcode<OpCode::Outer>, {.left = u.id(), .right = w.id()})};
 }
 
 namespace detail {
@@ -318,9 +318,9 @@ add_at(const Expression<T> &v, const Expression<T> &s, std::size_t i) {
     return detail::refused<T>(errc::tensor_shape);
   }
   Arena<T> &b = *detail::Router::arena(v);
-  return {b, b.make(opcode<OpCode::AddAt>,
-                    Element{static_cast<std::uint32_t>(i)},
-                    {.vec = v.id(), .scalar = s.id(b)})};
+  return {b,
+          b.make(opcode<OpCode::AddAt>, Element{static_cast<std::uint32_t>(i)},
+                 {.vec = v.id(), .scalar = s.id(b)})};
 }
 } // namespace detail
 

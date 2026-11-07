@@ -236,8 +236,9 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         const NodeId source = operands<OpCode::MatRow>(n).source;
         const std::span<const U> from =
             b.op_of(source) == OpCode::MatConst
-                ? std::span<const U>{b.tensors()[get<TensorRef>(b[source]).value]
-                                         .data}
+                ? std::span<
+                      const U>{b.tensors()[get<TensorRef>(b[source]).value]
+                                   .data}
                 : in(source, k);
         for (std::size_t i = 0; i < m.cols; ++i) {
           for (std::size_t j = 0; j < m.rows; ++j) {
@@ -427,9 +428,8 @@ sweep_step(const Arena<T> &b, std::span<const Node<T>> nodes,
       out[k] = static_cast<U>(n.value);
     }
   } else if (is_leaf(s.op)) {
-    const auto src =
-        at + static_cast<std::ptrdiff_t>(
-                 input_column(inputs, s.op, get<Slot>(n)) * W);
+    const auto src = at + static_cast<std::ptrdiff_t>(
+                              input_column(inputs, s.op, get<Slot>(n)) * W);
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }

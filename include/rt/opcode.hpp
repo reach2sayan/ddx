@@ -83,8 +83,7 @@ namespace ddx::rt {
 // A function the caller supplies with its own partials, of any number of
 // arguments: which function, and which component of its answer -- the value
 // or one partial -- is the node's ExternRef.
-#define DDX_RT_EXTERN_TABLE(X)                                                 \
-  X(extern_call, Extern, "extern", 0, Extern)
+#define DDX_RT_EXTERN_TABLE(X) X(extern_call, Extern, "extern", 0, Extern)
 // A left fold of `Count` terms in list order, ((t0 op t1) op t2) ..., the op
 // the last cell: what a chain of +=, *= or /= builds, one node where a chain
 // of the binary op would be one per term.  In a sum every product term is

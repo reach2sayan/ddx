@@ -85,9 +85,8 @@ private:
       jit::Compiler *const c = shared_compiler();
       held.status =
           c ? c->compile(*held.compile_graph, *compiling)
-                  .transform([&held](jit::Kernel<T> k) {
-                    held.kernel = std::move(k);
-                  })
+                  .transform(
+                      [&held](jit::Kernel<T> k) { held.kernel = std::move(k); })
             : std::unexpected{jit::compile_error{
                   .code = errc::jit_target, .detail = "no JIT on this host"}};
     }
