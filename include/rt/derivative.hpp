@@ -260,7 +260,7 @@ template <detail::AtImplicits At, impl::Numeric T>
   };
   // A reverse pass adds about two nodes per node of the cone.
   b.reserve(n + 2 * static_cast<std::size_t>(std::ranges::count(live, true)));
-  std::vector<NodeId> adj(n, no_node);
+  std::vector adj(n, no_node);
   std::vector<Guard> guard(n);
   adj[root] = b.constant(T{1});
 
