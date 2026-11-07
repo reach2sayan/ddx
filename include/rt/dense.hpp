@@ -241,9 +241,10 @@ private:
     Terms ts{term::Dense{placed(swept)}};
     // A held symbol's column is its row minus the cells on held symbols, which
     // the rows already hold.
+    SweepScratch scratch;
     for (const std::uint32_t s :
          std::views::iota(0u, all) | std::views::filter(held)) {
-      auto row = build_reverse_jacobian(b_, partials[s]).partial;
+      auto row = build_reverse_jacobian(b_, partials[s], scratch).partial;
       const NodeId e = unit(s, all);
       ts.push_back(term::Outer{.u = e, .g = b_.pack(row)});
       for (const std::uint32_t t :

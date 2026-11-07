@@ -31,9 +31,13 @@ constexpr void append(auto &c, std::ranges::input_range auto &&r)
                                std::ranges::range_value_t<decltype(c)>>
 {
   if constexpr (std::ranges::sized_range<decltype(r)>) {
-    c.reserve(c.size() + std::ranges::size(r));
+    // resize grows geometrically, where an exact reserve copies c every time.
+    const auto at = c.size();
+    c.resize(at + std::ranges::size(r));
+    std::ranges::copy(DDX_FWD(r), std::ranges::next(std::ranges::begin(c), at));
+  } else {
+    std::ranges::copy(DDX_FWD(r), std::back_inserter(c));
   }
-  std::ranges::copy(DDX_FWD(r), std::back_inserter(c));
 }
 
 } // namespace ddx::impl

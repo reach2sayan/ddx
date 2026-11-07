@@ -1383,8 +1383,10 @@ TEST(RtTensor, SweepsBuildNothingForWhatHoldsStill) {
     const auto root = sum(gemv(ddx::rt::outer(x, k), k)).id(b);
     (void)ddx::rt::tangent_sweep(b, std::span{&root, 1},
                                  ddx::rt::detail::seeds_along(b));
-    EXPECT_EQ(count(b, ddx::rt::OpCode::Outer), 2)
-        << "the primal and d(x) k^T, and no x d(k)^T over a zero row";
+    // d(x) k^T is read through the gemv as d(x) (k . k), so only the primal's
+    // outer is a node.
+    EXPECT_EQ(count(b, ddx::rt::OpCode::Outer), 1)
+        << "no x d(k)^T over a zero row";
   }
 }
 

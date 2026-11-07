@@ -74,7 +74,8 @@ template <typename T> auto msevec_t(std::size_t n) {
 }
 
 // The ops a dense Hessian block is built from, with the Outer taken of a
-// parameter so that it does not fold to a table.
+// parameter so that it does not fold to a table, and summed with one so that
+// the gemv reads it whole rather than as r (P r . x).
 template <typename T> ddx::rt::Expression<T> dense_block(std::size_t n) {
   using E = ddx::rt::Expression<T>;
   const E x = ddx::rt::vec<T>("x", n);
@@ -86,7 +87,8 @@ template <typename T> ddx::rt::Expression<T> dense_block(std::size_t n) {
   const E s = dot(x, x);
   return dot(x, gemv(m(7), x * x)) + sum(log(x) * gemv(m(8), x, true)) -
          sum(x * log(gemv(m(9), x / sum(x), true))) +
-         dot(x, gemv(ddx::rt::outer(r, ddx::rt::param<T>("P") * r), x)) +
+         dot(x, gemv(ddx::rt::outer(r, ddx::rt::param<T>("P") * r) + m(10),
+                     x)) +
          s * s * sum(x) +
          t * sum(x * log(x)) + t * log(t);
 }
