@@ -15,14 +15,18 @@ namespace ddx::impl {
 
 // The shape of a derivative tensor of order Order over N variables, and the
 // same with a leading output axis, as a vector-valued Equation produces.
+// The pack is expanded through decltype(n)::value, never a parameter's value,
+// which MSVC refuses as a template argument.
 template <std::size_t N, std::size_t Order>
-using uniform_extents_t = decltype(meta::unpack(meta::iota<Order>, [](auto... o) {
-  return md::extents<std::size_t, ((void)o, N)...>{};
-}));
+using uniform_extents_t = decltype(meta::unpack(
+    meta::repeat_t<meta::list, meta::index_t<N>, Order>{}, [](auto... n) {
+      return md::extents<std::size_t, decltype(n)::value...>{};
+    }));
 template <std::size_t Lead, std::size_t N, std::size_t Order>
-using stacked_extents_t = decltype(meta::unpack(meta::iota<Order>, [](auto... o) {
-  return md::extents<std::size_t, Lead, ((void)o, N)...>{};
-}));
+using stacked_extents_t = decltype(meta::unpack(
+    meta::repeat_t<meta::list, meta::index_t<N>, Order>{}, [](auto... n) {
+      return md::extents<std::size_t, Lead, decltype(n)::value...>{};
+    }));
 
 // An owning, constexpr-usable tensor with compile-time extents and a layout.
 // There is no rank-reducing view, since packed layouts have no cheap one.
