@@ -383,8 +383,7 @@ named_index(OpCode op) noexcept {
 #undef DDX_RT_NAMED
   return std::nullopt;
 }
-inline constexpr std::size_t named_count =
-    0 DDX_RT_NAMED_TABLE(DDX_RT_COUNT);
+inline constexpr std::size_t named_count = 0 DDX_RT_NAMED_TABLE(DDX_RT_COUNT);
 #undef DDX_RT_COUNT
 
 // One T per named kind. GCC before 15 double-frees when constant evaluation

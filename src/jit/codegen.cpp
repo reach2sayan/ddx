@@ -654,15 +654,15 @@ private:
                        element(row(v), i64(static_cast<std::uint64_t>(e))));
       }
       return;
-    case rt::OpCode::Gather:
-    {
+    case rt::OpCode::Gather: {
       // The element index is flat; a fused matrix is read by row and column.
       const std::uint64_t e = rt::detail::get<rt::Element>(p).value;
       scalar_out(v, at(a, i64(e % rows(a)), i64(e / rows(a))));
       return;
     }
     case rt::OpCode::AddAt: {
-      const auto [vec, add] = rt::detail::operands<rt::OpCode::AddAt>(g_.operands(v));
+      const auto [vec, add] =
+          rt::detail::operands<rt::OpCode::AddAt>(g_.operands(v));
       llvm::Value *const out = row(v);
       each(s, {}, [&](llvm::Value *i, llvm::Value *j, auto) {
         b_.CreateStore(at(vec, i, j), element(out, flat(i, j, s.rows)));
@@ -681,7 +681,8 @@ private:
           })[0]);
       return;
     case rt::OpCode::Dot: {
-      const auto [left, right] = rt::detail::operands<rt::OpCode::Dot>(g_.operands(v));
+      const auto [left, right] =
+          rt::detail::operands<rt::OpCode::Dot>(g_.operands(v));
       scalar_out(
           v, each(g_.shape(left), {zero}, [&](auto i, auto j, const auto &acc) {
             return Carried{fmuladd(at(left, i, j), at(right, i, j), acc[0])};
@@ -699,7 +700,8 @@ private:
       if (mate != rt::no_node) {
         done_[mate] = true;
       }
-      const auto [matrix, vec] = rt::detail::operands<rt::OpCode::MatVec>(g_.operands(v));
+      const auto [matrix, vec] =
+          rt::detail::operands<rt::OpCode::MatVec>(g_.operands(v));
       products(matrix, vec, transposed ? mate : v, transposed ? v : mate);
       return;
     }
@@ -820,7 +822,8 @@ template <CKernelScalar T>
 emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops, const rt::Graph<T> &g,
            const HoistedColumns &cols, llvm::Value *index, llvm::Value *mask) {
   std::vector<llvm::Value *> value(g.size(), nullptr);
-  std::map<std::pair<std::uint32_t, rt::ListOffset>, typename Emitter<T>::Answers>
+  std::map<std::pair<std::uint32_t, rt::ListOffset>,
+           typename Emitter<T>::Answers>
       called;
   for (const rt::Step &s : g.schedule()) {
     const auto &[v, c] = std::pair{s.node, s.fma};
@@ -835,10 +838,9 @@ emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops, const rt::Graph<T> &g,
       value[v] = emit.constant(p.value);
       break;
     case rt::Kind::Input:
-      value[v] =
-          emit.load(cols.inputs[rt::input_column(
-                        g.inputs(), p.op, rt::detail::get<rt::Slot>(p))],
-                    index, mask, "");
+      value[v] = emit.load(cols.inputs[rt::input_column(
+                               g.inputs(), p.op, rt::detail::get<rt::Slot>(p))],
+                           index, mask, "");
       break;
     case rt::Kind::Nary: {
       // Folds the terms in list order. In a fused step a product term becomes

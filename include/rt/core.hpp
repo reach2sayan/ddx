@@ -1372,9 +1372,10 @@ private:
     // The interpreter, within ~1.4x of a kernel on large graphs. A batch
     // shorter than block_lanes sweeps one point at a time rather than padding.
     ThreadTapes<T> &kept = lease.tapes();
-    n < block_lanes ? sweep_points<1>(*c.graph, *c.kernels, kept.one, xs, out, n)
-                    : sweep_points<block_lanes>(*c.graph, *c.kernels,
-                                                kept.block, xs, out, n);
+    n < block_lanes
+        ? sweep_points<1>(*c.graph, *c.kernels, kept.one, xs, out, n)
+        : sweep_points<block_lanes>(*c.graph, *c.kernels, kept.block, xs, out,
+                                    n);
   }
 
   // W points per sweep, so dispatch is paid once per node per block and each op

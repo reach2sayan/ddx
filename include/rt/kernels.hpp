@@ -98,7 +98,8 @@ template <impl::Numeric T = double> struct Kernels {
   [[nodiscard]] static constexpr T fold(std::array<T, N> &acc) noexcept {
     meta::for_each(meta::iota<std::bit_width(N) - 1>, [&](auto level) {
       constexpr std::size_t w = N >> (level + 1);
-      meta::for_each(meta::iota<w>, [&](auto l) { acc[l] = acc[l] + acc[l + w]; });
+      meta::for_each(meta::iota<w>,
+                     [&](auto l) { acc[l] = acc[l] + acc[l + w]; });
     });
     return acc[0];
   }

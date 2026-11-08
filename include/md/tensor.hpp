@@ -79,9 +79,11 @@ public:
   [[nodiscard]] constexpr decltype(auto)
   at_index(this auto &&self,
            const std::array<index_type, Ext::rank()> &idx) noexcept {
-    return meta::unpack(meta::iota<Ext::rank()>, [&](auto... k) -> decltype(auto) {
-      return DDX_FWD(self).data_[static_cast<std::size_t>(kMapping(idx[k]...))];
-    });
+    return meta::unpack(
+        meta::iota<Ext::rank()>, [&](auto... k) -> decltype(auto) {
+          return DDX_FWD(self)
+              .data_[static_cast<std::size_t>(kMapping(idx[k]...))];
+        });
   }
 
   [[nodiscard]] friend constexpr bool operator==(const md_tensor &a,

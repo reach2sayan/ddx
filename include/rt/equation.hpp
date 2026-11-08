@@ -39,9 +39,9 @@ template <Numeric T, typename... Rest>
            (std::same_as<Rest, rt::Expression<T>> && ...))
 class Equation<rt::Expression<T>, Rest...> : public rt::detail::Core<T> {
   // The output-count policy: Fixed by the pack size, or Dynamic.
-  using Outputs =
-      std::conditional_t<rt::detail::dynamic_outputs<T, Rest...>,
-                         rt::detail::Dynamic, rt::detail::Fixed<1 + sizeof...(Rest)>>;
+  using Outputs = std::conditional_t<rt::detail::dynamic_outputs<T, Rest...>,
+                                     rt::detail::Dynamic,
+                                     rt::detail::Fixed<1 + sizeof...(Rest)>>;
   using Base = rt::detail::Core<T>;
   friend Base;
   friend struct rt::detail::Creating;

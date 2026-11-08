@@ -16,10 +16,10 @@ namespace detail {
 
 // The symbol name of sym<"x">, "x"_s or var<"x">. Other types do not match,
 // which is what CSymbolTag tests.
-inline constexpr auto tag_key = boost::hof::match(
-    []<auto S>(meta::Type<symbol_type<S>>) { return S; },
-    []<Numeric T, CFixedString auto S, Freeze F>(
-        meta::Type<Variable<T, S, F>>) { return S; });
+inline constexpr auto tag_key =
+    boost::hof::match([]<auto S>(meta::Type<symbol_type<S>>) { return S; },
+                      []<Numeric T, CFixedString auto S, Freeze F>(
+                          meta::Type<Variable<T, S, F>>) { return S; });
 
 } // namespace detail
 

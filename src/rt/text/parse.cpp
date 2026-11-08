@@ -214,17 +214,17 @@ constexpr auto call_text_def = identifier >> '(' >> bp::eps[act::descend] >>
                                (expression % ',') >> bp::eps[act::ascend] >>
                                ')';
 constexpr auto call_def = call_text[act::apply];
-constexpr auto group_def = '(' >> bp::eps[act::descend] >> expression >>
-                           bp::eps[act::ascend] >> ')';
+constexpr auto group_def =
+    '(' >> bp::eps[act::descend] >> expression >> bp::eps[act::ascend] >> ')';
 // call is tried before symbol because both start with an identifier.
 constexpr auto operand_def = number | call | symbol | group;
 
 // Each action is attached to the operand it consumes, not to the sequence,
 // whose _attr would be empty.
-constexpr auto power_def =
-    operand[act::assign] >>
-    -(bp::lit("**") >> bp::eps[act::descend] >> unary[act::fold<OpCode::Pow>] >>
-      bp::eps[act::ascend]);
+constexpr auto power_def = operand[act::assign] >>
+                           -(bp::lit("**") >> bp::eps[act::descend] >>
+                             unary[act::fold<OpCode::Pow>] >>
+                             bp::eps[act::ascend]);
 // Signs are iterated rather than recursed, because a self-recursive rule loses
 // its attribute. The language is the same as Python's u_expr.
 constexpr auto unary_def =

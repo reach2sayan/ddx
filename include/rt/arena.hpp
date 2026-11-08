@@ -1806,9 +1806,8 @@ tensor_layout(const auto &s, std::span<const Step> schedule,
 }
 
 // Whether any node the roots reach satisfies `pred`.
-[[nodiscard]] constexpr bool reaches(const auto &nodes,
-                                     std::span<const NodeId> roots,
-                                     auto &&pred) {
+[[nodiscard]] constexpr bool
+reaches(const auto &nodes, std::span<const NodeId> roots, auto &&pred) {
   const auto live = reachable(nodes, roots);
   return std::ranges::any_of(live_ids(live),
                              [&](NodeId v) { return pred(nodes[v]); });

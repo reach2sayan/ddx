@@ -50,8 +50,8 @@ void print_infix(const printer<V> &p, const CExpression auto &e, int min_prec) {
   if constexpr (CExpressionNode<U>) {
     using Op = typename U::op_type;
     // A call is atomic to its parent.
-    constexpr int prec = Op::notation == Notation::Function ? precedence_atom
-                                                            : Op::precedence;
+    constexpr int prec =
+        Op::notation == Notation::Function ? precedence_atom : Op::precedence;
     const bool parens = prec < min_prec;
     if (parens) {
       p.put('(');
