@@ -28,7 +28,7 @@ std::vector<const double *> columns_of(const Eigen::PlainObjectBase<D> &m) {
   return std::views::iota(Eigen::Index{0}, m.cols()) |
          std::views::transform(
              [&m](Eigen::Index j) { return m.data() + j * m.outerStride(); }) |
-         std::ranges::to<std::vector<const double *>>();
+         ddx::impl::to<std::vector<const double *>>();
 }
 template <typename D>
   requires(!D::IsRowMajor && D::InnerStrideAtCompileTime == 1)
@@ -36,7 +36,7 @@ std::vector<double *> columns_of(Eigen::PlainObjectBase<D> &m) {
   return std::views::iota(Eigen::Index{0}, m.cols()) |
          std::views::transform(
              [&m](Eigen::Index j) { return m.data() + j * m.outerStride(); }) |
-         std::ranges::to<std::vector<double *>>();
+         ddx::impl::to<std::vector<double *>>();
 }
 
 // Expands one point's Jacobian block into a dense m x symbols matrix, with the

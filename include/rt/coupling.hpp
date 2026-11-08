@@ -6,6 +6,7 @@
 #include "rt/opcode.hpp"
 #include "util/config.hpp" // DDX_FWD
 #include "util/export.hpp"
+#include "util/ranges.hpp" // impl::to
 
 #include <boost/container/small_vector.hpp>
 #include <boost/dynamic_bitset.hpp>
@@ -306,7 +307,7 @@ template <impl::Numeric T>
       return arguments(b, v) | std::views::transform([&](NodeId u) {
                return detail::indices_of(of(u));
              }) |
-             std::ranges::to<Elements>();
+             impl::to<Elements>();
     case OpCode::VecConst:
       return Elements(shape_of(b, v).rows);
     case OpCode::Map:

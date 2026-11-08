@@ -485,7 +485,7 @@ namespace {
 auto narrowed(std::span<const double> v) {
   return v |
          std::views::transform([](double d) { return static_cast<float>(d); }) |
-         std::ranges::to<std::vector>();
+         ddx::impl::to<std::vector>();
 }
 
 template <typename T> auto scalar_typed_tensor_model(std::size_t n) {

@@ -25,6 +25,21 @@ template <typename C> [[nodiscard]] constexpr to_closure<C> to() noexcept {
   return {};
 }
 
+// r | to<std::vector>(), the element type deduced from r.
+template <template <typename...> typename C> struct to_deduced_closure {
+  [[nodiscard]] friend constexpr auto
+  operator|(std::ranges::input_range auto &&r, to_deduced_closure)
+    requires requires { std::ranges::to<C>(DDX_FWD(r)); }
+  {
+    return std::ranges::to<C>(DDX_FWD(r));
+  }
+};
+
+template <template <typename...> typename C>
+[[nodiscard]] constexpr to_deduced_closure<C> to() noexcept {
+  return {};
+}
+
 // Stands in for c.append_range(r), which libstdc++ 14 lacks.
 constexpr void append(auto &c, std::ranges::input_range auto &&r)
   requires std::convertible_to<std::ranges::range_reference_t<decltype(r)>,

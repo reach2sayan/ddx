@@ -84,7 +84,7 @@ std::vector<T> filled(std::size_t count, std::size_t seed) {
          std::views::transform([seed](std::size_t i) {
            return static_cast<T>(std::sin(static_cast<double>(i * 7 + seed)));
          }) |
-         std::ranges::to<std::vector<T>>();
+         ddx::impl::to<std::vector<T>>();
 }
 
 // CBLAS matches the reference table to rounding through both products and the
@@ -106,7 +106,7 @@ template <typename T> void cblas_agrees_with_the_reference_table() {
                   std::views::transform([](std::size_t i) {
                     return static_cast<T>(0.5 + 0.01 * static_cast<double>(i));
                   }) |
-                  std::ranges::to<std::vector<T>>();
+                  ddx::impl::to<std::vector<T>>();
   expect_close<T>(*cblas.gradient(std::span<const T>{at}),
                   *reference.gradient(std::span<const T>{at}));
   expect_close<T>(*cblas.hvp(at, std::span<const T>{at}),
