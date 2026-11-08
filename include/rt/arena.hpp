@@ -807,8 +807,8 @@ private:
     mix(h, cols);
     if constexpr (std::is_trivially_copyable_v<T> &&
                   (sizeof(T) == 8 || sizeof(T) == 4)) {
-      using Word = std::conditional_t<sizeof(T) == 8, std::uint64_t,
-                                      std::uint32_t>;
+      using Word =
+          std::conditional_t<sizeof(T) == 8, std::uint64_t, std::uint32_t>;
       for (const T &v : data) {
         mix(h, std::bit_cast<Word>(v));
       }
@@ -1256,14 +1256,17 @@ private:
     case OpCode::Scale:
       return low_rank(at.in[1], masked);
     case OpCode::Map:
-      return detail::get<OpCode>(at) == OpCode::Neg && low_rank(at.in[0], masked);
+      return detail::get<OpCode>(at) == OpCode::Neg &&
+             low_rank(at.in[0], masked);
     case OpCode::Zip:
       switch (detail::get<OpCode>(at)) {
       case OpCode::Add:
         // Under a mask a sum would split one fused product into two.
-        return !masked && low_rank(at.in[0], false) && low_rank(at.in[1], false);
+        return !masked && low_rank(at.in[0], false) &&
+               low_rank(at.in[1], false);
       case OpCode::Mul:
-        return !masked && (low_rank(at.in[0], true) || low_rank(at.in[1], true));
+        return !masked &&
+               (low_rank(at.in[0], true) || low_rank(at.in[1], true));
       default:
         return false;
       }
@@ -1282,10 +1285,10 @@ private:
       const NodeId out = t ? at.in[1] : at.in[0];
       const NodeId along = t ? at.in[0] : at.in[1];
       if (mask == no_node) {
-        return make(opcode<OpCode::Scale>,
-                    {.scalar = make(opcode<OpCode::Dot>,
-                                    {.left = along, .right = x}),
-                     .vec = out});
+        return make(
+            opcode<OpCode::Scale>,
+            {.scalar = make(opcode<OpCode::Dot>, {.left = along, .right = x}),
+             .vec = out});
       }
       const NodeId spread =
           make(opcode<OpCode::Zip>, OpCode::Mul, {.left = along, .right = x});
@@ -1327,8 +1330,9 @@ private:
     };
     // A constant's elements in column-major order, read in place unless a
     // transpose needs them laid out in `t`.
-    const auto elements = [this](NodeId u, std::vector<T> &t)
-        -> std::optional<std::span<const T>> {
+    const auto elements =
+        [this](NodeId u,
+               std::vector<T> &t) -> std::optional<std::span<const T>> {
       if (u == no_node) {
         return std::nullopt;
       }

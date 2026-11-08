@@ -275,9 +275,8 @@ struct PowOp : BinaryOp<T, detail::pow_impl, FixedString{"pow"}> {
     // Each term is an exact zero when its own factor vanishes.
     return unless_vanishing(lhs, pow(lhs, rhs),
                             rhs.derivative() * log(lhs) * pow(lhs, rhs)) +
-           unless_vanishing(lhs, rhs,
-                            rhs * pow(lhs, rhs - Lit<T, 1>{}) *
-                                lhs.derivative());
+           unless_vanishing(
+               lhs, rhs, rhs * pow(lhs, rhs - Lit<T, 1>{}) * lhs.derivative());
   }
 };
 
