@@ -1,6 +1,7 @@
 #include "ddx.hpp"
 #include "dual/taylor_dual.hpp"
 #include "rt/derivative.hpp"
+#include "rt/equation.hpp"
 #include "rt/interpret.hpp"
 #include <array>
 #include <gtest/gtest.h>

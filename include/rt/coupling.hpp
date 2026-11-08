@@ -127,12 +127,13 @@ struct Sparsity {
   [[nodiscard]] constexpr auto
   cells(std::ranges::random_access_range auto &&values) const {
     // Captured through views::all so that a view is copied and a container
-    // is referenced, never dangling either way.
-    return entries() |
-           std::views::transform(
-               [block = std::views::all(DDX_FWD(values))](const Cell &c) {
-                 return std::tuple{c.row, c.column, block[c.slot]};
-               });
+    // is referenced, never dangling either way. Called rather than piped:
+    // an owning_view makes the lambda move-only, which libstdc++ 14.2's pipe
+    // adaptor refuses.
+    return std::views::transform(
+        entries(), [block = std::views::all(DDX_FWD(values))](const Cell &c) {
+          return std::tuple{c.row, c.column, block[c.slot]};
+        });
   }
 
   // The slot of (i, j) in the compressed block, or nullopt for a structural
