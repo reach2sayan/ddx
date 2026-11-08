@@ -203,7 +203,7 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
   [[nodiscard]] friend constexpr TaylorDual exp(const TaylorDual &u) noexcept {
     using std::exp;
     return series(exp(u.c[0]), [&](const std::array<S, N + 1> &w, auto k) {
-      return dconv(w, u.c, k) * inv_k[k];
+      return TaylorDual::dconv(w, u.c, k) * TaylorDual::inv_k[k];
     });
   }
 
@@ -213,7 +213,8 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
     using std::log;
     const S invu0 = S{1} / u.c[0];
     return series(log(u.c[0]), [&](const std::array<S, N + 1> &w, auto k) {
-      return (u.c[k] - dconv(u.c, w, k, 1) * inv_k[k]) * invu0;
+      return (u.c[k] - TaylorDual::dconv(u.c, w, k, 1) * TaylorDual::inv_k[k]) *
+             invu0;
     });
   }
 
@@ -269,7 +270,7 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
     const S w0 = sqrt(u.c[0]);
     const auto inv2w0 = S{1} / (S{2} * w0);
     return series(w0, [&](const std::array<S, N + 1> &w, auto k) {
-      return (u.c[k] - conv(w, w, k, 1, k)) * inv2w0;
+      return (u.c[k] - TaylorDual::conv(w, w, k, 1, k)) * inv2w0;
     });
   }
 
@@ -432,7 +433,7 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
     constexpr S cc = static_cast<S>(S{2} * std::numbers::inv_sqrtpi);
     const TaylorDual g = exp(-(u * u));
     return series(erf(u.c[0]), [&](const std::array<S, N + 1> &, auto k) {
-      return cc * dconv(g.c, u.c, k) * inv_k[k];
+      return cc * TaylorDual::dconv(g.c, u.c, k) * TaylorDual::inv_k[k];
     });
   }
 
@@ -470,8 +471,9 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
     const S h0 = hypot(x.c[0], y.c[0]);
     const S invh = S{1} / h0;
     return series(h0, [&](const std::array<S, N + 1> &w, auto k) {
-      return (dconv(x.c, x.c, k) + dconv(y.c, y.c, k) - dconv(w, w, k, 1)) *
-             inv_k[k] * invh;
+      return (TaylorDual::dconv(x.c, x.c, k) + TaylorDual::dconv(y.c, y.c, k) -
+              TaylorDual::dconv(w, w, k, 1)) *
+             TaylorDual::inv_k[k] * invh;
     });
   }
 };

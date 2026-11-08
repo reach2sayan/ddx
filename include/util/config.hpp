@@ -18,7 +18,9 @@
 // For sweep helpers and dual kernels, which GCC stops inlining once a TU
 // exhausts its inlining budget.
 #define DDX_ALWAYS_INLINE BOOST_FORCEINLINE
-// The same for a lambda, written after its parameter list.
+// The same for a lambda, written after its parameter list. On MSVC a lambda
+// nested in a hidden friend then loses class-scope lookup, so such lambdas
+// qualify the class's members.
 #if defined(_MSC_VER) && !defined(__clang__)
 #define DDX_LAMBDA_INLINE [[msvc::forceinline]]
 #else
