@@ -31,6 +31,8 @@ set(DDX_BOOST_HEADER_DIRS
         boost/dynamic_bitset/impl
         boost/exception
         boost/functional/hash
+        boost/hof
+        boost/hof/detail
         boost/intrusive
         boost/intrusive/detail
         boost/move

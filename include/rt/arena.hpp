@@ -8,6 +8,7 @@
 #include "util/config.hpp"
 #include "util/error.hpp"
 #include "util/export.hpp"
+#include "util/meta.hpp"
 #include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>
@@ -121,9 +122,8 @@ DDX_RT_TERNARY_TABLE(DDX_RT_TERNARY_OPERANDS)
 template <OpCode Op>
 [[nodiscard]] constexpr Operands<Op>
 operands(const std::array<NodeId, 3> &in) noexcept {
-  return [&]<std::size_t... I>(std::index_sequence<I...>) {
-    return Operands<Op>{in[I]...};
-  }(std::make_index_sequence<arity_of(Op)>{});
+  return meta::unpack(meta::iota<arity_of(Op)>,
+                      [&](auto... i) { return Operands<Op>{in[i]...}; });
 }
 // The operands of a node, which must be an `Op`.
 template <OpCode Op>
@@ -362,7 +362,9 @@ reachable(const auto &nodes, std::span<const NodeId> roots,
           Reach reaches = every_operand) {
   std::vector live(nodes.size(), false);
   std::ranges::for_each(roots, [&](NodeId r) { live[r] = true; });
-  for (NodeId v = static_cast<NodeId>(nodes.size()); v-- > 0;) {
+  for (const NodeId v :
+       std::views::iota(NodeId{0}, static_cast<NodeId>(nodes.size())) |
+           std::views::reverse) {
     if (live[v]) {
       reaches(nodes, v, [&](NodeId u) { live[u] = true; });
     }
@@ -805,10 +807,7 @@ private:
               std::span<const T> data) const {
     std::uint64_t h = rows;
     mix(h, cols);
-    if constexpr (std::is_trivially_copyable_v<T> &&
-                  (sizeof(T) == 8 || sizeof(T) == 4)) {
-      using Word =
-          std::conditional_t<sizeof(T) == 8, std::uint64_t, std::uint32_t>;
+    if constexpr (word_sized) {
       for (const T &v : data) {
         mix(h, std::bit_cast<Word>(v));
       }
@@ -924,16 +923,19 @@ private:
     return intern({.op = OpCode::Seed, .payload = to_word(slot)});
   }
 
+  // A T that is one word is hashed and compared by its bits.
+  static constexpr bool word_sized =
+      std::is_trivially_copyable_v<T> && (sizeof(T) == 8 || sizeof(T) == 4);
+  using Word = std::conditional_t<sizeof(T) == 8, std::uint64_t, std::uint32_t>;
+
   static constexpr std::uint64_t payload_of(const Node<T> &n) {
     if (n.op != OpCode::Const) {
       return std::uint64_t{n.payload};
     }
     // Anything wider than a word hashes to one bucket and is told apart by
     // same().
-    if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 8) {
-      return std::bit_cast<std::uint64_t>(n.value);
-    } else if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 4) {
-      return std::bit_cast<std::uint32_t>(n.value);
+    if constexpr (word_sized) {
+      return std::bit_cast<Word>(n.value);
     } else {
       return 0;
     }
@@ -950,10 +952,8 @@ private:
   // Compares by bits where T is a word, as the hash does, so -0.0 and +0.0 stay
   // distinct and a NaN equals itself.
   static constexpr bool identical(const T &l, const T &r) {
-    if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 8) {
-      return std::bit_cast<std::uint64_t>(l) == std::bit_cast<std::uint64_t>(r);
-    } else if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 4) {
-      return std::bit_cast<std::uint32_t>(l) == std::bit_cast<std::uint32_t>(r);
+    if constexpr (word_sized) {
+      return std::bit_cast<Word>(l) == std::bit_cast<Word>(r);
     } else if constexpr (std::equality_comparable<T>) {
       using impl::same_value;
       return same_value(l, r);
@@ -1243,8 +1243,6 @@ private:
     return intern(n);
   }
 
-  // Folds a tensor node over constants into a table or a Const, using the
-  // reference kernels. Skipped in constant evaluation.
   // Whether M x can be had without forming M: M is outers u w^T under
   // scalings, negation and sums, or one such outer under an elementwise mask N.
   // Decided before anything is built, so a refusal leaves no nodes behind.
@@ -1315,6 +1313,8 @@ private:
     }
   }
 
+  // Folds a tensor node over constants into a table or a Const, using the
+  // reference kernels. Skipped in constant evaluation.
   constexpr std::optional<NodeId> fold_tensor(NodeId v) {
     if consteval {
       return std::nullopt;
@@ -1354,10 +1354,9 @@ private:
         return m.data;
       }
       t.resize(m.data.size());
-      for (std::size_t i = 0; i < m.rows; ++i) {
-        for (std::size_t j = 0; j < m.cols; ++j) {
-          t[j + i * m.cols] = m.data[i + j * m.rows];
-        }
+      for (const auto [i, j] : std::views::cartesian_product(
+               std::views::iota(0uz, m.rows), std::views::iota(0uz, m.cols))) {
+        t[j + i * m.cols] = m.data[i + j * m.rows];
       }
       return t;
     };
@@ -1804,6 +1803,14 @@ tensor_layout(const auto &s, std::span<const Step> schedule,
 [[nodiscard]] constexpr auto live_ids(const std::vector<bool> &live) {
   return std::views::iota(NodeId{0}, static_cast<NodeId>(live.size())) |
          std::views::filter([&live](NodeId v) { return live[v]; });
+}
+
+// Whether any node the roots reach satisfies `pred`.
+[[nodiscard]] constexpr bool
+reaches(const auto &nodes, std::span<const NodeId> roots, auto &&pred) {
+  const auto live = reachable(nodes, roots);
+  return std::ranges::any_of(live_ids(live),
+                             [&](NodeId v) { return pred(nodes[v]); });
 }
 
 } // namespace detail

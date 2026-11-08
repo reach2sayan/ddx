@@ -283,12 +283,8 @@ TEST(RtText, AnOutOfRangeLiteralRoundsByItsMagnitude) {
 }
 
 [[nodiscard]] std::string repeated(std::string_view word, std::size_t n) {
-  std::string out;
-  out.reserve(word.size() * n);
-  for (std::size_t i = 0; i < n; ++i) {
-    out += word;
-  }
-  return out;
+  return std::views::repeat(word, n) | std::views::join |
+         ddx::impl::to<std::string>();
 }
 
 // Parentheses, calls and ** recurse, and a stack overflow cannot be refused,

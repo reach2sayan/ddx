@@ -6,6 +6,9 @@
 #include "rt/text/ast.hpp"
 #include "util/config.hpp" // DDX_TRY
 #include "util/error.hpp"
+#include "util/meta.hpp"
+
+#include <boost/hof/match.hpp>
 
 #include <algorithm>
 #include <charconv>
@@ -70,44 +73,44 @@ template <std::floating_point T>
 form(const Ast &ast, std::span<const Expression<T>> symbols,
      std::span<const Expression<T>> built, const Term &t) {
   using Expr = Expression<T>;
-  const auto at = [](std::span<const Expr> from,
-                     const std::uint32_t i) -> result<Expr> {
-    return i < from.size() ? result<Expr>{from[i]} : fail(errc::bad_syntax);
-  };
-  // Applies the op to its first sizeof...(I) operands, checking each exists.
-  const auto over =
-      [&]<std::size_t... I>(std::index_sequence<I...>) -> result<Expr> {
+  // Applies the op to its first `arity` operands, checking each exists.
+  const auto over = [&](auto arity) -> result<Expr> {
     const auto stands = [&built](std::uint32_t i) { return i < built.size(); };
-    return std::ranges::all_of(std::span{t.in}.first(sizeof...(I)), stands)
-               ? result<Expr>{Expr::form(t.op, built[t.in[I]]...)}
-               : fail(errc::bad_syntax);
+    if (!std::ranges::all_of(std::span{t.in}.first(arity), stands)) {
+      return fail(errc::bad_syntax);
+    }
+    return meta::unpack(meta::iota<arity>, [&](auto... i) {
+      return Expr::form(t.op, built[t.in[i]]...);
+    });
   };
 
   switch (kind_of(t.op)) {
   case Kind::Const:
   case Kind::Input:
     return std::visit(
-        [&]<typename Index>(const Index &leaf) -> result<Expr> {
-          if constexpr (std::same_as<Index, NameIndex>) {
-            return at(symbols, leaf.i);
-          } else if constexpr (std::same_as<Index, LiteralIndex>) {
+        boost::hof::match(
+            [&](const NameIndex &leaf) -> result<Expr> {
+              return leaf.i < symbols.size() ? result<Expr>{symbols[leaf.i]}
+                                             : fail(errc::bad_syntax);
+            },
             // A pending literal rather than lit(), so "3 + 4" folds without a
             // node and the result matches the same expression built in C++.
-            return (leaf.i < ast.literals.size()
-                        ? scalar_of<T>(ast.literals[leaf.i])
-                        : result<T>{fail(errc::bad_syntax)})
-                .transform([](const T v) { return Expr{v}; });
-          } else {
-            return fail(errc::bad_syntax);
-          }
-        },
+            [&](const LiteralIndex &leaf) -> result<Expr> {
+              return (leaf.i < ast.literals.size()
+                          ? scalar_of<T>(ast.literals[leaf.i])
+                          : result<T>{fail(errc::bad_syntax)})
+                  .transform([](const T v) { return Expr{v}; });
+            },
+            [](std::monostate) -> result<Expr> {
+              return fail(errc::bad_syntax);
+            }),
         t.leaf);
   case Kind::Unary:
-    return over(std::make_index_sequence<1>{});
+    return over(meta::index_t<1>{});
   case Kind::Binary:
-    return over(std::make_index_sequence<2>{});
+    return over(meta::index_t<2>{});
   case Kind::Ternary:
-    return over(std::make_index_sequence<3>{});
+    return over(meta::index_t<3>{});
   case Kind::Extern:
   case Kind::Nary:
   case Kind::Tensor:

@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <ranges>
 #include <vector>
 
 // Equation::hvp gives the dense Hessian's product without building the
@@ -17,10 +18,9 @@ std::vector<double> dense_product(const std::vector<double> &h, std::size_t n,
   const ddx::impl::md::mdspan m{h.data(),
                                 ddx::impl::md::dextents<std::size_t, 2>{n, n}};
   std::vector<double> out(n, 0.0);
-  for (const std::size_t i : std::views::iota(0uz, n)) {
-    for (const std::size_t j : std::views::iota(0uz, n)) {
-      out[i] += m[i, j] * v[j];
-    }
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, n), std::views::iota(0uz, n))) {
+    out[i] += m[i, j] * v[j];
   }
   return out;
 }

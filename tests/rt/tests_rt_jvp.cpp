@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <ranges>
 #include <vector>
 
 // J v is checked against the dense jacobian() contracted by hand, and against
@@ -17,10 +18,9 @@ std::vector<double> dense_column(const std::vector<double> &jac, std::size_t m,
   const ddx::impl::md::mdspan J{jac.data(),
                                 ddx::impl::md::dextents<std::size_t, 2>{m, n}};
   std::vector<double> out(m, 0.0);
-  for (const std::size_t i : std::views::iota(0uz, m)) {
-    for (const std::size_t j : std::views::iota(0uz, n)) {
-      out[i] += J[i, j] * v[j];
-    }
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, m), std::views::iota(0uz, n))) {
+    out[i] += J[i, j] * v[j];
   }
   return out;
 }

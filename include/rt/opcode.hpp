@@ -1,10 +1,8 @@
 #pragma once
 
 #include "ops/unary_math.hpp" // DDX_UNARY_MATH_TABLE
+#include "util/meta.hpp"
 #include "util/ranges.hpp"
-
-#include <boost/mp11/algorithm.hpp>
-#include <boost/mp11/list.hpp>
 
 #include <algorithm>
 #include <array>
@@ -113,13 +111,8 @@ enum class OpCode : std::uint8_t {
 #undef DDX_RT_ENUMERATOR
 };
 
-inline constexpr std::size_t op_count = [] {
-  std::size_t n = 0;
-#define DDX_RT_COUNT(fn, Op, label, ...) ++n;
-  DDX_RT_OP_TABLE(DDX_RT_COUNT)
-#undef DDX_RT_COUNT
-  return n;
-}();
+#define DDX_RT_COUNT(...) +1
+inline constexpr std::size_t op_count = 0 DDX_RT_OP_TABLE(DDX_RT_COUNT);
 
 // Typed payloads: each opcode row names the type its node's payload word is
 // read back as.
@@ -162,12 +155,12 @@ struct ExternRef {
 };
 
 // Every payload type. A Map's or Zip's payload is its elementwise OpCode.
-using Payloads = boost::mp11::mp_list<NoPayload, Slot, TensorRef, Count,
-                                      Element, Orientation, OpCode, ExternRef>;
+using Payloads = meta::list<NoPayload, Slot, TensorRef, Count, Element,
+                            Orientation, OpCode, ExternRef>;
 template <typename P>
-  requires boost::mp11::mp_contains<Payloads, P>::value
+  requires(meta::contains(Payloads{}, meta::type_c<P>))
 inline constexpr auto payload_index =
-    static_cast<std::uint8_t>(boost::mp11::mp_find<Payloads, P>::value);
+    static_cast<std::uint8_t>(meta::index_of(Payloads{}, meta::type_c<P>));
 
 // Converts a payload to its stored word and back.
 template <typename P>
@@ -306,7 +299,7 @@ static_assert([] {
 }
 // The payload type of an Op node, as make() takes and get() returns it.
 template <OpCode Op>
-using payload_of_t = boost::mp11::mp_at_c<Payloads, detail::info(Op).payload>;
+using payload_of_t = DDX_TYPE(meta::at<detail::info(Op).payload>(Payloads{}));
 // An opcode as a type, so make() can check arity and payload at compile time.
 template <OpCode Op>
 inline constexpr std::integral_constant<OpCode, Op> opcode{};
@@ -390,13 +383,8 @@ named_index(OpCode op) noexcept {
 #undef DDX_RT_NAMED
   return std::nullopt;
 }
-inline constexpr std::size_t named_count = [] {
-  std::size_t n = 0;
-#define DDX_RT_NAMED(...) ++n;
-  DDX_RT_NAMED_TABLE(DDX_RT_NAMED)
-#undef DDX_RT_NAMED
-  return n;
-}();
+inline constexpr std::size_t named_count = 0 DDX_RT_NAMED_TABLE(DDX_RT_COUNT);
+#undef DDX_RT_COUNT
 
 // One T per named kind. GCC before 15 double-frees when constant evaluation
 // copies an array of allocating elements, so there it copies element-wise.

@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <format>
+#include <ranges>
 #include <regex>
 #include <string>
 
@@ -39,8 +40,8 @@ std::string ir_for(auto build, std::size_t nvars, ddx::jit::Options opt = {}) {
   Arena<> b;
   std::vector<ddx::rt::Expression<>> vars;
   static constexpr const char *names[] = {"x", "y"};
-  for (std::size_t i = 0; i < nvars; ++i) {
-    vars.push_back(var(b, names[i]));
+  for (const char *name : names | std::views::take(nvars)) {
+    vars.push_back(var(b, name));
   }
   const auto root = build(vars);
   const auto graph = ddx::test::freeze_values(b, std::array{root.id(b)});
@@ -133,13 +134,14 @@ TEST(JitVectorize, JacobianLoopVectorises) {
 // body is emitted wide, so the column count does not matter.
 TEST(JitVectorize, WideTranscendentalJacobianIsVector) {
   Arena<> b;
-  std::vector<ddx::rt::Expression<>> v;
-  for (std::size_t i = 0; i < 16; ++i) {
-    v.push_back(var(b, "x" + std::to_string(i)));
-  }
+  const auto v = std::views::iota(0uz, 16uz) |
+                 std::views::transform([&](std::size_t i) {
+                   return var(b, "x" + std::to_string(i));
+                 }) |
+                 ddx::impl::to<std::vector>();
   auto f = v[0] * log(v[0]);
-  for (std::size_t i = 1; i < v.size(); ++i) {
-    f = f + v[i] * log(v[i]) + exp(v[i - 1] * v[i]);
+  for (const auto [prev, cur] : v | std::views::pairwise) {
+    f = f + cur * log(cur) + exp(prev * cur);
   }
   const auto graph =
       ddx::test::GraphBuilder{b}.value(f).build_jacobian().finish();

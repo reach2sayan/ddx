@@ -11,6 +11,7 @@
 #include "symbolic/simplify.hpp"
 #include "symbolic/symbol.hpp"
 #include "util/config.hpp" // DDX_FWD
+#include "util/meta.hpp"
 #include "util/scope_guard.hpp"
 
 #include <algorithm>
@@ -32,40 +33,18 @@ namespace detail {
 template <CExpression E>
 using canonical_t = decltype(canonicalise(std::declval<const E &>()));
 
-template <CSymbol... Syms>
-constexpr auto make_derivatives(mp::mp_list<Syms...>,
+// thaw_partials lifts the hold that made each column, or the returned row
+// would differentiate to zero. See Freeze in expressions.hpp.
+constexpr auto make_derivatives(CSymbolList auto syms,
                                 const CExpression auto &expr) noexcept {
-  // thaw_partials lifts the hold that made each column, or the returned row
-  // would differentiate to zero. See Freeze in expressions.hpp.
-  return std::tuple(canonicalise(thaw_partials(
-      make_all_constant_except<Syms::value>(expr).derivative()))...);
+  return meta::unpack(syms, [&](auto... s) noexcept {
+    return std::tuple(canonicalise(thaw_partials(
+        make_all_constant_except<s.value>(expr).derivative()))...);
+  });
 }
 
-template <CSymbol... Syms, CExpression... Exprs>
-constexpr auto make_jac_rows(const std::tuple<Exprs...> &es,
-                             mp::mp_list<Syms...> = {}) noexcept {
-  return std::apply(
-      [](const auto &...exprs) noexcept {
-        return std::make_tuple(
-            make_derivatives(mp::mp_list<Syms...>{}, exprs)...);
-      },
-      es);
-}
-
-// A dual-valued row carries the seed in its dual part, so the derivative is
+// A dual-valued cell carries the seed in its dual part, so the derivative is
 // the real part.
-template <Numeric T, std::size_t N>
-[[nodiscard]] constexpr auto
-strip_seed(const std::array<T, N> &grads) noexcept {
-  if constexpr (DualLike<T>) {
-    std::array<dual_scalar_t<T>, N> result{};
-    std::ranges::transform(grads, result.begin(),
-                           [](const T &g) { return g.template get<0>(); });
-    return result;
-  } else {
-    return grads;
-  }
-}
 template <Numeric T> [[nodiscard]] constexpr auto strip_seed(const T &v) {
   if constexpr (DualLike<T>) {
     return v.template get<0>();
@@ -74,20 +53,16 @@ template <Numeric T> [[nodiscard]] constexpr auto strip_seed(const T &v) {
   }
 }
 
+// Variable k seeded on epsilon_l wherever idx[l] names it.
 template <Numeric S, std::size_t Depth>
 constexpr nth_dual_t<S, Depth> make_mixed_seed(S value,
                                                std::span<const std::size_t> idx,
                                                std::size_t k) noexcept {
-  if constexpr (Depth == 0) {
-    return value;
-  } else if constexpr (Depth == 1) {
-    return nth_dual_t<S, 1>{value, k == idx[0] ? S{1} : S{}};
-  } else {
-    auto inner =
-        make_mixed_seed<S, Depth - 1>(std::move(value), idx.subspan(1), k);
-    auto outer_tangent = embed_constant<S, Depth - 1>(k == idx[0] ? S{1} : S{});
-    return nth_dual_t<S, Depth>{std::move(inner), std::move(outer_tangent)};
+  std::size_t mask = 0;
+  for (const auto [l, i] : idx | std::views::enumerate) {
+    mask |= std::size_t{i == k} << l;
   }
+  return dual_seed<Depth>(value, mask);
 }
 
 // One sorted multi-index per symmetry class, since by Schwarz only
@@ -96,13 +71,15 @@ constexpr nth_dual_t<S, Depth> make_mixed_seed(S value,
 template <std::size_t N, std::size_t Order>
   requires(N > 0 && Order > 0)
 consteval auto simplex_index_table() noexcept {
-  std::array<std::array<std::size_t, Order>, binomial(N + Order - 1, Order)>
+  std::array<std::array<std::size_t, Order>,
+             binomial_fixed<Order>(N + Order - 1)>
       out{};
   std::array<std::size_t, Order> idx{};
   for (auto &slot : out) {
     slot = idx;
     // Raise the rightmost index that can grow, and set those after it equal.
-    for (std::size_t p = Order; p-- > 0;) {
+    for (const std::size_t p :
+         std::views::iota(0uz, Order) | std::views::reverse) {
       if (idx[p] + 1 < N) {
         const std::size_t v = ++idx[p];
         std::ranges::fill(idx | std::views::drop(p + 1), v);
@@ -141,11 +118,11 @@ template <CExpression TFirst, CExpression... TRest>
 class Equation<TFirst, TRest...> {
 public:
   using value_type = typename TFirst::value_type;
-  using symbols = tuple_union_t<extract_symbols_from_expr_t<TFirst>,
-                                extract_symbols_from_expr_t<TRest>...>;
+  using symbols = meta::list_t<symbol_set(expr_symbols_t<TFirst>{},
+                                          expr_symbols_t<TRest>{}...)>;
 
   static constexpr std::size_t output_dim = 1 + sizeof...(TRest);
-  static constexpr std::size_t input_dim = mp::mp_size<symbols>::value;
+  static constexpr std::size_t input_dim = meta::size(symbols{});
   static constexpr std::size_t number_of_derivatives = input_dim;
 
 private:
@@ -159,8 +136,6 @@ private:
   Exprs expressions;
 
   using point_t = std::array<value_type, input_dim>;
-  using jacobian_tensor_t =
-      md_tensor<S, md::extents<std::size_t, output_dim, input_dim>>;
 
   // Symbols are declared first, in Equation order, so a column is the symbol's
   // slot in the point even when a folded tree such as (y*x)/(x*y) loses it.
@@ -175,10 +150,9 @@ private:
                         (node_count_v<detail::canonical_t<TFirst>> + ... +
                          node_count_v<detail::canonical_t<TRest>>),
                     input_dim);
-    mp::mp_for_each<symbols>(
-        [&l]<typename Sym>(Sym) { (void)rt::var(l.arena, Sym::name); });
-    static_for<output_dim>([&]<std::size_t I>() {
-      l.roots[I] = rt::to_graph(l.arena, std::get<I>(expressions)).id(l.arena);
+    meta::for_each(symbols{}, [&l](auto s) { (void)rt::var(l.arena, s.name); });
+    meta::for_each(meta::iota<output_dim>, [&](auto i) {
+      l.roots[i] = rt::to_graph(l.arena, std::get<i>(expressions)).id(l.arena);
     });
     return l;
   }
@@ -192,12 +166,14 @@ private:
   // Built on demand, since storing the rows would instantiate the symbolic
   // Jacobian every time Equation<E> is named.
   [[nodiscard]] constexpr auto jacobian_rows() const noexcept {
-    return detail::make_jac_rows(expressions, symbols{});
+    return meta::unpack(expressions, [](const auto &...e) noexcept {
+      return std::make_tuple(detail::make_derivatives(symbols{}, e)...);
+    });
   }
 
 public:
   // get<0> is the expression itself and get<k> its partial in the (k-1)th
-  // symbol, in canonical order. The subscript [idx<N>] is the same.
+  // symbol, in canonical order.
   template <std::size_t N>
     requires(output_dim == 1 && N <= input_dim)
   [[nodiscard]] constexpr decltype(auto) get(this auto &&self) noexcept {
@@ -234,19 +210,12 @@ public:
           if constexpr (output_dim == 1) {
             return v[l.roots[0]];
           } else {
-            return index_apply<output_dim>([&]<std::size_t... I>() {
-              return std::array<value_type, output_dim>{v[l.roots[I]]...};
+            return meta::unpack(meta::iota<output_dim>, [&](auto... i) {
+              return std::array<value_type, output_dim>{v[l.roots[i]]...};
             });
           }
         },
         args...);
-  }
-
-  template <std::size_t N>
-    requires(output_dim == 1 && N <= input_dim)
-  [[nodiscard]] constexpr decltype(auto) operator[](this auto &&self,
-                                                    idx_t<N>) noexcept {
-    return DDX_FWD(self).template get<N>();
   }
 
   // Symbolic lowers the partial trees; Reverse builds the adjoint on the graph.
@@ -262,10 +231,10 @@ public:
           std::array<rt::NodeId, output_dim * input_dim> cells{};
           if constexpr (Mode == DiffMode::Symbolic) {
             const auto rows = jacobian_rows();
-            static_for<output_dim>([&]<std::size_t I>() {
-              static_for<input_dim>([&]<std::size_t J>() {
-                cells[I * input_dim + J] =
-                    rt::to_graph(l.arena, std::get<J>(std::get<I>(rows)))
+            meta::for_each(meta::iota<output_dim>, [&](auto i) {
+              meta::for_each(meta::iota<input_dim>, [&](auto j) {
+                cells[i * input_dim + j] =
+                    rt::to_graph(l.arena, std::get<j>(std::get<i>(rows)))
                         .id(l.arena);
               });
             });
@@ -279,12 +248,13 @@ public:
           }
           const auto v = rt::evaluate_reachable(l.arena, cells, vals);
           if constexpr (output_dim == 1) {
-            std::array<value_type, input_dim> row{};
-            std::ranges::transform(cells, row.begin(),
-                                   [&v](rt::NodeId c) { return v[c]; });
-            return detail::strip_seed(row);
+            std::array<S, input_dim> row{};
+            std::ranges::transform(cells, row.begin(), [&v](rt::NodeId c) {
+              return detail::strip_seed(v[c]);
+            });
+            return row;
           } else {
-            jacobian_tensor_t J{};
+            md_tensor<S, md::extents<std::size_t, output_dim, input_dim>> J{};
             for (const std::size_t i : std::views::iota(0uz, output_dim)) {
               for (const std::size_t k : std::views::iota(0uz, input_dim)) {
                 J[i, k] = detail::strip_seed(v[cells[i * input_dim + k]]);
@@ -360,13 +330,15 @@ public:
             walk(l.arena, detail::mixed_seeds<scalar, Order>(vals, idx),
                  std::span<U>{v}, std::span<U>{vtape});
             for (const auto [k, root] : l.roots | std::views::enumerate) {
-              const auto at = [&]<std::size_t... K>(std::index_sequence<K...>) {
+              const auto at = [&] {
                 if constexpr (output_dim == 1) {
                   return idx;
                 } else {
-                  return std::array{static_cast<std::size_t>(k), idx[K]...};
+                  return meta::unpack(meta::iota<Order>, [&](auto... o) {
+                    return std::array{static_cast<std::size_t>(k), idx[o]...};
+                  });
                 }
-              }(std::make_index_sequence<Order>{});
+              }();
               result.at_index(at) = detail::extract_nth<Order>(v[root]);
             }
           }
@@ -433,18 +405,18 @@ struct std::formatter<ddx::impl::Equation<Ts...>, char> {
     auto out = ctx.out();
 
     const auto rows = eq.jacobian_rows();
-    ddx::impl::static_for<Eq::output_dim>([&]<std::size_t I>() {
-      out = std::format_to(out, "f{}: ", I);
+    ddx::meta::for_each(ddx::meta::iota<Eq::output_dim>, [&](auto i) {
+      out = std::format_to(out, "f{}: ", i());
       out = std::vformat_to(out, one,
-                            std::make_format_args(std::get<I>(eq.functions())));
+                            std::make_format_args(std::get<i>(eq.functions())));
       out = std::format_to(out, "\n  jac: ");
-      const auto &row = std::get<I>(rows);
-      ddx::impl::static_for<Eq::input_dim>([&]<std::size_t J>() {
-        if constexpr (J > 0) {
+      const auto &row = std::get<i>(rows);
+      ddx::meta::for_each(ddx::meta::iota<Eq::input_dim>, [&](auto j) {
+        if constexpr (j > 0) {
           out = std::format_to(out, ", ");
         }
         out =
-            std::vformat_to(out, one, std::make_format_args(std::get<J>(row)));
+            std::vformat_to(out, one, std::make_format_args(std::get<j>(row)));
       });
       out = std::format_to(out, "\n");
     });

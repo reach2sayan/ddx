@@ -8,6 +8,7 @@
 #define MDSPAN_IMPL_STANDARD_NAMESPACE diff_mdspan
 #endif
 #include "third_party/mdspan.hpp"
+#include "util/meta.hpp"
 #define DDX_MDSPAN_NS MDSPAN_IMPL_STANDARD_NAMESPACE
 
 #include <cstddef>
@@ -20,15 +21,11 @@ using DDX_MDSPAN_NS::extents;
 using DDX_MDSPAN_NS::layout_right;
 using DDX_MDSPAN_NS::mdspan;
 
-namespace detail {
-template <typename T> inline constexpr bool is_extents_v = false;
-template <typename I, std::size_t... E>
-inline constexpr bool is_extents_v<extents<I, E...>> = true;
-
-} // namespace detail
-
 template <typename E>
-concept CExtents = detail::is_extents_v<std::remove_cvref_t<E>>;
+concept CExtents = requires {
+  []<typename I, std::size_t... N>(meta::Type<extents<I, N...>>) {
+  }(meta::type_c<std::remove_cvref_t<E>>);
+};
 
 // Every extent is known at compile time, so a tensor can own a std::array and
 // stay usable in constant evaluation.

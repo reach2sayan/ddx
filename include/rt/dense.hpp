@@ -2,9 +2,11 @@
 
 #include "rt/derivative.hpp"
 #include "rt/tensor.hpp"
+#include "util/meta.hpp"
 #include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>
+#include <boost/hof/match.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -164,7 +166,7 @@ private:
   // A tangent summed into one n x n matrix: diagonals as a vector, outer
   // products as one low-rank product, and each matrix written contiguously.
   [[nodiscard]] NodeId summed(const Terms &ts) {
-    const auto of = [&ts]<typename K>(std::type_identity<K>) {
+    const auto of = [&ts]<typename K>(meta::Type<K>) {
       return ts | std::views::filter([](const Term &t) {
                return std::holds_alternative<K>(t);
              }) |
@@ -178,13 +180,13 @@ private:
                                  return add(r, g ? g->d : ones());
                                });
     using Ids = boost::container::small_vector<NodeId, 4>;
-    auto matrices = of(std::type_identity<term::Dense>{}) |
+    auto matrices = of(meta::type_c<term::Dense>) |
                     std::views::transform(&term::Dense::block) |
                     impl::to<Ids>();
     // sum_k u_k g_k^T is computed as one product U G^T instead of K outer
     // products added together.
     const auto outers =
-        of(std::type_identity<term::Outer>{}) |
+        of(meta::type_c<term::Outer>) |
         impl::to<boost::container::small_vector<term::Outer, 4>>();
     if (outers.size() == 1) {
       matrices.push_back(
@@ -282,19 +284,21 @@ private:
   [[nodiscard]] Term scale(const E &m, const Term &t) {
     const bool vector = m.size() != 0 || m.pending();
     return std::visit(
-        [&]<typename K>(const K &k) -> Term {
-          if constexpr (std::same_as<K, term::Identity>) {
-            ++n2_;
-            return term::Diag{(vector ? m : m * expr(ones())).id(b_, {n_})};
-          } else if constexpr (std::same_as<K, term::Diag>) {
-            return term::Diag{(m * expr(k.d)).id(b_, {n_})};
-          } else if constexpr (std::same_as<K, term::Outer>) {
-            return term::Outer{.u = (m * expr(k.u)).id(b_, shape_of(b_, k.u)),
-                               .g = k.g};
-          } else {
-            return dense_scale(m, vector, k.block);
-          }
-        },
+        boost::hof::match(
+            [&](term::Identity) -> Term {
+              ++n2_;
+              return term::Diag{(vector ? m : m * expr(ones())).id(b_, {n_})};
+            },
+            [&](const term::Diag &k) -> Term {
+              return term::Diag{(m * expr(k.d)).id(b_, {n_})};
+            },
+            [&](const term::Outer &k) -> Term {
+              return term::Outer{.u = (m * expr(k.u)).id(b_, shape_of(b_, k.u)),
+                                 .g = k.g};
+            },
+            [&](const term::Dense &k) -> Term {
+              return dense_scale(m, vector, k.block);
+            }),
         t);
   }
   [[nodiscard]] Term dense_scale(const E &m, bool vector, NodeId block) {
@@ -359,36 +363,32 @@ private:
   }
   [[nodiscard]] NodeId row_of(const Term &t, std::uint32_t i) {
     return std::visit(
-        [&]<typename K>(const K &k) {
-          if constexpr (std::same_as<K, term::Identity>) {
-            return unit(i);
-          } else if constexpr (std::same_as<K, term::Diag>) {
-            return b_.make(opcode<OpCode::AddAt>, Element{i},
-                           {.vec = zeros(), .scalar = expr(k.d)[i].id(b_)});
-          } else if constexpr (std::same_as<K, term::Outer>) {
-            return scaled(expr(k.u)[i], k.g);
-          } else {
-            return b_.make(opcode<OpCode::RowOf>, Element{i}, k.block);
-          }
-        },
+        boost::hof::match(
+            [&](term::Identity) { return unit(i); },
+            [&](const term::Diag &k) {
+              return b_.make(opcode<OpCode::AddAt>, Element{i},
+                             {.vec = zeros(), .scalar = expr(k.d)[i].id(b_)});
+            },
+            [&](const term::Outer &k) { return scaled(expr(k.u)[i], k.g); },
+            [&](const term::Dense &k) {
+              return b_.make(opcode<OpCode::RowOf>, Element{i}, k.block);
+            }),
         t);
   }
   // u^T times a term, which is a row.
   [[nodiscard]] NodeId left(const E &u, const Term &t) {
     return std::visit(
-        [&]<typename K>(const K &k) {
-          if constexpr (std::same_as<K, term::Identity>) {
-            return u.id(b_, {n_});
-          } else if constexpr (std::same_as<K, term::Diag>) {
-            return (u * expr(k.d)).id(b_, {n_});
-          } else if constexpr (std::same_as<K, term::Outer>) {
-            return scaled(dot(u, expr(k.u)), k.g);
-          } else {
-            return b_.make(opcode<OpCode::MatVec>, Orientation::transposed,
-                           {.matrix = k.block,
-                            .vec = u.id(b_, {shape_of(b_, k.block).rows})});
-          }
-        },
+        boost::hof::match(
+            [&](term::Identity) { return u.id(b_, {n_}); },
+            [&](const term::Diag &k) { return (u * expr(k.d)).id(b_, {n_}); },
+            [&](const term::Outer &k) {
+              return scaled(dot(u, expr(k.u)), k.g);
+            },
+            [&](const term::Dense &k) {
+              return b_.make(opcode<OpCode::MatVec>, Orientation::transposed,
+                             {.matrix = k.block,
+                              .vec = u.id(b_, {shape_of(b_, k.block).rows})});
+            }),
         t);
   }
   [[nodiscard]] NodeId left(const E &u, const Terms &ts) {
@@ -407,24 +407,27 @@ private:
                             : matrix)
             : matrix;
     return std::visit(
-        [&]<typename K>(const K &k) -> Term {
-          if constexpr (std::same_as<K, term::Identity>) {
-            ++n2_;
-            return term::Dense{c};
-          } else if constexpr (std::same_as<K, term::Diag>) {
-            ++n2_;
-            return term::Dense{
-                b_.make(opcode<OpCode::ColScale>, {.matrix = c, .scale = k.d})};
-          } else if constexpr (std::same_as<K, term::Outer>) {
-            return term::Outer{.u = b_.make(opcode<OpCode::MatVec>, orientation,
-                                            {.matrix = matrix, .vec = k.u}),
-                               .g = k.g};
-          } else {
-            ++n3_;
-            return term::Dense{
-                b_.make(opcode<OpCode::MatMul>, {.left = c, .right = k.block})};
-          }
-        },
+        boost::hof::match(
+            [&](term::Identity) -> Term {
+              ++n2_;
+              return term::Dense{c};
+            },
+            [&](const term::Diag &k) -> Term {
+              ++n2_;
+              return term::Dense{b_.make(opcode<OpCode::ColScale>,
+                                         {.matrix = c, .scale = k.d})};
+            },
+            [&](const term::Outer &k) -> Term {
+              return term::Outer{.u = b_.make(opcode<OpCode::MatVec>,
+                                              orientation,
+                                              {.matrix = matrix, .vec = k.u}),
+                                 .g = k.g};
+            },
+            [&](const term::Dense &k) -> Term {
+              ++n3_;
+              return term::Dense{b_.make(opcode<OpCode::MatMul>,
+                                         {.left = c, .right = k.block})};
+            }),
         t);
   }
 

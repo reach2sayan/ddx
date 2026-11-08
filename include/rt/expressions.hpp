@@ -5,7 +5,10 @@
 #include "rt/opcode.hpp"
 #include "util/config.hpp"
 #include "util/error.hpp"
+#include "util/meta.hpp"
 #include "util/scope_guard.hpp"
+
+#include <boost/hof/match.hpp>
 
 #include <algorithm>
 #include <array>
@@ -57,7 +60,31 @@ struct Router {
         es, [](const auto &e) { return e.arena() != nullptr; });
     return named == es.end() ? nullptr : named->arena();
   }
+  // The operands' ids, or the first refusal: a poisoned or non-scalar one.
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr result<
+      boost::container::small_vector<NodeId, 8>>
+  scalar_ids(Arena<T> &b, std::span<const Expression<T>> es) {
+    for (const auto &e : es) {
+      if (const auto w = why(e)) {
+        return fail(*w);
+      }
+      if (!scalar(e)) {
+        return fail(errc::tensor_shape);
+      }
+    }
+    return es | std::views::transform([&b](const auto &e) { return e.id(b); }) |
+           impl::to<boost::container::small_vector<NodeId, 8>>();
+  }
 };
+
+// The poison of the first poisoned operand, if any.
+[[nodiscard]] constexpr std::optional<errc> poisoned(const auto &...es) {
+  std::optional<errc> why;
+  meta::for_each(std::tie(es...),
+                 [&](const auto &e) { why = why ? why : Router::why(e); });
+  return why;
+}
 } // namespace detail
 
 // Declared before Expression, which befriends it. A missing arena or a
@@ -115,13 +142,8 @@ public:
     }
     // b may be a copy of arena_.
     return std::visit(
-        [&b]<typename H>(const H &at) {
-          if constexpr (std::same_as<H, NodeId>) {
-            return at;
-          } else {
-            return b.fold_of(at);
-          }
-        },
+        boost::hof::match([](NodeId at) { return at; },
+                          [&b](const auto &at) { return b.fold_of(at); }),
         at_);
   }
   // The node id in its own arena, or no_node for a pending literal.
@@ -148,13 +170,12 @@ public:
   // Tensor operands give a Map, a Zip, a Scale or a VSelect instead.
   [[nodiscard]] static constexpr Expression
   form(OpCode op, const std::same_as<Expression> auto &...xs) {
-    std::optional<errc> why;
-    ((why = why ? why : xs.why_), ...);
-    if (why) {
+    if (const auto why = detail::poisoned(xs...)) {
       return poison(*why);
     }
     Arena<T> *b = nullptr;
-    ((b = b ? b : xs.arena()), ...);
+    meta::for_each(std::tie(xs...),
+                   [&](const Expression &x) { b = b ? b : x.arena(); });
     if (b == nullptr) {
       return Expression{apply<T>(op, xs.literal()...)};
     }
@@ -436,19 +457,9 @@ public:
     if (args.size() != b_->externs()[index_].arity) {
       return Expression<T>::poison(errc::wrong_argument_count);
     }
-    for (const auto &a : args) {
-      if (a.why_) {
-        return Expression<T>::poison(*a.why_);
-      }
-      if (!detail::Router::scalar(a)) {
-        return Expression<T>::poison(errc::tensor_shape);
-      }
-    }
-    const auto ids =
-        args |
-        std::views::transform([this](const auto &a) { return a.id(*b_); }) |
-        impl::to<boost::container::small_vector<NodeId, 8>>();
-    return Expression<T>{*b_, b_->extern_call(index_, ids)};
+    const auto ids = detail::Router::scalar_ids(*b_, args);
+    return ids ? Expression<T>{*b_, b_->extern_call(index_, *ids)}
+               : Expression<T>::poison(ids.error().code);
   }
   template <typename... A>
     requires(std::convertible_to<A, Expression<T>> && ...)
@@ -481,9 +492,6 @@ extern_fn(Arena<T> &b, ExternRecord record,
 }
 
 namespace detail {
-
-// Repeats Expression<T> once per element of a pack expansion.
-template <std::size_t, impl::Numeric T> using Repeat = Expression<T>;
 
 // The thread-local arena that var() registers into during an equation()
 // callback.

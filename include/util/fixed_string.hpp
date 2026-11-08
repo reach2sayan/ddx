@@ -1,5 +1,7 @@
 #pragma once
 
+#include "util/meta.hpp"
+
 #include <algorithm>
 #include <compare>
 #include <cstddef>
@@ -40,14 +42,10 @@ template <std::size_t N> struct FixedString {
 
 template <std::size_t N> FixedString(const char (&)[N]) -> FixedString<N>;
 
-namespace detail {
-template <typename T> inline constexpr bool is_fixed_string_v = false;
-template <std::size_t N>
-inline constexpr bool is_fixed_string_v<FixedString<N>> = true;
-} // namespace detail
-
 template <typename T>
-concept CFixedString = detail::is_fixed_string_v<T>;
+concept CFixedString = requires {
+  []<std::size_t N>(meta::Type<FixedString<N>>) {}(meta::type_c<T>);
+};
 
 namespace detail {
 

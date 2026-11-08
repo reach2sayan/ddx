@@ -190,10 +190,11 @@ constexpr std::size_t many_species = 128;
 TEST(RtSystem, BuildingSweepsOnlyTheJacobian) {
   const auto start = std::chrono::steady_clock::now();
   const auto eq = ddx::rt::equation([] {
-    std::vector<RE> x;
-    for (const std::size_t i : std::views::iota(0uz, many_species)) {
-      x.push_back(ddx::rt::var(std::format("x{:03}", i)));
-    }
+    const auto x = std::views::iota(0uz, many_species) |
+                   std::views::transform([](std::size_t i) {
+                     return ddx::rt::var(std::format("x{:03}", i));
+                   }) |
+                   ddx::impl::to<std::vector>();
     return models::mse(x);
   });
   const std::chrono::duration<double, std::milli> built =
@@ -230,7 +231,7 @@ TEST(RtSystem, PreparedLanesServeManyThreads) {
     if (together) {
       start.arrive_and_wait();
     }
-    for (int rep = 0; rep < 1000; ++rep) {
+    for ([[maybe_unused]] const int rep : std::views::iota(0, 1000)) {
       EXPECT_TRUE(sys.jacobian(in, fs, gs, n).has_value());
     }
     return std::pair{f, g};

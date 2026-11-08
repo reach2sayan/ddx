@@ -5,6 +5,7 @@
 #include "rt/expressions.hpp"
 #include "symbolic/expressions.hpp"
 #include "symbolic/traits.hpp"
+#include "util/meta.hpp"
 
 #include <array>
 #include <tuple>
@@ -28,14 +29,13 @@ template <impl::Numeric T, impl::CExpression U>
   } else if constexpr (impl::CLit<U>) {
     return lit(b, static_cast<T>(val(U::value)));
   } else if constexpr (impl::CConstant<U>) {
-    return lit(b,
-               static_cast<T>(val(e.template eval_seeded<impl::mp::mp_list<>>(
-                   std::array<T, 1>{}))));
+    return lit(b, static_cast<T>(val(e.template eval_seeded<meta::list<>>(
+                      std::array<T, 1>{}))));
   } else {
     constexpr auto code = opcode_of(U::op_type::label);
     static_assert(code.has_value(), "no OpCode row carries this op's label");
-    return std::apply(
-        [&](const auto &first, const auto &...rest) {
+    return meta::unpack(
+        e.expressions(), [&](const auto &first, const auto &...rest) {
           if constexpr (sizeof...(rest) == 0) {
             return Expression<T>::form(*code, lower(b, first));
           } else if constexpr (*code == OpCode::Select) {
@@ -44,11 +44,12 @@ template <impl::Numeric T, impl::CExpression U>
             return Expression<T>::form(*code, arms[0], arms[1], arms[2]);
           } else {
             Expression acc = lower(b, first);
-            ((acc = Expression<T>::form(*code, acc, lower(b, rest))), ...);
+            meta::for_each(std::forward_as_tuple(rest...), [&](const auto &r) {
+              acc = Expression<T>::form(*code, acc, lower(b, r));
+            });
             return acc;
           }
-        },
-        e.expressions());
+        });
   }
 }
 
@@ -61,9 +62,9 @@ template <impl::Numeric U, impl::CExpression E>
     constexpr auto code = opcode_of(Tree::op_type::label);
     static_assert(code.has_value(), "no OpCode row carries this op's label");
     return supports<U>(*code) &&
-           []<typename... C>(std::type_identity<std::tuple<C...>>) {
-             return (computes_at_tree<U, C>() && ...);
-           }(std::type_identity<typename Tree::children_t>{});
+           meta::unpack(impl::children(meta::type_c<Tree>), [](auto... c) {
+             return (computes_at_tree<U, DDX_TYPE(c)>() && ...);
+           });
   } else {
     return true;
   }
@@ -74,10 +75,10 @@ template <impl::Numeric U, impl::CExpression E>
 // Symbols are declared first in the compile-time Equation's order so their
 // columns match. Trees with frozen leaves are refused, as a Var is always live.
 template <impl::Numeric T, impl::CExpression U>
-  requires(!impl::holds_frozen<U>())
+  requires(!impl::holds_frozen(meta::type_c<U>))
 [[nodiscard]] constexpr Expression<T> to_graph(Arena<T> &b, const U &e) {
-  impl::mp::mp_for_each<impl::extract_symbols_from_expr_t<U>>(
-      [&b]<typename S>(S) { (void)var(b, S::name); });
+  meta::for_each(impl::expr_symbols_t<U>{},
+                 [&b](auto s) { (void)var(b, s.name); });
   return detail::lower(b, e);
 }
 

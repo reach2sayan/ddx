@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <ranges>
 #include <vector>
 
 // w'J against the dense jacobian() contracted by hand. Systems matter most,
@@ -17,10 +18,9 @@ std::vector<double> dense_row_vector(const std::vector<double> &jac,
   const ddx::impl::md::mdspan J{jac.data(),
                                 ddx::impl::md::dextents<std::size_t, 2>{m, n}};
   std::vector<double> out(n, 0.0);
-  for (const std::size_t j : std::views::iota(0uz, n)) {
-    for (const std::size_t i : std::views::iota(0uz, m)) {
-      out[j] += w[i] * J[i, j];
-    }
+  for (const auto [j, i] : std::views::cartesian_product(
+           std::views::iota(0uz, n), std::views::iota(0uz, m))) {
+    out[j] += w[i] * J[i, j];
   }
   return out;
 }

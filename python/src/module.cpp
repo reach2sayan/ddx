@@ -9,13 +9,13 @@
 #include "rt/text/ast.hpp"
 #include "rt/text/lower.hpp"
 #include "util/ranges.hpp"
+#include "util/meta.hpp"
 #include "util/scope_guard.hpp"
 #include "util/version.hpp"
 
 #include "jit/kernel.hpp"
 
 #include <boost/describe/enumerators.hpp>
-#include <boost/mp11/algorithm.hpp>
 
 #include <pybind11/native_enum.h>
 #include <pybind11/numpy.h>
@@ -483,8 +483,8 @@ PYBIND11_MODULE(_ddx, m) {
   };
   const auto described = [&]<typename E>(const char *name, const char *doc) {
     pyb::native_enum<E> e{m, name, "enum.IntEnum", doc};
-    boost::mp11::mp_for_each<boost::describe::describe_enumerators<E>>(
-        [&](auto d) { e.value(upper(d.name).c_str(), d.value); });
+    ddx::meta::for_each(boost::describe::describe_enumerators<E>{},
+                        [&](auto d) { e.value(upper(d.name).c_str(), d.value); });
     e.finalize();
   };
   described.operator()<jit::Backend>("Backend",

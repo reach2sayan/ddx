@@ -313,9 +313,9 @@ template <impl::Numeric T>
       return Elements(shape_of(b, v).rows);
     case OpCode::Map:
       if (op != OpCode::Neg) {
-        std::ranges::for_each(each(node.in[0]), [&](const auto &e) {
+        for (const auto &e : each(node.in[0])) {
           detail::couple(rows, e, e);
-        });
+        }
       }
       return each(node.in[0]).empty() ? std::nullopt
                                       : std::optional{each(node.in[0])};
@@ -418,14 +418,9 @@ template <impl::Numeric T>
         here |= of(t);
       }
       break;
-    case Kind::Ternary:
-      // A select couples like an Add, since it only chooses between branches.
-      {
-        const auto [cond, then, otherwise] =
-            detail::operands<OpCode::Select>(node.in);
-        here = of(then);
-        here |= of(otherwise);
-      }
+    case Kind::Ternary: // A select, like an Add, only chooses between arms.
+      here = of(node.in[1]);
+      here |= of(node.in[2]);
       break;
     case Kind::Binary:
       // Comparisons have zero derivative, so they get no support or coupling.

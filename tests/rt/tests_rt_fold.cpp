@@ -26,11 +26,10 @@ using ddx::rt::OpCode;
 using models::RE;
 
 std::vector<RE> fold_symbols(Arena<> &b, std::size_t n) {
-  std::vector<RE> x;
-  for (std::size_t i = 0; i < n; ++i) {
-    x.push_back(var(b, std::format("x{:02}", i)));
-  }
-  return x;
+  return std::views::iota(0uz, n) | std::views::transform([&](std::size_t i) {
+           return var(b, std::format("x{:02}", i));
+         }) |
+         ddx::impl::to<std::vector>();
 }
 
 // k terms over six symbols, with every third term a product.
@@ -50,11 +49,10 @@ RE term(const std::vector<RE> &x, std::size_t t) {
 }
 
 std::vector<double> ramp(std::size_t n) {
-  std::vector<double> p(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    p[i] = 0.3 + 0.17 * static_cast<double>(i);
-  }
-  return p;
+  return std::views::iota(0uz, n) | std::views::transform([](std::size_t i) {
+           return 0.3 + 0.17 * static_cast<double>(i);
+         }) |
+         ddx::impl::to<std::vector>();
 }
 
 void expect_close(double got, double want, double rel) {
@@ -97,7 +95,7 @@ protected:
                           std::size_t k = kTerms) const {
     const Fold &f = GetParam();
     RE acc = x[0] + 1.0;
-    for (std::size_t t = 0; t < k; ++t) {
+    for (const std::size_t t : std::views::iota(0uz, k)) {
       f.assign(acc, f.term(x, t));
     }
     return acc;
@@ -106,7 +104,7 @@ protected:
                            std::size_t k = kTerms) const {
     const Fold &f = GetParam();
     RE acc = x[0] + 1.0;
-    for (std::size_t t = 0; t < k; ++t) {
+    for (const std::size_t t : std::views::iota(0uz, k)) {
       acc = f.chain(acc, f.term(x, t));
     }
     return acc;
@@ -192,16 +190,16 @@ TEST_P(RtFold, ValueGradientHvpAndHessianMatchTheChain) {
   const auto pc = ddx::rt::derive_hvp(chain, fc);
 
   auto at = ramp(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     at.push_back(1.0 - 0.1 * static_cast<double>(i)); // the direction
   }
   const auto vs = ddx::rt::evaluate_all(fold, at);
   const auto vc = ddx::rt::evaluate_all(chain, at);
   expect_close(vs[fs], vc[fc], 1e-14);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     expect_close(vs[gs.partial[i]], vc[gc.partial[i]], 1e-13);
     expect_close(vs[ps.product[i]], vc[pc.product[i]], 1e-12);
-    for (std::size_t j = 0; j < n; ++j) {
+    for (const std::size_t j : std::views::iota(0uz, n)) {
       expect_close(vs[hs.at(i, j)], vc[hc.at(i, j)], 1e-12);
     }
   }
@@ -216,7 +214,7 @@ TEST_P(RtFold, ReadingEveryStepListsEachTermOnce) {
   Arena<> read, once;
   const auto x = fold_symbols(read, n);
   RE acc = x[0] + 1.0;
-  for (std::size_t t = 0; t < k; ++t) {
+  for (const std::size_t t : std::views::iota(0uz, k)) {
     f.assign(acc, f.term(x, t));
     (void)acc.id(read);
   }
@@ -233,7 +231,7 @@ TEST_P(RtFold, ReadingEveryStepListsEachTermOnce) {
   const auto go = ddx::rt::derive_jacobian(once, fo);
   const auto wr = ddx::rt::evaluate_all(read, at);
   const auto wo = ddx::rt::evaluate_all(once, at);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     expect_close(wr[gr.partial[i]], wo[go.partial[i]], 1e-12);
   }
 }
@@ -248,8 +246,8 @@ TEST_P(RtFold, CouplingPatternIsTheChains) {
   // Each term reads one symbol, so the coupling is the fold's own.
   const auto build = [&](const std::vector<RE> &s, auto &&combine) {
     RE acc = s[0] * s[0];
-    for (std::size_t i = 1; i < n; ++i) {
-      combine(acc, s[i] + 1.0);
+    for (const RE &si : s | std::views::drop(1)) {
+      combine(acc, si + 1.0);
     }
     return acc;
   };
@@ -280,10 +278,11 @@ TEST_P(RtFold, TheEquationMatchesTheChains) {
   constexpr std::size_t n = 6;
   const auto build = [&](bool in_place) {
     return ddx::rt::equation([&] {
-      std::vector<RE> x;
-      for (std::size_t i = 0; i < n; ++i) {
-        x.push_back(ddx::rt::var(std::format("x{:02}", i)));
-      }
+      const auto x = std::views::iota(0uz, n) |
+                     std::views::transform([](std::size_t i) {
+                       return ddx::rt::var(std::format("x{:02}", i));
+                     }) |
+                     ddx::impl::to<std::vector>();
       return in_place ? folded(x, 30) : chained(x, 30);
     });
   };
@@ -295,7 +294,7 @@ TEST_P(RtFold, TheEquationMatchesTheChains) {
   const auto close = [](const auto &want, const auto &got, double tol,
                         const char *what) {
     ASSERT_EQ(want.size(), got.size()) << what;
-    for (std::size_t i = 0; i < want.size(); ++i) {
+    for (const std::size_t i : std::views::iota(0uz, want.size())) {
       EXPECT_NEAR(got[i], want[i], tol * std::max(1.0, std::abs(want[i])))
           << what << " at " << i;
     }
@@ -358,7 +357,7 @@ INSTANTIATE_TEST_SUITE_P(Folds, RtFold, ::testing::ValuesIn(kFolds),
 // The sum alone, to see what contraction and rebalancing do with it.
 RE summed(const std::vector<RE> &x) {
   RE acc{0};
-  for (std::size_t t = 0; t < kTerms; ++t) {
+  for (const std::size_t t : std::views::iota(0uz, kTerms)) {
     acc += term(x, t);
   }
   return acc;
@@ -371,7 +370,7 @@ TEST(RtSumN, ListsInternByContent) {
   const auto x = fold_symbols(b, 4);
   const auto sum = [&](std::size_t terms) {
     RE acc = x[0];
-    for (std::size_t t = 1; t < terms; ++t) {
+    for (const std::size_t t : std::views::iota(1uz, terms)) {
       acc += x[t];
     }
     return acc.id(b);

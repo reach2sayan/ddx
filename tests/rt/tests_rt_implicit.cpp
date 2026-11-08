@@ -55,11 +55,11 @@ TEST(RtImplicit, ResidualIsZeroAtTheRootTheCallerSupplies) {
 constexpr std::size_t eos_species = 4;
 
 [[nodiscard]] std::vector<RE> fractions() {
-  std::vector<RE> x;
-  for (const std::size_t i : std::views::iota(0uz, eos_species)) {
-    x.push_back(ddx::rt::var(std::format("x{}", i)));
-  }
-  return x;
+  return std::views::iota(0uz, eos_species) |
+         std::views::transform([](std::size_t i) {
+           return ddx::rt::var(std::format("x{}", i));
+         }) |
+         ddx::impl::to<std::vector>();
 }
 
 // The quantity a caller differentiates, depending on Z and directly on x.
@@ -89,7 +89,7 @@ constexpr std::size_t eos_species = 4;
 template <typename Cubic>
 [[nodiscard]] double solve(const Cubic &f, std::vector<double> x, double z) {
   x.push_back(z);
-  for (int it = 0; it < 100; ++it) {
+  for ([[maybe_unused]] const int it : std::views::iota(0, 100)) {
     const double r = *f.evaluate(x);
     const double slope = (*f.jacobian(x))[eos_species];
     x.back() -= r / slope;
@@ -166,10 +166,9 @@ TEST(RtImplicit, ABatchCarriesAColumnOfRoots) {
                   ddx::impl::to<std::vector<double *>>();
   ASSERT_TRUE(eq.jacobian(in, fs, gs, n).has_value());
   for (const std::size_t i : std::views::iota(0uz, n)) {
-    std::vector<double> at;
-    for (const auto &column : columns) {
-      at.push_back(column[i]);
-    }
+    const auto at =
+        columns | std::views::transform([i](const auto &c) { return c[i]; }) |
+        ddx::impl::to<std::vector>();
     const auto J = *eq.jacobian(at);
     for (const auto [cell, j] :
          std::views::enumerate(eq.jacobian_pattern()->get().rows()[0].cols)) {

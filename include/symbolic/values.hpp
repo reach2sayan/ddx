@@ -4,6 +4,7 @@
 #include "symbolic/expressions.hpp"
 #include "symbolic/simplify.hpp"
 #include "symbolic/symbol.hpp"
+#include "util/meta.hpp"
 #include <functional> // the literal folds
 #include <utility>
 
@@ -220,7 +221,7 @@ public:
 
   template <std::size_t I> [[nodiscard]] constexpr auto get() const noexcept {
     static_assert(I < 2);
-    if constexpr (CTupleLike<T>) {
+    if constexpr (meta::CTupleLike<T>) {
       return eval().template get<I>();
     } else if constexpr (I == 0) {
       return eval();
@@ -354,7 +355,7 @@ struct tuple_size<ddx::impl::Lit<T, V...>> : integral_constant<std::size_t, 2> {
 
 template <std::size_t I, ddx::impl::Numeric T, auto... V>
 struct tuple_element<I, ddx::impl::Lit<T, V...>> {
-  using type = typename ddx::impl::detail::expression_element<T, I>::type;
+  using type = DDX_TYPE(ddx::impl::detail::expression_element<T, I>());
 };
 
 template <ddx::impl::Numeric T, ddx::impl::CFixedString auto C,
@@ -365,6 +366,6 @@ struct tuple_size<ddx::impl::Variable<T, C, F>>
 template <std::size_t I, ddx::impl::Numeric T, ddx::impl::CFixedString auto C,
           ddx::impl::Freeze F>
 struct tuple_element<I, ddx::impl::Variable<T, C, F>> {
-  using type = typename ddx::impl::detail::expression_element<T, I>::type;
+  using type = DDX_TYPE(ddx::impl::detail::expression_element<T, I>());
 };
 } // namespace std

@@ -3,6 +3,7 @@
 #include "dual/dual.hpp"
 #include "ops/unary_math.hpp" // DDX_UNARY_MATH_TABLE
 #include "util/config.hpp"    // DDX_ALWAYS_INLINE
+#include "util/meta.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -44,14 +45,11 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
   // convolution an order runs has a fixed length and unrolls. Forced inline
   // with generic callers, so each order's body is called once and inlined
   // into the step that runs it.
-  template <std::size_t First, std::size_t... K>
-  DDX_ALWAYS_INLINE static constexpr void orders(auto &&f,
-                                                 std::index_sequence<K...>) {
-    (f(std::integral_constant<std::size_t, First + K>{}), ...);
-  }
   template <std::size_t First>
   DDX_ALWAYS_INLINE static constexpr void orders(auto &&f) {
-    orders<First>(f, std::make_index_sequence<N + 1 - First>{});
+    meta::unpack(meta::iota<N + 1 - First>, [&](auto... k) DDX_LAMBDA_INLINE {
+      (f(meta::index_t<First + k>{}), ...);
+    });
   }
 
   constexpr TaylorDual() noexcept = default;
@@ -500,13 +498,6 @@ static_assert(Numeric<TaylorDual<double, 3>>,
       LABEL " has no TaylorDual overload");
 DDX_UNARY_MATH_TABLE(DDX_TAYLOR_HAS)
 #undef DDX_TAYLOR_HAS
-
-template <Numeric T, std::size_t N>
-auto scalar_base_impl(std::type_identity<TaylorDual<T, N>>) -> T;
-
-// A TaylorDual of order N counts as N levels of nesting, like nth_dual_t.
-template <Numeric S, std::size_t N>
-inline constexpr std::size_t dual_depth_v<TaylorDual<S, N>> = N;
 
 // Lets Constant::eval_seeded produce a zero-derivative TaylorDual.
 template <Numeric S, std::size_t N> struct ConstantEmbedder<TaylorDual<S, N>> {

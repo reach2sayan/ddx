@@ -150,10 +150,11 @@ TEST(RtJacobianJvp, AWrongDirectionOrNameIsRefused) {
   return ddx::rt::equation([species] {
     const auto t = ddx::rt::var("T");
     const auto p = ddx::rt::var("P");
-    std::vector<RE> x;
-    for (const std::size_t i : std::views::iota(0uz, species)) {
-      x.push_back(ddx::rt::var(std::format("x{:02}", i)));
-    }
+    const auto x = std::views::iota(0uz, species) |
+                   std::views::transform([](std::size_t i) {
+                     return ddx::rt::var(std::format("x{:02}", i));
+                   }) |
+                   ddx::impl::to<std::vector>();
     return models::mse(x) * t + log(p) * x[0];
   });
 }
@@ -238,10 +239,9 @@ TEST(RtRestrict, ABatchThroughTheView) {
                   ddx::impl::to<std::vector<double *>>();
   ASSERT_TRUE(tp.jacobian(in, fs, gs, n).has_value());
   for (const std::size_t i : std::views::iota(0uz, n)) {
-    std::vector<double> point;
-    for (const auto &column : columns) {
-      point.push_back(column[i]);
-    }
+    const auto point =
+        columns | std::views::transform([i](const auto &c) { return c[i]; }) |
+        ddx::impl::to<std::vector>();
     const auto full = *eq.jacobian(point);
     EXPECT_EQ(g[0][i], full[0]) << i;
     EXPECT_EQ(g[1][i], full[1]) << i;

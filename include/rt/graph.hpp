@@ -332,9 +332,11 @@ private:
   // matrix once for both, as a quadratic form's value and gradient need.
   void pair_products() {
     paired_.assign(properties_.size(), no_node);
-    std::vector<bool> later(properties_.size(), false);
+    // The later step of each pair, moved up beside its mate.
+    std::vector<Step> moved(properties_.size());
     std::vector<NodeId> products;
-    for (const NodeId v : schedule_ | std::views::transform(&Step::node)) {
+    for (const Step &step : schedule_) {
+      const NodeId v = step.node;
       if (op_of(v) != OpCode::MatVec) {
         continue;
       }
@@ -348,18 +350,12 @@ private:
       }
       paired_[*mate] = v;
       paired_[v] = *mate;
-      later[v] = true;
-    }
-    std::vector<Step> moved(properties_.size());
-    for (const Step &step : schedule_) {
-      if (later[step.node]) {
-        moved[step.node] = step;
-      }
+      moved[v] = step;
     }
     std::vector<Step> out;
     out.reserve(schedule_.size());
     for (const Step &step : schedule_) {
-      if (later[step.node]) {
+      if (moved[step.node].node != no_node) {
         continue;
       }
       out.push_back(step);
@@ -387,24 +383,11 @@ private:
     }
     const std::vector<bool> live = detail::reachable(
         *this, outputs_, [](const Graph &g, NodeId v, auto &&mark) {
-          if (const Contraction c = contraction_at(g, v)) {
-            mark(c.x);
-            mark(c.y);
-            mark(c.z);
-            return;
-          }
-          if (g.op_of(v) == OpCode::SumN) {
-            for (const NodeId t : arguments(g, v)) {
-              if (const Contraction c = product_of(g, t)) {
-                mark(c.x);
-                mark(c.y);
-              } else {
-                mark(t);
-              }
-            }
-            return;
-          }
-          detail::for_each_operand(g, v, mark);
+          std::ranges::for_each(
+              detail::reads_of(g, Step{.node = v,
+                                       .fma = contraction_at(g, v),
+                                       .fused = g.op_of(v) == OpCode::SumN}),
+              mark);
         });
     schedule_ = detail::schedule_of(
         *this, live_order_ |

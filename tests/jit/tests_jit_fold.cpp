@@ -10,6 +10,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <ranges>
 #include <vector>
 
 // A fold is one step in the kernel as in the sweep, in list order with a sum's
@@ -22,7 +23,7 @@ using RE = ddx::rt::Expression<>;
 
 RE summed(const std::vector<RE> &x) {
   RE acc{0};
-  for (std::size_t t = 0; t < 40; ++t) {
+  for (const std::size_t t : std::views::iota(0uz, 40uz)) {
     const RE &a = x[t % x.size()];
     const RE &c = x[(t * 5) % x.size()];
     const double w = 0.2 + 0.03 * static_cast<double>(t);
@@ -45,7 +46,7 @@ RE summed(const std::vector<RE> &x) {
 // The factors stay near one, so forty steps stay finite.
 template <bool Quotient> RE multiplied(const std::vector<RE> &x) {
   RE acc = x[0];
-  for (std::size_t t = 0; t < 40; ++t) {
+  for (const std::size_t t : std::views::iota(0uz, 40uz)) {
     const RE &a = x[t % x.size()];
     const RE &c = x[(t * 5) % x.size()];
     const RE step = t % 2 ? 1.0 + 0.1 * sin(a * c) : exp(0.05 * a) / (c + 1.0);
@@ -78,9 +79,9 @@ void expect_bit_identical(bool contract,
 
   std::array<std::vector<double>, nvars> columns;
   std::vector<const double *> xs;
-  for (std::size_t j = 0; j < nvars; ++j) {
+  for (const std::size_t j : std::views::iota(0uz, nvars)) {
     columns[j].resize(n);
-    for (std::size_t i = 0; i < n; ++i) {
+    for (const std::size_t i : std::views::iota(0uz, n)) {
       columns[j][i] = 0.2 + 0.5 * static_cast<double>((i + 7 * j) % 13) / 13.0;
     }
     xs.push_back(columns[j].data());
@@ -96,18 +97,17 @@ void expect_bit_identical(bool contract,
   kernel(xs, vs, gs, {}, n);
 
   std::vector<double> tape(graph.tape_rows());
-  for (std::size_t i = 0; i < n; ++i) {
-    std::vector<double> p(nvars);
-    for (std::size_t j = 0; j < nvars; ++j) {
-      p[j] = columns[j][i];
-    }
+  for (const std::size_t i : std::views::iota(0uz, n)) {
+    const auto p =
+        columns | std::views::transform([i](const auto &c) { return c[i]; }) |
+        ddx::impl::to<std::vector>();
     ddx::rt::evaluate_into(
         b, p, graph.schedule(), std::span<double>{tape},
         ddx::rt::detail::TapeView<double>{.scalar_rows = graph.rows()});
     EXPECT_EQ(std::bit_cast<std::uint64_t>(value[i]),
               std::bit_cast<std::uint64_t>(tape[graph.rows()[f]]))
         << "value at point " << i << (contract ? " fused" : " plain");
-    for (std::size_t j = 0; j < nvars; ++j) {
+    for (const std::size_t j : std::views::iota(0uz, nvars)) {
       EXPECT_EQ(std::bit_cast<std::uint64_t>(grad[j][i]),
                 std::bit_cast<std::uint64_t>(tape[graph.rows()[g.partial[j]]]))
           << "d/dx" << j << " at point " << i;

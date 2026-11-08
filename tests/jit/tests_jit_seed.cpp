@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <ranges>
 #include <vector>
 
 // The kernel and the sweep must agree on which input column holds each seed,
@@ -46,20 +47,18 @@ TEST(JitSeed, MatchesTheInterpreterToTheBit) {
       cell = 0.3 + 0.4 * static_cast<double>((i + 3 * j) % 5) / 5.0;
     }
   }
-  std::vector<const double *> xs;
-  for (const auto &column : columns) {
-    xs.push_back(column.data());
-  }
+  const auto xs =
+      columns | std::views::transform([](const auto &c) { return c.data(); }) |
+      ddx::impl::to<std::vector<const double *>>();
 
   std::vector<double> got(n);
   double *const values[]{got.data()};
   kernel(xs, values, {}, {}, n);
 
   for (const std::size_t i : std::views::iota(0uz, n)) {
-    std::vector<double> point;
-    for (const auto &column : columns) {
-      point.push_back(column[i]);
-    }
+    const auto point =
+        columns | std::views::transform([i](const auto &c) { return c[i]; }) |
+        ddx::impl::to<std::vector>();
     const auto want = ddx::rt::evaluate_all(b, point);
     EXPECT_EQ(got[i], want[graph.outputs()[0]]) << "at point " << i;
   }

@@ -4,8 +4,7 @@
 
 #include "rt/interpret.hpp"
 #include "rt/pipeline.hpp"
-
-#include <boost/mp11/algorithm.hpp>
+#include "util/meta.hpp"
 
 #include <llvm/ADT/StringMap.h>
 
@@ -41,16 +40,6 @@
 
 namespace ddx::jit {
 namespace {
-
-// Target initialisation is global LLVM state, and a process may hold more than
-// one Compiler, so it runs once.
-void init_native_target_once() {
-  [[maybe_unused]] static const bool once = [] {
-    llvm::InitializeNativeTarget();
-    llvm::InitializeNativeTargetAsmPrinter();
-    return true;
-  }();
-}
 
 // Converts an llvm::Error into a compile_error.
 [[nodiscard]] compile_error as_error(const errc code, const llvm::Twine &what,
@@ -100,39 +89,6 @@ void define_call(auto &def) {
 constexpr std::size_t tensor_widths = 5;
 constexpr unsigned widest_tensor_lanes = 1u << (tensor_widths - 1);
 
-// Runs the interpreter's step for node v on the kernel's tapes, at the
-// kernel's width.
-template <CKernelScalar T>
-void tensor_step(const rt::detail::TensorCall<T> &c, rt::NodeId v,
-                 std::size_t lanes, T *tape, T *vtape) {
-  const rt::Graph<T> &g = *c.graph;
-  const auto t = rt::detail::TapeView<T>::of(g, vtape, c.kernels);
-  boost::mp11::mp_with_index<tensor_widths>(
-      static_cast<std::size_t>(std::countr_zero(lanes)), [&](auto i) {
-        constexpr std::size_t W = std::size_t{1} << decltype(i)::value;
-        const auto lane =
-            rt::detail::lanes_of<W>(std::span<T>{tape, g.tape_rows() * W});
-        rt::detail::lanes_tensor<W>(*c.arena, v, (*c.arena)[v],
-                                    lane(g.rows()[v]), lane, t);
-      });
-}
-
-// Scatters every output block for the first `live` of the kernel's lanes.
-template <CKernelScalar T>
-void tensor_store(const rt::detail::TensorCall<T> &c, T *const *f, T *const *g,
-                  T *const *h, std::size_t i, std::size_t live,
-                  std::size_t lanes, const T *tape, const T *vtape) {
-  const rt::Graph<T> &graph = *c.graph;
-  const rt::Layout &layout = graph.layout();
-  rt::scatter_blocks(graph.output_rows(),
-                     std::span<const T>{tape, graph.tape_rows() * lanes},
-                     std::span<const T>{vtape, graph.tensors().extent * lanes},
-                     rt::Columns<T>{.values = {f, layout.values},
-                                    .jacobian = {g, layout.jacobian},
-                                    .hessian = {h, layout.hessian}},
-                     i, lanes, live);
-}
-
 // Defines every runtime symbol a kernel over T calls, such as sin or sinf.
 template <CKernelScalar T> void define_scalar(auto &def) {
 #define DDX_JIT_RUNTIME(fn, Op, label, functor, ...)                           \
@@ -154,21 +110,41 @@ template <CKernelScalar T> void define_scalar(auto &def) {
             {in, static_cast<std::size_t>(arity)},
             {answer, static_cast<std::size_t>(components)});
       });
+  // Runs the interpreter's step for a node on the kernel's tapes, at the
+  // kernel's width.
   def(
       detail::libm_name<T>(detail::tensor_step_symbol),
       +[](const rt::detail::TensorCall<T> *c, std::uint64_t node,
           std::uint64_t lanes, T *tape, T *vtape) noexcept {
-        tensor_step(*c, static_cast<rt::NodeId>(node),
-                    static_cast<std::size_t>(lanes), tape, vtape);
+        const auto v = static_cast<rt::NodeId>(node);
+        const rt::Graph<T> &g = *c->graph;
+        const auto t = rt::detail::TapeView<T>::of(g, vtape, c->kernels);
+        meta::with_index<tensor_widths>(
+            static_cast<std::size_t>(std::countr_zero(lanes)), [&](auto i) {
+              constexpr std::size_t W = std::size_t{1} << i;
+              const auto lane = rt::detail::lanes_of<W>(
+                  std::span<T>{tape, g.tape_rows() * W});
+              rt::detail::lanes_tensor<W>(*c->arena, v, (*c->arena)[v],
+                                          lane(g.rows()[v]), lane, t);
+            });
       });
+  // Scatters every output block for the first `live` of the kernel's lanes.
   def(
       detail::libm_name<T>(detail::tensor_store_symbol),
       +[](const rt::detail::TensorCall<T> *c, T *const *f, T *const *g,
           T *const *h, std::uint64_t i, std::uint64_t live, std::uint64_t lanes,
           const T *tape, const T *vtape) noexcept {
-        tensor_store(*c, f, g, h, static_cast<std::size_t>(i),
-                     static_cast<std::size_t>(live),
-                     static_cast<std::size_t>(lanes), tape, vtape);
+        const rt::Graph<T> &graph = *c->graph;
+        const rt::Layout &layout = graph.layout();
+        rt::scatter_blocks(
+            graph.output_rows(),
+            std::span<const T>{tape, graph.tape_rows() * lanes},
+            std::span<const T>{vtape, graph.tensors().extent * lanes},
+            rt::Columns<T>{.values = {f, layout.values},
+                           .jacobian = {g, layout.jacobian},
+                           .hessian = {h, layout.hessian}},
+            static_cast<std::size_t>(i), static_cast<std::size_t>(lanes),
+            static_cast<std::size_t>(live));
       });
   def(
       detail::libm_name<T>(detail::tensor_table_symbol),
@@ -325,7 +301,13 @@ struct Compiler::Impl {
   std::array<unsigned, 2> veclib_lanes{1, 1};
 
   [[nodiscard]] static compile_result<std::shared_ptr<Impl>> bring_up() {
-    init_native_target_once();
+    // Target initialisation is global LLVM state, and a process may hold more
+    // than one Compiler, so it runs once.
+    [[maybe_unused]] static const bool once = [] {
+      llvm::InitializeNativeTarget();
+      llvm::InitializeNativeTargetAsmPrinter();
+      return true;
+    }();
     auto impl = std::make_shared<Impl>();
 
     // Targets the host CPU, matching the project's -march=native.

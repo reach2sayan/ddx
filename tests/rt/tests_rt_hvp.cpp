@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <ranges>
 #include <vector>
 
 // H(x)v built by re-rooting is checked against derive_hessian's Hessian times
@@ -26,10 +27,9 @@ std::vector<double> reference_product(const ddx::rt::Hessian &h,
                                       std::span<const double> v) {
   const std::size_t n = h.partial.size();
   std::vector<double> out(n, 0.0);
-  for (const std::size_t i : std::views::iota(0uz, n)) {
-    for (const std::size_t j : std::views::iota(0uz, n)) {
-      out[i] += values[h.at(i, j)] * v[j];
-    }
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, n), std::views::iota(0uz, n))) {
+    out[i] += values[h.at(i, j)] * v[j];
   }
   return out;
 }

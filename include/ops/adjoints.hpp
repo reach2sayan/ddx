@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ops/numeric.hpp"
+#include "util/meta.hpp"
 
 #include <array>
 #include <cmath>
@@ -174,9 +175,9 @@ adjoint_of(const T &adj, [[maybe_unused]] const auto &...operands) noexcept {
 template <template <Numeric> class Fn, Numeric T>
 [[nodiscard]] constexpr auto adjoints_of(const T &adj,
                                          const auto &...operands) noexcept {
-  return [&]<std::size_t... I>(std::index_sequence<I...>) {
-    return std::array<T, sizeof...(I)>{adjoint_of<Fn, I>(adj, operands...)...};
-  }(std::make_index_sequence<sizeof...(operands)>{});
+  return meta::unpack(meta::iota<sizeof...(operands)>, [&](auto... i) {
+    return std::array{adjoint_of<Fn, i>(adj, operands...)...};
+  });
 }
 
 } // namespace ddx::impl::detail

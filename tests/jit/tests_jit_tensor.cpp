@@ -362,7 +362,7 @@ TEST(JitTensor, BatchesAndThreadsAreBitIdentical) {
   std::vector<char> ok(threads, 0);
   {
     std::vector<std::jthread> pool;
-    for (std::size_t t = 0; t < threads; ++t) {
+    for (const std::size_t t : std::views::iota(0uz, threads)) {
       pool.emplace_back([&, t] {
         start.arrive_and_wait();
         ok[t] = call() == want;
@@ -430,10 +430,11 @@ TEST(JitRebalance, AKernelKeepsTheLayoutOfTheSweep) {
   };
   // Two spellings of one sum become one node, and a/b then folds to 1.
   check([&] {
-    std::vector<RE> y;
-    for (const std::size_t i : std::views::iota(0uz, count)) {
-      y.push_back(ddx::rt::var(names(i)));
-    }
+    const auto y = std::views::iota(0uz, count) |
+                   std::views::transform([&](std::size_t i) {
+                     return ddx::rt::var(names(i));
+                   }) |
+                   ddx::impl::to<std::vector>();
     RE chain = y[0];
     for (const RE &term : y | std::views::drop(1)) {
       chain = chain + term;

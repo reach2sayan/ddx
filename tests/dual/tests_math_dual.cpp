@@ -386,7 +386,7 @@ TEST(NewMathFunctions, TaylorConstantOperandsMatchTheEmbeddedSeries) {
   const T u = sin(T::variable(0.7));
   const T k{2.5};
   const auto same = [](const T &a, const T &b) {
-    for (std::size_t i = 0; i < a.c.size(); ++i) {
+    for (const std::size_t i : std::views::iota(0uz, a.c.size())) {
       EXPECT_DOUBLE_EQ(a.c[i], b.c[i]) << "coefficient " << i;
     }
   };

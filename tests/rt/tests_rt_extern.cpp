@@ -217,7 +217,7 @@ TEST(RtExtern, CalledFromManyThreads) {
     for (const std::size_t t : std::views::iota(0uz, threads)) {
       pool.emplace_back([&, t] {
         start.arrive_and_wait();
-        for (int rep = 0; rep < 200; ++rep) {
+        for ([[maybe_unused]] const int rep : std::views::iota(0, 200)) {
           got[t] = *eq.jacobian(0.1 * static_cast<double>(t), 1.0);
         }
       });

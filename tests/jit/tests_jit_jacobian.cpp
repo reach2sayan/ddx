@@ -28,8 +28,8 @@ void expect_jacobian_matches_interpreter(auto build, std::size_t nvars,
   Arena<> b;
   std::vector<ddx::rt::Expression<>> vars;
   static constexpr const char *names[] = {"x", "y", "z"};
-  for (std::size_t i = 0; i < nvars; ++i) {
-    vars.push_back(var(b, names[i]));
+  for (const char *name : names | std::views::take(nvars)) {
+    vars.push_back(var(b, name));
   }
   const auto root = build(b, vars);
   // The reference sweep is run separately; the arena runs its own.
@@ -39,33 +39,29 @@ void expect_jacobian_matches_interpreter(auto build, std::size_t nvars,
   ASSERT_EQ(kernel.shape().outputs(), nvars + 1);
 
   std::vector<std::vector<double>> columns(nvars, std::vector<double>(n));
-  for (std::size_t j = 0; j < nvars; ++j) {
-    for (std::size_t i = 0; i < n; ++i) {
-      columns[j][i] = 0.2 + 0.5 * static_cast<double>((i + 2 * j) % 7) / 7.0;
-    }
+  for (const auto [j, i] : std::views::cartesian_product(
+           std::views::iota(0uz, nvars), std::views::iota(0uz, n))) {
+    columns[j][i] = 0.2 + 0.5 * static_cast<double>((i + 2 * j) % 7) / 7.0;
   }
-  std::vector<const double *> xs(nvars);
-  for (std::size_t j = 0; j < nvars; ++j) {
-    xs[j] = columns[j].data();
-  }
+  const auto xs =
+      columns | std::views::transform([](const auto &c) { return c.data(); }) |
+      ddx::impl::to<std::vector<const double *>>();
 
   std::vector<double> value(n);
   std::vector<std::vector<double>> grad(nvars, std::vector<double>(n));
-  std::vector<double *> gp(nvars);
-  for (std::size_t j = 0; j < nvars; ++j) {
-    gp[j] = grad[j].data();
-  }
+  const auto gp =
+      grad | std::views::transform([](auto &c) { return c.data(); }) |
+      ddx::impl::to<std::vector<double *>>();
   double *const value_columns[]{value.data()};
   kernel(xs, value_columns, gp, {}, n);
 
-  for (std::size_t i = 0; i < n; ++i) {
-    std::vector<double> point(nvars);
-    for (std::size_t j = 0; j < nvars; ++j) {
-      point[j] = columns[j][i];
-    }
+  for (const std::size_t i : std::views::iota(0uz, n)) {
+    const auto point =
+        columns | std::views::transform([i](const auto &c) { return c[i]; }) |
+        ddx::impl::to<std::vector>();
     const auto reference = ddx::rt::evaluate_all(b, point);
     EXPECT_NEAR(value[i], reference[reference_jacobian.value], 1e-12);
-    for (std::size_t j = 0; j < nvars; ++j) {
+    for (const std::size_t j : std::views::iota(0uz, nvars)) {
       const double want = reference[reference_jacobian.partial[j]];
       EXPECT_NEAR(grad[j][i], want, 1e-12 * std::max(1.0, std::abs(want)))
           << "d/d" << names[j] << " at point " << i;
@@ -116,7 +112,7 @@ TEST(JitJacobian, MatchesDdxThroughTheBridge) {
   double *const value_columns[]{value.data()};
   kernel(xs, value_columns, gp, {}, value.size());
 
-  for (std::size_t i = 0; i < value.size(); ++i) {
+  for (const std::size_t i : std::views::iota(0uz, value.size())) {
     const auto expected = ddx::Equation{f}.jacobian(cx[i], cy[i]);
     EXPECT_NEAR(value[i], ddx::Equation{f}.evaluate(cx[i], cy[i]), 1e-12);
     EXPECT_NEAR(dx[i], expected[0], 1e-12);
@@ -169,16 +165,17 @@ TEST(JitHessian, ThirdBlockCarriesTheColouredHessian) {
 
   // Compare against the interpreter on the same graph, scattered the same way.
   const auto &colouring = graph.colouring();
-  for (std::size_t point = 0; point < n; ++point) {
+  for (const std::size_t point : std::views::iota(0uz, n)) {
     const std::array<double, 2> at{cx[point], cy[point]};
     const auto reference = ddx::rt::evaluate_all(b, at);
     const auto outputs = graph.outputs();
 
     EXPECT_NEAR(value[point], reference[outputs[0]], 1e-12);
-    for (std::size_t j = 0; j < 2; ++j) {
+    for (const std::size_t j : std::views::iota(0uz, 2uz)) {
       EXPECT_NEAR(jac[j][point], reference[outputs[1 + j]], 1e-12);
     }
-    for (std::size_t c = 0; c < kernel.shape().hessian; ++c) {
+    for (const std::size_t c :
+         std::views::iota(0uz, kernel.shape().hessian)) {
       EXPECT_NEAR(hess[c][point], reference[outputs[3 + c]], 1e-12)
           << "compressed Hessian column " << c;
     }
@@ -194,7 +191,7 @@ TEST(JitJacobian, ADenseHessianSweptFirstLeavesTheKernelsBits) {
       const auto x = ddx::rt::var("x");
       const auto y = ddx::rt::var("y");
       ddx::rt::Expression<> f = x * y;
-      for (int i = 1; i <= 64; ++i) {
+      for (const int i : std::views::iota(1, 65)) {
         f = f + sin(x * (1.0 + 0.1 * i)) * exp(y * (i % 7)) / i;
       }
       return f;

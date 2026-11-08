@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <ranges>
 #include <vector>
 
 // A slightly wrong Jacobian still converges, but only linearly, so quadratic
@@ -31,7 +32,7 @@ TEST(RtNewton, SolvesASystemBuiltAtRuntime) {
 
   std::array<double, 2> at{1.5, 1.0};
   int taken = 0;
-  for (int iteration = 0; iteration < 40; ++iteration) {
+  for ([[maybe_unused]] const int iteration : std::views::iota(0, 40)) {
     const auto residual = *system.evaluate(at[0], at[1]);
     if (std::hypot(residual[0], residual[1]) < 1e-14) {
       break;
@@ -54,10 +55,11 @@ TEST(RtNewton, SolvesASystemBuiltAtRuntime) {
 TEST(RtNewton, SolvesPengRobinsonForCompressibility) {
   constexpr std::size_t species = 6;
   Arena<> b;
-  std::vector<RE> composition;
-  for (std::size_t i = 0; i < species; ++i) {
-    composition.push_back(var(b, "x" + std::to_string(i)));
-  }
+  const auto composition = std::views::iota(0uz, species) |
+                           std::views::transform([&](std::size_t i) {
+                             return var(b, "x" + std::to_string(i));
+                           }) |
+                           ddx::impl::to<std::vector>();
   const auto Z = var(b, "Z");
   const auto cubic = ddx::rt::equation(models::peng_robinson(composition, Z));
 
@@ -71,7 +73,7 @@ TEST(RtNewton, SolvesPengRobinsonForCompressibility) {
   at[z_slot] = 0.9; // Z, the unknown
 
   int taken = 0;
-  for (int iteration = 0; iteration < 60; ++iteration) {
+  for ([[maybe_unused]] const int iteration : std::views::iota(0, 60)) {
     const double residual = *cubic.evaluate(at);
     if (std::abs(residual) < 1e-14) {
       break;
@@ -101,7 +103,7 @@ TEST(RtNewton, OneEquationServesAWholeSweep) {
     at[z_slot] = 1.0;
     at[1 - z_slot] = target;
 
-    for (int iteration = 0; iteration < 40; ++iteration) {
+    for ([[maybe_unused]] const int iteration : std::views::iota(0, 40)) {
       const double residual = *f.evaluate(at);
       if (std::abs(residual) < 1e-15) {
         break;

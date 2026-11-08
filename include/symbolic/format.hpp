@@ -4,6 +4,9 @@
 #include "symbolic/expressions.hpp"
 #include "symbolic/traits.hpp" // CVariable
 #include "util/fmt.hpp"        // detail::fmt_put
+#include "util/meta.hpp"
+
+#include <boost/hof/match.hpp>
 
 #include <format>
 #include <ostream>
@@ -15,34 +18,14 @@ namespace ddx::impl {
 
 namespace detail {
 
-// A node's precedence as its parent sees it; leaves and calls are atomic.
-template <CExpression E> consteval int node_precedence() {
-  using U = std::remove_cvref_t<E>;
-  if constexpr (CExpressionNode<U>) {
-    using Op = typename U::op_type;
-    if constexpr (Op::notation == Notation::Function) {
-      return precedence_atom;
-    } else {
-      return Op::precedence;
-    }
-  } else {
-    return precedence_atom;
-  }
-}
-
-template <typename E> inline constexpr bool is_sum_v = false;
-template <Numeric T, CExpression... C>
-inline constexpr bool is_sum_v<Expression<SumOp<T>, C...>> = true;
-
 // A two-child sum whose right operand is a negation prints as a subtraction.
 template <CExpression E> consteval bool renders_as_subtraction() {
-  using U = std::remove_cvref_t<E>;
-  if constexpr (is_sum_v<U> && std::tuple_size_v<typename U::children_t> == 2) {
-    return is_negation_expr_v<
-        std::remove_cvref_t<std::tuple_element_t<1, typename U::children_t>>>;
-  } else {
-    return false;
-  }
+  return boost::hof::match(
+      []<Numeric T, CExpression A, CExpression B>(
+          meta::Type<Expression<SumOp<T>, A, B>>) {
+        return is_negation_expr_v<std::remove_cvref_t<B>>;
+      },
+      [](auto) { return false; })(meta::type_c<std::remove_cvref_t<E>>);
 }
 
 // The output context and value formatter shared by a whole print walk.
@@ -66,7 +49,9 @@ void print_infix(const printer<V> &p, const CExpression auto &e, int min_prec) {
   using U = std::remove_cvref_t<decltype(e)>;
   if constexpr (CExpressionNode<U>) {
     using Op = typename U::op_type;
-    constexpr int prec = node_precedence<U>();
+    // A call is atomic to its parent.
+    constexpr int prec =
+        Op::notation == Notation::Function ? precedence_atom : Op::precedence;
     const bool parens = prec < min_prec;
     if (parens) {
       p.put('(');
@@ -95,18 +80,13 @@ void print_infix(const printer<V> &p, const CExpression auto &e, int min_prec) {
     } else { // function notation brings its own parentheses
       p.put(Op::label);
       p.put('(');
-      std::apply(
-          [&](const auto &...c) {
-            bool first = true;
-            auto arg = [&](const auto &child) {
-              if (!std::exchange(first, false)) {
-                p.put(", ");
-              }
-              print_infix(p, child, 0);
-            };
-            (arg(c), ...);
-          },
-          kids);
+      bool first = true;
+      meta::for_each(kids, [&](const auto &child) {
+        if (!std::exchange(first, false)) {
+          p.put(", ");
+        }
+        print_infix(p, child, 0);
+      });
       p.put(')');
     }
 

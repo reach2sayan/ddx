@@ -397,7 +397,7 @@ public:
     DDX_CHECK(alive());
     std::vector<bool> chosen(symbol_count(), false);
     for (const std::string_view name : names) {
-      DDX_TRY(slot, symbol(name));
+      DDX_TRY(slot, arena_->symbol(name));
       chosen[*slot] = true;
     }
     return Restricted<Core>{*this, chosen};
@@ -739,7 +739,12 @@ protected:
                  return !detail::is_scalar((*arena_)[r]);
                })) {
       poison(error{errc::tensor_shape});
-    } else if (no_kernel_for_tensors()) {
+    } else if (!std::floating_point<T> &&
+               detail::reaches(*arena_, roots_, [](const auto &node) {
+                 return detail::on_tensors(node);
+               })) {
+      // A tensor row is computed by a table of kernels, at floating point
+      // only.
       poison(error{errc::unsupported_scalar});
     } else {
       // One reverse sweep per output is cheap, and the column counts, the
@@ -747,18 +752,6 @@ protected:
       jacobian_ = derive_jacobian(*arena_, roots_);
     }
     settle();
-  }
-
-  // A tensor row is computed by a table of kernels, at floating point only.
-  [[nodiscard]] constexpr bool no_kernel_for_tensors() const {
-    if constexpr (std::floating_point<T>) {
-      return false;
-    } else {
-      const auto live = detail::reachable(*arena_, roots_);
-      return std::ranges::any_of(detail::live_ids(live), [this](NodeId v) {
-        return detail::on_tensors((*arena_)[v]);
-      });
-    }
   }
 
   // Refuses with `why` and drops everything else, so from here on poisoned()
@@ -904,11 +897,11 @@ protected:
     // than via views::join, which GCC 15 flags maybe-uninitialized under -Wall.
     const ArenaWalk &walk = point_walk(sweeps_->hessian_walk, [&] {
       std::vector<NodeId> wanted{roots_.begin(), roots_.end()};
-      std::ranges::for_each(blocks, [&wanted](const Hessian &b) {
+      for (const Hessian &b : blocks) {
         impl::append(wanted, b.compressed);
         impl::append(wanted, b.partial);
         wanted.push_back(b.zero);
-      });
+      }
       return wanted;
     });
     const std::size_t n = symbol_count();
@@ -1005,9 +998,6 @@ private:
     });
   }
 
-  [[nodiscard]] result<std::uint32_t> symbol(std::string_view name) const {
-    return arena_->symbol(name);
-  }
   [[nodiscard]] constexpr const Sparsity &jacobian_sparsity() const {
     return jacobian_.pattern;
   }
@@ -1015,7 +1005,7 @@ private:
   [[nodiscard]] result<boost::container::small_vector<T, 64>>
   unit(std::string_view along) const {
     return alive()
-        .and_then([&] { return symbol(along); })
+        .and_then([&] { return arena_->symbol(along); })
         .transform([this](std::uint32_t slot) {
           boost::container::small_vector<T, 64> e(symbol_count(), T{0});
           e[slot] = T{1};
@@ -1237,7 +1227,9 @@ private:
   // The options a pipeline compiles under, and none under Interpret.
   [[nodiscard]] std::optional<jit::Options> compiling() const {
     if (jit::CKernelScalar<T> && options_.backend == jit::Backend::Compile) {
-      return effective_options();
+      // A short batch emits scalar, the threshold the sweep uses; an explicit
+      // `lanes` is honoured.
+      return jit::for_batch(options_, block_lanes);
     }
     return std::nullopt;
   }
@@ -1332,9 +1324,8 @@ private:
       // not the whole arena, and under the lock since another sweep may append.
       const auto tensors = [this] {
         [[maybe_unused]] const auto held = reading();
-        const auto live = detail::reachable(*arena_, roots_);
-        return std::ranges::any_of(detail::live_ids(live), [this](NodeId v) {
-          return detail::on_tensors((*arena_)[v]);
+        return detail::reaches(*arena_, roots_, [](const auto &node) {
+          return detail::on_tensors(node);
         });
       };
       if (!rebalanceable(want) || !compiling() ||
@@ -1350,12 +1341,6 @@ private:
     }
 #endif
     return nullptr;
-  }
-
-  // The emission width for the caller's batch: a short batch emits scalar, the
-  // same threshold the sweep uses. An explicit `lanes` is honoured.
-  [[nodiscard]] jit::Options effective_options() const noexcept {
-    return jit::for_batch(options_, block_lanes);
   }
 
   // FMA contraction is decided in the graph so every backend folds the same
@@ -1384,18 +1369,13 @@ private:
         return;
       }
     }
-    interpret(lease.tapes(), *c.graph, *c.kernels, xs, out, n);
-  }
-
-  // The interpreter, within ~1.4x of a kernel on large graphs. A batch shorter
-  // than block_lanes sweeps one point at a time rather than padding.
-  void interpret(ThreadTapes<T> &kept, const Graph<T> &graph,
-                 const TensorKernelTable<T> &kernels,
-                 std::span<const T *const> xs, const Columns<T> &out,
-                 std::size_t n) const {
+    // The interpreter, within ~1.4x of a kernel on large graphs. A batch
+    // shorter than block_lanes sweeps one point at a time rather than padding.
+    ThreadTapes<T> &kept = lease.tapes();
     n < block_lanes
-        ? sweep_points<1>(graph, kernels, kept.one, xs, out, n)
-        : sweep_points<block_lanes>(graph, kernels, kept.block, xs, out, n);
+        ? sweep_points<1>(*c.graph, *c.kernels, kept.one, xs, out, n)
+        : sweep_points<block_lanes>(*c.graph, *c.kernels, kept.block, xs, out,
+                                    n);
   }
 
   // W points per sweep, so dispatch is paid once per node per block and each op

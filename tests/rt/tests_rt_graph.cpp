@@ -98,7 +98,8 @@ TEST(RtGraph, IdOrderIsTopological) {
 
   // Codegen emits in id order in one pass, which is only correct if every child
   // precedes its parent.
-  for (NodeId v{0}; v < graph.size(); ++v) {
+  for (const NodeId v :
+       std::views::iota(NodeId{0}, static_cast<NodeId>(graph.size()))) {
     for (const NodeId child : graph.operands(v)) {
       if (child != ddx::rt::no_node) {
         EXPECT_LT(child, v) << "node " << v << " has a forward reference";
@@ -113,10 +114,11 @@ TEST(RtGraph, IdOrderIsTopological) {
 // touches a fraction of its ids. Only the size is checked here.
 TEST(RtGraph, PacksTheTapeByLiveness) {
   ddx::rt::Arena<> b;
-  std::vector<ddx::rt::Expression<>> x;
-  for (std::size_t i = 0; i < 64; ++i) {
-    x.push_back(var(b, std::format("x{:02}", i)));
-  }
+  const auto x = std::views::iota(0uz, 64uz) |
+                 std::views::transform([&](std::size_t i) {
+                   return var(b, std::format("x{:02}", i));
+                 }) |
+                 ddx::impl::to<std::vector>();
   const NodeId root = models::mse(x).id(b);
   const auto g = ddx::test::GraphBuilder{b}
                      .values_from(std::span<const NodeId>{&root, 1})
@@ -130,8 +132,9 @@ TEST(RtGraph, PacksTheTapeByLiveness) {
   auto rows = ddx::rt::in_order(g.output_blocks()) | std::views::join |
               std::views::transform([&g](NodeId o) { return g.rows()[o]; }) |
               ddx::impl::to<std::vector<std::uint32_t>>();
-  EXPECT_TRUE(std::ranges::all_of(
-      rows, [&g](std::uint32_t r) { return r < g.tape_rows(); }));
+  for (const std::uint32_t r : rows) {
+    EXPECT_LT(r, g.tape_rows());
+  }
   std::ranges::sort(rows);
   EXPECT_EQ(std::ranges::adjacent_find(rows), rows.end());
   // No step reads the row it writes, since the lane loops assume no aliasing.

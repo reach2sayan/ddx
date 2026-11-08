@@ -93,7 +93,7 @@ TEST(JitExtern, EveryFunctionAndComponentSurvivesTheRebuild) {
       const auto g = ddx::rt::extern_fn({.name = "g", .arity = 2}, g_of);
       const auto h = ddx::rt::extern_fn({.name = "h", .arity = 2}, h_of);
       auto spine = g(a, b) * h(b, a);
-      for (int k = 1; k <= 20; ++k) {
+      for (const int k : std::views::iota(1, 21)) {
         spine = spine + h(a, b) * static_cast<double>(k);
       }
       return spine;

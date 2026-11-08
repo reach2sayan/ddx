@@ -3,6 +3,7 @@
 #include "ops/numeric.hpp"       // Numeric, COperation, CExpression
 #include "symbolic/symbol.hpp"   // CSymbol, CSymbolList
 #include "util/fixed_string.hpp" // FixedString, CFixedString
+#include "util/meta.hpp"
 
 #include <concepts>
 #include <cstdint>
@@ -46,12 +47,11 @@ enum class Freeze : std::uint8_t { none, partial };
 
 template <Numeric T, CFixedString auto, Freeze = Freeze::none> class Variable;
 
-template <typename T> inline constexpr bool is_variable_v = false;
-template <Numeric T, CFixedString auto C, Freeze F>
-inline constexpr bool is_variable_v<Variable<T, C, F>> = true;
-
 template <typename T>
-concept CVariable = is_variable_v<std::remove_cvref_t<T>>;
+concept CVariable = requires {
+  []<Numeric U, CFixedString auto C, Freeze F>(meta::Type<Variable<U, C, F>>) {
+  }(meta::type_c<std::remove_cvref_t<T>>);
+};
 
 // Unconstrained so that rt can specialise it; the compile-time definition
 // carries its own CExpression constraint.
@@ -70,30 +70,32 @@ template <bool S, COperation Op, CExpression... Children>
 inline constexpr bool is_expression_type_v<ExpressionImpl<S, Op, Children...>> =
     true;
 
-template <typename T> inline constexpr bool is_constant_v = false;
-template <Numeric T, auto... V>
-inline constexpr bool is_constant_v<Lit<T, V...>> = true;
 template <typename T>
-concept CConstant = is_constant_v<std::remove_cvref_t<T>>;
-
-template <typename T> inline constexpr bool is_lit_v = false;
-template <Numeric T, auto V> inline constexpr bool is_lit_v<Lit<T, V>> = true;
+concept CConstant = requires {
+  []<Numeric U, auto... V>(meta::Type<Lit<U, V...>>) {
+  }(meta::type_c<std::remove_cvref_t<T>>);
+};
 
 template <typename T>
-concept CLit = is_lit_v<std::remove_cvref_t<T>>;
+concept CLit = requires {
+  []<Numeric U, auto V>(meta::Type<Lit<U, V>>) {
+  }(meta::type_c<std::remove_cvref_t<T>>);
+};
 
 // A node has children_t and a leaf does not.
 template <typename T>
 concept CExpressionNode =
     requires { typename std::remove_cvref_t<T>::children_t; };
 
-template <CExpression T> consteval std::size_t node_count_fn() {
-  using U = std::remove_cvref_t<T>;
-  if constexpr (CExpressionNode<U>) {
-    return
-        []<CExpression... C>(std::type_identity<std::tuple<C...>>) consteval {
-          return (1 + ... + node_count_fn<std::remove_cvref_t<C>>());
-        }(std::type_identity<typename U::children_t>{});
+// A node's children as meta::Type values.
+template <CExpressionNode T> consteval auto children(meta::Type<T>) noexcept {
+  return meta::args_of(meta::type_c<typename T::children_t>);
+}
+
+consteval std::size_t node_count(auto t) {
+  if constexpr (CExpressionNode<DDX_TYPE(t)>) {
+    return meta::unpack(children(t),
+                        [](auto... c) { return (1 + ... + node_count(c)); });
   } else {
     return 1;
   }
@@ -101,7 +103,7 @@ template <CExpression T> consteval std::size_t node_count_fn() {
 
 template <CExpression T>
 inline constexpr std::size_t node_count_v =
-    node_count_fn<std::remove_cvref_t<T>>();
+    node_count(meta::type_c<std::remove_cvref_t<T>>);
 
 // One argument of a point: a number, a range, a ValueMap, or a named value.
 template <typename T>
@@ -150,9 +152,9 @@ public:
   using value_type = typename Op::value_type;
 
   [[nodiscard]] constexpr auto derivative() const noexcept {
-    return std::apply(
-        [](const auto &...e) noexcept { return Op::derivative(e...); },
-        this->self().expressions());
+    return meta::unpack(
+        this->self().expressions(),
+        [](const auto &...e) noexcept { return Op::derivative(e...); });
   }
 
   // The seeded sweep. U is deduced from the point, so the same tree evaluates
@@ -160,11 +162,10 @@ public:
   template <CSymbolList Syms, Numeric U, std::size_t N>
   [[nodiscard]] constexpr U
   eval_seeded(const std::array<U, N> &vals) const noexcept {
-    return std::apply(
-        [&](const auto &...e) noexcept {
+    return meta::unpack(
+        this->self().expressions(), [&](const auto &...e) noexcept {
           return Op::eval(e.template eval_seeded<Syms>(vals)...);
-        },
-        this->self().expressions());
+        });
   }
 };
 
@@ -208,20 +209,17 @@ class Expression : public ExpressionImpl<(std::is_empty_v<Children> && ...), Op,
 
 public:
   using base_type::base_type;
-  using children_t = typename base_type::children_t;
-  static constexpr bool stateless = (std::is_empty_v<Children> && ...);
 };
 
 namespace detail {
-template <Numeric V, std::size_t I, typename = void> struct expression_element {
-  using type = V;
-};
-
-template <Numeric V, std::size_t I>
-struct expression_element<V, I,
-                          std::void_t<typename std::tuple_element_t<I, V>>> {
-  using type = std::tuple_element_t<I, V>;
-};
+// Element I of a tuple-like value type, or the value type itself.
+template <Numeric V, std::size_t I> consteval auto expression_element() {
+  if constexpr (requires { typename std::tuple_element_t<I, V>; }) {
+    return meta::type_c<std::tuple_element_t<I, V>>;
+  } else {
+    return meta::type_c<V>;
+  }
+}
 } // namespace detail
 
 } // namespace ddx::impl
@@ -240,7 +238,8 @@ struct tuple_size<ddx::impl::Expression<Op, Children...>>
 template <size_t I, ddx::impl::COperation Op,
           ddx::impl::CExpression... Children>
 struct tuple_element<I, ddx::impl::Expression<Op, Children...>> {
-  using type = typename ddx::impl::detail::expression_element<
-      typename ddx::impl::Expression<Op, Children...>::value_type, I>::type;
+  using type = DDX_TYPE(
+      ddx::impl::detail::expression_element<
+          typename ddx::impl::Expression<Op, Children...>::value_type, I>());
 };
 } // namespace std

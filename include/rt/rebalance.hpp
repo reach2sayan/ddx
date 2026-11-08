@@ -55,16 +55,13 @@ blocked_sum(Arena<T> &b, std::span<const NodeId> terms, std::size_t blocks) {
   // Sized to the default block count so a round never allocates.
   using Partials = boost::container::small_vector<Expression<T>, 16>;
   const auto as_expr = [&b](NodeId t) { return Expression<T>{b, t}; };
-  auto partials =
-      std::views::iota(0uz, blocks) | std::views::transform([&](std::size_t j) {
-        return std::ranges::fold_left_first(terms | std::views::drop(j) |
-                                                std::views::stride(blocks) |
-                                                std::views::transform(as_expr),
-                                            std::plus<>{});
-      }) |
-      std::views::filter([](const auto &o) { return o.has_value(); }) |
-      std::views::transform([](const auto &o) { return *o; }) |
-      impl::to<Partials>();
+  Partials partials;
+  for (std::size_t j = 0; j < std::min(blocks, terms.size()); ++j) {
+    partials.push_back(*std::ranges::fold_left_first(
+        terms | std::views::drop(j) | std::views::stride(blocks) |
+            std::views::transform(as_expr),
+        std::plus<>{}));
+  }
 
   // Combine pairwise so the final reduction is not a chain either.
   while (partials.size() > 1) {

@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <ranges>
 
 // f(x) = c x(1-x) + k(x ln x + (1-x) ln(1-x)) has f'(1/2) = 0 by symmetry and
 // f'' = -2c + k/(x(1-x)), so neither needs finite differences.
@@ -71,7 +72,7 @@ TEST(RtMiscibility, NewtonFindsTwoSymmetricMinima) {
 
   const auto minimise_from = [&](double start) {
     double at = start;
-    for (int iteration = 0; iteration < 100; ++iteration) {
+    for ([[maybe_unused]] const int iteration : std::views::iota(0, 100)) {
       const double slope = (*f.jacobian(at))[0];
       if (std::abs(slope) < 1e-14) {
         break;

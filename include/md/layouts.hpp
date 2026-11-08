@@ -1,6 +1,7 @@
 #pragma once
 
 #include "md/md.hpp"
+#include "util/meta.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,25 +14,8 @@ namespace ddx::impl {
 
 namespace detail {
 
-// C(n, k) in integer arithmetic, since a rounded double could pick the wrong
-// cell. The run-time subscript path uses binomial_fixed instead.
-[[nodiscard]] consteval std::size_t binomial(std::size_t n,
-                                             std::size_t k) noexcept {
-  if (k > n) {
-    return 0;
-  }
-  k = std::min(k, n - k); // C(n, k) == C(n, n - k), the shorter fold
-  return std::ranges::fold_left(
-      std::views::iota(std::size_t{1}, k + 1), std::size_t{1},
-      [n, k](std::size_t acc, std::size_t i) { return acc * (n - k + i) / i; });
-}
-
-static_assert(binomial(4, 2) == 6);
-static_assert(binomial(8, 3) == 56);
-static_assert(binomial(10, 0) == 1);
-
-// C(n, K) for a fixed K, as the falling product over K!. Unlike binomial(), it
-// unrolls to a few multiplies and one divide.
+// C(n, K) in integer arithmetic, since a rounded double could pick the wrong
+// cell: the falling product over K!, unrolled to a few multiplies and a divide.
 template <std::size_t K>
 [[nodiscard]] constexpr std::size_t binomial_fixed(std::size_t n) noexcept {
   if (n < K) {
@@ -39,9 +23,10 @@ template <std::size_t K>
   }
   std::size_t num = 1;
   std::size_t den = 1;
-  [&]<std::size_t... I>(std::index_sequence<I...>) {
-    ((num *= (n - I), den *= (I + 1)), ...);
-  }(std::make_index_sequence<K>{});
+  meta::for_each(meta::iota<K>, [&](auto i) {
+    num *= n - i;
+    den *= i + 1;
+  });
   return num / den;
 }
 
@@ -56,13 +41,11 @@ static_assert(binomial_fixed<2>(1) == 0);
 // Lead dense axes, for a vector output, over symmetric derivative axes packed
 // into C(N + Order - 1, Order) cells, one per sorted multi-index.
 template <std::size_t Lead> struct layout_leading_simplex {
-  template <md::CExtents Ext>
-  static constexpr std::size_t order_of = Ext::rank() - Lead;
   // Symmetric axes must have equal lengths to be interchangeable.
   template <md::CStaticExtents Ext> class mapping {
     static_assert(Ext::rank() > Lead,
                   "layout_leading_simplex needs at least one symmetric axis");
-    static constexpr std::size_t kOrder = order_of<Ext>;
+    static constexpr std::size_t kOrder = Ext::rank() - Lead;
     static_assert(std::ranges::all_of(std::views::iota(Lead, Ext::rank()),
                                       [](std::size_t r) {
                                         return Ext{}.extent(r) ==
@@ -102,11 +85,11 @@ template <std::size_t Lead> struct layout_leading_simplex {
       std::ranges::sort(a);
       // b_t = a_t + t is strictly increasing, and its colex rank is the sum of
       // C(b_t, t + 1), with t a compile-time constant in each term.
-      const index_type slot = [&]<std::size_t... T>(std::index_sequence<T...>) {
+      const index_type slot = meta::unpack(meta::iota<kOrder>, [&](auto... t) {
         return static_cast<index_type>(
-            (detail::binomial_fixed<T + 1>(static_cast<std::size_t>(a[T]) + T) +
+            (detail::binomial_fixed<t + 1>(static_cast<std::size_t>(a[t]) + t) +
              ... + std::size_t{0}));
-      }(std::make_index_sequence<kOrder>{});
+      });
       return lead * block_size() + slot;
     }
 

@@ -3,6 +3,7 @@
 // include-cleaner misses CFixedString used as a constrained auto parameter.
 #include "symbolic/symbol.hpp"
 #include "util/fixed_string.hpp" // IWYU pragma: keep
+#include "util/meta.hpp"
 #include <cstdint>
 #include <tuple>
 #include <type_traits>
@@ -17,13 +18,11 @@ constexpr auto refreeze(const T &e) noexcept {
     return typename T::template refrozen<(
         Hold && T::label != symbol ? Freeze::partial : Freeze::none)>{};
   } else if constexpr (CExpressionNode<T>) {
-    return std::apply(
-        [](const auto &...child) {
-          return Expression<typename T::op_type,
-                            decltype(refreeze<Hold, symbol>(child))...>{
-              refreeze<Hold, symbol>(child)...};
-        },
-        e.expressions());
+    return meta::unpack(e.expressions(), [](const auto &...child) {
+      return Expression<typename T::op_type,
+                        decltype(refreeze<Hold, symbol>(child))...>{
+          refreeze<Hold, symbol>(child)...};
+    });
   } else {
     return e;
   }
@@ -40,47 +39,39 @@ template <CExpression E> constexpr auto thaw_partials(const E &e) noexcept {
   return refreeze<false>(e);
 }
 
-// Orders symbols alphabetically, as a metafunction for mp_sort.
-template <CSymbol A, CSymbol B>
-struct symbol_less : std::bool_constant<(A::name < B::name)> {};
+// The union of symbol lists, alphabetical. The sort is stable, so unique
+// keeps the first of equal names without reordering the rest.
+consteval auto symbol_set(CSymbolList auto... lists) noexcept {
+  return meta::unique(meta::sort(meta::concat(lists...), [](auto a, auto b) {
+    return DDX_TYPE(a)::name < DDX_TYPE(b)::name;
+  }));
+}
 
-// mp_sort is stable, so duplicate names, which mp_unique then collapses, do
-// not reorder the rest.
-template <CSymbolList List> using sort_tuple_t = mp::mp_sort<List, symbol_less>;
-
-template <CSymbolList List>
-using unique_tuple_t = mp::mp_unique<sort_tuple_t<List>>;
-
-template <CSymbolList... Lists>
-using tuple_union_t = unique_tuple_t<mp::mp_append<Lists...>>;
-
-template <CExpression T> consteval auto extract_symbols_impl() {
+consteval auto symbols_of(auto t) noexcept {
+  using T = DDX_TYPE(t);
   if constexpr (CVariable<T>) {
-    return std::type_identity<mp::mp_list<symbol_type<T::label>>>{};
+    return meta::list_c<symbol_type<T::label>>;
   } else if constexpr (CExpressionNode<T>) {
-    return []<COperation Op, CExpression... C>(
-               std::type_identity<Expression<Op, C...>>) {
-      return std::type_identity<tuple_union_t<
-          typename decltype(extract_symbols_impl<C>())::type...>>{};
-    }(std::type_identity<T>{});
+    return meta::unpack(children(t),
+                        [](auto... c) { return symbol_set(symbols_of(c)...); });
   } else {
-    return std::type_identity<mp::mp_list<>>{};
+    return meta::list_c<>;
   }
 }
 
-template <CExpression T>
-using extract_symbols_from_expr_t =
-    typename decltype(extract_symbols_impl<T>())::type;
+// An expression's canonical symbol list.
+template <CExpression E>
+using expr_symbols_t =
+    meta::list_t<symbols_of(meta::type_c<std::remove_cvref_t<E>>)>;
 
 // Whether any variable in the tree is frozen.
-template <CExpression T> consteval bool holds_frozen() {
+consteval bool holds_frozen(auto t) noexcept {
+  using T = DDX_TYPE(t);
   if constexpr (CVariable<T>) {
     return T::frozen;
   } else if constexpr (CExpressionNode<T>) {
-    return []<COperation Op, CExpression... C>(
-               std::type_identity<Expression<Op, C...>>) {
-      return (holds_frozen<C>() || ...);
-    }(std::type_identity<T>{});
+    return meta::unpack(children(t),
+                        [](auto... c) { return (holds_frozen(c) || ...); });
   } else {
     return false;
   }
@@ -88,20 +79,10 @@ template <CExpression T> consteval bool holds_frozen() {
 
 namespace detail {
 
-// An expression's canonical symbol list and its length.
+// An expression's symbol count.
 template <CExpression Expr>
-using expr_symbols_t = extract_symbols_from_expr_t<std::remove_cvref_t<Expr>>;
-
-template <CExpression Expr>
-inline constexpr std::size_t expr_arity_v =
-    mp::mp_size<expr_symbols_t<Expr>>::value;
+inline constexpr std::size_t expr_arity_v = meta::size(expr_symbols_t<Expr>{});
 
 } // namespace detail
-
-template <std::size_t N> using idx_t = std::integral_constant<std::size_t, N>;
-
-template <std::size_t N> [[nodiscard]] consteval idx_t<N> idx() noexcept {
-  return {};
-}
 
 } // namespace ddx::impl
