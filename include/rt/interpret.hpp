@@ -252,8 +252,8 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
           break;
         }
         const auto c = in(cond, k);
-        for (auto &&[out, ci, yes, no] : std::views::zip(to, c, on, off)) {
-          out = chosen(ci) ? yes : no;
+        for (auto &&[dst, ci, yes, no] : std::views::zip(to, c, on, off)) {
+          dst = chosen(ci) ? yes : no;
         }
         break;
       }
