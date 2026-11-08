@@ -6,6 +6,7 @@
 #include "rt/arena.hpp"
 #include "rt/expressions.hpp"
 #include "util/error.hpp"
+#include "util/meta.hpp"
 #include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>
@@ -43,7 +44,8 @@ template <impl::Numeric T> [[nodiscard]] Expression<T> in_arena(auto &&make) {
 // The poison of the first poisoned operand, if any.
 [[nodiscard]] constexpr std::optional<errc> poisoned(const auto &...es) {
   std::optional<errc> why;
-  ((why = why ? why : Router::why(es)), ...);
+  meta::for_each(std::tie(es...),
+                 [&](const auto &e) { why = why ? why : Router::why(e); });
   return why;
 }
 // The shape of a node, including a table, which shape_of() does not cover.

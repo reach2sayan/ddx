@@ -5,7 +5,10 @@
 #include "rt/opcode.hpp"
 #include "util/config.hpp"
 #include "util/error.hpp"
+#include "util/meta.hpp"
 #include "util/scope_guard.hpp"
+
+#include <boost/hof/match.hpp>
 
 #include <algorithm>
 #include <array>
@@ -114,15 +117,9 @@ public:
       return shape.size() ? b.filled(shape, lit_) : b.constant(lit_);
     }
     // b may be a copy of arena_.
-    return std::visit(
-        [&b]<typename H>(const H &at) {
-          if constexpr (std::same_as<H, NodeId>) {
-            return at;
-          } else {
-            return b.fold_of(at);
-          }
-        },
-        at_);
+    return std::visit(boost::hof::match([](NodeId at) { return at; },
+                                         [&b](const auto &at) { return b.fold_of(at); }),
+                      at_);
   }
   // The node id in its own arena, or no_node for a pending literal.
   [[nodiscard]] constexpr NodeId id() const {
@@ -149,12 +146,16 @@ public:
   [[nodiscard]] static constexpr Expression
   form(OpCode op, const std::same_as<Expression> auto &...xs) {
     std::optional<errc> why;
-    ((why = why ? why : xs.why_), ...);
+    Arena<T> *b = nullptr;
+    meta::for_each(std::tie(xs...), [&](const Expression &x) {
+      why = why ? why : x.why_;
+    });
     if (why) {
       return poison(*why);
     }
-    Arena<T> *b = nullptr;
-    ((b = b ? b : xs.arena()), ...);
+    meta::for_each(std::tie(xs...), [&](const Expression &x) {
+      b = b ? b : x.arena();
+    });
     if (b == nullptr) {
       return Expression{apply<T>(op, xs.literal()...)};
     }
@@ -481,9 +482,6 @@ extern_fn(Arena<T> &b, ExternRecord record,
 }
 
 namespace detail {
-
-// Repeats Expression<T> once per element of a pack expansion.
-template <std::size_t, impl::Numeric T> using Repeat = Expression<T>;
 
 // The thread-local arena that var() registers into during an equation()
 // callback.

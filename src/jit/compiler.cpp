@@ -4,8 +4,7 @@
 
 #include "rt/interpret.hpp"
 #include "rt/pipeline.hpp"
-
-#include <boost/mp11/algorithm.hpp>
+#include "util/meta.hpp"
 
 #include <llvm/ADT/StringMap.h>
 
@@ -107,9 +106,9 @@ void tensor_step(const rt::detail::TensorCall<T> &c, rt::NodeId v,
                  std::size_t lanes, T *tape, T *vtape) {
   const rt::Graph<T> &g = *c.graph;
   const auto t = rt::detail::TapeView<T>::of(g, vtape, c.kernels);
-  boost::mp11::mp_with_index<tensor_widths>(
+  meta::with_index<tensor_widths>(
       static_cast<std::size_t>(std::countr_zero(lanes)), [&](auto i) {
-        constexpr std::size_t W = std::size_t{1} << decltype(i)::value;
+        constexpr std::size_t W = std::size_t{1} << i;
         const auto lane =
             rt::detail::lanes_of<W>(std::span<T>{tape, g.tape_rows() * W});
         rt::detail::lanes_tensor<W>(*c.arena, v, (*c.arena)[v],

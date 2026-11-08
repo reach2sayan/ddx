@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ops/numeric.hpp"
+#include "util/meta.hpp"
 
 #include <concepts>
 #include <cstddef>
@@ -10,11 +11,10 @@ namespace ddx::impl {
 
 template <Numeric T> class Dual;
 
-template <typename T> inline constexpr bool is_dual_v = false;
-template <Numeric T> inline constexpr bool is_dual_v<Dual<T>> = true;
-
 template <typename X>
-concept DualLike = is_dual_v<std::remove_cvref_t<X>>;
+concept DualLike = requires {
+  []<Numeric T>(meta::Type<Dual<T>>) {}(meta::type_c<std::remove_cvref_t<X>>);
+};
 
 template <Numeric T> struct dual_scalar_type {
   using type = T;

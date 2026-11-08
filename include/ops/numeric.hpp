@@ -46,40 +46,6 @@ template <typename T>
 concept CTupleLike =
     requires { std::tuple_size<std::remove_cvref_t<T>>::value; };
 
-namespace detail {
-template <typename F, typename Seq>
-inline constexpr bool index_invocable_v = false;
-template <typename F, std::size_t... Is>
-inline constexpr bool index_invocable_v<F, std::index_sequence<Is...>> =
-    (requires(F &&f) { DDX_FWD(f).template operator()<Is>(); } && ...);
-
-template <typename F, typename Seq>
-inline constexpr bool pack_invocable_v = false;
-template <typename F, std::size_t... Is>
-inline constexpr bool pack_invocable_v<F, std::index_sequence<Is...>> =
-    requires(F &&f) { DDX_FWD(f).template operator()<Is...>(); };
-} // namespace detail
-
-// static_for calls f once per index; index_apply passes the whole index pack
-// to f at once.
-template <std::size_t N>
-constexpr void static_for(auto &&f) noexcept
-  requires detail::index_invocable_v<decltype(f), std::make_index_sequence<N>>
-{
-  [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-    (DDX_FWD(f).template operator()<Is>(), ...);
-  }(std::make_index_sequence<N>{});
-}
-
-template <std::size_t N>
-[[nodiscard]] constexpr decltype(auto) index_apply(auto &&f)
-  requires detail::pack_invocable_v<decltype(f), std::make_index_sequence<N>>
-{
-  return [&]<std::size_t... Is>(std::index_sequence<Is...>) -> decltype(auto) {
-    return DDX_FWD(f).template operator()<Is...>();
-  }(std::make_index_sequence<N>{});
-}
-
 template <typename O>
 concept COperation =
     requires { typename O::value_type; } && Numeric<typename O::value_type>;

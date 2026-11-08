@@ -2,9 +2,7 @@
 
 #include "rt/core.hpp"
 #include "symbolic/equation.hpp"
-
-#include <boost/mp11/algorithm.hpp>
-#include <boost/mp11/list.hpp>
+#include "util/meta.hpp"
 
 #include <concepts>
 #include <memory>
@@ -14,19 +12,15 @@
 
 namespace ddx::rt::detail {
 
-template <typename T> struct is_output {
-  template <typename U> using fn = std::is_same<U, Expression<T>>;
-};
-
 // True when the pack is exactly Dynamic, so the output count is not fixed.
 template <typename T, typename... Rest>
 inline constexpr bool dynamic_outputs =
-    std::same_as<boost::mp11::mp_list<Rest...>, boost::mp11::mp_list<Dynamic>>;
+    sizeof...(Rest) == 1 && (std::same_as<Rest, Dynamic> && ...);
 
 // The output-count policy: Fixed by the pack size, or Dynamic.
 template <typename T, typename... Rest>
-using policy_of = boost::mp11::mp_if_c<dynamic_outputs<T, Rest...>, Dynamic,
-                                       Fixed<1 + sizeof...(Rest)>>;
+using policy_of = std::conditional_t<dynamic_outputs<T, Rest...>, Dynamic,
+                                     Fixed<1 + sizeof...(Rest)>>;
 
 // A friend of Equation, so that the equation() factories here and in rt/text
 // are the only callers of create().
@@ -47,8 +41,7 @@ namespace ddx::impl {
 // count known only at run time, where single-output members return an error.
 template <Numeric T, typename... Rest>
   requires(rt::detail::dynamic_outputs<T, Rest...> ||
-           boost::mp11::mp_all_of_q<boost::mp11::mp_list<Rest...>,
-                                    rt::detail::is_output<T>>::value)
+           (std::same_as<Rest, rt::Expression<T>> && ...))
 class Equation<rt::Expression<T>, Rest...> : public rt::detail::Core<T> {
   using Outputs = rt::detail::policy_of<T, Rest...>;
   using Base = rt::detail::Core<T>;
@@ -135,10 +128,10 @@ template <impl::Numeric T, typename Built>
     constexpr std::size_t outputs = std::tuple_size_v<Built>;
     static_assert(outputs > 0,
                   "equation: a system needs at least one function");
-    return impl::index_apply<outputs - 1>([&]<std::size_t... Rest>() {
+    return meta::unpack(meta::iota<outputs>, [&](auto... i) {
       return make(std::type_identity<
-                      impl::Equation<Expression<T>, Repeat<Rest, T>...>>{},
-                  built[0], built[Rest + 1]...);
+                      meta::repeat_t<impl::Equation, Expression<T>, outputs>>{},
+                  built[i]...);
     });
   } else {
     const auto outputs = built | impl::to<std::vector<Expression<T>>>();

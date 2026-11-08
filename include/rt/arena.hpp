@@ -8,6 +8,7 @@
 #include "util/config.hpp"
 #include "util/error.hpp"
 #include "util/export.hpp"
+#include "util/meta.hpp"
 #include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>
@@ -121,9 +122,8 @@ DDX_RT_TERNARY_TABLE(DDX_RT_TERNARY_OPERANDS)
 template <OpCode Op>
 [[nodiscard]] constexpr Operands<Op>
 operands(const std::array<NodeId, 3> &in) noexcept {
-  return [&]<std::size_t... I>(std::index_sequence<I...>) {
-    return Operands<Op>{in[I]...};
-  }(std::make_index_sequence<arity_of(Op)>{});
+  return meta::unpack(meta::iota<arity_of(Op)>,
+                      [&](auto... i) { return Operands<Op>{in[i]...}; });
 }
 // The operands of a node, which must be an `Op`.
 template <OpCode Op>

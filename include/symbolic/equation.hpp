@@ -11,6 +11,7 @@
 #include "symbolic/simplify.hpp"
 #include "symbolic/symbol.hpp"
 #include "util/config.hpp" // DDX_FWD
+#include "util/meta.hpp"
 #include "util/scope_guard.hpp"
 
 #include <algorithm>
@@ -32,24 +33,22 @@ namespace detail {
 template <CExpression E>
 using canonical_t = decltype(canonicalise(std::declval<const E &>()));
 
-template <CSymbol... Syms>
-constexpr auto make_derivatives(mp::mp_list<Syms...>,
+// thaw_partials lifts the hold that made each column, or the returned row
+// would differentiate to zero. See Freeze in expressions.hpp.
+constexpr auto make_derivatives(CSymbolList auto syms,
                                 const CExpression auto &expr) noexcept {
-  // thaw_partials lifts the hold that made each column, or the returned row
-  // would differentiate to zero. See Freeze in expressions.hpp.
-  return std::tuple(canonicalise(thaw_partials(
-      make_all_constant_except<Syms::value>(expr).derivative()))...);
+  return meta::unpack(syms, [&](auto... s) noexcept {
+    return std::tuple(canonicalise(
+        thaw_partials(make_all_constant_except<s.value>(expr).derivative()))...);
+  });
 }
 
-template <CSymbol... Syms, CExpression... Exprs>
+template <CExpression... Exprs>
 constexpr auto make_jac_rows(const std::tuple<Exprs...> &es,
-                             mp::mp_list<Syms...> = {}) noexcept {
-  return std::apply(
-      [](const auto &...exprs) noexcept {
-        return std::make_tuple(
-            make_derivatives(mp::mp_list<Syms...>{}, exprs)...);
-      },
-      es);
+                             CSymbolList auto syms) noexcept {
+  return meta::unpack(es, [&](const auto &...exprs) noexcept {
+    return std::make_tuple(make_derivatives(syms, exprs)...);
+  });
 }
 
 // A dual-valued row carries the seed in its dual part, so the derivative is
@@ -141,11 +140,11 @@ template <CExpression TFirst, CExpression... TRest>
 class Equation<TFirst, TRest...> {
 public:
   using value_type = typename TFirst::value_type;
-  using symbols = tuple_union_t<extract_symbols_from_expr_t<TFirst>,
-                                extract_symbols_from_expr_t<TRest>...>;
+  using symbols = decltype(symbol_set(extract_symbols_from_expr_t<TFirst>{},
+                                      extract_symbols_from_expr_t<TRest>{}...));
 
   static constexpr std::size_t output_dim = 1 + sizeof...(TRest);
-  static constexpr std::size_t input_dim = mp::mp_size<symbols>::value;
+  static constexpr std::size_t input_dim = meta::size(symbols{});
   static constexpr std::size_t number_of_derivatives = input_dim;
 
 private:
@@ -175,10 +174,9 @@ private:
                         (node_count_v<detail::canonical_t<TFirst>> + ... +
                          node_count_v<detail::canonical_t<TRest>>),
                     input_dim);
-    mp::mp_for_each<symbols>(
-        [&l]<typename Sym>(Sym) { (void)rt::var(l.arena, Sym::name); });
-    static_for<output_dim>([&]<std::size_t I>() {
-      l.roots[I] = rt::to_graph(l.arena, std::get<I>(expressions)).id(l.arena);
+    meta::for_each(symbols{}, [&l](auto s) { (void)rt::var(l.arena, s.name); });
+    meta::for_each(meta::iota<output_dim>, [&](auto i) {
+      l.roots[i] = rt::to_graph(l.arena, std::get<i>(expressions)).id(l.arena);
     });
     return l;
   }
@@ -234,8 +232,8 @@ public:
           if constexpr (output_dim == 1) {
             return v[l.roots[0]];
           } else {
-            return index_apply<output_dim>([&]<std::size_t... I>() {
-              return std::array<value_type, output_dim>{v[l.roots[I]]...};
+            return meta::unpack(meta::iota<output_dim>, [&](auto... i) {
+              return std::array<value_type, output_dim>{v[l.roots[i]]...};
             });
           }
         },
@@ -262,10 +260,10 @@ public:
           std::array<rt::NodeId, output_dim * input_dim> cells{};
           if constexpr (Mode == DiffMode::Symbolic) {
             const auto rows = jacobian_rows();
-            static_for<output_dim>([&]<std::size_t I>() {
-              static_for<input_dim>([&]<std::size_t J>() {
-                cells[I * input_dim + J] =
-                    rt::to_graph(l.arena, std::get<J>(std::get<I>(rows)))
+            meta::for_each(meta::iota<output_dim>, [&](auto i) {
+              meta::for_each(meta::iota<input_dim>, [&](auto j) {
+                cells[i * input_dim + j] =
+                    rt::to_graph(l.arena, std::get<j>(std::get<i>(rows)))
                         .id(l.arena);
               });
             });
@@ -360,13 +358,15 @@ public:
             walk(l.arena, detail::mixed_seeds<scalar, Order>(vals, idx),
                  std::span<U>{v}, std::span<U>{vtape});
             for (const auto [k, root] : l.roots | std::views::enumerate) {
-              const auto at = [&]<std::size_t... K>(std::index_sequence<K...>) {
+              const auto at = [&] {
                 if constexpr (output_dim == 1) {
                   return idx;
                 } else {
-                  return std::array{static_cast<std::size_t>(k), idx[K]...};
+                  return meta::unpack(meta::iota<Order>, [&](auto... o) {
+                    return std::array{static_cast<std::size_t>(k), idx[o]...};
+                  });
                 }
-              }(std::make_index_sequence<Order>{});
+              }();
               result.at_index(at) = detail::extract_nth<Order>(v[root]);
             }
           }
@@ -433,18 +433,18 @@ struct std::formatter<ddx::impl::Equation<Ts...>, char> {
     auto out = ctx.out();
 
     const auto rows = eq.jacobian_rows();
-    ddx::impl::static_for<Eq::output_dim>([&]<std::size_t I>() {
-      out = std::format_to(out, "f{}: ", I);
+    ddx::meta::for_each(ddx::meta::iota<Eq::output_dim>, [&](auto i) {
+      out = std::format_to(out, "f{}: ", i());
       out = std::vformat_to(out, one,
-                            std::make_format_args(std::get<I>(eq.functions())));
+                            std::make_format_args(std::get<i>(eq.functions())));
       out = std::format_to(out, "\n  jac: ");
-      const auto &row = std::get<I>(rows);
-      ddx::impl::static_for<Eq::input_dim>([&]<std::size_t J>() {
-        if constexpr (J > 0) {
+      const auto &row = std::get<i>(rows);
+      ddx::meta::for_each(ddx::meta::iota<Eq::input_dim>, [&](auto j) {
+        if constexpr (j > 0) {
           out = std::format_to(out, ", ");
         }
         out =
-            std::vformat_to(out, one, std::make_format_args(std::get<J>(row)));
+            std::vformat_to(out, one, std::make_format_args(std::get<j>(row)));
       });
       out = std::format_to(out, "\n");
     });

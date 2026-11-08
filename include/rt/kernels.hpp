@@ -7,8 +7,7 @@
 #include "rt/opcode.hpp"
 #include "util/config.hpp"
 #include "util/export.hpp"
-
-#include <boost/mp11/algorithm.hpp>
+#include "util/meta.hpp"
 
 #include <algorithm>
 #include <array>
@@ -97,12 +96,10 @@ template <impl::Numeric T = double> struct Kernels {
   // than a short row.
   template <std::size_t N>
   [[nodiscard]] static constexpr T fold(std::array<T, N> &acc) noexcept {
-    boost::mp11::mp_for_each<boost::mp11::mp_iota_c<std::bit_width(N) - 1>>(
-        [&](auto level) {
-          constexpr std::size_t w = N >> (level + 1);
-          boost::mp11::mp_for_each<boost::mp11::mp_iota_c<w>>(
-              [&](auto l) { acc[l] = acc[l] + acc[l + w]; });
-        });
+    meta::for_each(meta::iota<std::bit_width(N) - 1>, [&](auto level) {
+      constexpr std::size_t w = N >> (level + 1);
+      meta::for_each(meta::iota<w>, [&](auto l) { acc[l] = acc[l] + acc[l + w]; });
+    });
     return acc[0];
   }
 

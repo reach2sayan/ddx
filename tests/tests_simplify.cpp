@@ -176,7 +176,7 @@ TEST(Simplify, JacobianRowsDifferentiateAgain) {
   using ddx::impl::Freeze;
   using ddx::impl::make_all_constant_except;
   using ddx::impl::thaw_partials;
-  using Syms = ddx::impl::mp::mp_list<ddx::impl::symbol_type<FixedString{"x"}>,
+  using Syms = ddx::meta::list<ddx::impl::symbol_type<FixedString{"x"}>,
                                 ddx::impl::symbol_type<FixedString{"y"}>>;
 
   using Live = ddx::impl::Variable<double, FixedString{"y"}>;

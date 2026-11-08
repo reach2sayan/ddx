@@ -2,6 +2,7 @@
 #include "ops/algebra.hpp"
 #include "ops/operations.hpp"
 #include "symbolic/expressions.hpp"
+#include "util/meta.hpp"
 #include <compare>
 #include <concepts>
 #include <cstddef>
@@ -179,11 +180,9 @@ template <COperation Op, CExpression C, CExpression A, CExpression B>
 template <CExpression E>
 [[nodiscard]] constexpr auto canonicalise(const E &e) noexcept {
   if constexpr (CExpressionNode<E>) {
-    return std::apply(
-        [](const auto &...kids) noexcept {
-          return ordered_node<typename E::op_type>(canonicalise(kids)...);
-        },
-        e.expressions());
+    return meta::unpack(e.expressions(), [](const auto &...kids) noexcept {
+      return ordered_node<typename E::op_type>(canonicalise(kids)...);
+    });
   } else {
     return e;
   }

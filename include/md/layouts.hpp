@@ -1,6 +1,7 @@
 #pragma once
 
 #include "md/md.hpp"
+#include "util/meta.hpp"
 
 #include <algorithm>
 #include <array>
@@ -39,9 +40,10 @@ template <std::size_t K>
   }
   std::size_t num = 1;
   std::size_t den = 1;
-  [&]<std::size_t... I>(std::index_sequence<I...>) {
-    ((num *= (n - I), den *= (I + 1)), ...);
-  }(std::make_index_sequence<K>{});
+  meta::for_each(meta::iota<K>, [&](auto i) {
+    num *= n - i;
+    den *= i + 1;
+  });
   return num / den;
 }
 
@@ -102,11 +104,11 @@ template <std::size_t Lead> struct layout_leading_simplex {
       std::ranges::sort(a);
       // b_t = a_t + t is strictly increasing, and its colex rank is the sum of
       // C(b_t, t + 1), with t a compile-time constant in each term.
-      const index_type slot = [&]<std::size_t... T>(std::index_sequence<T...>) {
+      const index_type slot = meta::unpack(meta::iota<kOrder>, [&](auto... t) {
         return static_cast<index_type>(
-            (detail::binomial_fixed<T + 1>(static_cast<std::size_t>(a[T]) + T) +
+            (detail::binomial_fixed<t + 1>(static_cast<std::size_t>(a[t]) + t) +
              ... + std::size_t{0}));
-      }(std::make_index_sequence<kOrder>{});
+      });
       return lead * block_size() + slot;
     }
 

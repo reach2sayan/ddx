@@ -2,6 +2,7 @@
 
 #include "symbolic/expressions.hpp" // Numeric, symbol_type, Variable
 #include "util/fixed_string.hpp"
+#include "util/meta.hpp"
 
 #include <concepts>
 #include <type_traits>
@@ -83,11 +84,10 @@ constexpr Entry<S, V> symbol_type<S>::operator=(V v) const {
   return Entry<S, V>{std::move(v)};
 }
 
-template <typename T> inline constexpr bool is_entry_v = false;
-template <FixedString S, typename V>
-inline constexpr bool is_entry_v<Entry<S, V>> = true;
-
 template <typename T>
-concept CEntry = is_entry_v<std::remove_cvref_t<T>>;
+concept CEntry = requires {
+  []<FixedString S, typename V>(meta::Type<Entry<S, V>>) {
+  }(meta::type_c<std::remove_cvref_t<T>>);
+};
 
 } // namespace ddx::impl

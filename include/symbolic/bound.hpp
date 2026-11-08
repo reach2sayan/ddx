@@ -5,6 +5,7 @@
 #include "util/config.hpp" // DDX_FWD
 #include "util/error.hpp"
 #include "util/fixed_string.hpp"
+#include "util/meta.hpp"
 
 #include <algorithm>
 #include <array>
@@ -22,7 +23,7 @@ template <Numeric Scalar, CSymbolList SymList> struct ValueMap {
   using value_type = Scalar;
 
   static constexpr bool kValueMap = true;
-  static constexpr std::size_t arity = mp::mp_size<SymList>::value;
+  static constexpr std::size_t arity = meta::size(SymList{});
 
   std::array<Scalar, arity> slots{};
 
@@ -72,17 +73,17 @@ consteval std::array<std::size_t, N> arg_of_canonical() noexcept {
 // Builds a ValueMap, as in values(named<"x">(1.0), named<"y">(0.5)).
 template <FixedString... Syms, Numeric... Vs>
 [[nodiscard]] constexpr auto values(Entry<Syms, Vs>... nv) noexcept {
-  using SymList = unique_tuple_t<mp::mp_list<symbol_type<Syms>...>>;
+  using SymList = decltype(symbol_set(meta::list_c<symbol_type<Syms>...>));
   constexpr std::size_t N = sizeof...(Syms);
-  static_assert(mp::mp_size<SymList>::value == N, "values: duplicate symbol");
+  static_assert(meta::size(SymList{}) == N, "values: duplicate symbol");
 
   using Scalar = std::common_type_t<Vs...>;
   constexpr auto pos =
       detail::arg_of_canonical<SymList, N, symbol_type<Syms>...>();
   const auto args = std::tuple<Vs...>{nv.value...};
-  return index_apply<N>([&]<std::size_t... I>() {
+  return meta::unpack(meta::iota<N>, [&](auto... i) {
     return ValueMap<Scalar, SymList>{
-        std::array<Scalar, N>{static_cast<Scalar>(std::get<pos[I]>(args))...}};
+        std::array<Scalar, N>{static_cast<Scalar>(std::get<pos[i]>(args))...}};
   });
 }
 
@@ -90,9 +91,8 @@ template <FixedString... Syms, Numeric... Vs>
 template <CExpression Expr>
 [[nodiscard]] consteval auto symbol_order() noexcept {
   using SymList = detail::expr_symbols_t<std::remove_cvref_t<Expr>>;
-  constexpr std::size_t N = mp::mp_size<SymList>::value;
-  return index_apply<N>([]<std::size_t... I>() {
-    return std::array<std::string_view, N>{mp::mp_at_c<SymList, I>::name...};
+  return meta::unpack(SymList{}, [](auto... s) {
+    return std::array<std::string_view, sizeof...(s)>{s.name...};
   });
 }
 template <CExpression Expr>
@@ -138,7 +138,7 @@ make_point(const Args &...args) noexcept {
   }
 
   // point(map) or point(named<"x">(..), ..), read by name.
-  else if constexpr ((CValueMap<Args> && ...) || (is_entry_v<std::remove_cvref_t<Args>> && ...)) {
+  else if constexpr ((CValueMap<Args> && ...) || (CEntry<Args> && ...)) {
     const auto map = [&] {
       if constexpr ((CValueMap<Args> && ...)) {
         static_assert(sizeof...(Args) == 1, "eval: pass a single ValueMap");
@@ -148,8 +148,8 @@ make_point(const Args &...args) noexcept {
       }
     }();
     std::array<U, N> vals{};
-    static_for<N>([&]<std::size_t I>() {
-      vals[I] = static_cast<U>(map.template get<mp::mp_at_c<Syms, I>::value>());
+    meta::for_each(meta::iota<N>, [&](auto i) {
+      vals[i] = static_cast<U>(map.template get<DDX_TYPE(meta::at<i>(Syms{}))::value>());
     });
     return vals;
   }
@@ -224,9 +224,10 @@ template <auto Seed, CExpression Expr, CEvalArg... Args>
   constexpr std::size_t N = expr_arity_v<Expr>;
   return with_point<Syms, VT, N>(
       [&e](const std::array<VT, N> &vals) {
-        const auto seeds = index_apply<N>([&]<std::size_t... I>() {
-          return std::array<Dual<VT>, N>{Dual<VT>{
-              vals[I], mp::mp_at_c<Syms, I>::value == Seed ? VT{1} : VT{}}...};
+        constexpr std::size_t seed = symbol_index<Seed, Syms>();
+        const auto seeds = meta::unpack(meta::iota<N>, [&](auto... i) {
+          return std::array<Dual<VT>, N>{
+              Dual<VT>{vals[i], i == seed ? VT{1} : VT{}}...};
         });
         return e.template eval_seeded<Syms>(seeds);
       },

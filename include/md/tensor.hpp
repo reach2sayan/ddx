@@ -4,10 +4,7 @@
 #include "md/md.hpp"
 #include "symbolic/expressions.hpp"
 #include "util/config.hpp"
-
-#include <boost/mp11/algorithm.hpp>
-#include <boost/mp11/integral.hpp>
-#include <boost/mp11/list.hpp>
+#include "util/meta.hpp"
 
 #include <array>
 #include <concepts>
@@ -21,23 +18,19 @@ namespace detail {
 template <typename... I>
 using extents_of = md::extents<std::size_t, I::value...>;
 template <std::size_t N, std::size_t Order>
-using repeated =
-    boost::mp11::mp_repeat_c<boost::mp11::mp_list<boost::mp11::mp_size_t<N>>,
-                             Order>;
+inline constexpr auto repeated = meta::repeat<Order>(meta::list_c<meta::index_t<N>>);
 
 } // namespace detail
 
 // The shape of a derivative tensor of order Order over N variables.
 template <std::size_t N, std::size_t Order>
 using uniform_extents_t =
-    boost::mp11::mp_apply<detail::extents_of, detail::repeated<N, Order>>;
+    DDX_TYPE(meta::rebind<detail::extents_of>(detail::repeated<N, Order>));
 
 // The same with a leading output axis, as a vector-valued Equation produces.
 template <std::size_t Lead, std::size_t N, std::size_t Order>
-using stacked_extents_t = boost::mp11::mp_apply<
-    detail::extents_of,
-    boost::mp11::mp_push_front<detail::repeated<N, Order>,
-                               boost::mp11::mp_size_t<Lead>>>;
+using stacked_extents_t = DDX_TYPE(meta::rebind<detail::extents_of>(
+    meta::push_front(detail::repeated<N, Order>, meta::type_c<meta::index_t<Lead>>)));
 
 // An owning, constexpr-usable tensor with compile-time extents and a layout.
 // There is no rank-reducing view, since packed layouts have no cheap one.
@@ -90,8 +83,8 @@ public:
   [[nodiscard]] constexpr decltype(auto)
   at_index(this auto &&self,
            const std::array<index_type, Ext::rank()> &idx) noexcept {
-    return index_apply<Ext::rank()>([&]<std::size_t... K>() -> decltype(auto) {
-      return DDX_FWD(self).data_[static_cast<std::size_t>(kMapping(idx[K]...))];
+    return meta::unpack(meta::iota<Ext::rank()>, [&](auto... k) -> decltype(auto) {
+      return DDX_FWD(self).data_[static_cast<std::size_t>(kMapping(idx[k]...))];
     });
   }
 
