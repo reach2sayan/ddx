@@ -13,24 +13,16 @@
 
 namespace ddx::impl {
 
-namespace detail {
-
-template <typename... I>
-using extents_of = md::extents<std::size_t, I::value...>;
+// The shape of a derivative tensor of order Order over N variables, and the
+// same with a leading output axis, as a vector-valued Equation produces.
 template <std::size_t N, std::size_t Order>
-inline constexpr auto repeated = meta::repeat<Order>(meta::list_c<meta::index_t<N>>);
-
-} // namespace detail
-
-// The shape of a derivative tensor of order Order over N variables.
-template <std::size_t N, std::size_t Order>
-using uniform_extents_t =
-    DDX_TYPE(meta::rebind<detail::extents_of>(detail::repeated<N, Order>));
-
-// The same with a leading output axis, as a vector-valued Equation produces.
+using uniform_extents_t = decltype(meta::unpack(meta::iota<Order>, [](auto... o) {
+  return md::extents<std::size_t, ((void)o, N)...>{};
+}));
 template <std::size_t Lead, std::size_t N, std::size_t Order>
-using stacked_extents_t = DDX_TYPE(meta::rebind<detail::extents_of>(
-    meta::push_front(detail::repeated<N, Order>, meta::type_c<meta::index_t<Lead>>)));
+using stacked_extents_t = decltype(meta::unpack(meta::iota<Order>, [](auto... o) {
+  return md::extents<std::size_t, Lead, ((void)o, N)...>{};
+}));
 
 // An owning, constexpr-usable tensor with compile-time extents and a layout.
 // There is no rank-reducing view, since packed layouts have no cheap one.

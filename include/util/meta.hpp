@@ -72,13 +72,6 @@ consteval auto concat(CTypeList auto... l) noexcept {
   return mp::mp_append<mp::mp_list<>, decltype(l)...>{};
 }
 template <typename T>
-consteval auto push_front(CTypeList auto l, Type<T>) noexcept {
-  return mp::mp_push_front<decltype(l), T>{};
-}
-template <std::size_t N> consteval auto repeat(CTypeList auto l) noexcept {
-  return mp::mp_repeat_c<decltype(l), N>{};
-}
-template <typename T>
 consteval bool contains(CTypeList auto l, Type<T>) noexcept {
   return mp::mp_contains<decltype(l), T>::value;
 }
@@ -100,12 +93,6 @@ consteval auto unique(CTypeList auto l) noexcept {
 // Template<T, ..., T>, with T N times.
 template <template <typename...> typename Template, typename T, std::size_t N>
 using repeat_t = mp::mp_apply<Template, mp::mp_repeat_c<list<T>, N>>;
-
-// Type<Template<Ts...>> for l = list_c<Ts...>.
-template <template <typename...> typename Template>
-consteval auto rebind(CTypeList auto l) noexcept {
-  return type_c<mp::mp_apply<Template, decltype(l)>>;
-}
 
 // Calls f(T{}) for each T in order; over a tuple, f(element) left to right.
 DDX_ALWAYS_INLINE constexpr void for_each(CTypeList auto l, auto &&f) {

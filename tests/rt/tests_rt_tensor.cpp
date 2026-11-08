@@ -1088,7 +1088,7 @@ TEST(RtMatrix, EachRuleAlone) {
   const auto b = pair_table(n, 4, -1.0, 1.0);
   const auto c = pair_table(n, 5, 0.5, 1.5);
   const auto at = at_temperature(n, 0.8);
-  const auto pair = [](auto &&entry) {
+  const auto pair = [&](auto &&entry) {
     // sum_ij x_i entry(i, j) x_j, written out.
     const auto x = symbols(n);
     RE acc{0};
