@@ -228,25 +228,6 @@ template <impl::Numeric T>
   });
 }
 
-// Which nodes a derivative moves: every symbol and implicit, and whatever in
-// the cone reads one. No adjoint is built for a node that holds still.
-template <impl::Numeric T>
-[[nodiscard]] constexpr std::vector<bool>
-moving(const Arena<T> &b, const std::vector<bool> &live) {
-  std::vector<bool> moves(live.size(), false);
-  for (const NodeId v :
-       std::views::iota(NodeId{0}, static_cast<NodeId>(live.size()))) {
-    const OpCode op = b.op_of(v);
-    if (op == OpCode::Var || op == OpCode::Implicit) {
-      moves[v] = true;
-    } else if (live[v]) {
-      for_each_operand(b, v,
-                       [&](NodeId u) { moves[v] = moves[v] || moves[u]; });
-    }
-  }
-  return moves;
-}
-
 // Why the implicits cannot be differentiated, if so: a misuse of implicit(),
 // or a residual reaching another implicit, which would need a linear solve.
 template <impl::Numeric T>
@@ -274,27 +255,48 @@ template <impl::Numeric T>
   return std::nullopt;
 }
 
-// The root's cone in ascending id order, walked down from the root rather than
-// found by scanning the arena. `marked` comes back clear.
+// The roots' cone in ascending id order, walked down from the roots rather
+// than found by scanning the arena. `marked` comes back clear.
 template <impl::Numeric T>
 [[nodiscard]] constexpr std::vector<NodeId>
-cone_of(const Arena<T> &b, NodeId root, std::vector<bool> &marked) {
+cone_of(const Arena<T> &b, std::span<const NodeId> roots,
+        std::vector<bool> &marked) {
   marked.resize(b.size());
-  std::vector<NodeId> cone{root};
-  marked[root] = true;
+  std::vector<NodeId> cone;
+  const auto visit = [&](NodeId u) {
+    if (!marked[u]) {
+      marked[u] = true;
+      cone.push_back(u);
+    }
+  };
+  std::ranges::for_each(roots, visit);
   for (std::size_t i = 0; i < cone.size(); ++i) {
-    for_each_operand(b, cone[i], [&](NodeId u) {
-      if (!marked[u]) {
-        marked[u] = true;
-        cone.push_back(u);
-      }
-    });
+    for_each_operand(b, cone[i], visit);
   }
   for (const NodeId v : cone) {
     marked[v] = false;
   }
   std::ranges::sort(cone);
   return cone;
+}
+
+// A symbol or an implicit, which every derivative moves.
+template <impl::Numeric T>
+[[nodiscard]] constexpr bool is_symbol(const Arena<T> &b, NodeId u) {
+  const OpCode op = b.op_of(u);
+  return op == OpCode::Var || op == OpCode::Implicit;
+}
+
+// Which of the cone's nodes a derivative moves: every symbol, and whatever
+// reads one. Only the cone's entries are written.
+template <impl::Numeric T>
+constexpr void mark_moving(const Arena<T> &b, std::span<const NodeId> cone,
+                           std::vector<bool> &moving) {
+  moving.resize(b.size());
+  for (const NodeId v : cone) {
+    moving[v] = is_symbol(b, v);
+    for_each_operand(b, v, [&](NodeId u) { moving[v] = moving[v] || moving[u]; });
+  }
 }
 } // namespace detail
 
@@ -304,22 +306,13 @@ template <detail::AtImplicits At, impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow
 detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &s) {
   const auto n = static_cast<NodeId>(b.size());
-  const auto cone = cone_of(b, root, s.marked);
-  // Every symbol and implicit moves, and whatever in the cone reads one.
+  const auto cone = cone_of(b, std::span{&root, 1}, s.marked);
   // Contributions are built for moving nodes and also constants, whose nodes
   // later sweeps intern against; skipping them changes fma choices and bits.
-  const auto symbol = [&b](NodeId u) {
-    const OpCode op = b.op_of(u);
-    return op == OpCode::Var || op == OpCode::Implicit;
-  };
-  s.moving.resize(n);
-  for (const NodeId v : cone) {
-    for_each_operand(b, v, [&](NodeId u) {
-      s.moving[v] = s.moving[v] || s.moving[u] || symbol(u);
-    });
-  }
+  // A symbol moves even outside the cone, where solved implicits fold into it.
+  mark_moving(b, cone, s.moving);
   const auto moves = [&](NodeId u) {
-    return s.moving[u] || symbol(u) || kind_of(b.op_of(u)) == Kind::Const;
+    return is_symbol(b, u) || s.moving[u] || kind_of(b.op_of(u)) == Kind::Const;
   };
   s.adj.resize(n, no_node);
   s.guard.resize(n);
@@ -697,9 +690,10 @@ template <impl::Numeric T>
 tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
               std::span<const NodeId> tangent) {
   const auto n = static_cast<NodeId>(b.size());
-  const auto live = detail::reachable(b, roots);
-  const auto moves = detail::moving(b, live);
-  b.reserve(n + 2 * static_cast<std::size_t>(std::ranges::count(live, true)));
+  std::vector<bool> moves; // cone_of's marks, which come back clear
+  const auto cone = detail::cone_of(b, roots, moves);
+  detail::mark_moving(b, cone, moves);
+  b.reserve(n + 2 * cone.size());
   std::vector<NodeId> d(n, no_node);
   // A node that holds still has a zero tangent of its shape, made only when an
   // arm reads it.
@@ -722,7 +716,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
     return (moves[l] ? dl() + dr() : dr()).id(b, shape);
   };
 
-  for (const NodeId v : detail::live_ids(live)) {
+  for (const NodeId v : cone) {
     const auto node = b[v]; // A copy, since building below may reallocate.
     if (!moves[v]) {
       continue;

@@ -637,7 +637,7 @@ TEST(RtEquation, UnivariateDerivativesThroughMaxAndMin) {
 
 // The walk and the thread's tape are kept between calls, so a call after
 // another point, another order, or the arena's growth equals a fresh one.
-TEST(RtEquation, UnivariateDerivativeKeepsNothingBetweenCalls) {
+TEST(RtEquation, UnivariateDerivativeReusesItsWalk) {
   const auto build = [] {
     return ddx::rt::equation([] {
       const auto x = ddx::rt::var("x");
@@ -657,6 +657,29 @@ TEST(RtEquation, UnivariateDerivativeKeepsNothingBetweenCalls) {
   // A Hessian appends its sweep to the arena the Taylor walk reads.
   (void)*warm.hessian(0.6);
   EXPECT_EQ(*warm.univariate_derivative<4>(0.6), cold(0.6));
+}
+
+// sin and cos of one operand share a series, and so do sinh and cosh; a mate
+// written to the wrong row or skipped breaks the double-angle identities.
+template <std::size_t Order> void expect_paired_series_match(double at) {
+  const auto of_u = [](auto &&f) {
+    return ddx::rt::equation([&] { return f(0.7 * ddx::rt::var("x") + 0.2); });
+  };
+  const auto paired = of_u(
+      [](const auto &u) { return sin(u) * cos(u) + cosh(u) * sinh(u); });
+  const auto closed = of_u(
+      [](const auto &u) { return 0.5 * sin(2.0 * u) + 0.5 * sinh(2.0 * u); });
+  EXPECT_NEAR(*paired.template univariate_derivative<Order>(at),
+              *closed.template univariate_derivative<Order>(at), 1e-10)
+      << "order " << Order << " at " << at;
+}
+
+TEST(RtEquation, UnivariateDerivativeOfPairedSeries) {
+  for (const double at : {-0.8, 0.0, 0.45, 1.3}) {
+    expect_paired_series_match<2>(at);
+    expect_paired_series_match<4>(at);
+    expect_paired_series_match<8>(at);
+  }
 }
 
 } // namespace
@@ -1401,7 +1424,8 @@ TEST(RtEquation, CensusChargesATensorStepItsShape) {
   const auto eq = ddx::rt::equation([&] {
     const auto x = ddx::rt::vec("x", n);
     const auto t = ddx::rt::var("T");
-    const auto m = exp(t * ddx::rt::mat_constant(n, n, std::span<const double>{b}));
+    const auto m =
+        exp(t * ddx::rt::mat_constant(n, n, std::span<const double>{b}));
     return x % (m % x);
   });
   const auto c = eq.census(ddx::rt::Want::Value);

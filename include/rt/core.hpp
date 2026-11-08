@@ -17,9 +17,6 @@
 #include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>
-#include <boost/describe/enum.hpp>
-#include <boost/describe/enumerators.hpp>
-#include <boost/mp11/algorithm.hpp>
 
 #include "jit/options.hpp"
 
@@ -29,7 +26,6 @@
 #include <algorithm>
 #include <array>
 #include <concepts>
-#include <cstdint>
 #include <functional>
 #include <initializer_list>
 #include <memory>
@@ -221,15 +217,6 @@ struct Rebalanced {
   Jacobian derivative;
 };
 
-// The cones a Core walks one point at a time, each planned once.
-enum class PointWalk : std::uint8_t {
-  Hessians, // a system's hessian() at a point
-  Taylor,   // root 0's univariate_derivative
-};
-BOOST_DESCRIBE_ENUM(PointWalk, Hessians, Taylor)
-inline constexpr std::size_t point_walk_count =
-    boost::mp11::mp_size<boost::describe::describe_enumerators<PointWalk>>::value;
-
 // The arena's lock and every lazily built sweep, kept on the heap because a
 // mutex cannot move and constant evaluation never needs them.
 // Lock order: a pipeline's lock, then the arena's. Nothing under the arena's
@@ -240,8 +227,8 @@ struct Sweeps {
   Lazy<DenseHessian> dense;
   // Indexed by Want: the extra block of Hvp, Vjp, Jvp and JacobianJvp.
   std::array<Lazy<std::vector<NodeId>>, want_count> products;
-  // Indexed by PointWalk.
-  std::array<Lazy<ArenaWalk>, point_walk_count> walks;
+  Lazy<ArenaWalk> hessian_walk; // a system's hessian() at a point
+  Lazy<ArenaWalk> taylor_walk;  // root 0's univariate_derivative
 #ifdef DDX_HAS_JIT
   Lazy<Rebalanced> rebalanced;
 #endif
@@ -554,7 +541,7 @@ public:
     using Taylor = impl::TaylorDual<T, Order>;
     // Only root 0's cone is walked, since the arena may also hold a gradient
     // and a Hessian and a Taylor node costs Order + 1 coefficients.
-    const ArenaWalk &walk = point_walk(PointWalk::Taylor, [this] {
+    const ArenaWalk &walk = point_walk(sweeps_->taylor_walk, [this] {
       return std::array{roots_[0]};
     });
     // The tape is thread-kept and not cleared; every id read below is
@@ -871,7 +858,7 @@ protected:
     const auto &blocks = hessians();
     // The nodes the three blocks read, planned once. Appended per block rather
     // than via views::join, which GCC 15 flags maybe-uninitialized under -Wall.
-    const ArenaWalk &walk = point_walk(PointWalk::Hessians, [&] {
+    const ArenaWalk &walk = point_walk(sweeps_->hessian_walk, [&] {
       std::vector<NodeId> wanted{roots_.begin(), roots_.end()};
       std::ranges::for_each(blocks, [&wanted](const Hessian &b) {
         impl::append(wanted, b.compressed);
@@ -927,8 +914,8 @@ protected:
 
 private:
   // The walk over the cone `wanted()` names, planned once under the read lock.
-  const ArenaWalk &point_walk(PointWalk which, auto &&wanted) const {
-    return sweeps_->walks[std::to_underlying(which)].get([&] {
+  const ArenaWalk &point_walk(Lazy<ArenaWalk> &slot, auto &&wanted) const {
+    return slot.get([&] {
       const auto ids = wanted();
       [[maybe_unused]] const auto held = reading();
       return ArenaWalk{*arena_, live_ids(reachable(*arena_, ids)),
