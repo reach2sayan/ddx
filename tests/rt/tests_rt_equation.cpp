@@ -665,8 +665,8 @@ template <std::size_t Order> void expect_paired_series_match(double at) {
   const auto of_u = [](auto &&f) {
     return ddx::rt::equation([&] { return f(0.7 * ddx::rt::var("x") + 0.2); });
   };
-  const auto paired = of_u(
-      [](const auto &u) { return sin(u) * cos(u) + cosh(u) * sinh(u); });
+  const auto paired =
+      of_u([](const auto &u) { return sin(u) * cos(u) + cosh(u) * sinh(u); });
   const auto closed = of_u(
       [](const auto &u) { return 0.5 * sin(2.0 * u) + 0.5 * sinh(2.0 * u); });
   EXPECT_NEAR(*paired.template univariate_derivative<Order>(at),

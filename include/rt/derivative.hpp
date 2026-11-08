@@ -158,13 +158,14 @@ struct SweepScratch {
 
 template <AtImplicits At, impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow reverse_sweep(Arena<T> &b, NodeId root,
-                                                  SweepScratch &s);
+                                                  SweepScratch &scratch);
 } // namespace detail
 
 template <impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow
-build_reverse_jacobian(Arena<T> &b, NodeId root, detail::SweepScratch &s) {
-  return detail::reverse_sweep<detail::AtImplicits::solved>(b, root, s);
+build_reverse_jacobian(Arena<T> &b, NodeId root,
+                       detail::SweepScratch &scratch) {
+  return detail::reverse_sweep<detail::AtImplicits::solved>(b, root, scratch);
 }
 template <impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow build_reverse_jacobian(Arena<T> &b,
@@ -295,7 +296,8 @@ constexpr void mark_moving(const Arena<T> &b, std::span<const NodeId> cone,
   moving.resize(b.size());
   for (const NodeId v : cone) {
     moving[v] = is_symbol(b, v);
-    for_each_operand(b, v, [&](NodeId u) { moving[v] = moving[v] || moving[u]; });
+    for_each_operand(b, v,
+                     [&](NodeId u) { moving[v] = moving[v] || moving[u]; });
   }
 }
 } // namespace detail
@@ -304,23 +306,24 @@ constexpr void mark_moving(const Arena<T> &b, std::span<const NodeId> cone,
 // stays topological. Solved implicits fold adj[z] * dz/dx_s in at the end.
 template <detail::AtImplicits At, impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow
-detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &s) {
+detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &scratch) {
   const auto n = static_cast<NodeId>(b.size());
-  const auto cone = cone_of(b, std::span{&root, 1}, s.marked);
+  const auto cone = cone_of(b, std::span{&root, 1}, scratch.marked);
   // Contributions are built for moving nodes and also constants, whose nodes
   // later sweeps intern against; skipping them changes fma choices and bits.
   // A symbol moves even outside the cone, where solved implicits fold into it.
-  mark_moving(b, cone, s.moving);
+  mark_moving(b, cone, scratch.moving);
   const auto moves = [&](NodeId u) {
-    return is_symbol(b, u) || s.moving[u] || kind_of(b.op_of(u)) == Kind::Const;
+    return is_symbol(b, u) || scratch.moving[u] ||
+           kind_of(b.op_of(u)) == Kind::Const;
   };
-  s.adj.resize(n, no_node);
-  s.guard.resize(n);
-  s.gathered.resize(n);
-  auto &adj = s.adj;
-  auto &guard = s.guard;
-  auto &gathered = s.gathered;
-  auto &touched = s.touched;
+  scratch.adj.resize(n, no_node);
+  scratch.guard.resize(n);
+  scratch.gathered.resize(n);
+  auto &adj = scratch.adj;
+  auto &guard = scratch.guard;
+  auto &gathered = scratch.gathered;
+  auto &touched = scratch.touched;
   adj[root] = b.constant(T{1});
   touched.push_back(root);
 
@@ -420,7 +423,7 @@ detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &s) {
 
   // dot(A, M) for A = N (.) u w^T is u . (M (.) N) w, never forming A. Whether
   // a node contracts is decided first from ids, so failures build nothing.
-  auto &contracts = s.contracts;
+  auto &contracts = scratch.contracts;
   const auto contractible = [&](NodeId id) {
     for (auto u = static_cast<NodeId>(contracts.size()); u <= id; ++u) {
       const Node<T> &at = b[u];
@@ -670,7 +673,7 @@ detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &s) {
   }
   touched.clear();
   for (const NodeId v : cone) {
-    s.moving[v] = false;
+    scratch.moving[v] = false;
   }
   // Unreached symbols get the literal zero, interned only when needed, since an
   // unused node would still shift every later id.

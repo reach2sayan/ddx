@@ -541,9 +541,8 @@ public:
     using Taylor = impl::TaylorDual<T, Order>;
     // Only root 0's cone is walked, since the arena may also hold a gradient
     // and a Hessian and a Taylor node costs Order + 1 coefficients.
-    const ArenaWalk &walk = point_walk(sweeps_->taylor_walk, [this] {
-      return std::array{roots_[0]};
-    });
+    const ArenaWalk &walk = point_walk(
+        sweeps_->taylor_walk, [this] { return std::array{roots_[0]}; });
     // The tape is thread-kept and not cleared; every id read below is
     // scheduled, so this call writes it first.
     TapeLease<Taylor> lease{calls_out_};

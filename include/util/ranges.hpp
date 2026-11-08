@@ -32,9 +32,9 @@ constexpr void append(auto &c, std::ranges::input_range auto &&r)
 {
   if constexpr (std::ranges::sized_range<decltype(r)>) {
     // resize grows geometrically, where an exact reserve copies c every time.
-    const auto at = c.size();
-    c.resize(at + std::ranges::size(r));
-    std::ranges::copy(DDX_FWD(r), std::ranges::next(std::ranges::begin(c), at));
+    const auto at = std::ranges::ssize(c);
+    c.resize(c.size() + std::ranges::size(r));
+    std::ranges::copy(DDX_FWD(r), std::ranges::begin(c) + at);
   } else {
     std::ranges::copy(DDX_FWD(r), std::back_inserter(c));
   }
