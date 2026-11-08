@@ -99,7 +99,8 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
   DDX_ALWAYS_INLINE constexpr TaylorDual
   operator*(const TaylorDual &o) const noexcept {
     TaylorDual r;
-    orders<0>([&](auto k) { r.c[k] = conv(c, o.c, k, 0, k + 1); });
+    orders<0>([&](auto k)
+                  DDX_LAMBDA_INLINE { r.c[k] = conv(c, o.c, k, 0, k + 1); });
     return r;
   }
 
@@ -109,8 +110,9 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
   operator/(const TaylorDual &o) const noexcept {
     TaylorDual r;
     const S inv0 = S{1} / o.c[0];
-    orders<0>(
-        [&](auto k) { r.c[k] = (c[k] - conv(r.c, o.c, k, 0, k)) * inv0; });
+    orders<0>([&](auto k) DDX_LAMBDA_INLINE {
+      r.c[k] = (c[k] - conv(r.c, o.c, k, 0, k)) * inv0;
+    });
     return r;
   }
 
@@ -193,7 +195,7 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
   [[nodiscard]] DDX_ALWAYS_INLINE static constexpr TaylorDual
   series(S w0, auto next) noexcept {
     TaylorDual w{w0};
-    orders<1>([&](auto k) { w.c[k] = next(w.c, k); });
+    orders<1>([&](auto k) DDX_LAMBDA_INLINE { w.c[k] = next(w.c, k); });
     return w;
   }
 
@@ -223,7 +225,7 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
   coupled_pair(const TaylorDual &u, S s0, S c0) noexcept {
     static_assert(Sign == 1 || Sign == -1);
     TaylorDual s{s0}, cc{c0};
-    orders<1>([&](auto k) {
+    orders<1>([&](auto k) DDX_LAMBDA_INLINE {
       S sv{}, cv{};
       // Oldest coefficient first, so the newest, s[k-1] and c[k-1], enter
       // last and the chain to c[k] is one fma long rather than k.
@@ -303,9 +305,11 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
     TaylorDual w{tanh(u.c[0])};
     std::array<S, N + 1> sq{}; // w², extended as each w[k] lands
     sq[0] = w.c[0] * w.c[0];
-    orders<1>([&](auto k) {
-      w.c[k] = (static_cast<S>(k) * u.c[k] - dconv(sq, u.c, k)) * inv_k[k];
-      sq[k] = conv(w.c, w.c, k, 0, k + 1);
+    orders<1>([&](auto k) DDX_LAMBDA_INLINE {
+      // Qualified: MSVC does not find statics from a lambda in a hidden friend.
+      w.c[k] = (static_cast<S>(k) * u.c[k] - TaylorDual::dconv(sq, u.c, k)) *
+               TaylorDual::inv_k[k];
+      sq[k] = TaylorDual::conv(w.c, w.c, k, 0, k + 1);
     });
     return w;
   }
@@ -449,8 +453,11 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
     }
     // n integrates x·y' − y·x', the only part of u implicit_recurrence reads.
     TaylorDual n;
-    orders<1>([&](auto k) {
-      n.c[k] = (dconv(x.c, y.c, k) - dconv(y.c, x.c, k)) * inv_k[k];
+    orders<1>([&](auto k) DDX_LAMBDA_INLINE {
+      // Qualified, as in tanh.
+      n.c[k] =
+          (TaylorDual::dconv(x.c, y.c, k) - TaylorDual::dconv(y.c, x.c, k)) *
+          TaylorDual::inv_k[k];
     });
     return implicit_recurrence(n, atan2(y.c[0], x.c[0]), x * x + y * y);
   }

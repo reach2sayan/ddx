@@ -203,7 +203,7 @@ f: ℝⁿ → ℝᵐ:
 | `vjp(w, x)` | wᵀ J, length n |
 | `hvp(v, x)`, `hvp(name, x)` | H v, length n; one output |
 | `jacobian_jvp(v, x)`, `jacobian_jvp(name, x)` | ∂J/∂v, m × n |
-| `univariate_derivative<K>(x0)` | K-th derivative; one symbol, one output |
+| `univariate_derivative<K>(x0)`, `univariate_derivative<K>(xs, out)` | K-th derivative; one symbol, one output; the span form fills `out[i]` at `xs[i]`, several points to a sweep |
 
 The batch calls take one input column per input and one output pointer per
 output column, each `n` points long, write in place without allocating, and

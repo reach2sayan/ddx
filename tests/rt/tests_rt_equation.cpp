@@ -659,6 +659,33 @@ TEST(RtEquation, UnivariateDerivativeReusesItsWalk) {
   EXPECT_EQ(*warm.univariate_derivative<4>(0.6), cold(0.6));
 }
 
+// A span of points sweeps them a block at a time; 19 is two full blocks and a
+// short one, and below a block the points go one by one. Either way each
+// answer is the one point's, bit for bit.
+TEST(RtEquation, UnivariateDerivativeOverManyPoints) {
+  const auto eq = ddx::rt::equation([] {
+    const auto x = ddx::rt::var("x");
+    return log(1.5 + sin(x)) * cos(0.5 * x * x + 0.25);
+  });
+  for (const std::size_t n : {19uz, 3uz}) {
+    std::vector<double> xs(n), out(n);
+    for (auto &&[i, x] : xs | std::views::enumerate) {
+      x = -1.0 + 0.1 * static_cast<double>(i);
+    }
+    ASSERT_TRUE(eq.univariate_derivative<4>(std::span<const double>{xs},
+                                            std::span{out}));
+    for (std::size_t i = 0; i < n; ++i) {
+      EXPECT_EQ(out[i], *eq.univariate_derivative<4>(xs[i]));
+    }
+  }
+  std::vector<double> xs(4), out(3);
+  EXPECT_EQ(
+      eq.univariate_derivative<2>(std::span<const double>{xs}, std::span{out})
+          .error()
+          .code,
+      ddx::errc::wrong_arity);
+}
+
 // sin and cos of one operand share a series, and so do sinh and cosh; a mate
 // written to the wrong row or skipped breaks the double-angle identities.
 template <std::size_t Order> void expect_paired_series_match(double at) {

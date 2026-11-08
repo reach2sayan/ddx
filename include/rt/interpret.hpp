@@ -579,7 +579,9 @@ public:
         schedule_, [&b](const Step &s) { return supports<U>(b[s.node].op); });
   }
 
-  template <impl::Numeric T, impl::Numeric U>
+  // point is symbol-major and values node-major, W lanes each, as in
+  // evaluate_block.
+  template <std::size_t W = 1, impl::Numeric T, impl::Numeric U>
   constexpr void
   operator()(const Arena<T> &b, const auto &point, std::span<U> values,
              std::span<U> vtape,
@@ -592,7 +594,7 @@ public:
     if constexpr (std::same_as<U, T>) {
       tensors.kernels = &kernels;
     }
-    evaluate_into(b, point, schedule_, values, tensors);
+    evaluate_block<W>(b, point, schedule_, values, tensors);
   }
   // Allocates its own tapes and returns the values.
   template <impl::Numeric T>
