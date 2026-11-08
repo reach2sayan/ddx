@@ -312,7 +312,7 @@ TEST(ExpressionTest, ExpSum) {
   ASSERT_EQ(target.eval(), std::exp(3.0));
 }
 TEST(ExpressionTest, ExpDerivative) {
-  for (std::size_t i = 1; i < 1000; ++i) {
+  for (const std::size_t i : std::views::iota(1uz, 1000uz)) {
     Variable<double, ddx::impl::FixedString{"x"}> xv;
     auto target = exp(xv);
     const double at = static_cast<double>(i);
@@ -581,9 +581,10 @@ TEST(EquationTest, ReverseJacobianAgreesWithSymbolic) {
       ve.template jacobian<ddx::DiffMode::Symbolic>(std::array{2.0, 3.0, 4.0});
   auto J_rev = ve.jacobian(std::array{2.0, 3.0, 4.0});
 
-  for (std::size_t i = 0; i < decltype(ve)::output_dim; ++i)
-    for (std::size_t j = 0; j < decltype(ve)::input_dim; ++j)
-      ASSERT_DOUBLE_EQ((J_rev[i, j]), (J_sym[i, j]));
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, decltype(ve)::output_dim),
+           std::views::iota(0uz, decltype(ve)::input_dim)))
+    ASSERT_DOUBLE_EQ((J_rev[i, j]), (J_sym[i, j]));
 }
 TEST(EquationTest, ParallelReverseJacobian_FourOutputs) {
   auto x = var<"x">;
@@ -597,9 +598,10 @@ TEST(EquationTest, ParallelReverseJacobian_FourOutputs) {
       ve.template jacobian<ddx::DiffMode::Symbolic>(std::array{1.0, 2.0, 3.0});
   auto J_rev = ve.jacobian(std::array{1.0, 2.0, 3.0});
 
-  for (std::size_t i = 0; i < decltype(ve)::output_dim; ++i)
-    for (std::size_t j = 0; j < decltype(ve)::input_dim; ++j)
-      ASSERT_DOUBLE_EQ((J_rev[i, j]), (J_sym[i, j]));
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, decltype(ve)::output_dim),
+           std::views::iota(0uz, decltype(ve)::input_dim)))
+    ASSERT_DOUBLE_EQ((J_rev[i, j]), (J_sym[i, j]));
 }
 TEST(EquationTest, ParallelReverseJacobian_FiveOutputsTrigExp) {
   auto x = var<"x">;
@@ -614,9 +616,10 @@ TEST(EquationTest, ParallelReverseJacobian_FiveOutputsTrigExp) {
       ve.template jacobian<ddx::DiffMode::Symbolic>(std::array{0.5, 1.0, 1.5});
   auto J_rev = ve.jacobian(std::array{0.5, 1.0, 1.5});
 
-  for (std::size_t i = 0; i < decltype(ve)::output_dim; ++i)
-    for (std::size_t j = 0; j < decltype(ve)::input_dim; ++j)
-      ASSERT_NEAR((J_rev[i, j]), (J_sym[i, j]), 1e-12);
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, decltype(ve)::output_dim),
+           std::views::iota(0uz, decltype(ve)::input_dim)))
+    ASSERT_NEAR((J_rev[i, j]), (J_sym[i, j]), 1e-12);
 }
 TEST(EquationTest, ReverseJacobianSingleOutputMatchesFlatRow) {
   auto x = var<"x">;
@@ -628,7 +631,7 @@ TEST(EquationTest, ReverseJacobianSingleOutputMatchesFlatRow) {
   auto J_rev = ve.jacobian(std::array{2.0, 5.0});
   auto g = Equation{expr}.jacobian(2.0, 5.0);
 
-  for (std::size_t j = 0; j < decltype(ve)::input_dim; ++j)
+  for (const std::size_t j : std::views::iota(0uz, decltype(ve)::input_dim))
     ASSERT_DOUBLE_EQ((J_rev[0, j]), g[j]);
 }
 // canonicalise folds (y*x)/(x*y) to 1, so the sweep must be laid out by the

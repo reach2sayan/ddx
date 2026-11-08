@@ -23,12 +23,10 @@ using models::RE;
 // site order, which is what makes the Hessian banded.
 std::vector<RE> species(Arena<> &b, std::size_t n) {
   const auto width = std::to_string(n - 1).size();
-  std::vector<RE> x;
-  x.reserve(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    x.push_back(var(b, std::format("x{:0{}}", i, width)));
-  }
-  return x;
+  return std::views::iota(0uz, n) | std::views::transform([&](std::size_t i) {
+           return var(b, std::format("x{:0{}}", i, width));
+         }) |
+         ddx::impl::to<std::vector>();
 }
 
 // Central differences on the interpreter, independent of the reverse sweep.
@@ -37,7 +35,7 @@ void expect_jacobian_matches_differences(Arena<> &b, ddx::rt::NodeId root,
                                          std::vector<double> pt,
                                          double tol = 2e-6) {
   const auto values = ddx::rt::evaluate_all(b, pt);
-  for (std::size_t i = 0; i < pt.size(); ++i) {
+  for (const std::size_t i : std::views::iota(0uz, pt.size())) {
     const double h = 1e-6 * std::max(1.0, std::abs(pt[i]));
     auto hi = pt, lo = pt;
     hi[i] += h;
@@ -93,7 +91,7 @@ TEST(RtEnergy, StableDownToTraceMoleFractions) {
     const auto values = ddx::rt::evaluate_all(b, pt);
 
     EXPECT_TRUE(std::isfinite(values[g.value])) << "G at trace " << trace;
-    for (std::size_t i = 0; i < n; ++i) {
+    for (const std::size_t i : std::views::iota(0uz, n)) {
       EXPECT_TRUE(std::isfinite(values[g.partial[i]]))
           << "dG/dx" << i << " at trace " << trace;
     }

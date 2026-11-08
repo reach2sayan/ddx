@@ -62,9 +62,10 @@ void expect_agrees_with_ddx(const E &e, std::array<double, N> pt) {
   const auto expected_grad = ddx::meta::unpack(
       pt, [&](auto... a) { return ddx::Equation{e}.jacobian(a...); });
 
-  for (std::size_t i = 0; i < b.symbols().size(); ++i) {
-    SCOPED_TRACE("partial d/d" + std::string{b.symbols()[i]});
-    expect_close(values[g.partial[i]], expected_grad[i]);
+  for (const auto [symbol, partial, want] :
+       std::views::zip(b.symbols(), g.partial, expected_grad)) {
+    SCOPED_TRACE("partial d/d" + std::string{symbol});
+    expect_close(values[partial], want);
   }
 }
 
@@ -140,7 +141,7 @@ TEST(RtJacobian, SelectingOpsAgainstFiniteDifferences) {
     const auto f = build(vx, vy);
     const auto g = ddx::rt::derive_jacobian(b, f.id(b));
     const auto values = ddx::rt::evaluate_all(b, std::span<const double>{pt});
-    for (std::size_t i = 0; i < 2; ++i) {
+    for (const std::size_t i : std::views::iota(0uz, 2uz)) {
       const double h = 1e-6;
       auto hi = pt, lo = pt;
       hi[i] += h;
@@ -249,7 +250,7 @@ TEST(RtJacobian, ForwardModeAgreesWithReverse) {
     const auto rev =
         ddx::rt::derive_jacobian<ddx::DiffMode::Reverse>(b, f.id(b));
     const auto values = ddx::rt::evaluate_all(b, std::span<const double>{pt});
-    for (std::size_t i = 0; i < 2; ++i) {
+    for (const std::size_t i : std::views::iota(0uz, 2uz)) {
       const double want = values[rev.partial[i]];
       EXPECT_NEAR(values[fwd.partial[i]], want,
                   1e-12 * std::max(1.0, std::abs(want)))
@@ -277,10 +278,10 @@ TEST(RtJacobian, ABandedSystemKeepsOnlyTheCellsThatExist) {
   ddx::rt::Arena<> b;
 
   const auto name = [](std::size_t i) { return "x" + std::to_string(i); };
-  std::vector<ddx::rt::Expression<double>> x;
-  for (const std::size_t i : std::views::iota(0uz, n)) {
-    x.push_back(var(b, name(i)));
-  }
+  const auto x =
+      std::views::iota(0uz, n) |
+      std::views::transform([&](std::size_t i) { return var(b, name(i)); }) |
+      ddx::impl::to<std::vector>();
   // Squares rather than plain sums, since otherwise every partial would be a
   // constant and the sweep would fold the whole row away.
   std::vector<ddx::rt::Expression<double>> rows;
@@ -292,13 +293,9 @@ TEST(RtJacobian, ABandedSystemKeepsOnlyTheCellsThatExist) {
     rows.push_back(r);
   }
 
-  const auto j = ddx::rt::derive_jacobian(b, [&] {
-    std::vector<ddx::rt::NodeId> ids;
-    for (auto &r : rows) {
-      ids.push_back(r.id(b));
-    }
-    return ids;
-  }());
+  const auto j = ddx::rt::derive_jacobian(
+      b, rows | std::views::transform([&](auto &r) { return r.id(b); }) |
+             ddx::impl::to<std::vector>());
 
   const auto &pattern = j.pattern;
   EXPECT_EQ(pattern.size(), n);
@@ -401,10 +398,11 @@ TEST(RtJacobian, AFoldedPartialIsAStructuralHole) {
 TEST(RtJacobian, HessianCellPlacesEveryCompressedColumn) {
   static constexpr std::size_t n = 6;
   ddx::rt::Arena<> b;
-  std::vector<ddx::rt::Expression<double>> x;
-  for (const std::size_t i : std::views::iota(0uz, n)) {
-    x.push_back(var(b, "x" + std::to_string(i)));
-  }
+  const auto x = std::views::iota(0uz, n) |
+                 std::views::transform([&](std::size_t i) {
+                   return var(b, "x" + std::to_string(i));
+                 }) |
+                 ddx::impl::to<std::vector>();
   auto energy = x[0] * x[0];
   for (const std::size_t i : std::views::iota(1uz, n)) {
     energy = energy + x[i] * x[i] + x[0] * x[i];
@@ -741,7 +739,7 @@ TEST(RtJacobian, PowAtAZeroBaseIsGuardedOnTheGraph) {
       b, pow(x, 3.0).id(b));
   const auto live =
       ddx::rt::detail::reachable(b, std::span{&cubic.partial[0], 1});
-  for (std::size_t v = 0; v < b.size(); ++v) {
+  for (const std::size_t v : std::views::iota(0uz, b.size())) {
     EXPECT_FALSE(live[v] && b[static_cast<ddx::rt::NodeId>(v)].op ==
                                 ddx::rt::OpCode::Select)
         << "node " << v;

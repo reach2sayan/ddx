@@ -101,7 +101,7 @@ consteval auto simplex_index_table() noexcept {
   for (auto &slot : out) {
     slot = idx;
     // Raise the rightmost index that can grow, and set those after it equal.
-    for (std::size_t p = Order; p-- > 0;) {
+    for (const std::size_t p : std::views::iota(0uz, Order) | std::views::reverse) {
       if (idx[p] + 1 < N) {
         const std::size_t v = ++idx[p];
         std::ranges::fill(idx | std::views::drop(p + 1), v);

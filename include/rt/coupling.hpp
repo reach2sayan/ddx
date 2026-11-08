@@ -313,9 +313,9 @@ template <impl::Numeric T>
       return Elements(shape_of(b, v).rows);
     case OpCode::Map:
       if (op != OpCode::Neg) {
-        std::ranges::for_each(each(node.in[0]), [&](const auto &e) {
+        for (const auto &e : each(node.in[0])) {
           detail::couple(rows, e, e);
-        });
+        }
       }
       return each(node.in[0]).empty() ? std::nullopt
                                       : std::optional{each(node.in[0])};

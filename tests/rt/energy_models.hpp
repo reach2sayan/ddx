@@ -2,6 +2,7 @@
 #include "rt/derivative.hpp"
 #include <cmath>
 #include <numeric>
+#include <ranges>
 #include <vector>
 
 // Thermodynamic models built as runtime graphs. The parameters are arbitrary
@@ -19,12 +20,12 @@ inline double pseudo(std::size_t i, std::size_t j, double lo, double hi) {
 inline RE uniquac(const std::vector<RE> &x) {
   const std::size_t n = x.size();
   std::vector<double> r(n), q(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     r[i] = pseudo(i, 1, 0.9, 5.2);
     q[i] = pseudo(i, 2, 0.8, 4.4);
   }
   RE sum_r{0}, sum_q{0};
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     sum_r += r[i] * x[i];
     sum_q += q[i] * x[i];
   }
@@ -32,21 +33,21 @@ inline RE uniquac(const std::vector<RE> &x) {
   std::vector<RE> phi, theta;
   phi.reserve(n);
   theta.reserve(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     phi.push_back(r[i] * x[i] / sum_r);
     theta.push_back(q[i] * x[i] / sum_q);
   }
 
   RE comb{0};
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     comb += x[i] * log(phi[i] / x[i]) +
             5.0 * q[i] * x[i] * log(theta[i] / phi[i]); // z/2 = 5
   }
 
   RE res{0};
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     RE inner{0};
-    for (std::size_t j = 0; j < n; ++j) {
+    for (const std::size_t j : std::views::iota(0uz, n)) {
       inner += theta[j] * pseudo(j, i, 0.2, 1.8); // tau_ji, T folded in
     }
     res -= q[i] * x[i] * log(inner);
@@ -59,21 +60,20 @@ inline RE uniquac(const std::vector<RE> &x) {
 inline RE peng_robinson(const std::vector<RE> &x, const RE &Z) {
   const std::size_t n = x.size();
   std::vector<double> ai(n), bi(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     ai[i] = pseudo(i, 3, 0.3, 2.6);
     bi[i] = pseudo(i, 4, 0.02, 0.09);
   }
   RE a_mix{0};
-  for (std::size_t i = 0; i < n; ++i) {
-    for (std::size_t j = 0; j < n; ++j) {
-      const double aij =
-          std::sqrt(ai[i] * ai[j]) * (1.0 - pseudo(i, j, 0.0, 0.12));
-      a_mix += x[i] * x[j] * aij;
-    }
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, n), std::views::iota(0uz, n))) {
+    const double aij =
+        std::sqrt(ai[i] * ai[j]) * (1.0 - pseudo(i, j, 0.0, 0.12));
+    a_mix += x[i] * x[j] * aij;
   }
   RE b_mix{0};
-  for (std::size_t i = 0; i < n; ++i) {
-    b_mix += x[i] * bi[i];
+  for (const auto [xi, b] : std::views::zip(x, bi)) {
+    b_mix += xi * b;
   }
 
   const RE A = a_mix * 0.45724; // P/(RT)^2 folded into the constant
@@ -86,23 +86,23 @@ inline RE peng_robinson(const std::vector<RE> &x, const RE &Z) {
 // short-range UNIQUAC term. The double sum makes the Hessian dense.
 inline RE mse(const std::vector<RE> &x) {
   const std::size_t n = x.size();
-  std::vector<double> zc(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    zc[i] = pseudo(i, 5, -2.0, 2.0);
-  }
+  const auto zc = std::views::iota(0uz, n) |
+                  std::views::transform([](std::size_t i) {
+                    return pseudo(i, 5, -2.0, 2.0);
+                  }) |
+                  ddx::impl::to<std::vector>();
 
   RE ionic{0};
-  for (std::size_t i = 0; i < n; ++i) {
-    ionic += 0.5 * zc[i] * zc[i] * x[i];
+  for (const auto [z, xi] : std::views::zip(zc, x)) {
+    ionic += 0.5 * z * z * xi;
   }
 
   const RE lr = -0.3915 * sqrt(ionic) / (RE{1} + 1.2 * sqrt(ionic));
 
   RE mr{0};
-  for (std::size_t i = 0; i < n; ++i) {
-    for (std::size_t j = 0; j < n; ++j) {
-      mr += x[i] * x[j] * pseudo(i, j, -0.4, 0.4) * exp(-sqrt(ionic));
-    }
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, n), std::views::iota(0uz, n))) {
+    mr += x[i] * x[j] * pseudo(i, j, -0.4, 0.4) * exp(-sqrt(ionic));
   }
   return lr + mr + uniquac(x);
 }
@@ -114,9 +114,9 @@ inline RE mse(const std::vector<RE> &x) {
 inline RE cluster_expansion(const std::vector<RE> &s, std::size_t range = 2) {
   const std::size_t n = s.size();
   RE e{0};
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     e += pseudo(i, 6, -0.5, 0.5) * s[i]; // point term
-    for (std::size_t d = 1; d <= range; ++d) {
+    for (const std::size_t d : std::views::iota(1uz, range + 1)) {
       const std::size_t j = (i + d) % n;
       e += pseudo(i, j, -0.3, 0.3) * s[i] * s[j]; // pair term
     }
@@ -126,15 +126,14 @@ inline RE cluster_expansion(const std::vector<RE> &s, std::size_t range = 2) {
 
 // A bonded chain: stretch and bend terms, each local to a few sites.
 inline RE bonded_chain(const std::vector<RE> &r) {
-  const std::size_t n = r.size();
   RE e{0};
-  for (std::size_t i = 0; i + 1 < n; ++i) {
-    const RE d = r[i + 1] - r[i];
-    e += pseudo(i, 7, 0.5, 2.0) * d * d; // stretch
+  for (const auto [k, w] : std::views::enumerate(std::views::slide(r, 2))) {
+    const RE d = w[1] - w[0];
+    e += pseudo(static_cast<std::size_t>(k), 7, 0.5, 2.0) * d * d; // stretch
   }
-  for (std::size_t i = 0; i + 2 < n; ++i) {
-    const RE bend = r[i + 2] - 2.0 * r[i + 1] + r[i];
-    e += pseudo(i, 8, 0.2, 1.0) * bend * bend;
+  for (const auto [k, w] : std::views::enumerate(std::views::slide(r, 3))) {
+    const RE bend = w[2] - 2.0 * w[1] + w[0];
+    e += pseudo(static_cast<std::size_t>(k), 8, 0.2, 1.0) * bend * bend;
   }
   return e;
 }
@@ -147,10 +146,12 @@ inline RE regular_solution(const RE &x, double c, double k) {
 
 // An equimolar-ish composition summing to one.
 inline std::vector<double> composition(std::size_t n) {
-  std::vector<double> pt(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    pt[i] = (1.0 + 0.3 * static_cast<double>(i % 5)) / static_cast<double>(n);
-  }
+  auto pt = std::views::iota(0uz, n) |
+            std::views::transform([n](std::size_t i) {
+              return (1.0 + 0.3 * static_cast<double>(i % 5)) /
+                     static_cast<double>(n);
+            }) |
+            ddx::impl::to<std::vector>();
   const double total = std::accumulate(pt.begin(), pt.end(), 0.0);
   for (double &v : pt) {
     v /= total;

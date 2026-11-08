@@ -189,11 +189,10 @@ TEST(RtEigen, TheHessianBlockScattersDense) {
 template <typename T> void eigen_agrees_with_the_reference_table(double tol) {
   constexpr std::size_t n = 30;
   std::vector<T> m(n * n);
-  for (std::size_t i = 0; i < n; ++i) {
-    for (std::size_t j = 0; j < n; ++j) {
-      m[i + j * n] =
-          static_cast<T>(std::sin(static_cast<double>(i * 7 + j * 3)));
-    }
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, n), std::views::iota(0uz, n))) {
+    m[i + j * n] =
+        static_cast<T>(std::sin(static_cast<double>(i * 7 + j * 3)));
   }
   const auto model = [&] {
     const auto x = ddx::rt::vec<T>("x", n);
@@ -205,15 +204,16 @@ template <typename T> void eigen_agrees_with_the_reference_table(double tol) {
   eigen.tensor_kernels(eigen_table<T>);
   EXPECT_EQ(eigen.tensor_kernels().name, "eigen");
 
-  std::vector<T> at(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    at[i] = static_cast<T>(0.5 + 0.01 * static_cast<double>(i));
-  }
+  const auto at = std::views::iota(0uz, n) |
+                  std::views::transform([](std::size_t i) {
+                    return static_cast<T>(0.5 + 0.01 * static_cast<double>(i));
+                  }) |
+                  ddx::impl::to<std::vector>();
   const auto want_g = *reference.gradient(std::span<const T>{at});
   const auto got_g = *eigen.gradient(std::span<const T>{at});
   const auto want_h = *reference.hvp(at, std::span<const T>{at});
   const auto got_h = *eigen.hvp(at, std::span<const T>{at});
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     EXPECT_NEAR(got_g[i], want_g[i],
                 tol * std::max(1.0, std::abs(double{want_g[i]})));
     EXPECT_NEAR(got_h[i], want_h[i],

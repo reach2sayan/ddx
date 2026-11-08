@@ -7,9 +7,9 @@ TEST(MdLayout, SimplexPackedIsABijectionOnSortedMultiIndices) {
 
   constexpr T::mapping_type m{};
   std::set<std::size_t> slots;
-  for (std::size_t i = 0; i < 4; ++i) {
-    for (std::size_t j = i; j < 4; ++j) {
-      for (std::size_t k = j; k < 4; ++k) {
+  for (const std::size_t i : std::views::iota(0uz, 4uz)) {
+    for (const std::size_t j : std::views::iota(i, 4uz)) {
+      for (const std::size_t k : std::views::iota(j, 4uz)) {
         const auto s = static_cast<std::size_t>(m(i, j, k));
         EXPECT_LT(s, T::size());
         // Distinct multisets must not collide.

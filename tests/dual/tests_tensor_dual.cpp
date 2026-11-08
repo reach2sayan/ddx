@@ -9,20 +9,20 @@ TEST(BitExactness, EveryDriverIsBitStableAcrossBuilds) {
                  tanh(x) + sqrt(z * z + 1.0) + atan(x * z) + erf(y) +
                  cbrt(z + 3.0) + pow(z, 2.5);
   BitHash feed;
-  for (int i = 1; i <= 120; ++i) {
+  for (const int i : std::views::iota(1, 121)) {
     const double a = 0.01 * i, b = 0.02 * i + 0.3, c = 0.015 * i + 0.5;
     const std::array<double, 3> p{a, b, c};
     for (double v : Equation{e}.jacobian(p))
       feed(v);
     const auto g1 = Equation{e}.template derivative_tensor<1>(p);
-    for (std::size_t k = 0; k < 3; ++k)
-      feed(g1.data()[k]);
+    for (const double v : std::views::counted(g1.data(), 3))
+      feed(v);
     // Second-order tensors use packed symmetric storage, so walk the index
     // space rather than the buffer.
     const auto g2 = Equation{e}.template derivative_tensor<2>(p);
-    for (std::size_t r = 0; r < 3; ++r)
-      for (std::size_t cc = 0; cc < 3; ++cc)
-        feed(g2[r, cc]);
+    for (const auto [r, cc] : std::views::cartesian_product(
+             std::views::iota(0uz, 3uz), std::views::iota(0uz, 3uz)))
+      feed(g2[r, cc]);
     feed(e.eval(a, b, c));
     feed(e.eval_with_tangent<"x">(a, b, c).deriv());
 
@@ -125,11 +125,10 @@ TEST(DerivativeTensorTest, ForwardAndReverseHessiansAgree) {
     const std::array<double, 4> p{0.3, 0.4, 0.5, 0.6};
     const auto T = Equation{e}.template derivative_tensor<2>(p);
     const auto R = Equation{e}.hessian(p);
-    for (std::size_t i = 0; i < 4; ++i) {
-      for (std::size_t j = 0; j < 4; ++j) {
-        EXPECT_NEAR((T[i, j]), (R[i, j]), 1e-12)
-            << "N=4 at (" << i << "," << j << ")";
-      }
+    for (const auto [i, j] : std::views::cartesian_product(
+             std::views::iota(0uz, 4uz), std::views::iota(0uz, 4uz))) {
+      EXPECT_NEAR((T[i, j]), (R[i, j]), 1e-12)
+          << "N=4 at (" << i << "," << j << ")";
     }
   }
   {
@@ -142,11 +141,10 @@ TEST(DerivativeTensorTest, ForwardAndReverseHessiansAgree) {
     const std::array<double, 5> p{0.3, 0.4, 0.5, 0.6, 0.7};
     const auto T = Equation{e}.template derivative_tensor<2>(p);
     const auto R = Equation{e}.hessian(p);
-    for (std::size_t i = 0; i < 5; ++i) {
-      for (std::size_t j = 0; j < 5; ++j) {
-        EXPECT_NEAR((T[i, j]), (R[i, j]), 1e-12)
-            << "N=5 at (" << i << "," << j << ")";
-      }
+    for (const auto [i, j] : std::views::cartesian_product(
+             std::views::iota(0uz, 5uz), std::views::iota(0uz, 5uz))) {
+      EXPECT_NEAR((T[i, j]), (R[i, j]), 1e-12)
+          << "N=5 at (" << i << "," << j << ")";
     }
   }
 }

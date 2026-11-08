@@ -904,11 +904,11 @@ protected:
     // than via views::join, which GCC 15 flags maybe-uninitialized under -Wall.
     const ArenaWalk &walk = point_walk(sweeps_->hessian_walk, [&] {
       std::vector<NodeId> wanted{roots_.begin(), roots_.end()};
-      std::ranges::for_each(blocks, [&wanted](const Hessian &b) {
+      for (const Hessian &b : blocks) {
         impl::append(wanted, b.compressed);
         impl::append(wanted, b.partial);
         wanted.push_back(b.zero);
-      });
+      }
       return wanted;
     });
     const std::size_t n = symbol_count();

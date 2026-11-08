@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <ranges>
 #include <string>
 #include <vector>
 
@@ -36,7 +37,7 @@ TEST(RtArena, ReserveChangesNeitherIdsNorInterning) {
     const auto x = var(b, "x");
     const auto y = var(b, "y");
     auto f = exp(x) * sin(y);
-    for (int k = 1; k < 200; ++k) {
+    for (const int k : std::views::iota(1, 200)) {
       f += pow(x, k) / (y + k);
     }
     return f.id(b);
@@ -110,7 +111,7 @@ TEST(RtArena, ConstantOperandsFold) {
 // a single node.
 TEST(RtArena, ConstantsInternByTheirBits) {
   Arena<> b;
-  for (int i = 0; i < 64; ++i) {
+  for (const int i : std::views::iota(0, 64)) {
     (void)lit(b, 1.0 + i).id(b);
   }
   const auto plus = lit(b, 0.0).id(b);

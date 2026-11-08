@@ -55,7 +55,7 @@ TEST(RtEquation, MatchesTheCompileTimeEquation) {
   const auto want = compile_time.jacobian(1.3, 0.7);
   const auto got = *runtime.jacobian(1.3, 0.7);
   ASSERT_EQ(got.size(), want.size());
-  for (std::size_t i = 0; i < got.size(); ++i) {
+  for (const std::size_t i : std::views::iota(0uz, got.size())) {
     EXPECT_NEAR(got[i], want[i], 1e-12) << "partial " << i;
   }
 }
@@ -75,10 +75,11 @@ TEST(RtEquation, EveryCallSpellingAgrees) {
       *eq.jacobian(std::map<std::string, double>{{"y", 0.7}, {"x", 1.3}});
 
   ASSERT_EQ(positional.size(), 2u);
-  for (std::size_t i = 0; i < 2; ++i) {
-    EXPECT_DOUBLE_EQ(by_range[i], positional[i]);
-    EXPECT_DOUBLE_EQ(by_name[i], positional[i]);
-    EXPECT_DOUBLE_EQ(by_map[i], positional[i]);
+  for (const auto [range, name, map, at] :
+       std::views::zip(by_range, by_name, by_map, positional)) {
+    EXPECT_DOUBLE_EQ(range, at);
+    EXPECT_DOUBLE_EQ(name, at);
+    EXPECT_DOUBLE_EQ(map, at);
   }
 }
 
@@ -218,12 +219,11 @@ TEST(RtEquation, HessianMatchesTheCompileTimeEquation) {
   const auto want = ddx::Equation{f}.hessian(0.7, 1.1);
 
   ASSERT_EQ(got.size(), 4u);
-  for (std::size_t i = 0; i < 2; ++i) {
-    for (std::size_t j = 0; j < 2; ++j) {
-      EXPECT_NEAR(got[i * 2 + j], ddx::impl::get_real_part<1>(want[i, j]),
-                  1e-10)
-          << "H[" << i << "][" << j << "]";
-    }
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, 2uz), std::views::iota(0uz, 2uz))) {
+    EXPECT_NEAR(got[i * 2 + j], ddx::impl::get_real_part<1>(want[i, j]),
+                1e-10)
+        << "H[" << i << "][" << j << "]";
   }
   EXPECT_TRUE(std::isfinite(got[1]));
   EXPECT_DOUBLE_EQ(got[1], got[2]) << "a Hessian is symmetric";
@@ -288,7 +288,7 @@ TEST(RtEquation, BatchAgreesWithPerPoint) {
 
   constexpr std::size_t n = 8;
   std::vector<double> cx(n), cy(n), f(n), dx(n), dy(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     cx[i] = 0.3 + 0.1 * static_cast<double>(i);
     cy[i] = 1.0 + 0.2 * static_cast<double>(i);
   }
@@ -298,7 +298,7 @@ TEST(RtEquation, BatchAgreesWithPerPoint) {
 
   *eq.jacobian(columns, values, partials, n);
 
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     const auto want = *eq.jacobian(cx[i], cy[i]);
     EXPECT_NEAR(f[i], *eq.evaluate(cx[i], cy[i]), 1e-12) << "point " << i;
     EXPECT_NEAR(dx[i], want[0], 1e-12) << "point " << i;
@@ -405,8 +405,8 @@ TEST(RtEquation, BatchHessianFillsTheCompressedColumns) {
 
   const auto dense = *eq.hessian(0.7, 1.1);
   EXPECT_NEAR(dense[1], dense[2], 1e-12) << "symmetric";
-  for (std::size_t i = 0; i < n; ++i) {
-    EXPECT_NEAR(f[i], *eq.evaluate(0.7, 1.1), 1e-12);
+  for (const double value : f) {
+    EXPECT_NEAR(value, *eq.evaluate(0.7, 1.1), 1e-12);
   }
 }
 
@@ -584,7 +584,7 @@ TEST(RtEquation, HessianOfASystemIsOneBlockPerOutput) {
   EXPECT_NEAR(at(1, 0, 1), std::exp(0.7), 1e-10);
   EXPECT_NEAR(at(1, 1, 1), 0.0, 1e-10);
 
-  for (std::size_t k = 0; k < 2; ++k) {
+  for (const std::size_t k : std::views::iota(0uz, 2uz)) {
     EXPECT_NEAR(at(k, 0, 1), at(k, 1, 0), 1e-12);
   }
 }
@@ -674,8 +674,8 @@ TEST(RtEquation, UnivariateDerivativeOverManyPoints) {
     }
     ASSERT_TRUE(eq.univariate_derivative<4>(std::span<const double>{xs},
                                             std::span{out}));
-    for (std::size_t i = 0; i < n; ++i) {
-      EXPECT_EQ(out[i], *eq.univariate_derivative<4>(xs[i]));
+    for (const auto [got, x] : std::views::zip(out, xs)) {
+      EXPECT_EQ(got, *eq.univariate_derivative<4>(x));
     }
   }
   std::vector<double> xs(4), out(3);
@@ -812,7 +812,7 @@ TEST(RtEquation, InterpretDeclinesTheBackendAndAgreesWithIt) {
 
   constexpr std::size_t n = 16;
   std::vector<double> cx(n), cy(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     cx[i] = 0.3 + 0.02 * static_cast<double>(i);
     cy[i] = 0.7 - 0.01 * static_cast<double>(i);
   }
@@ -839,7 +839,7 @@ TEST(RtEquation, InterpretDeclinesTheBackendAndAgreesWithIt) {
 
   // Equal rather than near, because the contraction is decided in the graph, so
   // kernel and sweep round the same products the same number of times.
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     EXPECT_EQ(std::bit_cast<std::uint64_t>(f_jit[i]),
               std::bit_cast<std::uint64_t>(f_int[i]))
         << "value at " << i;
@@ -862,7 +862,7 @@ TEST(RtEquation, PointsPicksTheKernelWidthAndTheAnswerIsTheSame) {
 
   constexpr std::size_t n = 64;
   std::vector<double> cx(n), cy(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     cx[i] = 0.3 + 0.005 * static_cast<double>(i);
     cy[i] = 0.7 - 0.002 * static_cast<double>(i);
   }
@@ -876,7 +876,7 @@ TEST(RtEquation, PointsPicksTheKernelWidthAndTheAnswerIsTheSame) {
   ASSERT_TRUE(batched.uses_kernel());
 
   std::vector<double> f1(n), dx1(n), dy1(n), f2(n), dx2(n), dy2(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     const double *const one[]{cx.data() + i, cy.data() + i};
     double *const values[]{f1.data() + i};
     double *const partials[]{dx1.data() + i, dy1.data() + i};
@@ -892,7 +892,7 @@ TEST(RtEquation, PointsPicksTheKernelWidthAndTheAnswerIsTheSame) {
   EXPECT_TRUE(stepping.uses_kernel());
   EXPECT_TRUE(batched.uses_kernel());
 
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     EXPECT_EQ(f1[i], f2[i]) << "value at " << i;
     EXPECT_EQ(dx1[i], dx2[i]) << "d/dx at " << i;
     EXPECT_EQ(dy1[i], dy2[i]) << "d/dy at " << i;
@@ -914,10 +914,10 @@ TEST(RtEquation, TheDefaultCompilesNothing) {
   ASSERT_TRUE(eq.jacobian(columns, values, partials, n).has_value());
   EXPECT_FALSE(eq.uses_kernel()) << "a default equation reached for a compiler";
   EXPECT_FALSE(eq.uses_kernel()) << "and asking built one";
-  for (std::size_t i = 0; i < n; ++i) {
-    EXPECT_NEAR(f[i], 0.6 * std::log(0.6) + 1.4 * 1.4, 1e-12);
-    EXPECT_NEAR(dx[i], std::log(0.6) + 1.0, 1e-12);
-    EXPECT_NEAR(dy[i], 2 * 1.4, 1e-12);
+  for (const auto [value, by_x, by_y] : std::views::zip(f, dx, dy)) {
+    EXPECT_NEAR(value, 0.6 * std::log(0.6) + 1.4 * 1.4, 1e-12);
+    EXPECT_NEAR(by_x, std::log(0.6) + 1.0, 1e-12);
+    EXPECT_NEAR(by_y, 2 * 1.4, 1e-12);
   }
 }
 
@@ -952,10 +952,8 @@ TEST(RtEquation, TheColumnCountsCompileNothing) {
   const std::size_t hc = *eq.hessian_columns();
   std::vector<double> cx(n, 0.6), cy(n, 0.9), f(n), dx(n), dy(n);
   std::vector<std::vector<double>> hb(hc, std::vector<double>(n));
-  std::vector<double *> hp(hc);
-  for (std::size_t c = 0; c < hc; ++c) {
-    hp[c] = hb[c].data();
-  }
+  const auto hp = hb | std::views::transform([](auto &c) { return c.data(); }) |
+                  ddx::impl::to<std::vector<double *>>();
   const double *const columns[]{cx.data(), cy.data()};
   double *const values[]{f.data()};
   double *const partials[]{dx.data(), dy.data()};
@@ -983,10 +981,11 @@ TEST(RtEquation, DifferentEquationTypesShareOneCompilerSafely) {
   };
 
   constexpr std::size_t n = 4;
-  std::vector<double> cx(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    cx[i] = 0.4 + 0.1 * static_cast<double>(i);
-  }
+  const auto cx = std::views::iota(0uz, n) |
+                  std::views::transform([](std::size_t i) {
+                    return 0.4 + 0.1 * static_cast<double>(i);
+                  }) |
+                  ddx::impl::to<std::vector>();
 
   // Both shapes compile at once from several threads.
   const auto one_scalar = [&] {
@@ -1020,14 +1019,14 @@ TEST(RtEquation, DifferentEquationTypesShareOneCompilerSafely) {
 
   std::vector<std::thread> racers;
   std::vector<std::vector<double>> got_scalar(4), got_system(4);
-  for (std::size_t t = 0; t < 4; ++t) {
+  for (const std::size_t t : std::views::iota(0uz, 4uz)) {
     racers.emplace_back([&, t] { got_scalar[t] = one_scalar(); });
     racers.emplace_back([&, t] { got_system[t] = one_system(); });
   }
   for (auto &r : racers) {
     r.join();
   }
-  for (std::size_t t = 0; t < 4; ++t) {
+  for (const std::size_t t : std::views::iota(0uz, 4uz)) {
     EXPECT_EQ(got_scalar[t], want_scalar) << "scalar equation on thread " << t;
     EXPECT_EQ(got_system[t], want_system) << "system equation on thread " << t;
   }
@@ -1081,7 +1080,7 @@ TEST(RtEquation, OptionsReachTheCompilerAndDoNotChangeTheAnswer) {
 
   constexpr std::size_t n = 16;
   std::vector<double> cx(n), cy(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     cx[i] = 0.3 + 0.02 * static_cast<double>(i);
     cy[i] = 0.7 - 0.01 * static_cast<double>(i);
   }
@@ -1114,7 +1113,7 @@ TEST(RtEquation, OptionsReachTheCompilerAndDoNotChangeTheAnswer) {
 
   // Bit-exact, since the lane width changes what is scheduled but never what is
   // contracted.
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     EXPECT_EQ(f1[i], f0[i]) << "scalar value at " << i;
     EXPECT_EQ(dx1[i], dx0[i]) << "scalar d/dx at " << i;
     EXPECT_EQ(dy1[i], dy0[i]) << "scalar d/dy at " << i;
@@ -1132,7 +1131,7 @@ TEST(RtEquation, ConcurrentConstCallsAgreeWithOneThread) {
 
   constexpr std::size_t n = 32;
   std::vector<double> cx(n), cy(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     cx[i] = 0.3 + 0.02 * static_cast<double>(i);
     cy[i] = 0.7 - 0.01 * static_cast<double>(i);
   }
@@ -1142,10 +1141,9 @@ TEST(RtEquation, ConcurrentConstCallsAgreeWithOneThread) {
   const auto once = [&] {
     std::vector<double> f(n), dx(n), dy(n);
     std::vector<std::vector<double>> hs(hcols, std::vector<double>(n));
-    std::vector<double *> hp(hcols);
-    for (std::size_t c = 0; c < hcols; ++c) {
-      hp[c] = hs[c].data();
-    }
+    const auto hp =
+        hs | std::views::transform([](auto &c) { return c.data(); }) |
+        ddx::impl::to<std::vector<double *>>();
     double *const values[]{f.data()};
     double *const partials[]{dx.data(), dy.data()};
     EXPECT_TRUE(eq.hessian(columns, values, partials, hp, n).has_value());
@@ -1155,7 +1153,7 @@ TEST(RtEquation, ConcurrentConstCallsAgreeWithOneThread) {
 
   std::vector<std::thread> racers;
   std::vector<decltype(once())> got(8);
-  for (std::size_t t = 0; t < got.size(); ++t) {
+  for (const std::size_t t : std::views::iota(0uz, got.size())) {
     racers.emplace_back([&, t] {
       // Interleaved with the read-only accessors, which take the same locks.
       (void)eq.uses_kernel();
@@ -1170,11 +1168,11 @@ TEST(RtEquation, ConcurrentConstCallsAgreeWithOneThread) {
 
   const auto &[ef, edx, edy, ehs] = expected;
   for (const auto &[f, dx, dy, hs] : got) {
-    for (std::size_t i = 0; i < n; ++i) {
+    for (const std::size_t i : std::views::iota(0uz, n)) {
       EXPECT_NEAR(f[i], ef[i], 1e-12) << "value at " << i;
       EXPECT_NEAR(dx[i], edx[i], 1e-12) << "d/dx at " << i;
       EXPECT_NEAR(dy[i], edy[i], 1e-12) << "d/dy at " << i;
-      for (std::size_t c = 0; c < hs.size(); ++c) {
+      for (const std::size_t c : std::views::iota(0uz, hs.size())) {
         EXPECT_NEAR(hs[c][i], ehs[c][i], 1e-12) << "h" << c << " at " << i;
       }
     }
@@ -1212,7 +1210,7 @@ TEST(RtEquation, EvaluatingABatchComputesNoPartials) {
 
   constexpr std::size_t n = 5;
   std::vector<double> cx(n), cy(n), f(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     cx[i] = 0.3 + 0.1 * static_cast<double>(i);
     cy[i] = 1.1 - 0.05 * static_cast<double>(i);
   }
@@ -1220,7 +1218,7 @@ TEST(RtEquation, EvaluatingABatchComputesNoPartials) {
   double *const values[]{f.data()};
   ASSERT_TRUE(eq.evaluate(columns, values, n).has_value());
 
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     EXPECT_NEAR(f[i], cx[i] * std::log(cx[i]) + cy[i] * cy[i], 1e-12)
         << "value at " << i;
     // Bit-exact against the scalar accessor, which uses the same graph.
@@ -1291,14 +1289,14 @@ TEST(RtEquation, GradientIsTheJacobianWithoutTheValue) {
 
   constexpr std::size_t n = 4;
   std::vector<double> cx(n), cy(n), gx(n), gy(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     cx[i] = 0.3 + 0.1 * static_cast<double>(i);
     cy[i] = 1.1 - 0.05 * static_cast<double>(i);
   }
   const double *const columns[]{cx.data(), cy.data()};
   double *const partials[]{gx.data(), gy.data()};
   ASSERT_TRUE(eq.gradient(columns, partials, n).has_value());
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     const auto at = *eq.jacobian(cx[i], cy[i]);
     EXPECT_EQ(gx[i], at[0]) << i;
     EXPECT_EQ(gy[i], at[1]) << i;
@@ -1361,13 +1359,14 @@ namespace {
 // Uses enough of the emitter's op set that the codegen levels could disagree.
 auto level_model() {
   return ddx::rt::equation([] {
-    std::vector<ddx::rt::Expression<double>> v;
-    for (std::size_t i = 0; i < 24; ++i) {
-      v.push_back(ddx::rt::var("x" + std::to_string(i)));
-    }
+    const auto v = std::views::iota(0uz, 24uz) |
+                   std::views::transform([](std::size_t i) {
+                     return ddx::rt::var("x" + std::to_string(i));
+                   }) |
+                   ddx::impl::to<std::vector>();
     auto f = v[0] * log(v[0]);
-    for (std::size_t i = 1; i < v.size(); ++i) {
-      f = f + v[i] * log(v[i]) + exp(v[i - 1] * v[i]) + sqrt(v[i]) * v[i - 1];
+    for (const auto [prev, cur] : v | std::views::pairwise) {
+      f = f + cur * log(cur) + exp(prev * cur) + sqrt(cur) * prev;
     }
     return f;
   });
@@ -1375,12 +1374,12 @@ auto level_model() {
 
 std::vector<double> level_gradient(const auto &eq, std::size_t n) {
   std::vector<double> at(n), value(1), partial(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     at[i] = 0.35 + 0.01 * static_cast<double>(i);
   }
   std::vector<const double *> xs(n);
   std::vector<double *> gs(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     xs[i] = at.data() + i;
     gs[i] = partial.data() + i;
   }
@@ -1470,15 +1469,16 @@ TEST(RtEquation, ElementReadsSumIntoTheirOwnElements) {
   const auto eq = ddx::rt::equation([] {
     const auto x = ddx::rt::vec("x", n);
     ddx::rt::Expression<double> acc{0.0};
-    for (std::size_t i = 0; i + 1 < n; ++i) {
+    for (const std::size_t i : std::views::iota(0uz, n - 1)) {
       acc = acc + x[i] * x[i + 1];
     }
     return acc;
   });
-  std::vector<double> at(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    at[i] = 0.01 * static_cast<double>(i);
-  }
+  const auto at = std::views::iota(0uz, n) |
+                  std::views::transform([](std::size_t i) {
+                    return 0.01 * static_cast<double>(i);
+                  }) |
+                  ddx::impl::to<std::vector>();
   const auto g = eq.gradient(std::span<const double>{at});
   ASSERT_TRUE(g.has_value());
   EXPECT_EQ((*g)[0], at[1]);
@@ -1496,7 +1496,7 @@ TEST(RtEquation, NoCallCostsMoreThanItsValueTimesAConstant) {
       const auto x = ddx::rt::vec("x", n);
       const auto y = select(x - 0.5, x * x, sin(x));
       RE acc = dot(exp(x), x) + sum(y);
-      for (std::size_t i = 0; i + 1 < n; ++i) {
+      for (const std::size_t i : std::views::iota(0uz, n - 1)) {
         acc = acc + y[i] * x[i + 1] + sin(x[i]);
       }
       return acc;
@@ -1506,7 +1506,7 @@ TEST(RtEquation, NoCallCostsMoreThanItsValueTimesAConstant) {
     return ddx::rt::equation([n] {
       const auto x = ddx::rt::vec("x", n);
       std::vector<RE> f;
-      for (std::size_t i = 0; i + 1 < n; ++i) {
+      for (const std::size_t i : std::views::iota(0uz, n - 1)) {
         f.push_back(sin(x[i]) * x[i + 1]);
       }
       return f;

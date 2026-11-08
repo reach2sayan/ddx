@@ -36,10 +36,9 @@ TEST(JitParam, ColumnsAreSymbolsThenParamsThenSeeds) {
              static_cast<double>(j);
     }
   }
-  std::vector<const double *> xs;
-  for (const auto &column : columns) {
-    xs.push_back(column.data());
-  }
+  const auto xs =
+      columns | std::views::transform([](const auto &c) { return c.data(); }) |
+      ddx::impl::to<std::vector<const double *>>();
   std::vector<double> got(n);
   double *const values[]{got.data()};
   (*kernel)(xs, values, {}, {}, n);

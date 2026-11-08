@@ -7,6 +7,7 @@
 #include "rt/tensor.hpp" // pack
 #include "util/ranges.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <format>
 #include <memory>
@@ -52,13 +53,9 @@ public:
   // model running now.
   [[nodiscard]] static PyExpression pack(std::span<const PyExpression> scalars,
                                          const SharedArena &fallback) {
-    SharedArena arena = fallback;
-    for (const PyExpression &e : scalars) {
-      if (e.arena_) {
-        arena = e.arena_;
-        break;
-      }
-    }
+    const auto held = std::ranges::find_if(
+        scalars, [](const PyExpression &e) { return e.arena_ != nullptr; });
+    SharedArena arena = held != scalars.end() ? held->arena_ : fallback;
     if (!arena) {
       fail_with(errc::outside_equation);
     }

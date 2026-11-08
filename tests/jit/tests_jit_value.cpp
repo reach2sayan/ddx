@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <format>
 #include <numeric>
+#include <ranges>
 #include <span>
 #include <string>
 #include <tuple>
@@ -38,8 +39,8 @@ void expect_matches_interpreter(auto build, std::size_t nvars,
   Arena<> b;
   std::vector<ddx::rt::Expression<>> vars;
   static constexpr const char *names[] = {"x", "y", "z", "w"};
-  for (std::size_t i = 0; i < nvars; ++i) {
-    vars.push_back(var(b, names[i]));
+  for (const char *name : names | std::views::take(nvars)) {
+    vars.push_back(var(b, name));
   }
   const auto root = build(b, vars);
   const auto graph = ddx::test::freeze_values(b, std::array{root.id(b)});
@@ -49,25 +50,22 @@ void expect_matches_interpreter(auto build, std::size_t nvars,
 
   // The sample points stay in a range that every op in the suite accepts.
   std::vector<std::vector<double>> columns(nvars, std::vector<double>(n));
-  for (std::size_t j = 0; j < nvars; ++j) {
-    for (std::size_t i = 0; i < n; ++i) {
-      columns[j][i] = 0.15 + 0.6 * static_cast<double>((i + 3 * j) % 11) / 11.0;
-    }
+  for (const auto [j, i] : std::views::cartesian_product(
+           std::views::iota(0uz, nvars), std::views::iota(0uz, n))) {
+    columns[j][i] = 0.15 + 0.6 * static_cast<double>((i + 3 * j) % 11) / 11.0;
   }
-  std::vector<const double *> xs(nvars);
-  for (std::size_t j = 0; j < nvars; ++j) {
-    xs[j] = columns[j].data();
-  }
+  const auto xs =
+      columns | std::views::transform([](const auto &c) { return c.data(); }) |
+      ddx::impl::to<std::vector<const double *>>();
 
   std::vector<double> got(n, std::numeric_limits<double>::quiet_NaN());
   double *const value_columns[]{got.data()};
   kernel(xs, value_columns, {}, {}, n);
 
-  for (std::size_t i = 0; i < n; ++i) {
-    std::vector<double> point(nvars);
-    for (std::size_t j = 0; j < nvars; ++j) {
-      point[j] = columns[j][i];
-    }
+  for (const std::size_t i : std::views::iota(0uz, n)) {
+    const auto point =
+        columns | std::views::transform([i](const auto &c) { return c[i]; }) |
+        ddx::impl::to<std::vector>();
     const double want = ddx::rt::evaluate(b, root.id(b), point);
     ASSERT_NEAR(got[i], want, 1e-12 * std::max(1.0, std::abs(want)))
         << "at point " << i;
@@ -134,15 +132,16 @@ TEST(JitValue, PowWithAConstantOperandIsTheSweepsPowToTheBit) {
     const auto kernel = must_compile(graph);
     ASSERT_TRUE(static_cast<bool>(kernel));
     constexpr std::size_t n = 64;
-    std::vector<double> column(n);
-    for (std::size_t i = 0; i < n; ++i) {
-      column[i] = 0.013 + 1.37 * static_cast<double>(i);
-    }
+    const auto column = std::views::iota(0uz, n) |
+                        std::views::transform([](std::size_t i) {
+                          return 0.013 + 1.37 * static_cast<double>(i);
+                        }) |
+                        ddx::impl::to<std::vector>();
     const double *const xs[]{column.data()};
     std::vector<double> got(n);
     double *const values[]{got.data()};
     kernel(xs, values, {}, {}, n);
-    for (std::size_t i = 0; i < n; ++i) {
+    for (const std::size_t i : std::views::iota(0uz, n)) {
       const double want =
           ddx::rt::evaluate(b, root.id(b), std::span{&column[i], 1});
       EXPECT_EQ(std::bit_cast<std::uint64_t>(got[i]),
@@ -213,7 +212,7 @@ TEST(JitValue, MaxMinSignedZeroTiesMatchTheInterpreter) {
   double *const value_columns[]{got_max.data(), got_min.data()};
   kernel(xs, value_columns, {}, {}, cx.size());
 
-  for (std::size_t i = 0; i < cx.size(); ++i) {
+  for (const std::size_t i : std::views::iota(0uz, cx.size())) {
     const auto want = ddx::rt::evaluate_all(b, std::array{cx[i], cy[i]});
     EXPECT_EQ(std::signbit(got_max[i]), std::signbit(want[graph.outputs()[0]]))
         << "max at " << i;
@@ -236,7 +235,7 @@ TEST(JitValue, AValuesOnlyGraphCompilesAndStoresNoPartials) {
 
   constexpr std::size_t n = 5;
   std::vector<double> cx(n), cy(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     cx[i] = 0.3 + 0.1 * static_cast<double>(i);
     cy[i] = 1.1 - 0.05 * static_cast<double>(i);
   }
@@ -247,7 +246,7 @@ TEST(JitValue, AValuesOnlyGraphCompilesAndStoresNoPartials) {
   double *const values[]{value.data()};
   kernel(xs, values, {}, {}, n);
 
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     EXPECT_NEAR(value[i], cx[i] * std::log(cx[i]) + std::exp(cx[i] * cy[i]),
                 1e-12)
         << "value at " << i;
@@ -271,7 +270,7 @@ TEST(JitValue, EveryLaneWidthAgreesToTheBit) {
 
   constexpr std::size_t n = 13;
   std::vector<double> cx(n), cy(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     cx[i] = 0.2 + 0.05 * static_cast<double>(i);
     cy[i] = 0.9 - 0.03 * static_cast<double>(i);
   }
@@ -294,7 +293,7 @@ TEST(JitValue, EveryLaneWidthAgreesToTheBit) {
         *ddx::jit::Lanes::exactly(8), ddx::jit::Lanes::derived()}) {
     const auto [v, dx, dy] = run(lanes);
     const std::string width = spelled(lanes);
-    for (std::size_t i = 0; i < n; ++i) {
+    for (const std::size_t i : std::views::iota(0uz, n)) {
       EXPECT_EQ(std::bit_cast<std::uint64_t>(v[i]),
                 std::bit_cast<std::uint64_t>(v1[i]))
           << "value, lanes " << width << " at " << i;
@@ -328,7 +327,7 @@ TEST(JitValue, AFloatGraphAgreesAcrossWidthsAndWithTheSweep) {
 
   constexpr std::size_t n = 13;
   std::vector<float> cx(n), cy(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     cx[i] = 0.2f + 0.05f * static_cast<float>(i);
     cy[i] = 0.9f - 0.03f * static_cast<float>(i);
   }
@@ -349,15 +348,14 @@ TEST(JitValue, AFloatGraphAgreesAcrossWidthsAndWithTheSweep) {
        {*ddx::jit::Lanes::exactly(4), *ddx::jit::Lanes::exactly(8),
         *ddx::jit::Lanes::exactly(16), ddx::jit::Lanes::derived()}) {
     const auto wide = run(lanes);
-    for (std::size_t k = 0; k < wide.size(); ++k) {
-      for (std::size_t i = 0; i < n; ++i) {
-        EXPECT_EQ(std::bit_cast<std::uint32_t>(wide[k][i]),
-                  std::bit_cast<std::uint32_t>(scalar[k][i]))
-            << "block " << k << ", lanes " << spelled(lanes) << " at " << i;
-      }
+    for (const auto [k, i] : std::views::cartesian_product(
+             std::views::iota(0uz, wide.size()), std::views::iota(0uz, n))) {
+      EXPECT_EQ(std::bit_cast<std::uint32_t>(wide[k][i]),
+                std::bit_cast<std::uint32_t>(scalar[k][i]))
+          << "block " << k << ", lanes " << spelled(lanes) << " at " << i;
     }
   }
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     const std::array point{cx[i], cy[i]};
     const float want = ddx::rt::evaluate(b, f.id(b), point);
     EXPECT_EQ(std::bit_cast<std::uint32_t>(scalar[0][i]),
@@ -417,7 +415,7 @@ TEST(JitValue, EveryCodegenLevelAgreesToTheBit) {
                            ddx::jit::OptLevel::O3}) {
     const auto [v, dx, dy] = run(level);
     const auto at = std::to_underlying(level);
-    for (std::size_t i = 0; i < cx.size(); ++i) {
+    for (const std::size_t i : std::views::iota(0uz, cx.size())) {
       EXPECT_EQ(std::bit_cast<std::uint64_t>(v[i]),
                 std::bit_cast<std::uint64_t>(v1[i]))
           << "value, codegen " << at << " at " << i;
@@ -443,7 +441,7 @@ TEST(JitValue, TheVectorisersDoNotMoveABit) {
 
   constexpr std::size_t n = 9;
   std::vector<double> cx(n), cy(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     cx[i] = 0.3 + 0.05 * static_cast<double>(i);
     cy[i] = 0.9 - 0.03 * static_cast<double>(i);
   }
@@ -467,7 +465,7 @@ TEST(JitValue, TheVectorisersDoNotMoveABit) {
                     ddx::jit::Options{
                         .codegen = {.lanes = lanes, .slp_vectorize = true}}}}) {
       const auto [v, dx, dy] = run(o);
-      for (std::size_t i = 0; i < n; ++i) {
+      for (const std::size_t i : std::views::iota(0uz, n)) {
         EXPECT_EQ(std::bit_cast<std::uint64_t>(v[i]),
                   std::bit_cast<std::uint64_t>(v0[i]))
             << what << ", lanes " << width << ", value at " << i;
@@ -493,7 +491,7 @@ TEST(JitValue, SharedAndNested) {
   expect_matches_interpreter(
       [](Arena<> &, auto &v) {
         auto t = v[0];
-        for (int i = 0; i < 6; ++i) {
+        for ([[maybe_unused]] const int i : std::views::iota(0, 6)) {
           t = sin(t * v[1]) + exp(t / 3.0);
         }
         return t;
@@ -521,8 +519,8 @@ TEST(JitValue, AgreesWithDdxThroughTheBridge) {
   double *const value_columns[]{got.data()};
   kernel(xs, value_columns, {}, {}, got.size());
 
-  for (std::size_t i = 0; i < got.size(); ++i) {
-    EXPECT_NEAR(got[i], ddx::Equation{exp(x) * sin(y)}.evaluate(cx[i], cy[i]),
+  for (const auto [value, at_x, at_y] : std::views::zip(got, cx, cy)) {
+    EXPECT_NEAR(value, ddx::Equation{exp(x) * sin(y)}.evaluate(at_x, at_y),
                 1e-12);
   }
 }

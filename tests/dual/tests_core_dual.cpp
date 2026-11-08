@@ -231,9 +231,9 @@ TEST(EquationForward, AgreesWithSymbolic) {
   auto ve_fwd = Equation(xd * xd, xd * yd, yd * yd);
   auto J_fwd = ve_fwd.derivative_tensor<1>(std::array{xv, yv});
 
-  for (std::size_t i = 0; i < 3; ++i)
-    for (std::size_t j = 0; j < 2; ++j)
-      EXPECT_DOUBLE_EQ((J_fwd[i, j]), (J_sym[i, j]));
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, 3uz), std::views::iota(0uz, 2uz)))
+    EXPECT_DOUBLE_EQ((J_fwd[i, j]), (J_sym[i, j]));
 }
 TEST(EquationForward, TrigJacobian) {
   Variable<double, FixedString{"x"}> x;
@@ -256,9 +256,9 @@ TEST(EquationForward, AgreesWithReverse) {
   auto ve_rev = Equation(xs * ys, sin(xs) + ys * ys);
   auto J_rev = ve_rev.jacobian(std::array{2.0, 3.0});
 
-  for (std::size_t i = 0; i < 2; ++i)
-    for (std::size_t j = 0; j < 2; ++j)
-      EXPECT_NEAR((J_rev[i, j]), (J_fwd[i, j]), 1e-12);
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, 2uz), std::views::iota(0uz, 2uz)))
+    EXPECT_NEAR((J_rev[i, j]), (J_fwd[i, j]), 1e-12);
 }
 TEST(ReverseModeAD, ScalarLiteralCoercion) {
   auto x = var<"x", dual>;
@@ -431,10 +431,9 @@ TEST(HessianTest, SingleOutputIsLaidOutByTheEquationsSymbols) {
   const Equation eq{(y * x) / (x * y) + z * z * z};
   static_assert(decltype(eq)::input_dim == 3);
   const auto H = eq.hessian(1.0, 2.0, 3.0);
-  for (std::size_t i = 0; i < 3; ++i) {
-    for (std::size_t j = 0; j < 3; ++j) {
-      EXPECT_DOUBLE_EQ((H[i, j]), (i == 2 && j == 2) ? 18.0 : 0.0) << i << j;
-    }
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, 3uz), std::views::iota(0uz, 3uz))) {
+    EXPECT_DOUBLE_EQ((H[i, j]), (i == 2 && j == 2) ? 18.0 : 0.0) << i << j;
   }
   const auto g = eq.jacobian(1.0, 2.0, 3.0);
   EXPECT_DOUBLE_EQ(g[2], 27.0);
@@ -491,10 +490,11 @@ TEST(HessianForwardTest, AgreesWithForwardOverReverse) {
   auto ve_fwd = Equation(xf * yf, xf * xf);
   auto H_fwd = ve_fwd.derivative_tensor<2>(std::array{xv, yv});
 
-  for (const auto k : {0uz, 1uz})
-    for (const auto i : {0uz, 1uz})
-      for (const auto j : {0uz, 1uz})
-        EXPECT_NEAR((H_fwd[k, i, j]), (H_rev[k, i, j]), 1e-12);
+  for (const auto [k, i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, 2uz),
+           std::views::iota(0uz, 2uz),
+           std::views::iota(0uz, 2uz)))
+    EXPECT_NEAR((H_fwd[k, i, j]), (H_rev[k, i, j]), 1e-12);
 }
 TEST(HessianForwardTest, WithValues) {
   Variable<double, FixedString{"x"}> x;
@@ -590,9 +590,9 @@ TEST(ScalarHessianTest, ForwardAgreesWithReverse) {
   auto H_fwd =
       Equation{expr_f}.template derivative_tensor<2>(std::array{xv, yv});
 
-  for (const auto i : {0uz, 1uz})
-    for (const auto j : {0uz, 1uz})
-      EXPECT_NEAR((H_fwd[i, j]), (H_rev[i, j]), 1e-12);
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, 2uz), std::views::iota(0uz, 2uz)))
+    EXPECT_NEAR((H_fwd[i, j]), (H_rev[i, j]), 1e-12);
 }
 TEST(DerivativeTensorTest, Order1_ScalarVariable) {
   Variable<double, FixedString{"x"}> x;
@@ -632,9 +632,9 @@ TEST(DerivativeTensorTest, Order2_MatchesHessian) {
   auto H_fwd =
       Equation{expr_f}.template derivative_tensor<2>(std::array{xv, yv});
 
-  for (std::size_t i = 0; i < 2; ++i)
-    for (std::size_t j = 0; j < 2; ++j)
-      EXPECT_NEAR((H_fwd[i, j]), (H_rev[i, j]), 1e-12);
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, 2uz), std::views::iota(0uz, 2uz)))
+    EXPECT_NEAR((H_fwd[i, j]), (H_rev[i, j]), 1e-12);
 }
 TEST(DerivativeTensorTest, Order3_Polynomial) {
   Variable<double, FixedString{"x"}> x;
@@ -669,9 +669,9 @@ TEST(DerivativeTensorTest, Equation_Order1_IsJacobian) {
   auto ve_rev = Equation(xr * yr, xr * xr);
   auto J_rev = ve_rev.jacobian(std::array{xv, yv});
 
-  for (std::size_t i = 0; i < 2; ++i)
-    for (std::size_t j = 0; j < 2; ++j)
-      EXPECT_NEAR((J_fwd[i, j]), (J_rev[i, j]), 1e-12);
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, 2uz), std::views::iota(0uz, 2uz)))
+    EXPECT_NEAR((J_fwd[i, j]), (J_rev[i, j]), 1e-12);
 }
 TEST(DerivativeTensorTest, Equation_Order2_IsHessianStack) {
   double xv = 1.5, yv = 2.5;
@@ -687,10 +687,11 @@ TEST(DerivativeTensorTest, Equation_Order2_IsHessianStack) {
   auto ve_rev = Equation(xr * yr, xr * xr);
   auto H_rev = ve_rev.hessian(std::array{2.0, 3.0});
 
-  for (std::size_t k = 0; k < 2; ++k)
-    for (std::size_t i = 0; i < 2; ++i)
-      for (std::size_t j = 0; j < 2; ++j)
-        EXPECT_NEAR((H_fwd[k, i, j]), (H_rev[k, i, j]), 1e-12);
+  for (const auto [k, i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, 2uz),
+           std::views::iota(0uz, 2uz),
+           std::views::iota(0uz, 2uz)))
+    EXPECT_NEAR((H_fwd[k, i, j]), (H_rev[k, i, j]), 1e-12);
 }
 TEST(DerivativeTensorTest, Equation_Order3_TrigPolynomial) {
   Variable<double, FixedString{"x"}> x;
@@ -776,11 +777,12 @@ TEST(TutorialHigherOrder, FourthOrder_AllCrossPartialsOfSinXplusY) {
   auto T4 =
       Equation{sin(x + y)}.template derivative_tensor<4>(std::array{xv, yv});
   double expected = std::sin(xv + yv);
-  for (const auto i : {0uz, 1uz})
-    for (const auto j : {0uz, 1uz})
-      for (const auto k : {0uz, 1uz})
-        for (const auto l : {0uz, 1uz})
-          EXPECT_NEAR((T4[i, j, k, l]), expected, 1e-8);
+  for (const auto [i, j, k, l] : std::views::cartesian_product(
+           std::views::iota(0uz, 2uz),
+           std::views::iota(0uz, 2uz),
+           std::views::iota(0uz, 2uz),
+           std::views::iota(0uz, 2uz)))
+    EXPECT_NEAR((T4[i, j, k, l]), expected, 1e-8);
 }
 TEST(TutorialHigherOrder, ThirdOrder_MixedPartial) {
   double xv = 1.0, yv = 2.0;
@@ -928,9 +930,9 @@ TEST(TutorialReverseHigherOrder, ForwardReverseHessianAgree) {
   Variable<D, FixedString{"y"}> yr;
   auto f_rev = sin(xr) * exp(yr);
   auto H_rev = Equation{f_rev}.hessian(std::array{xv, yv});
-  for (const auto i : {0uz, 1uz})
-    for (const auto j : {0uz, 1uz})
-      EXPECT_NEAR((H_fwd[i, j]), (H_rev[i, j]), 1e-12);
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, 2uz), std::views::iota(0uz, 2uz)))
+    EXPECT_NEAR((H_fwd[i, j]), (H_rev[i, j]), 1e-12);
 }
 TEST(DualScalarContract, Val) {
   const dual2nd a = embed_constant<double, 2>(3.5);

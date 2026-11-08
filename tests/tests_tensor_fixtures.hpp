@@ -46,7 +46,7 @@ void ExpectPackedMatchesDense(const Expr &expr, const Values &values) {
     const auto idx = ddx::meta::unpack(
         multi, [](auto... i) { return std::array<std::size_t, Order>{i...}; });
     std::array<U, N> seeds{};
-    for (std::size_t k = 0; k < N; ++k) {
+    for (const std::size_t k : std::views::iota(0uz, N)) {
       seeds[k] =
           ddx::impl::detail::make_mixed_seed<S, Order>(values[k], idx, k);
     }

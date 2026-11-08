@@ -115,12 +115,12 @@ take_point(const std::ranges::input_range auto &r) noexcept {
   std::array<U, N> vals{};
   std::size_t i = 0;
   // Reads one past N to detect a range that is too long.
-  std::ranges::for_each(r | std::views::take(N + 1), [&](const auto &v) {
+  for (const auto &v : r | std::views::take(N + 1)) {
     if (i < N) {
       vals[i] = static_cast<U>(v);
     }
     ++i;
-  });
+  }
   return {vals, i};
 }
 

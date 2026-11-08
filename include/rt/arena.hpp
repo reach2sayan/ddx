@@ -362,7 +362,9 @@ reachable(const auto &nodes, std::span<const NodeId> roots,
           Reach reaches = every_operand) {
   std::vector live(nodes.size(), false);
   std::ranges::for_each(roots, [&](NodeId r) { live[r] = true; });
-  for (NodeId v = static_cast<NodeId>(nodes.size()); v-- > 0;) {
+  for (const NodeId v :
+       std::views::iota(NodeId{0}, static_cast<NodeId>(nodes.size())) |
+           std::views::reverse) {
     if (live[v]) {
       reaches(nodes, v, [&](NodeId u) { live[u] = true; });
     }
@@ -1354,10 +1356,9 @@ private:
         return m.data;
       }
       t.resize(m.data.size());
-      for (std::size_t i = 0; i < m.rows; ++i) {
-        for (std::size_t j = 0; j < m.cols; ++j) {
-          t[j + i * m.cols] = m.data[i + j * m.rows];
-        }
+      for (const auto [i, j] : std::views::cartesian_product(
+               std::views::iota(0uz, m.rows), std::views::iota(0uz, m.cols))) {
+        t[j + i * m.cols] = m.data[i + j * m.rows];
       }
       return t;
     };

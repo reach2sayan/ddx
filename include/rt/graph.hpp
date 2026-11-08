@@ -141,11 +141,12 @@ constexpr void scatter_blocks(const OutputRows &rows, std::span<const T> tape,
       // Output column c reads a column-major matrix in row-major order.
       const std::size_t cols = r.width / r.rows;
       const T *const base = vtape.data() + std::size_t{r.at} * stride;
-      for (std::size_t c = 0; c < r.width; ++c, ++column) {
+      for (const std::size_t c : std::views::iota(0uz, std::size_t{r.width})) {
         const std::size_t e = c / cols + (c % cols) * r.rows;
-        for (std::size_t k = 0; k < width; ++k) {
+        for (const std::size_t k : std::views::iota(0uz, width)) {
           (*column)[i + k] = base[k * r.width + e];
         }
+        ++column;
       }
     }
   }

@@ -12,6 +12,7 @@
 #endif
 
 #include <cstddef>
+#include <ranges>
 #include <string>
 #include <vector>
 
@@ -45,14 +46,15 @@ constexpr std::size_t kDepth = 1000;
 TEST(RtStack, AThousandChainedSymbolsOnAOneMegabyteStack) {
   on_small_stack([] {
     const auto eq = ddx::rt::equation([] {
-      std::vector<ddx::rt::Expression<double>> x;
-      for (std::size_t i = 0; i < kSymbols; ++i) {
-        x.push_back(ddx::rt::var("x" + std::to_string(10000 + i)));
-      }
+      const auto x = std::views::iota(0uz, kSymbols) |
+                     std::views::transform([](std::size_t i) {
+                       return ddx::rt::var("x" + std::to_string(10000 + i));
+                     }) |
+                     ddx::impl::to<std::vector>();
       // Built the way a loop builds it, one term deeper each time.
       ddx::rt::Expression<double> acc{0.0};
-      for (std::size_t i = 0; i + 1 < kSymbols; ++i) {
-        acc = acc + x[i] * x[i + 1] + sin(x[i]);
+      for (const auto [a, b] : x | std::views::pairwise) {
+        acc = acc + a * b + sin(a);
       }
       return acc;
     });
@@ -72,7 +74,8 @@ TEST(RtStack, AVectorChainDeepOnAOneMegabyteStack) {
     const auto eq = ddx::rt::equation([] {
       const auto x = ddx::rt::vec("x", 8);
       auto acc = x;
-      for (std::size_t i = 0; i < kDepth; ++i) {
+      for ([[maybe_unused]] const std::size_t i :
+           std::views::iota(0uz, kDepth)) {
         acc = acc * 0.999 + sin(acc);
       }
       return sum(acc * x);

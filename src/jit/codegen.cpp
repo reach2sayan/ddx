@@ -596,7 +596,7 @@ private:
     }
     const auto columns = [&](llvm::Value *j0, std::uint64_t count) {
       llvm::SmallVector<llvm::Value *, 4> js, xs;
-      for (std::uint64_t d = 0; d < count; ++d) {
+      for (const std::uint64_t d : std::views::iota(std::uint64_t{0}, count)) {
         js.push_back(add(j0, i64(d)));
         xs.push_back(py != nullptr ? at(x, js.back()) : nullptr);
       }
@@ -608,7 +608,7 @@ private:
             llvm::Value *y =
                 to != nullptr ? b_.CreateLoad(lanes_.scalar, to) : nullptr;
             Carried next;
-            for (std::uint64_t d = 0; d < count; ++d) {
+            for (const std::uint64_t d : std::views::iota(std::uint64_t{0}, count)) {
               llvm::Value *const mij = at(m, i, js[d]);
               if (to != nullptr) {
                 y = fmuladd(mij, xs[d], y);

@@ -40,11 +40,10 @@ std::vector<RE> symbols(std::size_t n) {
 using models::composition;
 
 std::vector<double> direction(std::size_t n) {
-  std::vector<double> d(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    d[i] = std::sin(1.0 + static_cast<double>(i));
-  }
-  return d;
+  return std::views::iota(0uz, n) | std::views::transform([](std::size_t i) {
+           return std::sin(1.0 + static_cast<double>(i));
+         }) |
+         ddx::impl::to<std::vector>();
 }
 
 // models::uniquac over vectors: phi and theta are elementwise, and the inner
@@ -52,10 +51,10 @@ std::vector<double> direction(std::size_t n) {
 RE uniquac_tensor(const RV &x) {
   const std::size_t n = x.size();
   std::vector<double> r(n), q(n), tau(n * n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     r[i] = models::pseudo(i, 1, 0.9, 5.2);
     q[i] = models::pseudo(i, 2, 0.8, 4.4);
-    for (std::size_t j = 0; j < n; ++j) {
+    for (const std::size_t j : std::views::iota(0uz, n)) {
       tau[j + i * n] = models::pseudo(j, i, 0.2, 1.8); // tau_ji at (j, i)
     }
   }
@@ -76,10 +75,10 @@ RE uniquac_tensor(const RV &x) {
 RE debye_hueckel_and_double_sum(const RV &x) {
   const std::size_t n = x.size();
   std::vector<double> half_zc2(n), p(n * n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
     const double zc = models::pseudo(i, 5, -2.0, 2.0);
     half_zc2[i] = 0.5 * zc * zc;
-    for (std::size_t j = 0; j < n; ++j) {
+    for (const std::size_t j : std::views::iota(0uz, n)) {
       p[i + j * n] = models::pseudo(i, j, -0.4, 0.4);
     }
   }
@@ -168,9 +167,9 @@ Batch batch_jacobian(const auto &eq, std::size_t width, std::size_t points,
   Batch r{.xs = std::vector(width, std::vector<double>(points)),
           .f = std::vector<double>(points),
           .g = std::vector(eq.symbols()->size(), std::vector<double>(points))};
-  for (std::size_t p = 0; p < points; ++p) {
+  for (const std::size_t p : std::views::iota(0uz, points)) {
     const auto x = at(p);
-    for (std::size_t i = 0; i < width; ++i) {
+    for (const std::size_t i : std::views::iota(0uz, width)) {
       r.xs[i][p] = x[i];
     }
   }
@@ -187,7 +186,7 @@ Batch batch_jacobian(const auto &eq, std::size_t width, std::size_t points,
 }
 // Every point of a batch must match the single-point call to the bit.
 void expect_batch_matches(const auto &eq, const Batch &r) {
-  for (std::size_t p = 0; p < r.f.size(); ++p) {
+  for (const std::size_t p : std::views::iota(0uz, r.f.size())) {
     const auto at = r.point(p);
     EXPECT_EQ(r.f[p], *eq.evaluate(std::span<const double>{at})) << p;
     EXPECT_EQ(r.gradient(p), *eq.gradient(std::span<const double>{at})) << p;
@@ -203,7 +202,7 @@ void expect_threads_agree(auto &&call) {
   std::vector<char> ok(threads, 0);
   {
     std::vector<std::jthread> pool;
-    for (std::size_t t = 0; t < threads; ++t) {
+    for (const std::size_t t : std::views::iota(0uz, threads)) {
       pool.emplace_back([&, t] {
         start.arrive_and_wait();
         ok[t] = call() == want;
@@ -233,10 +232,9 @@ void each_node(std::size_t n, Scalar scalar, Tensor tensor,
 }
 std::vector<double> matrix(std::size_t rows, std::size_t cols) {
   std::vector<double> m(rows * cols);
-  for (std::size_t i = 0; i < rows; ++i) {
-    for (std::size_t j = 0; j < cols; ++j) {
-      m[i + j * rows] = models::pseudo(i, j, -1.0, 1.0);
-    }
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, rows), std::views::iota(0uz, cols))) {
+    m[i + j * rows] = models::pseudo(i, j, -1.0, 1.0);
   }
   return m;
 }
@@ -247,17 +245,18 @@ TEST(RtTensor, DotSumAndScale) {
       6,
       [](const std::vector<RE> &x) {
         RE d{0}, s{0};
-        for (std::size_t i = 0; i < x.size(); ++i) {
+        for (const std::size_t i : std::views::iota(0uz, x.size())) {
           d += x[i] * x[(i + 1) % x.size()];
           s += 3.0 * x[0] * x[i];
         }
         return d * s;
       },
       [](const RV &x) {
-        std::vector<RE> rolled;
-        for (std::size_t i = 0; i < x.size(); ++i) {
-          rolled.push_back(x[(i + 1) % x.size()]);
-        }
+        const auto rolled =
+            std::views::iota(0uz, x.size()) |
+            std::views::transform(
+                [&](std::size_t i) { return x[(i + 1) % x.size()]; }) |
+            ddx::impl::to<std::vector>();
         return dot(x, ddx::rt::pack(rolled)) * sum((3.0 * x[0]) * x);
       });
 }
@@ -267,9 +266,9 @@ TEST(RtTensor, MapAndZip) {
       5,
       [](const std::vector<RE> &x) {
         RE acc{0};
-        for (std::size_t i = 0; i < x.size(); ++i) {
-          acc += log(x[i]) / (x[i] + 1.0) + exp(x[i]) * sqrt(x[i]) -
-                 pow(x[i], 1.5) + abs(x[i] - 0.3);
+        for (const RE &e : x) {
+          acc += log(e) / (e + 1.0) + exp(e) * sqrt(e) - pow(e, 1.5) +
+                 abs(e - 0.3);
         }
         return acc;
       },
@@ -288,16 +287,16 @@ TEST(RtTensor, GemvBothWays) {
         // sum_i (M x)_i^2, plus M^T applied to the first rows of x, dotted
         // with x.
         RE acc{0};
-        for (std::size_t i = 0; i < rows; ++i) {
+        for (const std::size_t i : std::views::iota(0uz, rows)) {
           RE y{0};
-          for (std::size_t j = 0; j < cols; ++j) {
+          for (const std::size_t j : std::views::iota(0uz, cols)) {
             y += m[i + j * rows] * x[j];
           }
           acc += y * y;
         }
-        for (std::size_t j = 0; j < cols; ++j) {
+        for (const std::size_t j : std::views::iota(0uz, cols)) {
           RE z{0};
-          for (std::size_t i = 0; i < rows; ++i) {
+          for (const std::size_t i : std::views::iota(0uz, rows)) {
             z += m[i + j * rows] * x[i];
           }
           acc += z * x[j];
@@ -306,10 +305,10 @@ TEST(RtTensor, GemvBothWays) {
       },
       [&](const RV &x) {
         const auto M = ddx::rt::mat_constant(rows, cols, m);
-        std::vector<RE> head;
-        for (std::size_t i = 0; i < rows; ++i) {
-          head.push_back(x[i]);
-        }
+        const auto head = std::views::iota(0uz, rows) |
+                          std::views::transform(
+                              [&](std::size_t i) { return x[i]; }) |
+                          ddx::impl::to<std::vector>();
         const RV y = gemv(M, x);
         return sum(y * y) + dot(gemv(M, ddx::rt::pack(head), true), x);
       });
@@ -491,10 +490,12 @@ auto narrowed(std::span<const double> v) {
 template <typename T> auto scalar_typed_tensor_model(std::size_t n) {
   return ddx::rt::equation<T>([n] {
     const auto x = ddx::rt::vec<T>("x", n);
-    std::vector<T> m(n * n);
-    for (std::size_t i = 0; i < m.size(); ++i) {
-      m[i] = static_cast<T>(models::pseudo(i % n, i / n, -1.0, 1.0));
-    }
+    const auto m =
+        std::views::iota(0uz, n * n) |
+        std::views::transform([n](std::size_t i) {
+          return static_cast<T>(models::pseudo(i % n, i / n, -1.0, 1.0));
+        }) |
+        ddx::impl::to<std::vector>();
     const auto M = ddx::rt::mat_constant<T>(n, n, m);
     const auto y = gemv(M, x);
     return dot(x, y) + sum(log(x) * x) +
@@ -603,10 +604,10 @@ std::vector<double> hessian_by_hvp(const auto &eq, std::span<const double> at,
   const std::size_t n = at.size();
   std::vector<std::vector<double>> xs(n, std::vector<double>(count));
   std::vector<std::vector<double>> vs(n, std::vector<double>(count, 0.0));
-  for (std::size_t i = 0; i < n; ++i) {
-    std::ranges::fill(xs[i], at[i]);
+  for (const auto [column, x] : std::views::zip(xs, at)) {
+    std::ranges::fill(column, x);
   }
-  for (std::size_t k = 0; k < count; ++k) {
+  for (const std::size_t k : std::views::iota(0uz, count)) {
     vs[from + k][k] = 1.0;
   }
   std::vector<const double *> xcols(n), vcols(n);
@@ -623,13 +624,7 @@ std::vector<double> hessian_by_hvp(const auto &eq, std::span<const double> at,
   double *const fcol[]{f.data()};
   EXPECT_TRUE(eq.hvp(xcols, vcols, fcol, gcols, hcols, count).has_value());
   // Row-major H(i, j), where point k answers column from + k.
-  std::vector<double> h(n * count);
-  for (std::size_t i = 0; i < n; ++i) {
-    for (std::size_t k = 0; k < count; ++k) {
-      h[i * count + k] = hv[i][k];
-    }
-  }
-  return h;
+  return hv | std::views::join | ddx::impl::to<std::vector>();
 }
 } // namespace
 
@@ -659,8 +654,8 @@ TEST(RtTensorHvp, ColumnsAssembleTheColouredHessian) {
   const auto coloured = *eq.hessian(std::span<const double>{at});
   expect_close(coloured, by_hvp, 1e-10, "H by n hvp vs coloured");
   // Symmetric, as a Hessian is, to rounding.
-  for (std::size_t i = 0; i < n; ++i) {
-    for (std::size_t j = 0; j < i; ++j) {
+  for (const std::size_t i : std::views::iota(0uz, n)) {
+    for (const std::size_t j : std::views::iota(0uz, i)) {
       expect_close(by_hvp[i * n + j], by_hvp[j * n + i], 1e-10, "symmetry");
     }
   }
@@ -679,20 +674,19 @@ TEST(RtTensorHvp, APoolSplitsTheBatchByColumnAndAgreesToTheBit) {
   std::latch start{threads};
   {
     std::vector<std::jthread> pool;
-    for (std::size_t t = 0; t < threads; ++t) {
+    for (const std::size_t t : std::views::iota(0uz, threads)) {
       pool.emplace_back([&, t] {
         start.arrive_and_wait();
         parts[t] = hessian_by_hvp(eq, at, t * slice, slice);
       });
     }
   }
-  for (std::size_t t = 0; t < threads; ++t) {
-    for (std::size_t i = 0; i < n; ++i) {
-      for (std::size_t k = 0; k < slice; ++k) {
-        EXPECT_EQ(parts[t][i * slice + k], whole[i * n + t * slice + k])
-            << t << "," << i << "," << k;
-      }
-    }
+  for (const auto [t, i, k] : std::views::cartesian_product(
+           std::views::iota(0uz, threads),
+           std::views::iota(0uz, n),
+           std::views::iota(0uz, slice))) {
+    EXPECT_EQ(parts[t][i * slice + k], whole[i * n + t * slice + k])
+        << t << "," << i << "," << k;
   }
 }
 
@@ -715,9 +709,10 @@ TEST(RtTensorHvp, JacobianJvpAlongTemperatureMatchesDifferences) {
   const auto ghi = *eq.gradient(std::span<const double>{hi});
   const auto glo = *eq.gradient(std::span<const double>{lo});
   ASSERT_EQ(dj.size(), ghi.size());
-  for (std::size_t j = 0; j < dj.size(); ++j) {
-    const double fd = (ghi[j] - glo[j]) / (2 * h);
-    EXPECT_NEAR(dj[j], fd, 1e-6 * std::max(1.0, std::abs(fd))) << j;
+  for (const auto [j, tangent, above, below] :
+       std::views::zip(std::views::iota(0uz), dj, ghi, glo)) {
+    const double fd = (above - below) / (2 * h);
+    EXPECT_NEAR(tangent, fd, 1e-6 * std::max(1.0, std::abs(fd))) << j;
   }
 }
 
@@ -858,8 +853,8 @@ TEST(RtTensorDense, BatchColumnsAreThePointsBlockRowMajor) {
   ASSERT_EQ(*eq.dense_hessian_columns(), n * n);
   constexpr std::size_t points = 3;
   std::vector<std::vector<double>> xs(n, std::vector<double>(points));
-  for (std::size_t i = 0; i < n; ++i) {
-    std::ranges::fill(xs[i], at[i]);
+  for (const auto [column, x] : std::views::zip(xs, at)) {
+    std::ranges::fill(column, x);
   }
   std::vector<const double *> xcols(n);
   std::ranges::transform(xs, xcols.begin(),
@@ -872,12 +867,11 @@ TEST(RtTensorDense, BatchColumnsAreThePointsBlockRowMajor) {
   std::ranges::transform(h, hcols.begin(), [](auto &c) { return c.data(); });
   double *const fcol[]{f.data()};
   ASSERT_TRUE(eq.dense_hessian(xcols, fcol, gcols, hcols, points).has_value());
-  for (std::size_t i = 0; i < n; ++i) {
-    for (std::size_t j = 0; j < n; ++j) {
-      for (std::size_t p = 0; p < points; ++p) {
-        EXPECT_EQ(h[i * n + j][p], want[i * n + j]) << i << "," << j;
-      }
-    }
+  for (const auto [i, j, p] : std::views::cartesian_product(
+           std::views::iota(0uz, n),
+           std::views::iota(0uz, n),
+           std::views::iota(0uz, points))) {
+    EXPECT_EQ(h[i * n + j][p], want[i * n + j]) << i << "," << j;
   }
 }
 
@@ -923,10 +917,9 @@ namespace {
 std::vector<double> pair_table(std::size_t n, std::size_t seed, double lo,
                                double hi) {
   std::vector<double> m(n * n);
-  for (std::size_t i = 0; i < n; ++i) {
-    for (std::size_t j = 0; j < n; ++j) {
-      m[i + j * n] = models::pseudo(i + seed, j, lo, hi);
-    }
+  for (const auto [i, j] : std::views::cartesian_product(
+           std::views::iota(0uz, n), std::views::iota(0uz, n))) {
+    m[i + j * n] = models::pseudo(i + seed, j, lo, hi);
   }
   return m;
 }
@@ -955,8 +948,8 @@ TEST(RtMatrix, SelectAcrossShapes) {
     const RE T = ddx::rt::var("T");
     const auto x = symbols(n);
     RE acc{0};
-    for (std::size_t i = 0; i < n; ++i) {
-      for (std::size_t j = 0; j < n; ++j) {
+    for (const std::size_t i : std::views::iota(0uz, n)) {
+      for (const std::size_t j : std::views::iota(0uz, n)) {
         const double p = b1[i + j * n];
         const RE m = select(T > 1.0, exp(T * p), T * b2[i + j * n]);
         const RE e = p > 0.0 ? exp(T * p) : RE{0.0};
@@ -1007,9 +1000,9 @@ TEST(RtMatrix, ExpOfTemperatureTimesATableMatchesTheScalarGraph) {
       const RE T = ddx::rt::var("T");
       const auto x = symbols(n);
       RE acc{0};
-      for (std::size_t i = 0; i < n; ++i) {
+      for (const std::size_t i : std::views::iota(0uz, n)) {
         RE row{0};
-        for (std::size_t j = 0; j < n; ++j) {
+        for (const std::size_t j : std::views::iota(0uz, n)) {
           row += x[j] * exp(T * b[i + j * n]);
         }
         acc += x[i] * row;
@@ -1035,11 +1028,10 @@ TEST(RtMatrix, AGuardedMatrixMatchesTheScalarGraph) {
     const RE T = ddx::rt::var("T");
     const auto x = symbols(n);
     RE acc{0};
-    for (std::size_t i = 0; i < n; ++i) {
-      for (std::size_t j = 0; j < n; ++j) {
-        const std::size_t k = i + j * n;
-        acc += x[i] * select(T > 1.2, exp(T * b1[k]), b2[k] / T) * x[j];
-      }
+    for (const auto [i, j] : std::views::cartesian_product(
+             std::views::iota(0uz, n), std::views::iota(0uz, n))) {
+      const std::size_t k = i + j * n;
+      acc += x[i] * select(T > 1.2, exp(T * b1[k]), b2[k] / T) * x[j];
     }
     return acc;
   });
@@ -1065,9 +1057,9 @@ TEST(RtMatrix, TemperatureDependentTauMatchesTheScalarGraph) {
     const RE T = ddx::rt::var("T");
     const auto x = symbols(n);
     RE acc{0};
-    for (std::size_t i = 0; i < n; ++i) {
+    for (const std::size_t i : std::views::iota(0uz, n)) {
       RE inner{0};
-      for (std::size_t j = 0; j < n; ++j) {
+      for (const std::size_t j : std::views::iota(0uz, n)) {
         const std::size_t ji = j + i * n;
         inner +=
             x[j] * exp(-(a0[ji] + T * a1[ji] + (T * T) * a2[ji]) / (R * T));
@@ -1100,10 +1092,9 @@ TEST(RtMatrix, EachRuleAlone) {
     // sum_ij x_i entry(i, j) x_j, written out.
     const auto x = symbols(n);
     RE acc{0};
-    for (std::size_t i = 0; i < n; ++i) {
-      for (std::size_t j = 0; j < n; ++j) {
-        acc += x[i] * entry(i, j) * x[j];
-      }
+    for (const auto [i, j] : std::views::cartesian_product(
+             std::views::iota(0uz, n), std::views::iota(0uz, n))) {
+      acc += x[i] * entry(i, j) * x[j];
     }
     return acc;
   };
@@ -1146,10 +1137,9 @@ TEST(RtMatrix, EachRuleAlone) {
          // sum_ij exp(T x_i x_j), with x inside the exponential.
          const auto x = symbols(n);
          RE acc{0};
-         for (std::size_t i = 0; i < n; ++i) {
-           for (std::size_t j = 0; j < n; ++j) {
-             acc += exp(T * x[i] * x[j]);
-           }
+         for (const auto [i, j] : std::views::cartesian_product(
+                  std::views::iota(0uz, n), std::views::iota(0uz, n))) {
+           acc += exp(T * x[i] * x[j]);
          }
          return acc;
        },
@@ -1160,10 +1150,9 @@ TEST(RtMatrix, EachRuleAlone) {
          // x^T M^T log(x) with M = T B, the transposed product.
          const auto x = symbols(n);
          RE acc{0};
-         for (std::size_t i = 0; i < n; ++i) {
-           for (std::size_t j = 0; j < n; ++j) {
-             acc += x[j] * (T * b[i + j * n]) * log(x[i]);
-           }
+         for (const auto [i, j] : std::views::cartesian_product(
+                  std::views::iota(0uz, n), std::views::iota(0uz, n))) {
+           acc += x[j] * (T * b[i + j * n]) * log(x[i]);
          }
          return acc;
        },
@@ -1263,10 +1252,11 @@ TEST(RtMatrix, DenseHessianOverAUniquacResidualInTemperatureAndPressure) {
   const auto a0 = pair_table(n, 13, -200.0, 400.0);
   const auto a1 = pair_table(n, 14, -1.0, 1.0);
   const auto ap = pair_table(n, 15, -1e-2, 1e-2);
-  std::vector<double> q(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    q[i] = 1.0 + 0.1 * static_cast<double>(i % 7);
-  }
+  const auto q = std::views::iota(0uz, n) |
+                 std::views::transform([](std::size_t i) {
+                   return 1.0 + 0.1 * static_cast<double>(i % 7);
+                 }) |
+                 ddx::impl::to<std::vector>();
   const auto eq = ddx::rt::equation([&] {
     const RE T = ddx::rt::var("T");
     const RE P = ddx::rt::var("P");
@@ -1344,10 +1334,9 @@ TEST(RtMatrix, DenseHessianRefusesACompositionDependentMatrix) {
   const auto want = ddx::rt::equation([&] {
     const auto x = symbols(n);
     RE acc{0};
-    for (std::size_t i = 0; i < n; ++i) {
-      for (std::size_t j = 0; j < n; ++j) {
-        acc += x[i] * (exp(x[i] * x[j]) * b[i + j * n]) * x[j];
-      }
+    for (const auto [i, j] : std::views::cartesian_product(
+             std::views::iota(0uz, n), std::views::iota(0uz, n))) {
+      acc += x[i] * (exp(x[i] * x[j]) * b[i + j * n]) * x[j];
     }
     return acc;
   });
