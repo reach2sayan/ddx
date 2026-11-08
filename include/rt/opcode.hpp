@@ -111,13 +111,8 @@ enum class OpCode : std::uint8_t {
 #undef DDX_RT_ENUMERATOR
 };
 
-inline constexpr std::size_t op_count = [] {
-  std::size_t n = 0;
-#define DDX_RT_COUNT(fn, Op, label, ...) ++n;
-  DDX_RT_OP_TABLE(DDX_RT_COUNT)
-#undef DDX_RT_COUNT
-  return n;
-}();
+#define DDX_RT_COUNT(...) +1
+inline constexpr std::size_t op_count = 0 DDX_RT_OP_TABLE(DDX_RT_COUNT);
 
 // Typed payloads: each opcode row names the type its node's payload word is
 // read back as.
@@ -388,13 +383,9 @@ named_index(OpCode op) noexcept {
 #undef DDX_RT_NAMED
   return std::nullopt;
 }
-inline constexpr std::size_t named_count = [] {
-  std::size_t n = 0;
-#define DDX_RT_NAMED(...) ++n;
-  DDX_RT_NAMED_TABLE(DDX_RT_NAMED)
-#undef DDX_RT_NAMED
-  return n;
-}();
+inline constexpr std::size_t named_count =
+    0 DDX_RT_NAMED_TABLE(DDX_RT_COUNT);
+#undef DDX_RT_COUNT
 
 // One T per named kind. GCC before 15 double-frees when constant evaluation
 // copies an array of allocating elements, so there it copies element-wise.

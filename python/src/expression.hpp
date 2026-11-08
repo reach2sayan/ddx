@@ -143,12 +143,16 @@ private:
                               auto &&fn) {
     return {fn(l.expression_, r.expression_), l.arena_ ? l.arena_ : r.arena_};
   }
-  friend PyExpression select(const PyExpression &, const PyExpression &,
-                             const PyExpression &);
-  // Used by the reductions and vector factories in module.cpp.
-  friend PyExpression reduce(const PyExpression &, auto &&);
-  friend PyExpression reduce(const PyExpression &, const PyExpression &,
-                             auto &&);
+  // A composition that may refuse, such as a reduction or a vector factory in
+  // module.cpp, raises where it is formed.
+  friend PyExpression reduce(const PyExpression &v, auto &&fn) {
+    return checked(fn(v.expression_), v.arena_);
+  }
+  friend PyExpression reduce(const PyExpression &u, const PyExpression &v,
+                             auto &&fn) {
+    return checked(fn(u.expression_, v.expression_),
+                   u.arena_ ? u.arena_ : v.arena_);
+  }
 
 public:
   [[nodiscard]] constexpr const Base &base() const noexcept {
@@ -170,17 +174,6 @@ private:
   Base expression_;
   SharedArena arena_;
 };
-
-// A composition that may refuse, such as a reduction, raises where it is
-// formed. Mixed operands take whichever arena is set.
-[[nodiscard]] inline PyExpression reduce(const PyExpression &v, auto &&fn) {
-  return PyExpression::checked(fn(v.expression_), v.arena_);
-}
-[[nodiscard]] inline PyExpression reduce(const PyExpression &u,
-                                         const PyExpression &v, auto &&fn) {
-  return PyExpression::checked(fn(u.expression_, v.expression_),
-                               u.arena_ ? u.arena_ : v.arena_);
-}
 
 // The result of transpose(M), kept as the matrix it reads.
 struct PyTransposed {

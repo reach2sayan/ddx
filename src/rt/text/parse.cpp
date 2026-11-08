@@ -116,9 +116,9 @@ constexpr auto subtract = [](auto &ctx) {
 template <typename Index>
 constexpr auto leaf = [](auto &ctx) {
   Ast &ast = _globals(ctx).ast;
-  _val(ctx) = append(
-      ast, {.op = Index::op,
-            .leaf = Index{intern(ast.template table<Index>(), _attr(ctx))}});
+  auto &table = std::same_as<Index, NameIndex> ? ast.names : ast.literals;
+  _val(ctx) =
+      append(ast, {.op = Index::op, .leaf = Index{intern(table, _attr(ctx))}});
 };
 
 constexpr auto assign = [](auto &ctx) { _val(ctx) = _attr(ctx); };

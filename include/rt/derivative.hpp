@@ -222,10 +222,9 @@ template <impl::Numeric T>
   }
   std::vector<NodeId> wanted(roots.begin(), roots.end());
   impl::append(wanted, b.closures());
-  const auto live = reachable(b, wanted);
-  return std::ranges::any_of(live_ids(live), [&b](NodeId v) {
-    return kind_of(b[v].op) == Kind::Extern &&
-           b.externs()[detail::get<ExternRef>(b[v]).function].order < 2;
+  return reaches(b, wanted, [&b](const Node<T> &node) {
+    return kind_of(node.op) == Kind::Extern &&
+           b.externs()[detail::get<ExternRef>(node).function].order < 2;
   });
 }
 

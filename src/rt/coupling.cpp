@@ -32,20 +32,14 @@ Colouring colour_columns(const CouplingRows &rows) {
   const std::size_t n = rows.size();
 
   // Two columns conflict when any row couples both.
-  const auto conflicting = [&](const std::size_t j) {
-    return std::views::iota(j + 1, n) |
-           std::views::filter([&, j](const std::size_t k) {
-             return rows[j].intersects(rows[k]);
-           }) |
-           std::views::transform(
-               [j](const std::size_t k) { return std::pair{j, k}; });
-  };
   std::vector<std::pair<std::size_t, std::size_t>> edges;
-  for (const auto [j, k] : std::views::iota(0uz, n) |
-                               std::views::transform(conflicting) |
-                               std::views::join) {
-    edges.emplace_back(j, k);
-    edges.emplace_back(k, j);
+  for (std::size_t j = 0; j < n; ++j) {
+    for (std::size_t k = j + 1; k < n; ++k) {
+      if (rows[j].intersects(rows[k])) {
+        edges.emplace_back(j, k);
+        edges.emplace_back(k, j);
+      }
+    }
   }
   const ConflictGraph conflicts{boost::edges_are_unsorted_multi_pass,
                                 edges.begin(), edges.end(), n};

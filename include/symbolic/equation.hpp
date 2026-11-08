@@ -43,28 +43,8 @@ constexpr auto make_derivatives(CSymbolList auto syms,
   });
 }
 
-template <CExpression... Exprs>
-constexpr auto make_jac_rows(const std::tuple<Exprs...> &es,
-                             CSymbolList auto syms) noexcept {
-  return meta::unpack(es, [&](const auto &...exprs) noexcept {
-    return std::make_tuple(make_derivatives(syms, exprs)...);
-  });
-}
-
-// A dual-valued row carries the seed in its dual part, so the derivative is
+// A dual-valued cell carries the seed in its dual part, so the derivative is
 // the real part.
-template <Numeric T, std::size_t N>
-[[nodiscard]] constexpr auto
-strip_seed(const std::array<T, N> &grads) noexcept {
-  if constexpr (DualLike<T>) {
-    std::array<dual_scalar_t<T>, N> result{};
-    std::ranges::transform(grads, result.begin(),
-                           [](const T &g) { return g.template get<0>(); });
-    return result;
-  } else {
-    return grads;
-  }
-}
 template <Numeric T> [[nodiscard]] constexpr auto strip_seed(const T &v) {
   if constexpr (DualLike<T>) {
     return v.template get<0>();
@@ -73,20 +53,16 @@ template <Numeric T> [[nodiscard]] constexpr auto strip_seed(const T &v) {
   }
 }
 
+// Variable k seeded on epsilon_l wherever idx[l] names it.
 template <Numeric S, std::size_t Depth>
 constexpr nth_dual_t<S, Depth> make_mixed_seed(S value,
                                                std::span<const std::size_t> idx,
                                                std::size_t k) noexcept {
-  if constexpr (Depth == 0) {
-    return value;
-  } else if constexpr (Depth == 1) {
-    return nth_dual_t<S, 1>{value, k == idx[0] ? S{1} : S{}};
-  } else {
-    auto inner =
-        make_mixed_seed<S, Depth - 1>(std::move(value), idx.subspan(1), k);
-    auto outer_tangent = embed_constant<S, Depth - 1>(k == idx[0] ? S{1} : S{});
-    return nth_dual_t<S, Depth>{std::move(inner), std::move(outer_tangent)};
+  std::size_t mask = 0;
+  for (const auto [l, i] : idx | std::views::enumerate) {
+    mask |= std::size_t{i == k} << l;
   }
+  return dual_seed<Depth>(value, mask);
 }
 
 // One sorted multi-index per symmetry class, since by Schwarz only
@@ -95,7 +71,8 @@ constexpr nth_dual_t<S, Depth> make_mixed_seed(S value,
 template <std::size_t N, std::size_t Order>
   requires(N > 0 && Order > 0)
 consteval auto simplex_index_table() noexcept {
-  std::array<std::array<std::size_t, Order>, binomial(N + Order - 1, Order)>
+  std::array<std::array<std::size_t, Order>,
+             binomial_fixed<Order>(N + Order - 1)>
       out{};
   std::array<std::size_t, Order> idx{};
   for (auto &slot : out) {
@@ -159,8 +136,6 @@ private:
   Exprs expressions;
 
   using point_t = std::array<value_type, input_dim>;
-  using jacobian_tensor_t =
-      md_tensor<S, md::extents<std::size_t, output_dim, input_dim>>;
 
   // Symbols are declared first, in Equation order, so a column is the symbol's
   // slot in the point even when a folded tree such as (y*x)/(x*y) loses it.
@@ -191,7 +166,9 @@ private:
   // Built on demand, since storing the rows would instantiate the symbolic
   // Jacobian every time Equation<E> is named.
   [[nodiscard]] constexpr auto jacobian_rows() const noexcept {
-    return detail::make_jac_rows(expressions, symbols{});
+    return meta::unpack(expressions, [](const auto &...e) noexcept {
+      return std::make_tuple(detail::make_derivatives(symbols{}, e)...);
+    });
   }
 
 public:
@@ -271,12 +248,13 @@ public:
           }
           const auto v = rt::evaluate_reachable(l.arena, cells, vals);
           if constexpr (output_dim == 1) {
-            std::array<value_type, input_dim> row{};
-            std::ranges::transform(cells, row.begin(),
-                                   [&v](rt::NodeId c) { return v[c]; });
-            return detail::strip_seed(row);
+            std::array<S, input_dim> row{};
+            std::ranges::transform(cells, row.begin(), [&v](rt::NodeId c) {
+              return detail::strip_seed(v[c]);
+            });
+            return row;
           } else {
-            jacobian_tensor_t J{};
+            md_tensor<S, md::extents<std::size_t, output_dim, input_dim>> J{};
             for (const std::size_t i : std::views::iota(0uz, output_dim)) {
               for (const std::size_t k : std::views::iota(0uz, input_dim)) {
                 J[i, k] = detail::strip_seed(v[cells[i * input_dim + k]]);

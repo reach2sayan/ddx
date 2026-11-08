@@ -173,10 +173,6 @@ private:
 
   // --- running -------------------------------------------------------------
 
-  void run(Want want, const Point &at, const rt::Columns<double> &out) const {
-    unwrap(dispatch(want, at.columns(), out, at.size()));
-  }
-
   // Storage for one derivative block. Compressed blocks go to scratch and are
   // scattered afterwards; the other shapes are written straight into the array.
   struct Out {
@@ -259,7 +255,11 @@ private:
     constexpr rt::WantInfo w = rt::want_info(W);
     const Point at{x, inputs_};
     Cell cell;
-    auto f = w.values ? values_block(sizes.values, at) : std::nullopt;
+    // The values array, or nothing when the value is a single float.
+    std::optional<Block> f;
+    if (w.values && (height() != 1 || at.batched())) {
+      f.emplace(shape_of({ssize(height())}, at), sizes.values, at.size());
+    }
     Out g = out_for(w.jacobian, sizes.jacobian, at);
     Out h = out_for(w.hessian, sizes.hessian, at);
     const rt::Columns<double> columns{
@@ -287,7 +287,8 @@ private:
     }
     pyb::list parts;
     if (w.values) {
-      parts.append(value_of(f, cell));
+      parts.append(f ? std::move(*f).array()
+                     : pyb::object{pyb::float_(cell.value)});
     }
     if (w.jacobian != rt::BlockShape::None) {
       parts.append(finish(w.jacobian, g, at, pattern, nullptr));
@@ -350,11 +351,6 @@ private:
     return dims;
   }
 
-  // Whether the value is a single double, returned as a Python float.
-  [[nodiscard]] bool scalar(const Point &at) const {
-    return height() == 1 && !at.batched();
-  }
-
   // Stack storage for that single value, with the row pointer the ABI wants.
   struct Cell {
     double value{};
@@ -363,20 +359,6 @@ private:
       return {&row, 1};
     }
   };
-
-  // The values array, or nothing when the value is a single float.
-  [[nodiscard]] std::optional<Block> values_block(std::size_t columns,
-                                                  const Point &at) const {
-    return scalar(at) ? std::nullopt
-                      : std::optional<Block>{std::in_place,
-                                             shape_of({ssize(height())}, at),
-                                             columns, at.size()};
-  }
-
-  [[nodiscard]] static pyb::object value_of(std::optional<Block> &f,
-                                            Cell &cell) {
-    return f ? std::move(*f).array() : pyb::object{pyb::float_(cell.value)};
-  }
 
   // A direction covers the symbols; a point covers every input.
   Symbols symbols_;
@@ -470,19 +452,21 @@ public:
   // swapped in by adopt() is picked up.
   void operator()() {
     const auto l = eq_->pipeline(want_);
-    eq_->run(
-        want_, at_,
+    unwrap(eq_->dispatch(
+        want_, at_.columns(),
         {.values = f_ ? f_->rows() : std::span<double *const>{},
          .jacobian = partials_ ? partials_->rows() : std::span<double *const>{},
          .hessian =
-             compressed_ ? compressed_->rows() : std::span<double *const>{}});
+             compressed_ ? compressed_->rows() : std::span<double *const>{}},
+        at_.size()));
     if (g_) {
       const rt::Sparsity &pattern = eq_->derivative().pattern;
       py::scatter(pattern, *partials_, *g_, pattern.columns, pattern.size(),
                   at_.size());
     }
     if (h_) {
-      scatter(*l);
+      py::scatter(l->graph->colouring(), *compressed_, *h_, eq_->width(),
+                  eq_->width(), at_.size());
     }
   }
 
@@ -499,11 +483,6 @@ public:
   }
 
 private:
-  void scatter(const PyEquation::Compiled &l) {
-    py::scatter(l.graph->colouring(), *compressed_, *h_, eq_->width(),
-                eq_->width(), at_.size());
-  }
-
   // A rank-0 block is returned as a float, matching the allocating calls.
   template <typename B>
   [[nodiscard]] static pyb::object read(const std::optional<B> &b) {

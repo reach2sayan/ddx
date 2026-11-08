@@ -18,21 +18,6 @@ namespace ddx::impl {
 
 namespace detail {
 
-// A node's precedence as its parent sees it; leaves and calls are atomic.
-template <CExpression E> consteval int node_precedence() {
-  using U = std::remove_cvref_t<E>;
-  if constexpr (CExpressionNode<U>) {
-    using Op = typename U::op_type;
-    if constexpr (Op::notation == Notation::Function) {
-      return precedence_atom;
-    } else {
-      return Op::precedence;
-    }
-  } else {
-    return precedence_atom;
-  }
-}
-
 // A two-child sum whose right operand is a negation prints as a subtraction.
 template <CExpression E> consteval bool renders_as_subtraction() {
   return boost::hof::match(
@@ -64,7 +49,9 @@ void print_infix(const printer<V> &p, const CExpression auto &e, int min_prec) {
   using U = std::remove_cvref_t<decltype(e)>;
   if constexpr (CExpressionNode<U>) {
     using Op = typename U::op_type;
-    constexpr int prec = node_precedence<U>();
+    // A call is atomic to its parent.
+    constexpr int prec = Op::notation == Notation::Function ? precedence_atom
+                                                            : Op::precedence;
     const bool parens = prec < min_prec;
     if (parens) {
       p.put('(');

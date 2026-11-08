@@ -73,9 +73,7 @@ inline constexpr bool probes_Select =
 template <impl::Numeric T>
 inline constexpr bool probes_VSelect = probes_Select<T>;
 
-template <impl::Numeric T>
-inline constexpr bool probes_Sign =
-    impl::CArithmetic<T> || std::totally_ordered<T>;
+template <impl::Numeric T> inline constexpr bool probes_Sign = probes_Lt<T>;
 
 // Every row instantiates for every T, so an op the scalar lacks returns T{}.
 // Callers check supports() before relying on the result.

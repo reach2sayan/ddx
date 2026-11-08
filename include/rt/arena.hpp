@@ -807,10 +807,7 @@ private:
               std::span<const T> data) const {
     std::uint64_t h = rows;
     mix(h, cols);
-    if constexpr (std::is_trivially_copyable_v<T> &&
-                  (sizeof(T) == 8 || sizeof(T) == 4)) {
-      using Word =
-          std::conditional_t<sizeof(T) == 8, std::uint64_t, std::uint32_t>;
+    if constexpr (word_sized) {
       for (const T &v : data) {
         mix(h, std::bit_cast<Word>(v));
       }
@@ -926,16 +923,19 @@ private:
     return intern({.op = OpCode::Seed, .payload = to_word(slot)});
   }
 
+  // A T that is one word is hashed and compared by its bits.
+  static constexpr bool word_sized =
+      std::is_trivially_copyable_v<T> && (sizeof(T) == 8 || sizeof(T) == 4);
+  using Word = std::conditional_t<sizeof(T) == 8, std::uint64_t, std::uint32_t>;
+
   static constexpr std::uint64_t payload_of(const Node<T> &n) {
     if (n.op != OpCode::Const) {
       return std::uint64_t{n.payload};
     }
     // Anything wider than a word hashes to one bucket and is told apart by
     // same().
-    if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 8) {
-      return std::bit_cast<std::uint64_t>(n.value);
-    } else if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 4) {
-      return std::bit_cast<std::uint32_t>(n.value);
+    if constexpr (word_sized) {
+      return std::bit_cast<Word>(n.value);
     } else {
       return 0;
     }
@@ -952,10 +952,8 @@ private:
   // Compares by bits where T is a word, as the hash does, so -0.0 and +0.0 stay
   // distinct and a NaN equals itself.
   static constexpr bool identical(const T &l, const T &r) {
-    if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 8) {
-      return std::bit_cast<std::uint64_t>(l) == std::bit_cast<std::uint64_t>(r);
-    } else if constexpr (std::is_trivially_copyable_v<T> && sizeof(T) == 4) {
-      return std::bit_cast<std::uint32_t>(l) == std::bit_cast<std::uint32_t>(r);
+    if constexpr (word_sized) {
+      return std::bit_cast<Word>(l) == std::bit_cast<Word>(r);
     } else if constexpr (std::equality_comparable<T>) {
       using impl::same_value;
       return same_value(l, r);
@@ -1245,8 +1243,6 @@ private:
     return intern(n);
   }
 
-  // Folds a tensor node over constants into a table or a Const, using the
-  // reference kernels. Skipped in constant evaluation.
   // Whether M x can be had without forming M: M is outers u w^T under
   // scalings, negation and sums, or one such outer under an elementwise mask N.
   // Decided before anything is built, so a refusal leaves no nodes behind.
@@ -1317,6 +1313,8 @@ private:
     }
   }
 
+  // Folds a tensor node over constants into a table or a Const, using the
+  // reference kernels. Skipped in constant evaluation.
   constexpr std::optional<NodeId> fold_tensor(NodeId v) {
     if consteval {
       return std::nullopt;
@@ -1805,6 +1803,15 @@ tensor_layout(const auto &s, std::span<const Step> schedule,
 [[nodiscard]] constexpr auto live_ids(const std::vector<bool> &live) {
   return std::views::iota(NodeId{0}, static_cast<NodeId>(live.size())) |
          std::views::filter([&live](NodeId v) { return live[v]; });
+}
+
+// Whether any node the roots reach satisfies `pred`.
+[[nodiscard]] constexpr bool reaches(const auto &nodes,
+                                     std::span<const NodeId> roots,
+                                     auto &&pred) {
+  const auto live = reachable(nodes, roots);
+  return std::ranges::any_of(live_ids(live),
+                             [&](NodeId v) { return pred(nodes[v]); });
 }
 
 } // namespace detail

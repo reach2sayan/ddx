@@ -17,11 +17,6 @@ template <typename T, typename... Rest>
 inline constexpr bool dynamic_outputs =
     sizeof...(Rest) == 1 && (std::same_as<Rest, Dynamic> && ...);
 
-// The output-count policy: Fixed by the pack size, or Dynamic.
-template <typename T, typename... Rest>
-using policy_of = std::conditional_t<dynamic_outputs<T, Rest...>, Dynamic,
-                                     Fixed<1 + sizeof...(Rest)>>;
-
 // A friend of Equation, so that the equation() factories here and in rt/text
 // are the only callers of create().
 struct Creating {
@@ -43,7 +38,10 @@ template <Numeric T, typename... Rest>
   requires(rt::detail::dynamic_outputs<T, Rest...> ||
            (std::same_as<Rest, rt::Expression<T>> && ...))
 class Equation<rt::Expression<T>, Rest...> : public rt::detail::Core<T> {
-  using Outputs = rt::detail::policy_of<T, Rest...>;
+  // The output-count policy: Fixed by the pack size, or Dynamic.
+  using Outputs =
+      std::conditional_t<rt::detail::dynamic_outputs<T, Rest...>,
+                         rt::detail::Dynamic, rt::detail::Fixed<1 + sizeof...(Rest)>>;
   using Base = rt::detail::Core<T>;
   friend Base;
   friend struct rt::detail::Creating;
@@ -57,12 +55,8 @@ class Equation<rt::Expression<T>, Rest...> : public rt::detail::Core<T> {
   }
 
   template <typename... Es>
-  static constexpr bool are_outputs =
-      Outputs::expected == sizeof...(Es) + 1 &&
-      (std::same_as<Es, rt::Expression<T>> && ...);
-
-  template <typename... Es>
-    requires are_outputs<Es...>
+    requires(Outputs::expected == sizeof...(Es) + 1 &&
+             (std::same_as<Es, rt::Expression<T>> && ...))
   [[nodiscard]] static constexpr Equation
   create(std::unique_ptr<rt::Arena<T>> owned, rt::Expression<T> first,
          Es... rest) {
@@ -116,41 +110,30 @@ template <impl::Numeric T, typename... Ts>
       nullptr, first, rest...);
 }
 
-namespace detail {
-
-// Picks the Equation type from what the callback built: one root, a fixed-size
-// tuple-like of roots, or any other range, which becomes a System.
-template <impl::Numeric T, typename Built>
-[[nodiscard]] auto over(const Built &built, auto &&make) {
+// Builds an equation from a callback such as [] { return exp(var("x")); }.
+// One root gives an Equation, a fixed-size tuple-like of roots a fixed-size
+// system, and any other range a System.
+template <impl::Numeric T = double>
+[[nodiscard]] auto equation(std::invocable auto &&assemble) {
+  auto [arena, built] = detail::assemble<T>(DDX_FWD(assemble));
+  using Built = std::remove_cvref_t<decltype(built)>;
+  using detail::Creating;
   if constexpr (std::same_as<Built, Expression<T>>) {
-    return make(meta::type_c<impl::Equation<Expression<T>>>, built);
-  } else if constexpr (requires { std::tuple_size<Built>::value; }) {
+    return Creating::create<Equation<T>>(std::move(arena), built);
+  } else if constexpr (meta::CTupleLike<Built>) {
     constexpr std::size_t outputs = std::tuple_size_v<Built>;
     static_assert(outputs > 0,
                   "equation: a system needs at least one function");
     return meta::unpack(meta::iota<outputs>, [&](auto... i) {
-      return make(
-          meta::type_c<meta::repeat_t<impl::Equation, Expression<T>, outputs>>,
-          built[i]...);
+      return Creating::create<
+          meta::repeat_t<impl::Equation, Expression<T>, outputs>>(
+          std::move(arena), built[i]...);
     });
   } else {
     const auto outputs = built | impl::to<std::vector<Expression<T>>>();
-    return make(meta::type_c<System<T>>,
-                std::span<const Expression<T>>{outputs});
+    return Creating::create<System<T>>(std::move(arena),
+                                       std::span<const Expression<T>>{outputs});
   }
-}
-
-} // namespace detail
-
-// Builds an equation from a callback such as [] { return exp(var("x")); }.
-// An array of roots gives a fixed-size system and any other range a System.
-template <impl::Numeric T = double>
-[[nodiscard]] auto equation(std::invocable auto &&assemble) {
-  auto [arena, built] = detail::assemble<T>(DDX_FWD(assemble));
-  return detail::over<T>(
-      built, [&]<typename Eq>(meta::Type<Eq>, auto... roots) {
-        return detail::Creating::create<Eq>(std::move(arena), roots...);
-      });
 }
 
 } // namespace ddx::rt

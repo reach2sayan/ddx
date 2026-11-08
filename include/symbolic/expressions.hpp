@@ -209,8 +209,6 @@ class Expression : public ExpressionImpl<(std::is_empty_v<Children> && ...), Op,
 
 public:
   using base_type::base_type;
-  using children_t = typename base_type::children_t;
-  static constexpr bool stateless = (std::is_empty_v<Children> && ...);
 };
 
 namespace detail {

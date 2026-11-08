@@ -5,7 +5,6 @@
 #include "util/export.hpp"
 
 #include <array>
-#include <concepts>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -40,16 +39,6 @@ struct Ast {
   std::vector<std::string> names;    // free identifiers in order of first use
   std::vector<std::string> literals; // kept as text so they are read at T
   std::uint32_t root = no_term;
-
-  template <typename Index>
-    requires std::same_as<Index, NameIndex> || std::same_as<Index, LiteralIndex>
-  [[nodiscard]] std::vector<std::string> &table() noexcept {
-    if constexpr (std::same_as<Index, NameIndex>) {
-      return names;
-    } else {
-      return literals;
-    }
-  }
 };
 
 [[nodiscard]] DDX_API result<Ast> parse(std::string_view source);

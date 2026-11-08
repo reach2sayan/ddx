@@ -66,29 +66,6 @@ llvm::Function *declare(llvm::Module &m, llvm::StringRef name,
   return fn;
 }
 
-// Declares a libm function as not touching memory, the IR form of
-// -fno-math-errno, so that calls to it can be hoisted.
-llvm::Function *libm_decl(llvm::Module &m, std::string_view name,
-                          llvm::Type *scalar, unsigned args) {
-  llvm::SmallVector<llvm::Type *, 2> params(args, scalar);
-  auto *fn = declare(m, name, llvm::FunctionType::get(scalar, params, false),
-                     llvm::MemoryEffects::none());
-  fn->setDoesNotFreeMemory();
-  return fn;
-}
-
-// Declares a runtime entry point the kernel calls: the extern trampoline, the
-// tensor step, or the tensor store.
-template <CKernelScalar T>
-llvm::Function *runtime_decl(llvm::Module &m, std::string_view symbol,
-                             llvm::ArrayRef<llvm::Value *> args) {
-  const auto types = llvm::to_vector(
-      llvm::map_range(args, [](llvm::Value *a) { return a->getType(); }));
-  return declare(m, libm_name<T>(symbol),
-                 llvm::FunctionType::get(llvm::Type::getVoidTy(m.getContext()),
-                                         types, false));
-}
-
 // The kernel handles `width` points per iteration, as T when width is 1 and as
 // <width x T> otherwise. Only memory accesses and libm calls differ by width.
 struct LaneType {
@@ -263,9 +240,16 @@ public:
   }
 
 private:
+  // Calls a runtime entry point: the extern trampoline, the tensor step, or
+  // the tensor store.
   void runtime_call(std::string_view symbol,
                     llvm::ArrayRef<llvm::Value *> args) const {
-    b_.CreateCall(runtime_decl<T>(m_, symbol, args), args);
+    const auto types = llvm::to_vector(
+        llvm::map_range(args, [](llvm::Value *a) { return a->getType(); }));
+    b_.CreateCall(
+        declare(m_, libm_name<T>(symbol),
+                llvm::FunctionType::get(b_.getVoidTy(), types, false)),
+        args);
   }
 
   [[nodiscard]] llvm::Value *lanes_at(std::uint32_t row) const {
@@ -281,8 +265,14 @@ private:
       if (id != llvm::Intrinsic::not_intrinsic) {
         fn = llvm::Intrinsic::getOrInsertDeclaration(&m_, id, {lanes_.ty});
       } else {
-        fn = libm_decl(m_, libm_name<T>(rt::label_of(op)), lanes_.scalar,
-                       static_cast<unsigned>(args.size()));
+        // Not touching memory is the IR form of -fno-math-errno, so a call
+        // can be hoisted.
+        const llvm::SmallVector<llvm::Type *, 2> params(args.size(),
+                                                        lanes_.scalar);
+        fn = declare(m_, libm_name<T>(rt::spelling_of(op).name),
+                     llvm::FunctionType::get(lanes_.scalar, params, false),
+                     llvm::MemoryEffects::none());
+        fn->setDoesNotFreeMemory();
         scalarise = lanes_.vector();
       }
     }
@@ -407,9 +397,6 @@ private:
   [[nodiscard]] llvm::Value *i64(std::uint64_t c) const {
     return b_.getInt64(c);
   }
-  [[nodiscard]] rt::NodeId operand(rt::NodeId v, std::size_t slot) const {
-    return g_.operands(v)[slot];
-  }
   [[nodiscard]] std::uint64_t rows(rt::NodeId u) const {
     return g_.shape(u).rows;
   }
@@ -509,7 +496,7 @@ private:
     case rt::OpCode::VecConst:
       return read(tables_[u], i);
     case rt::OpCode::MatRow:
-      if (const rt::NodeId a = operand(u, 0);
+      if (const rt::NodeId a = g_.operands(u)[0];
           g_.op_of(a) == rt::OpCode::MatConst) {
         const bool plain =
             rt::detail::get<rt::Orientation>(g_[u]) == rt::Orientation::plain;
@@ -904,17 +891,14 @@ emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops, const rt::Graph<T> &g,
       }
       if (loops->handles(v)) {
         loops->emit(v, value);
-        if (rt::detail::is_scalar(p)) {
-          value[v] = emit.from_tape(g.rows()[v], mask);
-        }
-        break;
+      } else {
+        rt::detail::for_each_operand(g, v, [&](rt::NodeId u) {
+          if (!rt::detail::on_tensors(g[u])) {
+            emit.to_tape(value[u], g.rows()[u], mask);
+          }
+        });
+        emit.tensor_step(v);
       }
-      rt::detail::for_each_operand(g, v, [&](rt::NodeId u) {
-        if (!rt::detail::on_tensors(g[u])) {
-          emit.to_tape(value[u], g.rows()[u], mask);
-        }
-      });
-      emit.tensor_step(v);
       if (rt::detail::is_scalar(p)) {
         value[v] = emit.from_tape(g.rows()[v], mask);
       }
@@ -922,36 +906,6 @@ emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops, const rt::Graph<T> &g,
     }
   }
   return value;
-}
-
-template <CKernelScalar T>
-void emit_stores(const Emitter<T> &emit, const rt::Graph<T> &g,
-                 const HoistedColumns &cols,
-                 std::span<llvm::Value *const> value, llvm::Value *index,
-                 llvm::Value *mask) {
-  const rt::PerBlock<std::span<llvm::Value *const>> columns{
-      cols.out.values, cols.out.jacobian, cols.out.hessian};
-  for (const auto [block_columns, block] :
-       rt::zip_blocks(columns, g.output_blocks())) {
-    for (const auto [column, o] : std::views::zip(block_columns, block)) {
-      emit.store(value[o], column, index, mask);
-    }
-  }
-}
-
-// With tensors, outputs go through the interpreter's scatter: scalars are
-// stored to their tape rows, then one call writes every block.
-template <CKernelScalar T>
-void emit_tensor_stores(const Emitter<T> &emit, const rt::Graph<T> &g,
-                        std::span<llvm::Value *const> value,
-                        llvm::Function &kernel, llvm::Value *index,
-                        llvm::Value *live, llvm::Value *mask) {
-  for (const rt::NodeId o : g.outputs()) {
-    if (!rt::detail::on_tensors(g[o])) {
-      emit.to_tape(value[o], g.rows()[o], mask);
-    }
-  }
-  emit.tensor_store(kernel, index, live);
 }
 
 } // namespace
@@ -1030,9 +984,23 @@ emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g, llvm::StringRef name,
   const std::vector<llvm::Value *> value =
       emit_nodes(emit, loops ? &*loops : nullptr, g, cols, index, mask);
   if (g.has_tensors()) {
-    emit_tensor_stores(emit, g, value, *fn, index, live, mask);
+    // With tensors, outputs go through the interpreter's scatter: scalars are
+    // stored to their tape rows, then one call writes every block.
+    for (const rt::NodeId o : g.outputs()) {
+      if (!rt::detail::on_tensors(g[o])) {
+        emit.to_tape(value[o], g.rows()[o], mask);
+      }
+    }
+    emit.tensor_store(*fn, index, live);
   } else {
-    emit_stores(emit, g, cols, value, index, mask);
+    const rt::PerBlock<std::span<llvm::Value *const>> columns{
+        cols.out.values, cols.out.jacobian, cols.out.hessian};
+    for (const auto [block_columns, block] :
+         rt::zip_blocks(columns, g.output_blocks())) {
+      for (const auto [column, o] : std::views::zip(block_columns, block)) {
+        emit.store(value[o], column, index, mask);
+      }
+    }
   }
 
   // nuw and nsw hold because n counts allocated points, and they let SCEV

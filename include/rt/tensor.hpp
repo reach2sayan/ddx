@@ -41,13 +41,6 @@ template <impl::Numeric T> [[nodiscard]] Expression<T> in_arena(auto &&make) {
   return current_arena<T> == nullptr ? refused<T>(errc::outside_equation)
                                      : DDX_FWD(make)(*current_arena<T>);
 }
-// The poison of the first poisoned operand, if any.
-[[nodiscard]] constexpr std::optional<errc> poisoned(const auto &...es) {
-  std::optional<errc> why;
-  meta::for_each(std::tie(es...),
-                 [&](const auto &e) { why = why ? why : Router::why(e); });
-  return why;
-}
 // The shape of a node, including a table, which shape_of() does not cover.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Shape matrix_shape(const Arena<T> &b,
@@ -77,18 +70,9 @@ pack(Arena<T> &b, std::span<const Expression<T>> scalars) {
   if (scalars.empty()) {
     return detail::refused<T>(errc::tensor_shape);
   }
-  for (const auto &s : scalars) {
-    if (const auto why = detail::Router::why(s)) {
-      return detail::refused<T>(*why);
-    }
-    if (!detail::Router::scalar(s)) {
-      return detail::refused<T>(errc::tensor_shape);
-    }
-  }
-  const auto ids =
-      scalars | std::views::transform([&b](const auto &s) { return s.id(b); }) |
-      impl::to<boost::container::small_vector<NodeId, 8>>();
-  return {b, b.pack(ids)};
+  const auto ids = detail::Router::scalar_ids(b, scalars);
+  return ids ? Expression<T>{b, b.pack(*ids)}
+             : detail::refused<T>(ids.error().code);
 }
 template <impl::Numeric T = double>
 [[nodiscard]] Expression<T> pack(std::span<const Expression<T>> scalars) {

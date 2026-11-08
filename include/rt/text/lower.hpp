@@ -73,10 +73,6 @@ template <std::floating_point T>
 form(const Ast &ast, std::span<const Expression<T>> symbols,
      std::span<const Expression<T>> built, const Term &t) {
   using Expr = Expression<T>;
-  const auto at = [](std::span<const Expr> from,
-                     const std::uint32_t i) -> result<Expr> {
-    return i < from.size() ? result<Expr>{from[i]} : fail(errc::bad_syntax);
-  };
   // Applies the op to its first `arity` operands, checking each exists.
   const auto over = [&](auto arity) -> result<Expr> {
     const auto stands = [&built](std::uint32_t i) { return i < built.size(); };
@@ -94,7 +90,8 @@ form(const Ast &ast, std::span<const Expression<T>> symbols,
     return std::visit(
         boost::hof::match(
             [&](const NameIndex &leaf) -> result<Expr> {
-              return at(symbols, leaf.i);
+              return leaf.i < symbols.size() ? result<Expr>{symbols[leaf.i]}
+                                             : fail(errc::bad_syntax);
             },
             // A pending literal rather than lit(), so "3 + 4" folds without a
             // node and the result matches the same expression built in C++.

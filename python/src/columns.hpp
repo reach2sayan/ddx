@@ -202,10 +202,8 @@ private:
   // An array whose rows are the symbols, in order.
   void from_array(const pyb::handle &x, std::size_t arity) {
     auto a = pyb::cast<Array>(x);
-    if (a.ndim() != 1 && a.ndim() != 2) {
-      fail_with(errc::wrong_arity);
-    }
-    if (static_cast<std::size_t>(a.shape(0)) != arity) {
+    if ((a.ndim() != 1 && a.ndim() != 2) ||
+        static_cast<std::size_t>(a.shape(0)) != arity) {
       fail_with(errc::wrong_arity);
     }
     n_ = a.ndim() == 2 ? static_cast<std::size_t>(a.shape(1)) : 1;
