@@ -227,7 +227,9 @@ struct Sweeps {
   Lazy<DenseHessian> dense;
   // Indexed by Want: the extra block of Hvp, Vjp, Jvp and JacobianJvp.
   std::array<Lazy<std::vector<NodeId>>, want_count> products;
-  Lazy<ArenaWalk> walk; // Serves a system's hessian() at a point.
+  Lazy<ArenaWalk> hessian_walk; // a system's hessian() at a point
+  Lazy<ArenaWalk> taylor_walk;  // root 0's univariate_derivative
+  Lazy<bool> taylor_computes;   // taylor_walk at TaylorDual, any order
 #ifdef DDX_HAS_JIT
   Lazy<Rebalanced> rebalanced;
 #endif
@@ -533,25 +535,76 @@ public:
   template <std::size_t Order>
     requires(Order > 0)
   [[nodiscard]] result<T> univariate_derivative(T x0) const {
+    T d{};
+    return univariate_derivative<Order>(std::span{&x0, 1}, std::span{&d, 1})
+        .transform([&] { return d; });
+  }
+
+  // out[i] is the Order-th derivative at xs[i]. From block_lanes points on,
+  // each sweep carries block_lanes of them, so dispatch is paid once a block.
+  template <std::size_t Order>
+    requires(Order > 0)
+  [[nodiscard]] result<void> univariate_derivative(std::span<const T> xs,
+                                                   std::span<T> out) const {
     DDX_CHECK(single());
     if (arena_->inputs().named() != 1 || symbol_count() != 1) {
       return fail(errc::not_univariate);
     }
+    if (out.size() != xs.size()) {
+      return fail(errc::wrong_arity);
+    }
     using Taylor = impl::TaylorDual<T, Order>;
-    const std::span<const NodeId> root{roots_.data(), 1};
-    [[maybe_unused]] const auto held = reading();
+    // Only root 0's cone is walked, since the arena may also hold a gradient
+    // and a Hessian and a Taylor node costs Order + 1 coefficients.
+    const ArenaWalk &walk = point_walk(
+        sweeps_->taylor_walk, [this] { return std::array{roots_[0]}; });
     // Refuse rather than sweep, since an op the Taylor scalar lacks would
-    // evaluate to a zero node and give a silently wrong number.
-    if (!computes_at<Taylor>(*arena_, root)) {
+    // evaluate to a zero node and give a silently wrong number. The order
+    // never changes what is supported, so the verdict is kept at order 1.
+    using Order1 = impl::TaylorDual<T, 1>;
+    static_assert(
+        std::ranges::all_of(std::views::iota(0uz, op_count), [](auto i) {
+          const auto op = static_cast<OpCode>(i);
+          return supports<Order1>(op) == supports<Taylor>(op);
+        }));
+    if (!sweeps_->taylor_computes.get([&] {
+          [[maybe_unused]] const auto held = reading();
+          return walk.template computes<Order1>(*arena_);
+        })) {
       return fail(errc::unsupported_scalar);
     }
-    const std::array<Taylor, 1> at{Taylor::variable(x0)};
-    // Only root 0's cone is evaluated, since the arena may also hold a gradient
-    // and a Hessian and a Taylor node costs Order + 1 coefficients.
-    const auto values = evaluate_reachable(*arena_, root, at,
-                                           reference_table<T>, contraction());
-    return values[roots_[0]].c[Order] *
-           static_cast<T>(impl::detail::compile_time_factorial(Order));
+    // The tape is thread-kept and not cleared; every id read below is
+    // scheduled, so each sweep writes it first.
+    TapeLease<Taylor> lease{calls_out_};
+    TapeSet<Taylor> &kept = lease.tapes().values;
+    [[maybe_unused]] const auto held = sweeping();
+    const auto sweep = [&](auto lanes) {
+      constexpr std::size_t W = lanes;
+      kept.tape.resize(arena_->size() * W);
+      kept.vtape.resize(walk.extent() * W);
+      std::array<Taylor, W> at;
+      for (const std::size_t base :
+           std::views::iota(0uz, xs.size()) | std::views::stride(W)) {
+        // A short block repeats its last point.
+        const std::size_t width = std::min(W, xs.size() - base);
+        for (const auto [k, a] : at | std::views::enumerate) {
+          a = Taylor::variable(xs[base + std::min<std::size_t>(k, width - 1)]);
+        }
+        walk.template operator()<W>(*arena_, at, std::span<Taylor>{kept.tape},
+                                    std::span<Taylor>{kept.vtape});
+        std::ranges::transform(
+            std::span{kept.tape}.subspan(roots_[0] * W, width),
+            out.begin() + base, [](const Taylor &t) {
+              return t.c[Order] *
+                     static_cast<T>(
+                         impl::detail::compile_time_factorial(Order));
+            });
+      }
+    };
+    xs.size() < block_lanes
+        ? sweep(std::integral_constant<std::size_t, 1>{})
+        : sweep(std::integral_constant<std::size_t, block_lanes>{});
+    return {};
   }
 
   // --- batch ---------------------------------------------------------------
@@ -849,16 +902,14 @@ protected:
     const auto &blocks = hessians();
     // The nodes the three blocks read, planned once. Appended per block rather
     // than via views::join, which GCC 15 flags maybe-uninitialized under -Wall.
-    const auto &walk = sweeps_->walk.get([&] {
+    const ArenaWalk &walk = point_walk(sweeps_->hessian_walk, [&] {
       std::vector<NodeId> wanted{roots_.begin(), roots_.end()};
       std::ranges::for_each(blocks, [&wanted](const Hessian &b) {
         impl::append(wanted, b.compressed);
         impl::append(wanted, b.partial);
         wanted.push_back(b.zero);
       });
-      [[maybe_unused]] const auto held = reading();
-      return ArenaWalk{*arena_, live_ids(reachable(*arena_, wanted)),
-                       contraction()};
+      return wanted;
     });
     const std::size_t n = symbol_count();
     // The tape is thread-kept and not cleared; every id read below is
@@ -906,6 +957,16 @@ protected:
   }
 
 private:
+  // The walk over the cone `wanted()` names, planned once under the read lock.
+  const ArenaWalk &point_walk(Lazy<ArenaWalk> &slot, auto &&wanted) const {
+    return slot.get([&] {
+      const auto ids = wanted();
+      [[maybe_unused]] const auto held = reading();
+      return ArenaWalk{*arena_, live_ids(reachable(*arena_, ids)),
+                       contraction()};
+    });
+  }
+
   // Runs `build` once under the arena's write lock, since every sweep appends.
   template <typename V> const V &sweep(Lazy<V> &slot, auto &&build) const {
     return slot.get([&] {

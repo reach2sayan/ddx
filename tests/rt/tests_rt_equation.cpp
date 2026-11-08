@@ -635,6 +635,80 @@ TEST(RtEquation, UnivariateDerivativesThroughMaxAndMin) {
               1e-10);
 }
 
+// The walk and the thread's tape are kept between calls, so a call after
+// another point, another order, or the arena's growth equals a fresh one.
+TEST(RtEquation, UnivariateDerivativeReusesItsWalk) {
+  const auto build = [] {
+    return ddx::rt::equation([] {
+      const auto x = ddx::rt::var("x");
+      const auto y = 0.5 * sin(3.0 * x) * x + 0.25;
+      return log(1.5 + y) / (2.0 - cos(y)) - 4.0 * tanh(y);
+    });
+  };
+  const auto cold = [&](double at) {
+    return *build().univariate_derivative<4>(at);
+  };
+  const auto warm = build();
+  for (const double at : {0.3, 0.9, 0.3}) {
+    EXPECT_EQ(*warm.univariate_derivative<4>(at), cold(at));
+    EXPECT_EQ(*warm.univariate_derivative<2>(at),
+              *build().univariate_derivative<2>(at));
+  }
+  // A Hessian appends its sweep to the arena the Taylor walk reads.
+  (void)*warm.hessian(0.6);
+  EXPECT_EQ(*warm.univariate_derivative<4>(0.6), cold(0.6));
+}
+
+// A span of points sweeps them a block at a time; 19 is two full blocks and a
+// short one, and below a block the points go one by one. Either way each
+// answer is the one point's, bit for bit.
+TEST(RtEquation, UnivariateDerivativeOverManyPoints) {
+  const auto eq = ddx::rt::equation([] {
+    const auto x = ddx::rt::var("x");
+    return log(1.5 + sin(x)) * cos(0.5 * x * x + 0.25);
+  });
+  for (const std::size_t n : {19uz, 3uz}) {
+    std::vector<double> xs(n), out(n);
+    for (auto &&[i, x] : xs | std::views::enumerate) {
+      x = -1.0 + 0.1 * static_cast<double>(i);
+    }
+    ASSERT_TRUE(eq.univariate_derivative<4>(std::span<const double>{xs},
+                                            std::span{out}));
+    for (std::size_t i = 0; i < n; ++i) {
+      EXPECT_EQ(out[i], *eq.univariate_derivative<4>(xs[i]));
+    }
+  }
+  std::vector<double> xs(4), out(3);
+  EXPECT_EQ(
+      eq.univariate_derivative<2>(std::span<const double>{xs}, std::span{out})
+          .error()
+          .code,
+      ddx::errc::wrong_arity);
+}
+
+// sin and cos of one operand share a series, and so do sinh and cosh; a mate
+// written to the wrong row or skipped breaks the double-angle identities.
+template <std::size_t Order> void expect_paired_series_match(double at) {
+  const auto of_u = [](auto &&f) {
+    return ddx::rt::equation([&] { return f(0.7 * ddx::rt::var("x") + 0.2); });
+  };
+  const auto paired =
+      of_u([](const auto &u) { return sin(u) * cos(u) + cosh(u) * sinh(u); });
+  const auto closed = of_u(
+      [](const auto &u) { return 0.5 * sin(2.0 * u) + 0.5 * sinh(2.0 * u); });
+  EXPECT_NEAR(*paired.template univariate_derivative<Order>(at),
+              *closed.template univariate_derivative<Order>(at), 1e-10)
+      << "order " << Order << " at " << at;
+}
+
+TEST(RtEquation, UnivariateDerivativeOfPairedSeries) {
+  for (const double at : {-0.8, 0.0, 0.45, 1.3}) {
+    expect_paired_series_match<2>(at);
+    expect_paired_series_match<4>(at);
+    expect_paired_series_match<8>(at);
+  }
+}
+
 } // namespace
 
 // The graph changes which nodes are visited but never the arithmetic at any of
@@ -1377,7 +1451,8 @@ TEST(RtEquation, CensusChargesATensorStepItsShape) {
   const auto eq = ddx::rt::equation([&] {
     const auto x = ddx::rt::vec("x", n);
     const auto t = ddx::rt::var("T");
-    const auto m = exp(t * ddx::rt::mat_constant(n, n, std::span<const double>{b}));
+    const auto m =
+        exp(t * ddx::rt::mat_constant(n, n, std::span<const double>{b}));
     return x % (m % x);
   });
   const auto c = eq.census(ddx::rt::Want::Value);

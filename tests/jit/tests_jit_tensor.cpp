@@ -35,7 +35,7 @@ std::vector<T> table(std::size_t count, std::size_t seed, double lo,
                         static_cast<double>((i * 37 + seed * 11) % 101) /
                         100.0);
          }) |
-         std::ranges::to<std::vector>();
+         ddx::impl::to<std::vector>();
 }
 
 // Gemv in both orientations off tables, plus a Dot, a Sum, Maps and Zips.
@@ -74,7 +74,8 @@ template <typename T> auto msevec_t(std::size_t n) {
 }
 
 // The ops a dense Hessian block is built from, with the Outer taken of a
-// parameter so that it does not fold to a table.
+// parameter so that it does not fold to a table, and summed with one so that
+// the gemv reads it whole rather than as r (P r . x).
 template <typename T> ddx::rt::Expression<T> dense_block(std::size_t n) {
   using E = ddx::rt::Expression<T>;
   const E x = ddx::rt::vec<T>("x", n);
@@ -86,7 +87,8 @@ template <typename T> ddx::rt::Expression<T> dense_block(std::size_t n) {
   const E s = dot(x, x);
   return dot(x, gemv(m(7), x * x)) + sum(log(x) * gemv(m(8), x, true)) -
          sum(x * log(gemv(m(9), x / sum(x), true))) +
-         dot(x, gemv(ddx::rt::outer(r, ddx::rt::param<T>("P") * r), x)) +
+         dot(x, gemv(ddx::rt::outer(r, ddx::rt::param<T>("P") * r) + m(10),
+                     x)) +
          s * s * sum(x) +
          t * sum(x * log(x)) + t * log(t);
 }
@@ -128,18 +130,18 @@ Columns<T> points(std::size_t count, std::size_t n, std::size_t seed) {
                         0.8 * static_cast<double>((j * 7 + p * 3 + seed) % 17) /
                             17.0);
                   }) |
-                  std::ranges::to<std::vector>();
+                  ddx::impl::to<std::vector>();
          }) |
-         std::ranges::to<std::vector>();
+         ddx::impl::to<std::vector>();
 }
 
 template <typename T> auto pointers(Columns<T> &c) {
   return c | std::views::transform([](auto &v) { return v.data(); }) |
-         std::ranges::to<std::vector>();
+         ddx::impl::to<std::vector>();
 }
 template <typename T> auto pointers(const Columns<T> &c) {
   return c | std::views::transform([](const auto &v) { return v.data(); }) |
-         std::ranges::to<std::vector>();
+         ddx::impl::to<std::vector>();
 }
 
 // Runs one batch of `want` and returns every output column it writes.
@@ -207,7 +209,7 @@ Columns<T> batch(const auto &eq, Want want, std::size_t n) {
     std::unreachable();
   }();
   EXPECT_TRUE(ok.has_value()) << ddx::rt::name_of(want);
-  return std::views::join(out) | std::ranges::to<std::vector>();
+  return std::views::join(out) | ddx::impl::to<std::vector>();
 }
 
 // The kernel and the sweep associate sums differently, so the error is relative
@@ -275,7 +277,7 @@ std::set<OpCode> dense_ops(auto &&expression) {
   const auto live = ddx::rt::detail::reachable(b, std::span{&h.block, 1});
   return ddx::rt::detail::live_ids(live) |
          std::views::transform([&b](ddx::rt::NodeId v) { return b.op_of(v); }) |
-         std::ranges::to<std::set>();
+         ddx::impl::to<std::set>();
 }
 
 } // namespace
@@ -302,7 +304,7 @@ TEST(JitTensor, CompilesAndAnswersTheSweep) {
                     std::views::transform([p](std::size_t i) {
                       return 0.2 + 0.03 * static_cast<double>(p + i);
                     }) |
-                    std::ranges::to<std::vector>();
+                    ddx::impl::to<std::vector>();
     EXPECT_NEAR(*eq.evaluate(std::span<const double>{at}),
                 *swept.evaluate(std::span<const double>{at}), 1e-12);
     const auto g = *eq.gradient(std::span<const double>{at});
@@ -417,7 +419,7 @@ TEST(JitRebalance, AKernelKeepsTheLayoutOfTheSweep) {
                     std::views::transform([](std::size_t i) {
                       return 0.5 + 0.125 * static_cast<double>(i);
                     }) |
-                    std::ranges::to<std::vector>();
+                    ddx::impl::to<std::vector>();
     const std::span<const double> point{at};
     const auto want = *swept.jacobian(point);
     const auto got = *compiled.jacobian(point);

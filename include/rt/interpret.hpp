@@ -7,12 +7,15 @@
 
 #include <boost/container/small_vector.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <concepts>
 #include <functional>
 #include <ranges>
 #include <span>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -110,7 +113,8 @@ template <typename U> struct TapeView {
   std::span<const TensorRow> tensor_rows{};
   U *vtape = nullptr;
   const TensorKernelTable<U> *kernels = nullptr;
-  // Each product's paired partner from Graph::pairs, or empty for no pairing.
+  // Each node's mate, or empty for no pairing: Graph::pairs' products, or an
+  // ArenaWalk's paired_ops.
   std::span<const NodeId> pairs{};
 
   [[nodiscard]] constexpr TapeRow row(NodeId v) const noexcept {
@@ -341,6 +345,33 @@ lanes_opaque(const Arena<T> &b, NodeId v, const Node<T> &n, bool fused, U *out,
   }
 }
 
+// U op T for a binary field op with a Const operand, so a dual takes its
+// ConstOperand overload. False when neither operand is a Const. The field-op
+// test comes first, so other functors' bodies are never probed at U.
+template <std::size_t W, typename Fn, impl::Numeric T, impl::Numeric U>
+  requires is_field_op_v<Fn> && (!std::same_as<U, T>) &&
+           requires(const U &u, const T &c) {
+             { Fn{}(u, c) } -> std::same_as<U>;
+             { Fn{}(c, u) } -> std::same_as<U>;
+           }
+DDX_NOINLINE
+    constexpr bool lanes_by_constant(const Arena<T> &b, const Node<T> &n,
+                                     U *DDX_RESTRICT out,
+                                     const U *DDX_RESTRICT x,
+                                     const U *DDX_RESTRICT y) noexcept {
+  if (const Node<T> &c = b[n.in[1]]; c.op == OpCode::Const) {
+    std::ranges::transform(x, x + W, out,
+                           [&c](const U &u) { return Fn{}(u, c.value); });
+    return true;
+  }
+  if (const Node<T> &c = b[n.in[0]]; c.op == OpCode::Const) {
+    std::ranges::transform(y, y + W, out,
+                           [&c](const U &u) { return Fn{}(c.value, u); });
+    return true;
+  }
+  return false;
+}
+
 // Opaque rows return true and run after the dispatch: called inside it, GCC
 // spills the closure and reloads the tape base on every step.
 template <std::size_t W, impl::Numeric T, typename U>
@@ -364,6 +395,14 @@ lanes_apply(const Arena<T> &b, NodeId i, const Node<T> &n, U *DDX_RESTRICT out,
       if constexpr (R::arity == 1) {
         lanes<W, Fn, U, R::ok>(out, lane(in[0]));
       } else if constexpr (R::arity == 2) {
+        if constexpr (requires {
+                        lanes_by_constant<W, Fn>(b, n, out, lane(in[0]),
+                                                 lane(in[1]));
+                      }) {
+          if (lanes_by_constant<W, Fn>(b, n, out, lane(in[0]), lane(in[1]))) {
+            return false;
+          }
+        }
         lanes<W, Fn, U, R::ok>(out, lane(in[0]), lane(in[1]));
       } else {
         lanes<W, Fn, U, R::ok>(out, lane(in[0]), lane(in[1]), lane(in[2]));
@@ -373,6 +412,77 @@ lanes_apply(const Arena<T> &b, NodeId i, const Node<T> &n, U *DDX_RESTRICT out,
   });
   if (opaque) {
     lanes_opaque<W>(b, i, n, s.fused, out, lane, t);
+  }
+}
+
+// Ops of one operand that a single series computes together: sin and cos,
+// sinh and cosh.
+inline constexpr std::array paired_ops{
+    std::pair{OpCode::SineOp, OpCode::CosineOp},
+    std::pair{OpCode::SinhOp, OpCode::CoshOp}};
+[[nodiscard]] constexpr auto pairing_of(OpCode op) noexcept {
+  return std::ranges::find_if(paired_ops, [op](const auto &p) {
+    return op == p.first || op == p.second;
+  });
+}
+
+// Each scheduled node's mate under paired_ops, or empty when none pair.
+// Interning leaves at most one node per op and operand.
+[[nodiscard]] constexpr std::vector<NodeId>
+mates_of(const auto &nodes, std::span<const Step> schedule) {
+  using Candidate = std::tuple<std::ptrdiff_t, NodeId, NodeId>;
+  auto found = schedule | std::views::filter([&nodes](const Step &s) {
+                 return !s.fma && pairing_of(s.op) != paired_ops.end() &&
+                        !is_tensor(nodes[s.node]);
+               }) |
+               std::views::transform([&nodes](const Step &s) {
+                 return Candidate{pairing_of(s.op) - paired_ops.begin(),
+                                  nodes[s.node].in[0], s.node};
+               }) |
+               impl::to<std::vector<Candidate>>();
+  std::ranges::sort(found);
+  std::vector<NodeId> mates;
+  for (const auto run :
+       found | std::views::chunk_by([](const auto &x, const auto &y) {
+         return std::get<0>(x) == std::get<0>(y) &&
+                std::get<1>(x) == std::get<1>(y);
+       })) {
+    if (std::ranges::size(run) == 2) {
+      mates.resize(nodes.size(), no_node);
+      mates[std::get<2>(run[0])] = std::get<2>(run[1]);
+      mates[std::get<2>(run[1])] = std::get<2>(run[0]);
+    }
+  }
+  return mates;
+}
+
+// The lower id of a mated pair writes both rows from one series, and the
+// higher finds its row written. Ids are topological, so the operand is ready
+// and every reader of the mate comes later. Only a scalar with the series
+// pairs; t.pairs also holds Graph::pairs' products, hence the op test.
+template <std::size_t W, typename U>
+DDX_ALWAYS_INLINE constexpr bool
+lanes_mated(NodeId i, const Step &s, auto &&lane, const TapeView<U> &t) {
+  if constexpr (!requires(const U &u) { sincos_td(u); }) {
+    return false;
+  } else {
+    const auto p = pairing_of(s.op);
+    if (t.pairs.empty() || t.pairs[i] == no_node || p == paired_ops.end()) {
+      return false;
+    }
+    if (const NodeId mate = t.pairs[i]; mate > i) {
+      const bool first = s.op == p->first;
+      const bool circular = p->first == OpCode::SineOp;
+      U *const own = lane(s.out);
+      U *const other = lane(t.row(mate));
+      const U *const x = lane(s.in[0]);
+      for (std::size_t k = 0; k < W; ++k) {
+        auto [f, g] = circular ? sincos_td(x[k]) : sinhcosh_td(x[k]);
+        own[k] = first ? std::move(f) : std::move(g);
+        other[k] = first ? std::move(g) : std::move(f);
+      }
+    }
+    return true;
   }
 }
 
@@ -403,7 +513,7 @@ sweep_step(const Arena<T> &b, std::span<const Node<T>> nodes,
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }
-  } else {
+  } else if (!detail::lanes_mated<W>(i, s, lane, t)) {
     detail::lanes_apply<W>(b, i, n, out, lane, s, t);
   }
 }
@@ -425,16 +535,6 @@ constexpr void evaluate_block(const Arena<T> &b, const R &point_lanes,
     detail::sweep_step<W>(b, nodes, inputs, s, std::ranges::begin(point_lanes),
                           lane, tensors);
   }
-}
-
-// Whether every op the roots reach is supported at U. Check this first, since
-// apply() silently returns U{} for an unsupported op.
-template <impl::Numeric U, impl::Numeric T>
-[[nodiscard]] constexpr bool computes_at(const Arena<T> &b,
-                                         std::span<const NodeId> roots) {
-  const auto live = detail::reachable(b, roots);
-  return std::ranges::all_of(detail::live_ids(live),
-                             [&b](NodeId v) { return supports<U>(b[v].op); });
 }
 
 template <impl::Numeric T, std::ranges::random_access_range R>
@@ -464,7 +564,7 @@ public:
   constexpr ArenaWalk(const Arena<T> &b, auto ids,
                       Contract contract = Contract::on)
       : schedule_{schedule_of(b, ids, contract)},
-        layout_{tensor_layout(b, schedule_)} {}
+        layout_{tensor_layout(b, schedule_)}, mates_{mates_of(b, schedule_)} {}
   // Walks every node in id order, where children precede parents.
   template <impl::Numeric T>
   constexpr explicit ArenaWalk(const Arena<T> &b)
@@ -475,22 +575,30 @@ public:
     return layout_.extent;
   }
 
-  template <impl::Numeric T, impl::Numeric U>
+  // Whether every scheduled op is supported at U. Check this first, since
+  // apply() silently returns U{} for an unsupported op.
+  template <impl::Numeric U, impl::Numeric T>
+  [[nodiscard]] constexpr bool computes(const Arena<T> &b) const {
+    return std::ranges::all_of(
+        schedule_, [&b](const Step &s) { return supports<U>(b[s.node].op); });
+  }
+
+  // point is symbol-major and values node-major, W lanes each, as in
+  // evaluate_block.
+  template <std::size_t W = 1, impl::Numeric T, impl::Numeric U>
   constexpr void
   operator()(const Arena<T> &b, const auto &point, std::span<U> values,
              std::span<U> vtape,
              const TensorKernelTable<T> &kernels = reference_table<T>) const {
-    // At another scalar, callers must have checked computes_at() first.
-    assert((std::same_as<U, T> ||
-            std::ranges::all_of(schedule_, [&b](const Step &s) {
-              return supports<U>(b[s.node].op);
-            })));
+    // At another scalar, callers must have checked computes() first.
+    assert((std::same_as<U, T> || computes<U>(b)));
     // Only the arena's own scalar has a kernel table for tensor rows.
-    TapeView<U> tensors{.tensor_rows = layout_.rows, .vtape = vtape.data()};
+    TapeView<U> tensors{
+        .tensor_rows = layout_.rows, .vtape = vtape.data(), .pairs = mates_};
     if constexpr (std::same_as<U, T>) {
       tensors.kernels = &kernels;
     }
-    evaluate_into(b, point, schedule_, values, tensors);
+    evaluate_block<W>(b, point, schedule_, values, tensors);
   }
   // Allocates its own tapes and returns the values.
   template <impl::Numeric T>
@@ -507,6 +615,7 @@ public:
 private:
   std::vector<Step> schedule_;
   TensorLayout layout_;
+  std::vector<NodeId> mates_;
 };
 } // namespace detail
 
@@ -521,6 +630,15 @@ evaluate_reachable(const Arena<T> &b, std::span<const NodeId> roots,
                    Contract contract = Contract::on) {
   return detail::ArenaWalk{b, detail::live_ids(detail::reachable(b, roots)),
                            contract}(b, point, kernels);
+}
+
+// Whether every op the roots reach is supported at U; ArenaWalk::computes over
+// the walk the roots would sweep.
+template <impl::Numeric U, impl::Numeric T>
+[[nodiscard]] constexpr bool computes_at(const Arena<T> &b,
+                                         std::span<const NodeId> roots) {
+  return detail::ArenaWalk{b, detail::live_ids(detail::reachable(b, roots))}
+      .template computes<U>(b);
 }
 
 // Evaluates every node in id order; this is the reference the JIT is checked

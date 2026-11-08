@@ -513,20 +513,23 @@ public:
                                               std::uint32_t cols,
                                               std::span<const T> data) {
     assert(data.size() == std::size_t{rows} * cols);
-    auto at = model_.tensors.end();
+    auto k = static_cast<std::uint32_t>(model_.tensors.size());
     if constexpr (std::equality_comparable<T>) {
-      at = std::ranges::find_if(model_.tensors, [&](const TensorConst<T> &t) {
-        return t.rows == rows && t.cols == cols &&
-               std::ranges::equal(t.data, data, identical);
-      });
+      if ((model_.tensors.size() + 1) * 2 > tensor_table_.size()) {
+        rehash_tensors(model_.tensors.size() + 1);
+      }
+      const std::size_t i = tensor_slot(rows, cols, data);
+      if (tensor_table_[i] == kFreeList) {
+        tensor_table_[i] = k;
+      } else {
+        k = tensor_table_[i];
+      }
     }
-    if (at == model_.tensors.end()) {
+    if (k == model_.tensors.size()) {
       model_.tensors.push_back(
           {.rows = rows, .cols = cols, .data = {data.begin(), data.end()}});
-      at = std::prev(model_.tensors.end());
     }
-    const TensorRef ref{
-        static_cast<std::uint32_t>(std::distance(model_.tensors.begin(), at))};
+    const TensorRef ref{k};
     return cols == 1 ? make(opcode<OpCode::VecConst>, ref)
                      : make(opcode<OpCode::MatConst>, ref);
   }
@@ -795,6 +798,42 @@ private:
     listed_.push_back(
         {.at = at, .size = static_cast<std::uint32_t>(ids.size())});
     return at;
+  }
+  // The slot holding the tensor spelled `data`, or the free one it would take.
+  [[nodiscard]] constexpr std::size_t
+  tensor_slot(std::uint32_t rows, std::uint32_t cols,
+              std::span<const T> data) const {
+    std::uint64_t h = rows;
+    mix(h, cols);
+    if constexpr (std::is_trivially_copyable_v<T> &&
+                  (sizeof(T) == 8 || sizeof(T) == 4)) {
+      using Word =
+          std::conditional_t<sizeof(T) == 8, std::uint64_t, std::uint32_t>;
+      for (const T &v : data) {
+        mix(h, std::bit_cast<Word>(v));
+      }
+    }
+    auto run = probe(static_cast<std::size_t>(h), tensor_table_.size());
+    return *std::ranges::find_if(run, [&](std::size_t j) {
+      if (tensor_table_[j] == kFreeList) {
+        return true;
+      }
+      const TensorConst<T> &t = model_.tensors[tensor_table_[j]];
+      return t.rows == rows && t.cols == cols &&
+             std::ranges::equal(t.data, data, identical);
+    });
+  }
+  // In pool order, so a repeated tensor keeps its first index, as a scan
+  // would find it.
+  constexpr void rehash_tensors(std::size_t tensors) {
+    tensor_table_.assign(std::bit_ceil(std::max<std::size_t>(64, 2 * tensors)),
+                         kFreeList);
+    for (const auto [k, t] : model_.tensors | std::views::enumerate) {
+      const std::size_t i = tensor_slot(t.rows, t.cols, t.data);
+      if (tensor_table_[i] == kFreeList) {
+        tensor_table_[i] = static_cast<std::uint32_t>(k);
+      }
+    }
   }
   constexpr void rehash_lists(std::size_t lists) {
     list_table_.assign(std::bit_ceil(std::max<std::size_t>(64, 2 * lists)),
@@ -1182,6 +1221,9 @@ private:
                .vec = make(opcode<OpCode::MatVec>, detail::get<Orientation>(n),
                            {.matrix = a, .vec = vec})});
         }
+        if (n.op == OpCode::MatVec && low_rank(a, false)) {
+          return applied(a, b, detail::get<Orientation>(n), no_node);
+        }
       }
       const NodeId id = intern(n);
       return fold_tensor(id).value_or(id);
@@ -1203,6 +1245,76 @@ private:
 
   // Folds a tensor node over constants into a table or a Const, using the
   // reference kernels. Skipped in constant evaluation.
+  // Whether M x can be had without forming M: M is outers u w^T under
+  // scalings, negation and sums, or one such outer under an elementwise mask N.
+  // Decided before anything is built, so a refusal leaves no nodes behind.
+  [[nodiscard]] constexpr bool low_rank(NodeId m, bool masked) const {
+    const Node<T> &at = model_.nodes[m];
+    switch (at.op) {
+    case OpCode::Outer:
+      return shapes_[m].cols > 1;
+    case OpCode::Scale:
+      return low_rank(at.in[1], masked);
+    case OpCode::Map:
+      return detail::get<OpCode>(at) == OpCode::Neg &&
+             low_rank(at.in[0], masked);
+    case OpCode::Zip:
+      switch (detail::get<OpCode>(at)) {
+      case OpCode::Add:
+        // Under a mask a sum would split one fused product into two.
+        return !masked && low_rank(at.in[0], false) &&
+               low_rank(at.in[1], false);
+      case OpCode::Mul:
+        return !masked &&
+               (low_rank(at.in[0], true) || low_rank(at.in[1], true));
+      default:
+        return false;
+      }
+    default:
+      return false;
+    }
+  }
+  // M x for a low_rank M: u w^T x = u (w . x), and (N (.) u w^T) x =
+  // u (.) N (w (.) x); transposed, u and w trade places.
+  [[nodiscard]] constexpr NodeId applied(NodeId m, NodeId x, Orientation o,
+                                         NodeId mask) {
+    const Node<T> at = model_.nodes[m]; // A copy: building may reallocate.
+    switch (at.op) {
+    case OpCode::Outer: {
+      const bool t = o == Orientation::transposed;
+      const NodeId out = t ? at.in[1] : at.in[0];
+      const NodeId along = t ? at.in[0] : at.in[1];
+      if (mask == no_node) {
+        return make(
+            opcode<OpCode::Scale>,
+            {.scalar = make(opcode<OpCode::Dot>, {.left = along, .right = x}),
+             .vec = out});
+      }
+      const NodeId spread =
+          make(opcode<OpCode::Zip>, OpCode::Mul, {.left = along, .right = x});
+      return make(opcode<OpCode::Zip>, OpCode::Mul,
+                  {.left = out,
+                   .right = make(opcode<OpCode::MatVec>, o,
+                                 {.matrix = mask, .vec = spread})});
+    }
+    case OpCode::Scale:
+      return make(opcode<OpCode::Scale>,
+                  {.scalar = at.in[0], .vec = applied(at.in[1], x, o, mask)});
+    case OpCode::Map:
+      return make(opcode<OpCode::Map>, OpCode::Neg,
+                  applied(at.in[0], x, o, mask));
+    default: { // A Zip low_rank() accepted.
+      if (detail::get<OpCode>(at) == OpCode::Add) {
+        const NodeId l = applied(at.in[0], x, o, mask); // Left first.
+        return make(opcode<OpCode::Zip>, OpCode::Add,
+                    {.left = l, .right = applied(at.in[1], x, o, mask)});
+      }
+      return low_rank(at.in[1], true) ? applied(at.in[1], x, o, at.in[0])
+                                      : applied(at.in[0], x, o, at.in[1]);
+    }
+    }
+  }
+
   constexpr std::optional<NodeId> fold_tensor(NodeId v) {
     if consteval {
       return std::nullopt;
@@ -1216,8 +1328,11 @@ private:
       }
       return model_.nodes[u].value;
     };
-    // A constant's elements in column-major order, transposing if needed.
-    const auto elements = [this](NodeId u) -> std::optional<std::vector<T>> {
+    // A constant's elements in column-major order, read in place unless a
+    // transpose needs them laid out in `t`.
+    const auto elements =
+        [this](NodeId u,
+               std::vector<T> &t) -> std::optional<std::span<const T>> {
       if (u == no_node) {
         return std::nullopt;
       }
@@ -1238,7 +1353,7 @@ private:
       if (detail::get<Orientation>(x) == Orientation::plain) {
         return m.data;
       }
-      std::vector<T> t(m.data.size());
+      t.resize(m.data.size());
       for (std::size_t i = 0; i < m.rows; ++i) {
         for (std::size_t j = 0; j < m.cols; ++j) {
           t[j + i * m.cols] = m.data[i + j * m.rows];
@@ -1247,13 +1362,14 @@ private:
       return t;
     };
     const Shape s = shape_of(*this, v);
-    std::vector<T> out(s.size());
+    std::vector<T> out;
     const auto table = [&]() -> NodeId {
       const NodeId t = tensor_const(s.rows, s.cols, out);
       return s.cols == 1 ? t
                          : make(opcode<OpCode::MatRow>, Orientation::plain, t);
     };
     if (n.op == OpCode::Pack) {
+      out.resize(s.size());
       for (const auto [e, item] : arguments(*this, v) | std::views::enumerate) {
         const auto x = scalar(item);
         if (!x) {
@@ -1266,18 +1382,36 @@ private:
     if (has_list(n.op)) {
       return std::nullopt;
     }
-    // Fold only when every operand is a constant.
-    const auto u = elements(a);
-    const auto w = elements(b);
-    const auto su = scalar(a);
-    const auto sw = scalar(b);
-    if ((a != no_node && !u && !su) || (b != no_node && !w && !sw) ||
-        c != no_node) {
+    // Fold only when every operand is a constant, decided before any copy.
+    const auto held = [this](NodeId u) {
+      if (u == no_node) {
+        return true;
+      }
+      const Node<T> &x = model_.nodes[u];
+      return x.op == OpCode::Const || x.op == OpCode::VecConst ||
+             (x.op == OpCode::MatRow &&
+              model_.nodes[detail::operands<OpCode::MatRow>(x).source].op ==
+                  OpCode::MatConst);
+    };
+    // Nor when the result outgrows its operands, as an outer of two constant
+    // vectors would: a table per sweep is n^2 memory where the node is free.
+    const auto size = [this](NodeId u) {
+      return u == no_node ? 0u : shapes_[u].size();
+    };
+    if (!held(a) || !held(b) || c != no_node ||
+        s.size() > std::max(size(a), size(b))) {
       return std::nullopt;
     }
+    std::vector<T> ut;
+    std::vector<T> wt;
+    const auto u = elements(a, ut);
+    const auto w = elements(b, wt);
+    const auto su = scalar(a);
+    const auto sw = scalar(b);
+    out.resize(s.size());
     T reduced{};
     const bool computed = tensor_row(
-        *this, v, [&](int i) { return std::span<const T>{i == 0 ? *u : *w}; },
+        *this, v, [&](int i) { return i == 0 ? *u : *w; },
         [&](int i) { return i == 0 ? *su : *sw; }, std::span<T>{out}, reduced,
         K{});
     if (!computed) {
@@ -1333,6 +1467,8 @@ private:
   static constexpr std::uint32_t kFreeList = ~std::uint32_t{0};
   std::vector<ListKey> listed_;
   std::vector<std::uint32_t> list_table_;
+  // model_.tensors by content, like list_table_.
+  std::vector<std::uint32_t> tensor_table_;
   // Per named kind, the leaf node of each slot.
   PerKind<std::vector<NodeId>> ids_;
   // Every named input sorted by name, a hand-written flat map since no library

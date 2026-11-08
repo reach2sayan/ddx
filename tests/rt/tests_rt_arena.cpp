@@ -1,5 +1,6 @@
 #include "rt/expressions.hpp"
 #include "rt/interpret.hpp"
+#include "rt/tensor.hpp"
 
 #include <gtest/gtest.h>
 

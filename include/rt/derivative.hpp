@@ -123,14 +123,55 @@ namespace detail {
 // At an implicit z a reverse sweep either solves through it, folding
 // adj[z] * dz/dx into each symbol, or holds z and only collects df/dz.
 enum class AtImplicits : bool { solved, held };
+
+// The condition under which a node lies on a chosen select path, so that
+// 0 * inf below an unchosen arm cannot produce NaN. no_node means always.
+struct Guard {
+  NodeId cond = no_node;
+  [[nodiscard]] constexpr bool always() const noexcept {
+    return cond == no_node;
+  }
+};
+
+// Per vector, element reads summed as scalars and packed once at the flush,
+// since an AddAt per read costs n^2 on a model indexing every element.
+struct Gathered {
+  NodeId base = no_node;
+  Guard guard{};    // The vector's guard when the reads began.
+  Guard reads{};    // The OR of the reads' guards.
+  bool open = true; // False once a read or the base drops the guard.
+  std::vector<NodeId> element;
+};
+
+// A reverse sweep's per-node state, lent from sweep to sweep over one arena so
+// that each costs its cone rather than the arena: a sweep puts back every id it
+// touched. Whether a node contracts never changes, so that is kept.
+struct SweepScratch {
+  std::vector<NodeId> adj;
+  std::vector<Guard> guard;
+  std::vector<Gathered> gathered;
+  std::vector<bool> marked;
+  std::vector<bool> moving;
+  std::vector<bool> contracts;
+  std::vector<NodeId> touched;
+};
+
 template <AtImplicits At, impl::Numeric T>
-[[nodiscard]] constexpr JacobianRow reverse_sweep(Arena<T> &b, NodeId root);
+[[nodiscard]] constexpr JacobianRow reverse_sweep(Arena<T> &b, NodeId root,
+                                                  SweepScratch &scratch);
 } // namespace detail
 
 template <impl::Numeric T>
+[[nodiscard]] constexpr JacobianRow
+build_reverse_jacobian(Arena<T> &b, NodeId root,
+                       detail::SweepScratch &scratch) {
+  return detail::reverse_sweep<detail::AtImplicits::solved>(b, root, scratch);
+}
+template <impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow build_reverse_jacobian(Arena<T> &b,
                                                            NodeId root) {
-  return detail::reverse_sweep<detail::AtImplicits::solved>(b, root);
+  detail::SweepScratch s;
+  return build_reverse_jacobian(b, root, s);
 }
 
 namespace detail {
@@ -142,8 +183,9 @@ struct Implicits {
                                                                 Slot slot) {
     auto &row = b.closure_rows_[slot.value];
     if (!row) {
+      SweepScratch s;
       const auto f =
-          reverse_sweep<AtImplicits::held>(b, b.closures()[slot.value]);
+          reverse_sweep<AtImplicits::held>(b, b.closures()[slot.value], s);
       const Expression<T> fz{b, f.implicit[slot.value]};
       row = f.partial | std::views::transform([&](NodeId fs) {
               return b.is_constant(fs, T{0})
@@ -187,25 +229,6 @@ template <impl::Numeric T>
   });
 }
 
-// Which nodes a derivative moves: every symbol and implicit, and whatever in
-// the cone reads one. No adjoint is built for a node that holds still.
-template <impl::Numeric T>
-[[nodiscard]] constexpr std::vector<bool>
-moving(const Arena<T> &b, const std::vector<bool> &live) {
-  std::vector<bool> moves(live.size(), false);
-  for (const NodeId v :
-       std::views::iota(NodeId{0}, static_cast<NodeId>(live.size()))) {
-    const OpCode op = b.op_of(v);
-    if (op == OpCode::Var || op == OpCode::Implicit) {
-      moves[v] = true;
-    } else if (live[v]) {
-      for_each_operand(b, v,
-                       [&](NodeId u) { moves[v] = moves[v] || moves[u]; });
-    }
-  }
-  return moves;
-}
-
 // Why the implicits cannot be differentiated, if so: a misuse of implicit(),
 // or a residual reaching another implicit, which would need a linear solve.
 template <impl::Numeric T>
@@ -232,37 +255,77 @@ template <impl::Numeric T>
   }
   return std::nullopt;
 }
-} // namespace detail
 
-namespace detail {
-// The condition under which a node lies on a chosen select path, so that
-// 0 * inf below an unchosen arm cannot produce NaN. no_node means always.
-struct Guard {
-  NodeId cond = no_node;
-  [[nodiscard]] constexpr bool always() const noexcept {
-    return cond == no_node;
+// The roots' cone in ascending id order, walked down from the roots rather
+// than found by scanning the arena. `marked` comes back clear.
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::vector<NodeId>
+cone_of(const Arena<T> &b, std::span<const NodeId> roots,
+        std::vector<bool> &marked) {
+  marked.resize(b.size());
+  std::vector<NodeId> cone;
+  const auto visit = [&](NodeId u) {
+    if (!marked[u]) {
+      marked[u] = true;
+      cone.push_back(u);
+    }
+  };
+  std::ranges::for_each(roots, visit);
+  for (std::size_t i = 0; i < cone.size(); ++i) {
+    for_each_operand(b, cone[i], visit);
   }
-};
+  for (const NodeId v : cone) {
+    marked[v] = false;
+  }
+  std::ranges::sort(cone);
+  return cone;
+}
+
+// A symbol or an implicit, which every derivative moves.
+template <impl::Numeric T>
+[[nodiscard]] constexpr bool is_symbol(const Arena<T> &b, NodeId u) {
+  const OpCode op = b.op_of(u);
+  return op == OpCode::Var || op == OpCode::Implicit;
+}
+
+// Which of the cone's nodes a derivative moves: every symbol, and whatever
+// reads one. Only the cone's entries are written.
+template <impl::Numeric T>
+constexpr void mark_moving(const Arena<T> &b, std::span<const NodeId> cone,
+                           std::vector<bool> &moving) {
+  moving.resize(b.size());
+  for (const NodeId v : cone) {
+    moving[v] = is_symbol(b, v);
+    for_each_operand(b, v,
+                     [&](NodeId u) { moving[v] = moving[v] || moving[u]; });
+  }
+}
 } // namespace detail
 
 // The reverse sweep, appending adjoint nodes above the cone so reverse id order
 // stays topological. Solved implicits fold adj[z] * dz/dx_s in at the end.
 template <detail::AtImplicits At, impl::Numeric T>
-[[nodiscard]] constexpr JacobianRow detail::reverse_sweep(Arena<T> &b,
-                                                          NodeId root) {
+[[nodiscard]] constexpr JacobianRow
+detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &scratch) {
   const auto n = static_cast<NodeId>(b.size());
-  const auto live = detail::reachable(b, std::span{&root, 1});
+  const auto cone = cone_of(b, std::span{&root, 1}, scratch.marked);
   // Contributions are built for moving nodes and also constants, whose nodes
   // later sweeps intern against; skipping them changes fma choices and bits.
-  const auto moving = detail::moving(b, live);
+  // A symbol moves even outside the cone, where solved implicits fold into it.
+  mark_moving(b, cone, scratch.moving);
   const auto moves = [&](NodeId u) {
-    return moving[u] || kind_of(b.op_of(u)) == Kind::Const;
+    return is_symbol(b, u) || scratch.moving[u] ||
+           kind_of(b.op_of(u)) == Kind::Const;
   };
-  // A reverse pass adds about two nodes per node of the cone.
-  b.reserve(n + 2 * static_cast<std::size_t>(std::ranges::count(live, true)));
-  std::vector adj(n, no_node);
-  std::vector<Guard> guard(n);
+  scratch.adj.resize(n, no_node);
+  scratch.guard.resize(n);
+  scratch.gathered.resize(n);
+  auto &adj = scratch.adj;
+  auto &guard = scratch.guard;
+  auto &gathered = scratch.gathered;
+  auto &touched = scratch.touched;
   adj[root] = b.constant(T{1});
+  touched.push_back(root);
 
   const Expression<T> zero{0};
   const Expression<T> one{1};
@@ -288,15 +351,6 @@ template <detail::AtImplicits At, impl::Numeric T>
                ? Guard{}
                : Guard{select(expr(held.cond), one, expr(g.cond)).id(b)};
   };
-  // Per vector, element reads summed as scalars and packed once at the flush,
-  // since an AddAt per read costs n^2 on a model indexing every element.
-  struct Gathered {
-    NodeId base = no_node;
-    Guard guard{};    // The vector's guard when the reads began.
-    Guard reads{};    // The OR of the reads' guards.
-    bool open = true; // False once a read or the base drops the guard.
-    std::vector<NodeId> element;
-  };
   // The guard add_to would have left: the vector's own, if it had an adjoint,
   // ORed with every read's.
   const auto guard_of = [&](const Gathered &row) {
@@ -305,7 +359,6 @@ template <detail::AtImplicits At, impl::Numeric T>
     }
     return row.base == no_node ? row.reads : joined(row.guard, row.reads);
   };
-  std::vector<Gathered> gathered(n);
   const auto flush = [&](NodeId v) {
     if (v >= gathered.size() || gathered[v].element.empty()) {
       return;
@@ -329,6 +382,7 @@ template <detail::AtImplicits At, impl::Numeric T>
     Gathered &row = gathered[from];
     const bool first = row.element.empty();
     if (first) {
+      touched.push_back(from);
       row.base = adj[from];
       row.guard = guard[from];
       row.open = row.base == no_node || !row.guard.always();
@@ -358,6 +412,7 @@ template <detail::AtImplicits At, impl::Numeric T>
       return;
     }
     if (adj[child] == no_node) {
+      touched.push_back(child);
       adj[child] = c;
       guard[child] = g;
       return;
@@ -368,7 +423,7 @@ template <detail::AtImplicits At, impl::Numeric T>
 
   // dot(A, M) for A = N (.) u w^T is u . (M (.) N) w, never forming A. Whether
   // a node contracts is decided first from ids, so failures build nothing.
-  std::vector<bool> contracts;
+  auto &contracts = scratch.contracts;
   const auto contractible = [&](NodeId id) {
     for (auto u = static_cast<NodeId>(contracts.size()); u <= id; ++u) {
       const Node<T> &at = b[u];
@@ -400,7 +455,7 @@ template <detail::AtImplicits At, impl::Numeric T>
                                   : self(at.in[0], m * expr(at.in[1]));
   };
 
-  for (const NodeId v : detail::live_ids(live) | std::views::reverse) {
+  for (const NodeId v : cone | std::views::reverse) {
     // A Pack whose adjoint is only element reads passes each read straight to
     // its argument, rather than building a vector to take apart.
     if (v < gathered.size() && !gathered[v].element.empty() &&
@@ -602,14 +657,23 @@ template <detail::AtImplicits At, impl::Numeric T>
   JacobianRow g{.value = root,
                 .partial = std::vector<NodeId>(b.symbols().size(), no_node),
                 .implicit = std::vector<NodeId>(implicits, no_node)};
-  for (const auto [v, node] : std::views::enumerate(b.nodes().first(n))) {
+  // Only a touched id holds an adjoint; putting it back readies the next sweep.
+  for (const NodeId v : touched) {
+    const Node<T> &node = b[v];
     if (node.op == OpCode::Var) {
-      g.partial[detail::get<Slot>(node).value] =
-          adj[static_cast<std::size_t>(v)];
+      g.partial[detail::get<Slot>(node).value] = adj[v];
     } else if (node.op == OpCode::Implicit) {
-      g.implicit[detail::get<Slot>(node).value] =
-          adj[static_cast<std::size_t>(v)];
+      g.implicit[detail::get<Slot>(node).value] = adj[v];
     }
+  }
+  for (const NodeId v : touched) {
+    adj[v] = no_node;
+    guard[v] = {};
+    gathered[v] = {};
+  }
+  touched.clear();
+  for (const NodeId v : cone) {
+    scratch.moving[v] = false;
   }
   // Unreached symbols get the literal zero, interned only when needed, since an
   // unused node would still shift every later id.
@@ -629,9 +693,10 @@ template <impl::Numeric T>
 tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
               std::span<const NodeId> tangent) {
   const auto n = static_cast<NodeId>(b.size());
-  const auto live = detail::reachable(b, roots);
-  const auto moves = detail::moving(b, live);
-  b.reserve(n + 2 * static_cast<std::size_t>(std::ranges::count(live, true)));
+  std::vector<bool> moves; // cone_of's marks, which come back clear
+  const auto cone = detail::cone_of(b, roots, moves);
+  detail::mark_moving(b, cone, moves);
+  b.reserve(n + 2 * cone.size());
   std::vector<NodeId> d(n, no_node);
   // A node that holds still has a zero tangent of its shape, made only when an
   // arm reads it.
@@ -654,7 +719,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
     return (moves[l] ? dl() + dr() : dr()).id(b, shape);
   };
 
-  for (const NodeId v : detail::live_ids(live)) {
+  for (const NodeId v : cone) {
     const auto node = b[v]; // A copy, since building below may reallocate.
     if (!moves[v]) {
       continue;
@@ -845,8 +910,9 @@ derive_jacobian(Arena<T> &b, std::span<const NodeId> roots) {
   j.pattern.rowptr.reserve(roots.size() + 1);
   // Earlier rows' nodes are not in this root's cone but still share
   // subexpressions through interning.
+  detail::SweepScratch scratch;
   for (const NodeId r : roots) {
-    const auto g = build_reverse_jacobian(b, r);
+    const auto g = build_reverse_jacobian(b, r, scratch);
     // The same zero test the sweep uses, so the two cannot drift, -0.0
     // included.
     auto nonzero = g.partial | std::views::enumerate |
@@ -943,6 +1009,7 @@ template <impl::Numeric T>
   // Only the cells a column owns are kept, since each other cell would cost an
   // output column and a whole cone of nodes.
   h.compressed.assign(h.colouring.width(), h.zero);
+  detail::SweepScratch scratch;
   for (const std::size_t c : h.colouring.colours()) {
     // Summing a colour's partials first lets one sweep do |colour| sweeps'
     // work.
@@ -953,7 +1020,7 @@ template <impl::Numeric T>
         h.colouring.columns_of(c) |
             std::views::transform(std::move(make_partial_expression)),
         Expression<T>{0}, std::plus<>{});
-    const auto row = build_reverse_jacobian(b, seed.id(b));
+    const auto row = build_reverse_jacobian(b, seed.id(b), scratch);
     for (const Cell &owned : h.colouring.owned_cells(c)) {
       h.compressed[owned.slot] = row.partial[owned.row];
     }

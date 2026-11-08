@@ -51,8 +51,9 @@ using Terms = boost::container::small_vector<Term, 4>;
 // The part that two like terms add: the left factor of an outer product or a
 // dense block's matrix.
 [[nodiscard]] constexpr NodeId &primary(Term &t) {
-  return std::holds_alternative<term::Outer>(t) ? std::get<term::Outer>(t).u
-                                                : std::get<term::Dense>(t).block;
+  return std::holds_alternative<term::Outer>(t)
+             ? std::get<term::Outer>(t).u
+             : std::get<term::Dense>(t).block;
 }
 [[nodiscard]] constexpr bool diagonal(const Term &t) {
   return std::holds_alternative<term::Identity>(t) ||
@@ -170,12 +171,12 @@ private:
              std::views::transform(
                  [](const Term &t) -> const K & { return std::get<K>(t); });
     };
-    const NodeId d = std::ranges::fold_left(
-        ts | std::views::filter(diagonal), no_node,
-        [this](NodeId r, const Term &t) {
-          const auto *g = std::get_if<term::Diag>(&t);
-          return add(r, g ? g->d : ones());
-        });
+    const NodeId d =
+        std::ranges::fold_left(ts | std::views::filter(diagonal), no_node,
+                               [this](NodeId r, const Term &t) {
+                                 const auto *g = std::get_if<term::Diag>(&t);
+                                 return add(r, g ? g->d : ones());
+                               });
     using Ids = boost::container::small_vector<NodeId, 4>;
     auto matrices = of(std::type_identity<term::Dense>{}) |
                     std::views::transform(&term::Dense::block) |
@@ -194,12 +195,11 @@ private:
         return b_.pack(outers | std::views::transform(side) | impl::to<Ids>(),
                        OpCode::StackRows);
       };
-      matrices.push_back(
-          b_.make(opcode<OpCode::MatMul>,
-                  {.left = b_.make(opcode<OpCode::MatRow>,
-                                   Orientation::transposed,
-                                   rows(&term::Outer::u)),
-                   .right = rows(&term::Outer::g)}));
+      matrices.push_back(b_.make(
+          opcode<OpCode::MatMul>,
+          {.left = b_.make(opcode<OpCode::MatRow>, Orientation::transposed,
+                           rows(&term::Outer::u)),
+           .right = rows(&term::Outer::g)}));
     }
     // A block with no terms is the zero diagonal. A lone table needs no node,
     // since tensor_layout gives an output table its own row.
@@ -241,9 +241,10 @@ private:
     Terms ts{term::Dense{placed(swept)}};
     // A held symbol's column is its row minus the cells on held symbols, which
     // the rows already hold.
+    SweepScratch scratch;
     for (const std::uint32_t s :
          std::views::iota(0u, all) | std::views::filter(held)) {
-      auto row = build_reverse_jacobian(b_, partials[s]).partial;
+      auto row = build_reverse_jacobian(b_, partials[s], scratch).partial;
       const NodeId e = unit(s, all);
       ts.push_back(term::Outer{.u = e, .g = b_.pack(row)});
       for (const std::uint32_t t :
@@ -280,19 +281,21 @@ private:
   // multiple. A diagonal folds into an existing diag so no matrix is copied.
   [[nodiscard]] Term scale(const E &m, const Term &t) {
     const bool vector = m.size() != 0 || m.pending();
-    return std::visit([&]<typename K>(const K &k) -> Term {
-      if constexpr (std::same_as<K, term::Identity>) {
-        ++n2_;
-        return term::Diag{(vector ? m : m * expr(ones())).id(b_, {n_})};
-      } else if constexpr (std::same_as<K, term::Diag>) {
-        return term::Diag{(m * expr(k.d)).id(b_, {n_})};
-      } else if constexpr (std::same_as<K, term::Outer>) {
-        return term::Outer{.u = (m * expr(k.u)).id(b_, shape_of(b_, k.u)),
-                           .g = k.g};
-      } else {
-        return dense_scale(m, vector, k.block);
-      }
-    }, t);
+    return std::visit(
+        [&]<typename K>(const K &k) -> Term {
+          if constexpr (std::same_as<K, term::Identity>) {
+            ++n2_;
+            return term::Diag{(vector ? m : m * expr(ones())).id(b_, {n_})};
+          } else if constexpr (std::same_as<K, term::Diag>) {
+            return term::Diag{(m * expr(k.d)).id(b_, {n_})};
+          } else if constexpr (std::same_as<K, term::Outer>) {
+            return term::Outer{.u = (m * expr(k.u)).id(b_, shape_of(b_, k.u)),
+                               .g = k.g};
+          } else {
+            return dense_scale(m, vector, k.block);
+          }
+        },
+        t);
   }
   [[nodiscard]] Term dense_scale(const E &m, bool vector, NodeId block) {
     const Node<T> inner = b_[block];
@@ -331,10 +334,10 @@ private:
     Terms out;
     for (Term t : ts) {
       const auto like = std::ranges::find_if(out, [&](Term &o) {
-        return diagonal(o) ? diagonal(t)
-                           : t.index() == o.index() && right(t) == right(o) &&
-                                 shape_of(b_, primary(t)) ==
-                                     shape_of(b_, primary(o));
+        return diagonal(o)
+                   ? diagonal(t)
+                   : t.index() == o.index() && right(t) == right(o) &&
+                         shape_of(b_, primary(t)) == shape_of(b_, primary(o));
       });
       if (like == out.end()) {
         out.push_back(t);
@@ -355,35 +358,38 @@ private:
            impl::to<Terms>();
   }
   [[nodiscard]] NodeId row_of(const Term &t, std::uint32_t i) {
-    return std::visit([&]<typename K>(const K &k) {
-      if constexpr (std::same_as<K, term::Identity>) {
-        return unit(i);
-      } else if constexpr (std::same_as<K, term::Diag>) {
-        return b_.make(opcode<OpCode::AddAt>, Element{i},
-                       {.vec = zeros(), .scalar = expr(k.d)[i].id(b_)});
-      } else if constexpr (std::same_as<K, term::Outer>) {
-        return scaled(expr(k.u)[i], k.g);
-      } else {
-        return b_.make(opcode<OpCode::RowOf>, Element{i}, k.block);
-      }
-    }, t);
+    return std::visit(
+        [&]<typename K>(const K &k) {
+          if constexpr (std::same_as<K, term::Identity>) {
+            return unit(i);
+          } else if constexpr (std::same_as<K, term::Diag>) {
+            return b_.make(opcode<OpCode::AddAt>, Element{i},
+                           {.vec = zeros(), .scalar = expr(k.d)[i].id(b_)});
+          } else if constexpr (std::same_as<K, term::Outer>) {
+            return scaled(expr(k.u)[i], k.g);
+          } else {
+            return b_.make(opcode<OpCode::RowOf>, Element{i}, k.block);
+          }
+        },
+        t);
   }
   // u^T times a term, which is a row.
   [[nodiscard]] NodeId left(const E &u, const Term &t) {
-    return std::visit([&]<typename K>(const K &k) {
-      if constexpr (std::same_as<K, term::Identity>) {
-        return u.id(b_, {n_});
-      } else if constexpr (std::same_as<K, term::Diag>) {
-        return (u * expr(k.d)).id(b_, {n_});
-      } else if constexpr (std::same_as<K, term::Outer>) {
-        return scaled(dot(u, expr(k.u)), k.g);
-      } else {
-        return b_.make(
-            opcode<OpCode::MatVec>, Orientation::transposed,
-            {.matrix = k.block,
-             .vec = u.id(b_, {shape_of(b_, k.block).rows})});
-      }
-    }, t);
+    return std::visit(
+        [&]<typename K>(const K &k) {
+          if constexpr (std::same_as<K, term::Identity>) {
+            return u.id(b_, {n_});
+          } else if constexpr (std::same_as<K, term::Diag>) {
+            return (u * expr(k.d)).id(b_, {n_});
+          } else if constexpr (std::same_as<K, term::Outer>) {
+            return scaled(dot(u, expr(k.u)), k.g);
+          } else {
+            return b_.make(opcode<OpCode::MatVec>, Orientation::transposed,
+                           {.matrix = k.block,
+                            .vec = u.id(b_, {shape_of(b_, k.block).rows})});
+          }
+        },
+        t);
   }
   [[nodiscard]] NodeId left(const E &u, const Terms &ts) {
     return std::ranges::fold_left(ts, no_node, [&](NodeId r, const Term &t) {
@@ -394,30 +400,32 @@ private:
   [[nodiscard]] Term gemv(NodeId matrix, Orientation orientation,
                           const Term &t) {
     const bool table = is_table(b_, matrix);
-    const NodeId c = table || orientation == Orientation::transposed
-                         ? b_.make(opcode<OpCode::MatRow>, orientation,
-                                   table ? operands<OpCode::MatRow>(b_[matrix]).source
-                                         : matrix)
-                         : matrix;
-    return std::visit([&]<typename K>(const K &k) -> Term {
-      if constexpr (std::same_as<K, term::Identity>) {
-        ++n2_;
-        return term::Dense{c};
-      } else if constexpr (std::same_as<K, term::Diag>) {
-        ++n2_;
-        return term::Dense{
-            b_.make(opcode<OpCode::ColScale>, {.matrix = c, .scale = k.d})};
-      } else if constexpr (std::same_as<K, term::Outer>) {
-        return term::Outer{
-            .u = b_.make(opcode<OpCode::MatVec>, orientation,
-                         {.matrix = matrix, .vec = k.u}),
-            .g = k.g};
-      } else {
-        ++n3_;
-        return term::Dense{
-            b_.make(opcode<OpCode::MatMul>, {.left = c, .right = k.block})};
-      }
-    }, t);
+    const NodeId c =
+        table || orientation == Orientation::transposed
+            ? b_.make(opcode<OpCode::MatRow>, orientation,
+                      table ? operands<OpCode::MatRow>(b_[matrix]).source
+                            : matrix)
+            : matrix;
+    return std::visit(
+        [&]<typename K>(const K &k) -> Term {
+          if constexpr (std::same_as<K, term::Identity>) {
+            ++n2_;
+            return term::Dense{c};
+          } else if constexpr (std::same_as<K, term::Diag>) {
+            ++n2_;
+            return term::Dense{
+                b_.make(opcode<OpCode::ColScale>, {.matrix = c, .scale = k.d})};
+          } else if constexpr (std::same_as<K, term::Outer>) {
+            return term::Outer{.u = b_.make(opcode<OpCode::MatVec>, orientation,
+                                            {.matrix = matrix, .vec = k.u}),
+                               .g = k.g};
+          } else {
+            ++n3_;
+            return term::Dense{
+                b_.make(opcode<OpCode::MatMul>, {.left = c, .right = k.block})};
+          }
+        },
+        t);
   }
 
   // Whether a Pack is the symbol vector in order, whose tangent is the
@@ -499,11 +507,10 @@ private:
       // a commutative node's operands by id.
       const E l = expr(node.in[0]);
       const E r = expr(node.in[1]);
-      const auto [pl, pr] =
-          contributions(node.op, E{1}, l, r,
-                        {.left = row(node.in[0]) != no_node,
-                         .right = row(node.in[1]) != no_node},
-                        E{0});
+      const auto [pl, pr] = contributions(node.op, E{1}, l, r,
+                                          {.left = row(node.in[0]) != no_node,
+                                           .right = row(node.in[1]) != no_node},
+                                          E{0});
       return add(scaled(pl, row(node.in[0])), scaled(pr, row(node.in[1])));
     }
     case Kind::Ternary: { // a select never scales the untaken row by 0
@@ -606,13 +613,14 @@ private:
         return expr(ts.empty() ? b_.zeros({w, n_}) : summed(ts));
       };
       const E c = expr(cond_of);
-      const E cond = c.size() ? expr(b_.make(opcode<OpCode::Outer>,
-                                             {.left = cond_of, .right = ones()}))
-                              : c;
+      const E cond = c.size()
+                         ? expr(b_.make(opcode<OpCode::Outer>,
+                                        {.left = cond_of, .right = ones()}))
+                         : c;
       ++n2_;
-      out.push_back(term::Dense{
-          select(cond, block(mat_[then]), block(mat_[otherwise]))
-              .id(b_, {w, n_})});
+      out.push_back(
+          term::Dense{select(cond, block(mat_[then]), block(mat_[otherwise]))
+                          .id(b_, {w, n_})});
       break;
     }
     case OpCode::AddAt: {
@@ -620,9 +628,9 @@ private:
       out = mat_[vec];
       if (row(scalar) != no_node) {
         ++n2_;
-        out.push_back(term::Outer{
-            .u = unit(get<Element>(node).value, width_of(b_, vec)),
-            .g = row(scalar)});
+        out.push_back(
+            term::Outer{.u = unit(get<Element>(node).value, width_of(b_, vec)),
+                        .g = row(scalar)});
       }
       break;
     }

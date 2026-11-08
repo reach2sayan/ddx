@@ -6,6 +6,7 @@
 #include "rt/opcode.hpp"
 #include "util/config.hpp" // DDX_FWD
 #include "util/export.hpp"
+#include "util/ranges.hpp" // impl::to
 
 #include <boost/container/small_vector.hpp>
 #include <boost/dynamic_bitset.hpp>
@@ -126,12 +127,13 @@ struct Sparsity {
   [[nodiscard]] constexpr auto
   cells(std::ranges::random_access_range auto &&values) const {
     // Captured through views::all so that a view is copied and a container
-    // is referenced, never dangling either way.
-    return entries() |
-           std::views::transform(
-               [block = std::views::all(DDX_FWD(values))](const Cell &c) {
-                 return std::tuple{c.row, c.column, block[c.slot]};
-               });
+    // is referenced, never dangling either way. Called rather than piped:
+    // an owning_view makes the lambda move-only, which libstdc++ 14.2's pipe
+    // adaptor refuses.
+    return std::views::transform(
+        entries(), [block = std::views::all(DDX_FWD(values))](const Cell &c) {
+          return std::tuple{c.row, c.column, block[c.slot]};
+        });
   }
 
   // The slot of (i, j) in the compressed block, or nullopt for a structural
@@ -306,7 +308,7 @@ template <impl::Numeric T>
       return arguments(b, v) | std::views::transform([&](NodeId u) {
                return detail::indices_of(of(u));
              }) |
-             std::ranges::to<Elements>();
+             impl::to<Elements>();
     case OpCode::VecConst:
       return Elements(shape_of(b, v).rows);
     case OpCode::Map:

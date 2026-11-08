@@ -275,7 +275,7 @@ void expect_reentry_matches(auto inner_model, auto native_model,
     const auto at = std::views::iota(0uz, symbols) |
                     std::views::transform(
                         [&](std::size_t j) { return column(j, p); }) |
-                    std::ranges::to<std::vector>();
+                    ddx::impl::to<std::vector>();
     const std::span<const double> point{at};
     EXPECT_NEAR(*eq.evaluate(point), *native.evaluate(point), 1e-10);
     expect_close(*eq.jacobian(point), *native.jacobian(point), 1e-10);

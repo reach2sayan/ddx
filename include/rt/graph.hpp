@@ -464,7 +464,7 @@ template <impl::Numeric T> [[nodiscard]] Census census_of(const Graph<T> &g) {
   }
   out.by_op = rows |
               std::views::filter([](const Census::Row &r) { return r.steps; }) |
-              std::ranges::to<std::vector>();
+              impl::to<std::vector>();
   std::ranges::stable_sort(out.by_op, std::ranges::greater{},
                            &Census::Row::values);
   return out;

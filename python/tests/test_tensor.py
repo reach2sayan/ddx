@@ -264,8 +264,9 @@ def test_a_vector_iterates_its_elements() -> None:
 def test_nodes_refuses_what_the_call_refuses() -> None:
     def model() -> ddx.Expression:
         x = ddx.vec("x", 2)
-        # An outer product a symbol moves has no dense form.
-        return x @ (ddx.outer(x * x, x) @ x)
+        # An elementwise map of an outer product a symbol moves has no dense
+        # form; a bare outer under @ is read as u (w . x) and never formed.
+        return x @ (ddx.exp(ddx.outer(x * x, x)) @ x)
 
     eq = ddx.equation(model)
     with pytest.raises(ddx.Error) as refused:

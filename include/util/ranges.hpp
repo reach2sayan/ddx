@@ -25,15 +25,34 @@ template <typename C> [[nodiscard]] constexpr to_closure<C> to() noexcept {
   return {};
 }
 
+// r | to<std::vector>(), the element type deduced from r.
+template <template <typename...> typename C> struct to_deduced_closure {
+  [[nodiscard]] friend constexpr auto
+  operator|(std::ranges::input_range auto &&r, to_deduced_closure)
+    requires requires { std::ranges::to<C>(DDX_FWD(r)); }
+  {
+    return std::ranges::to<C>(DDX_FWD(r));
+  }
+};
+
+template <template <typename...> typename C>
+[[nodiscard]] constexpr to_deduced_closure<C> to() noexcept {
+  return {};
+}
+
 // Stands in for c.append_range(r), which libstdc++ 14 lacks.
 constexpr void append(auto &c, std::ranges::input_range auto &&r)
   requires std::convertible_to<std::ranges::range_reference_t<decltype(r)>,
                                std::ranges::range_value_t<decltype(c)>>
 {
   if constexpr (std::ranges::sized_range<decltype(r)>) {
-    c.reserve(c.size() + std::ranges::size(r));
+    // resize grows geometrically, where an exact reserve copies c every time.
+    const auto at = std::ranges::ssize(c);
+    c.resize(c.size() + std::ranges::size(r));
+    std::ranges::copy(DDX_FWD(r), std::ranges::begin(c) + at);
+  } else {
+    std::ranges::copy(DDX_FWD(r), std::back_inserter(c));
   }
-  std::ranges::copy(DDX_FWD(r), std::back_inserter(c));
 }
 
 } // namespace ddx::impl
