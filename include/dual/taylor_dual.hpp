@@ -3,6 +3,7 @@
 #include "dual/dual.hpp"
 #include "ops/unary_math.hpp" // DDX_UNARY_MATH_TABLE
 #include "util/config.hpp"    // DDX_ALWAYS_INLINE
+#include "util/meta.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -44,14 +45,11 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
   // convolution an order runs has a fixed length and unrolls. Forced inline
   // with generic callers, so each order's body is called once and inlined
   // into the step that runs it.
-  template <std::size_t First, std::size_t... K>
-  DDX_ALWAYS_INLINE static constexpr void orders(auto &&f,
-                                                 std::index_sequence<K...>) {
-    (f(std::integral_constant<std::size_t, First + K>{}), ...);
-  }
   template <std::size_t First>
   DDX_ALWAYS_INLINE static constexpr void orders(auto &&f) {
-    orders<First>(f, std::make_index_sequence<N + 1 - First>{});
+    meta::unpack(meta::iota<N + 1 - First>, [&](auto... k) DDX_LAMBDA_INLINE {
+      (f(meta::index_t<First + k>{}), ...);
+    });
   }
 
   constexpr TaylorDual() noexcept = default;

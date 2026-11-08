@@ -98,8 +98,7 @@ template <impl::Numeric T = double> struct Kernels {
   [[nodiscard]] static constexpr T fold(std::array<T, N> &acc) noexcept {
     meta::for_each(meta::iota<std::bit_width(N) - 1>, [&](auto level) {
       constexpr std::size_t w = N >> (level + 1);
-      meta::for_each(meta::iota<w>,
-                     [&](auto l) { acc[l] = acc[l] + acc[l + w]; });
+      meta::for_each(meta::iota<w>, [&](auto l) { acc[l] = acc[l] + acc[l + w]; });
     });
     return acc[0];
   }
@@ -108,7 +107,7 @@ template <impl::Numeric T = double> struct Kernels {
                              bool transposed) noexcept {
     if (transposed) {
       // out[j] = column_j . v
-      for (const std::size_t j : std::views::iota(0uz, c)) {
+      for (std::size_t j = 0; j < c; ++j) {
         out[j] = dot(m.subspan(j * r, r), v);
       }
       return;
@@ -124,7 +123,7 @@ template <impl::Numeric T = double> struct Kernels {
       const T *DDX_RESTRICT c2 = c1 + r;
       const T *DDX_RESTRICT c3 = c2 + r;
       const T x0 = v[j], x1 = v[j + 1], x2 = v[j + 2], x3 = v[j + 3];
-      for (const std::size_t i : std::views::iota(0uz, r)) {
+      for (std::size_t i = 0; i < r; ++i) {
         y[i] = madd(c3[i], x3,
                     madd(c2[i], x2, madd(c1[i], x1, madd(c0[i], x0, y[i]))));
       }
@@ -132,7 +131,7 @@ template <impl::Numeric T = double> struct Kernels {
     for (; j < c; ++j) {
       const T *DDX_RESTRICT col = m.data() + j * r;
       const T x = v[j];
-      for (const std::size_t i : std::views::iota(0uz, r)) {
+      for (std::size_t i = 0; i < r; ++i) {
         y[i] = madd(col[i], x, y[i]);
       }
     }
@@ -151,16 +150,15 @@ template <impl::Numeric T = double> struct Kernels {
                            std::size_t j0) {
           std::array<const T *, C> col{};
           std::array<T, C> xj{};
-          for (const std::size_t d : std::views::iota(0uz, C)) {
+          for (std::size_t d = 0; d < C; ++d) {
             col[d] = m.data() + (j0 + d) * n;
             xj[d] = x[j0 + d];
           }
           std::array<std::array<T, L>, C> acc{};
-          for (const std::size_t i :
-               std::views::iota(0uz, whole) | std::views::stride(L)) {
-            for (const std::size_t l : std::views::iota(0uz, L)) {
+          for (std::size_t i = 0; i < whole; i += L) {
+            for (std::size_t l = 0; l < L; ++l) {
               T yi = y[i + l];
-              for (const std::size_t d : std::views::iota(0uz, C)) {
+              for (std::size_t d = 0; d < C; ++d) {
                 const T mi = col[d][i + l];
                 yi = madd(mi, xj[d], yi);
                 acc[d][l] = madd(mi, x[i + l], acc[d][l]);
@@ -168,13 +166,13 @@ template <impl::Numeric T = double> struct Kernels {
               y[i + l] = yi;
             }
           }
-          for (const std::size_t i : std::views::iota(whole, n)) {
-            for (const std::size_t d : std::views::iota(0uz, C)) {
+          for (std::size_t i = whole; i < n; ++i) {
+            for (std::size_t d = 0; d < C; ++d) {
               y[i] = madd(col[d][i], xj[d], y[i]);
               acc[d][i - whole] = madd(col[d][i], x[i], acc[d][i - whole]);
             }
           }
-          for (const std::size_t d : std::views::iota(0uz, C)) {
+          for (std::size_t d = 0; d < C; ++d) {
             transposed[j0 + d] = fold(acc[d]);
           }
         };
@@ -192,13 +190,12 @@ template <impl::Numeric T = double> struct Kernels {
   [[nodiscard]] static constexpr T reduce(std::size_t n, auto step) noexcept {
     std::array<T, kLanes> acc{};
     const std::size_t whole = n / kLanes * kLanes;
-    for (const std::size_t i :
-         std::views::iota(0uz, whole) | std::views::stride(kLanes)) {
-      for (const std::size_t l : std::views::iota(0uz, kLanes)) {
+    for (std::size_t i = 0; i < whole; i += kLanes) {
+      for (std::size_t l = 0; l < kLanes; ++l) {
         acc[l] = step(acc[l], i + l);
       }
     }
-    for (const std::size_t i : std::views::iota(whole, n)) {
+    for (std::size_t i = whole; i < n; ++i) {
       acc[i - whole] = step(acc[i - whole], i);
     }
     return fold(acc);
@@ -250,7 +247,7 @@ template <impl::Numeric T = double> struct Kernels {
   // out = A B, computed as one gemv per column of B.
   static constexpr void gemm(std::size_t r, std::size_t k, std::size_t c, In a,
                              In bm, Out out) noexcept {
-    for (const std::size_t j : std::views::iota(0uz, c)) {
+    for (std::size_t j = 0; j < c; ++j) {
       gemv(r, k, a, bm.subspan(j * k, k), out.subspan(j * r, r), false);
     }
   }

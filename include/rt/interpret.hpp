@@ -33,7 +33,7 @@ template <std::size_t W, typename Fn, impl::Numeric T, bool Ok,
           std::same_as<T>... Ts>
 constexpr void lanes(T *DDX_RESTRICT out,
                      const Ts *DDX_RESTRICT... in) noexcept {
-  for (const std::size_t k : std::views::iota(0uz, W)) {
+  for (std::size_t k = 0; k < W; ++k) {
     out[k] = supported<Fn, T, Ok>(in[k]...);
   }
 }
@@ -143,7 +143,7 @@ DDX_NOINLINE constexpr void lanes_extern(const Arena<T> &b, NodeId v, U *out,
     const auto args = arguments(b, v);
     boost::container::small_vector<T, 8> in(args.size());
     boost::container::small_vector<T, 16> answer(e.size());
-    for (const std::size_t k : std::views::iota(0uz, W)) {
+    for (std::size_t k = 0; k < W; ++k) {
       for (const auto [j, arg] : args | std::views::enumerate) {
         in[static_cast<std::size_t>(j)] = lane(t.row(arg))[k];
       }
@@ -189,7 +189,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
     const auto at = [&](NodeId s, std::size_t k) { return lane(t.row(s))[k]; };
     const bool paired =
         n.op == OpCode::MatVec && !t.pairs.empty() && t.pairs[v] != no_node;
-    for (const std::size_t k : std::views::iota(0uz, W)) {
+    for (std::size_t k = 0; k < W; ++k) {
       const auto to = mine(k);
       // Arithmetic rows go first through one dispatch, since a second switch
       // is costly on short rows.
@@ -236,7 +236,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         const auto items = arguments(b, v);
         for (const auto [i, item] : items | std::views::enumerate) {
           const auto r = in(item, k);
-          for (const std::size_t j : std::views::iota(0uz, r.size())) {
+          for (std::size_t j = 0; j < r.size(); ++j) {
             to[static_cast<std::size_t>(i) + j * items.size()] = r[j];
           }
         }
@@ -297,7 +297,7 @@ DDX_NOINLINE constexpr void lanes_fold(const Arena<T> &b, NodeId v, OpCode op,
       if constexpr (R::arity == 2) {
         for (const auto [i, term] : arguments(b, v) | std::views::enumerate) {
           const U *const r = row(term);
-          for (const std::size_t k : std::views::iota(0uz, W)) {
+          for (std::size_t k = 0; k < W; ++k) {
             out[k] =
                 i == 0 ? r[k]
                        : supported<typename R::functor, U, R::ok>(out[k], r[k]);
@@ -311,14 +311,14 @@ DDX_NOINLINE constexpr void lanes_fold(const Arena<T> &b, NodeId v, OpCode op,
     const Contraction c = fused ? product_of(b, term) : Contraction{};
     if (!c) {
       const U *const r = row(term);
-      for (const std::size_t k : std::views::iota(0uz, W)) {
+      for (std::size_t k = 0; k < W; ++k) {
         out[k] = i == 0 ? r[k] : out[k] + r[k];
       }
       continue;
     }
     const U *const x = row(c.x);
     const U *const y = row(c.y);
-    for (const std::size_t k : std::views::iota(0uz, W)) {
+    for (std::size_t k = 0; k < W; ++k) {
       if (i == 0) {
         out[k] = c.negated ? -(x[k] * y[k]) : x[k] * y[k];
       } else if (c.negated) {
@@ -474,7 +474,7 @@ lanes_mated(NodeId i, const Step &s, auto &&lane, const TapeView<U> &t) {
       U *const own = lane(s.out);
       U *const other = lane(t.row(mate));
       const U *const x = lane(s.in[0]);
-      for (const std::size_t k : std::views::iota(0uz, W)) {
+      for (std::size_t k = 0; k < W; ++k) {
         auto [f, g] = circular ? sincos_td(x[k]) : sinhcosh_td(x[k]);
         own[k] = first ? std::move(f) : std::move(g);
         other[k] = first ? std::move(g) : std::move(f);
@@ -502,13 +502,13 @@ sweep_step(const Arena<T> &b, std::span<const Node<T>> nodes,
   // Not a switch on kind_of(): a kind test before lanes_apply's own switch
   // measured 1.4x slower on libm-heavy graphs from branch mispredictions.
   if (s.op == OpCode::Const) {
-    for (const std::size_t k : std::views::iota(0uz, W)) {
+    for (std::size_t k = 0; k < W; ++k) {
       out[k] = static_cast<U>(n.value);
     }
   } else if (is_leaf(s.op)) {
     const auto src = at + static_cast<std::ptrdiff_t>(
                               input_column(inputs, s.op, get<Slot>(n)) * W);
-    for (const std::size_t k : std::views::iota(0uz, W)) {
+    for (std::size_t k = 0; k < W; ++k) {
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }
   } else if (!detail::lanes_mated<W>(i, s, lane, t)) {

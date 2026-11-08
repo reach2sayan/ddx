@@ -56,8 +56,7 @@ blocked_sum(Arena<T> &b, std::span<const NodeId> terms, std::size_t blocks) {
   using Partials = boost::container::small_vector<Expression<T>, 16>;
   const auto as_expr = [&b](NodeId t) { return Expression<T>{b, t}; };
   Partials partials;
-  for (const std::size_t j :
-       std::views::iota(0uz, std::min(blocks, terms.size()))) {
+  for (std::size_t j = 0; j < std::min(blocks, terms.size()); ++j) {
     partials.push_back(*std::ranges::fold_left_first(
         terms | std::views::drop(j) | std::views::stride(blocks) |
             std::views::transform(as_expr),
