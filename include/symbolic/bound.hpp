@@ -73,7 +73,7 @@ consteval std::array<std::size_t, N> arg_of_canonical() noexcept {
 // Builds a ValueMap, as in values(named<"x">(1.0), named<"y">(0.5)).
 template <FixedString... Syms, Numeric... Vs>
 [[nodiscard]] constexpr auto values(Entry<Syms, Vs>... nv) noexcept {
-  using SymList = decltype(symbol_set(meta::list_c<symbol_type<Syms>...>));
+  using SymList = meta::list_t<symbol_set(meta::list_c<symbol_type<Syms>...>)>;
   constexpr std::size_t N = sizeof...(Syms);
   static_assert(meta::size(SymList{}) == N, "values: duplicate symbol");
 
@@ -90,7 +90,7 @@ template <FixedString... Syms, Numeric... Vs>
 // The canonical (alphabetical) symbol order that positional points use.
 template <CExpression Expr>
 [[nodiscard]] consteval auto symbol_order() noexcept {
-  using SymList = detail::expr_symbols_t<std::remove_cvref_t<Expr>>;
+  using SymList = expr_symbols_t<Expr>;
   return meta::unpack(SymList{}, [](auto... s) {
     return std::array<std::string_view, sizeof...(s)>{s.name...};
   });
@@ -107,7 +107,7 @@ namespace detail {
 template <typename... Args>
 concept CDynamicPoint =
     sizeof...(Args) == 1 && (std::ranges::input_range<Args> && ...) &&
-    !(CTupleLike<Args> && ...);
+    !(meta::CTupleLike<Args> && ...);
 // Copies the first N values of a range and returns how many it saw.
 template <Numeric U, std::size_t N>
 [[nodiscard]] constexpr std::pair<std::array<U, N>, std::size_t>

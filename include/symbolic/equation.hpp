@@ -140,8 +140,8 @@ template <CExpression TFirst, CExpression... TRest>
 class Equation<TFirst, TRest...> {
 public:
   using value_type = typename TFirst::value_type;
-  using symbols = decltype(symbol_set(extract_symbols_from_expr_t<TFirst>{},
-                                      extract_symbols_from_expr_t<TRest>{}...));
+  using symbols = meta::list_t<symbol_set(expr_symbols_t<TFirst>{},
+                                           expr_symbols_t<TRest>{}...)>;
 
   static constexpr std::size_t output_dim = 1 + sizeof...(TRest);
   static constexpr std::size_t input_dim = meta::size(symbols{});
@@ -195,7 +195,7 @@ private:
 
 public:
   // get<0> is the expression itself and get<k> its partial in the (k-1)th
-  // symbol, in canonical order. The subscript [idx<N>] is the same.
+  // symbol, in canonical order.
   template <std::size_t N>
     requires(output_dim == 1 && N <= input_dim)
   [[nodiscard]] constexpr decltype(auto) get(this auto &&self) noexcept {
@@ -238,13 +238,6 @@ public:
           }
         },
         args...);
-  }
-
-  template <std::size_t N>
-    requires(output_dim == 1 && N <= input_dim)
-  [[nodiscard]] constexpr decltype(auto) operator[](this auto &&self,
-                                                    idx_t<N>) noexcept {
-    return DDX_FWD(self).template get<N>();
   }
 
   // Symbolic lowers the partial trees; Reverse builds the adjoint on the graph.

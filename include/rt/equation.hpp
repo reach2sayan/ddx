@@ -123,19 +123,18 @@ namespace detail {
 template <impl::Numeric T, typename Built>
 [[nodiscard]] auto over(const Built &built, auto &&make) {
   if constexpr (std::same_as<Built, Expression<T>>) {
-    return make(std::type_identity<impl::Equation<Expression<T>>>{}, built);
+    return make(meta::type_c<impl::Equation<Expression<T>>>, built);
   } else if constexpr (requires { std::tuple_size<Built>::value; }) {
     constexpr std::size_t outputs = std::tuple_size_v<Built>;
     static_assert(outputs > 0,
                   "equation: a system needs at least one function");
     return meta::unpack(meta::iota<outputs>, [&](auto... i) {
-      return make(std::type_identity<
-                      meta::repeat_t<impl::Equation, Expression<T>, outputs>>{},
+      return make(meta::type_c<meta::repeat_t<impl::Equation, Expression<T>, outputs>>,
                   built[i]...);
     });
   } else {
     const auto outputs = built | impl::to<std::vector<Expression<T>>>();
-    return make(std::type_identity<System<T>>{},
+    return make(meta::type_c<System<T>>,
                 std::span<const Expression<T>>{outputs});
   }
 }
@@ -148,7 +147,7 @@ template <impl::Numeric T = double>
 [[nodiscard]] auto equation(std::invocable auto &&assemble) {
   auto [arena, built] = detail::assemble<T>(DDX_FWD(assemble));
   return detail::over<T>(
-      built, [&]<typename Eq>(std::type_identity<Eq>, auto... roots) {
+      built, [&]<typename Eq>(meta::Type<Eq>, auto... roots) {
         return detail::Creating::create<Eq>(std::move(arena), roots...);
       });
 }

@@ -4,6 +4,7 @@
 #include "symbolic/expressions.hpp"
 #include "symbolic/simplify.hpp"
 #include "symbolic/symbol.hpp"
+#include "util/meta.hpp"
 #include <functional> // the literal folds
 #include <utility>
 
@@ -220,7 +221,7 @@ public:
 
   template <std::size_t I> [[nodiscard]] constexpr auto get() const noexcept {
     static_assert(I < 2);
-    if constexpr (CTupleLike<T>) {
+    if constexpr (meta::CTupleLike<T>) {
       return eval().template get<I>();
     } else if constexpr (I == 0) {
       return eval();

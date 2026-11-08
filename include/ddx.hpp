@@ -28,9 +28,6 @@ namespace literals = impl::literals;
 
 using impl::constant;
 
-// eq[idx<1>()] is the same as eq.get<1>().
-using impl::idx;
-
 // named<"x">(3.0) is one named entry of a point.
 using impl::Entry;
 using impl::named;

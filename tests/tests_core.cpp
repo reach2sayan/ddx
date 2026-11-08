@@ -215,7 +215,7 @@ TEST(ConceptTest, AnOpSatisfied) {
 }
 TEST(SymbolTest, SingleVariable) {
   using E = Variable<double, ddx::impl::FixedString{"x"}>;
-  using Syms = extract_symbols_from_expr_t<E>;
+  using Syms = expr_symbols_t<E>;
   static_assert(ddx::meta::size(Syms{}) == 1);
   static_assert(
       ddx::meta::at<0>(Syms{}) ==
@@ -225,7 +225,7 @@ TEST(SymbolTest, TwoVariables) {
   using E =
       decltype(std::declval<Variable<double, ddx::impl::FixedString{"x"}>>() *
                std::declval<Variable<double, ddx::impl::FixedString{"y"}>>());
-  using Syms = extract_symbols_from_expr_t<E>;
+  using Syms = expr_symbols_t<E>;
   static_assert(ddx::meta::size(Syms{}) == 2);
   // Symbols are sorted lexicographically, so "x" comes before "y".
   static_assert(
@@ -239,7 +239,7 @@ TEST(SymbolTest, DuplicateSymbolsDeduplicated) {
   using E =
       decltype(std::declval<Variable<double, ddx::impl::FixedString{"x"}>>() *
                std::declval<Variable<double, ddx::impl::FixedString{"x"}>>());
-  using Syms = extract_symbols_from_expr_t<E>;
+  using Syms = expr_symbols_t<E>;
   static_assert(ddx::meta::size(Syms{}) == 1);
 }
 TEST(SymbolTest, ThreeVariables) {
@@ -247,14 +247,14 @@ TEST(SymbolTest, ThreeVariables) {
   auto y = var<"y">;
   auto z = var<"z">;
   auto expr = x + y + z;
-  using Syms = extract_symbols_from_expr_t<decltype(expr)>;
+  using Syms = expr_symbols_t<decltype(expr)>;
   static_assert(ddx::meta::size(Syms{}) == 3);
 }
 // Symbols come back sorted and deduplicated however they are spread, or a
 // Jacobian would carry the right numbers against the wrong names.
 TEST(SymbolTest, CanonicalOrderIsAlphabetical) {
   auto expr = (var<"z"> * var<"a">)+(var<"m"> * var<"z">)+var<"b">;
-  using Syms = extract_symbols_from_expr_t<decltype(expr)>;
+  using Syms = expr_symbols_t<decltype(expr)>;
   using ddx::impl::FixedString;
   static_assert(ddx::meta::size(Syms{}) == 4);
   static_assert(
@@ -422,7 +422,7 @@ TEST(EquationTest, SingleVariable) {
   auto x = var<"x", int>;
   auto expr = x * 2_ci;
   auto eq = Equation(expr);
-  ASSERT_EQ(eq[idx<1>()].eval(), 2);
+  ASSERT_EQ(eq.get<1>().eval(), 2);
 }
 TEST(EquationTest, TwoVariables) {
   auto x = var<"x", int>;
@@ -430,16 +430,16 @@ TEST(EquationTest, TwoVariables) {
   auto expr = x * y;
   auto eq = Equation(expr);
   // Each folded partial names one symbol, so each takes just that value.
-  ASSERT_EQ(eq[idx<1>()].eval(2), 2);
-  ASSERT_EQ(eq[idx<2>()].eval(4), 4);
+  ASSERT_EQ(eq.get<1>().eval(2), 2);
+  ASSERT_EQ(eq.get<2>().eval(4), 4);
 }
 TEST(EquationTest, LinearCombination) {
   auto x = var<"x", int>;
   auto y = var<"y", int>;
   auto expr = constant(1) * x + constant(2) * y;
   auto eq = Equation(expr);
-  ASSERT_EQ(eq[idx<1>()].eval(), 1);
-  ASSERT_EQ(eq[idx<2>()].eval(), 2);
+  ASSERT_EQ(eq.get<1>().eval(), 1);
+  ASSERT_EQ(eq.get<2>().eval(), 2);
 }
 TEST(EquationTest, DifferenceOfSquares) {
   constexpr auto x = var<"x", int>;
@@ -457,21 +457,13 @@ TEST(EquationTest, ExpEquation) {
   auto expr = exp(x);
   auto eq = Equation(expr);
   ASSERT_DOUBLE_EQ(eq.evaluate(std::array{1.0}), std::exp(1.0));
-  ASSERT_DOUBLE_EQ(eq[idx<1>()].eval(1.0), std::exp(1.0));
+  ASSERT_DOUBLE_EQ(eq.get<1>().eval(1.0), std::exp(1.0));
 }
 TEST(EquationTest, TrigEquation) {
   auto x = var<"x">;
   auto expr = sin(x) * cos(x);
   auto eq = Equation(expr);
-  ASSERT_DOUBLE_EQ(eq[idx<1>()].eval(0.5), std::cos(2 * 0.5));
-}
-TEST(EquationTest, IdxEquivalence) {
-  // eq[idx<N>()] is the subscript spelling of eq.get<N>().
-  auto x = var<"x", int>;
-  auto y = var<"y", int>;
-  auto eq = Equation(x * y);
-  ASSERT_EQ(eq[idx<1>()].eval(5), eq.get<1>().eval(5));
-  ASSERT_EQ(eq[idx<2>()].eval(3), eq.get<2>().eval(3));
+  ASSERT_DOUBLE_EQ(eq.get<1>().eval(0.5), std::cos(2 * 0.5));
 }
 TEST(EquationTest, ThreeVariablePartials) {
   auto x = var<"x", int>;
@@ -493,17 +485,17 @@ TEST(EquationTest, UpdateAndReevaluate) {
   auto eq = Equation(expr);
 
   ASSERT_EQ(eq.evaluate(std::array{3}), 9);
-  ASSERT_EQ(eq[idx<1>()].eval(3), 6);
+  ASSERT_EQ(eq.get<1>().eval(3), 6);
 
   ASSERT_EQ(eq.evaluate(std::array{5}), 25);
-  ASSERT_EQ(eq[idx<1>()].eval(5), 10);
+  ASSERT_EQ(eq.get<1>().eval(5), 10);
 }
 TEST(EquationTest, MixedTrigExpEquation) {
   auto x = var<"x">;
   auto expr = exp(x) * sin(x);
   auto eq = Equation(expr);
   double expected = std::exp(1.0) * (std::sin(1.0) + std::cos(1.0));
-  ASSERT_DOUBLE_EQ(eq[idx<1>()].eval(1.0), expected);
+  ASSERT_DOUBLE_EQ(eq.get<1>().eval(1.0), expected);
 }
 TEST(EquationTest, NumberOfDerivatives) {
   auto x = var<"x", int>;
@@ -917,7 +909,7 @@ TEST(Ownership, EquationSubtreeAccessorsWorkOnTemporaries) {
   auto x = var<"x">;
   auto y = var<"y">;
   EXPECT_DOUBLE_EQ(Equation(x * y).get<1>().eval(2.0), 2.0);
-  EXPECT_DOUBLE_EQ(Equation(x * y)[idx<2>()].eval(4.0), 4.0);
+  EXPECT_DOUBLE_EQ(Equation(x * y).get<2>().eval(4.0), 4.0);
 }
 
 // The stored partial trees agree with the sweep at pow's zeros.

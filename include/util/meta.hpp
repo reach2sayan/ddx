@@ -32,14 +32,21 @@ template <typename T> struct Type : std::type_identity<T> {
 template <typename T> inline constexpr Type<T> type_c{};
 template <typename V> using type_of = typename std::remove_cvref_t<V>::type;
 
+// Has a std::tuple_size, so get<I> decomposes it.
+template <typename T>
+concept CTupleLike =
+    requires { std::tuple_size<std::remove_cvref_t<T>>::value; };
+
 // Any L<Ts...> but a tuple, which for_each and unpack walk as a value.
 template <typename L>
-concept CTypeList =
-    mp::mp_is_list<std::remove_cvref_t<L>>::value &&
-    !requires { std::tuple_size<std::remove_cvref_t<L>>::value; };
+concept CTypeList = mp::mp_is_list<std::remove_cvref_t<L>>::value && !CTupleLike<L>;
 
 template <typename... Ts> using list = mp::mp_list<Ts...>;
 template <typename... Ts> inline constexpr list<Ts...> list_c{};
+// The type of a list value, as using L = meta::list_t<sort(l, less)>.
+// L is a plain auto: a constrained auto parameter breaks later deductions on
+// GCC 15.
+template <auto L> using list_t = std::remove_cvref_t<decltype(L)>;
 template <std::size_t N> using index_t = std::integral_constant<std::size_t, N>;
 template <std::size_t N> inline constexpr mp::mp_iota_c<N> iota{};
 
@@ -47,19 +54,11 @@ template <std::size_t N> inline constexpr mp::mp_iota_c<N> iota{};
 template <typename T> consteval auto args_of(Type<T>) noexcept {
   return mp::mp_transform<Type, mp::mp_rename<T, mp::mp_list>>{};
 }
-// Lifts a list's elements to Type<T>, for for_each over types that are not
-// constexpr default-constructible.
-consteval auto types(CTypeList auto l) noexcept {
-  return mp::mp_transform<Type, decltype(l)>{};
-}
 
 namespace detail {
 template <typename F> struct test {
   template <typename... A>
   using fn = std::bool_constant<static_cast<bool>(F{}(type_c<A>...))>;
-};
-template <typename F> struct map {
-  template <typename... A> using fn = type_of<decltype(F{}(type_c<A>...))>;
 };
 } // namespace detail
 
@@ -91,19 +90,6 @@ consteval std::size_t index_of(CTypeList auto l, Type<T>) noexcept {
 template <typename F> consteval bool all_of(CTypeList auto l, F) noexcept {
   return mp::mp_all_of_q<decltype(l), detail::test<F>>::value;
 }
-template <typename F> consteval bool any_of(CTypeList auto l, F) noexcept {
-  return mp::mp_any_of_q<decltype(l), detail::test<F>>::value;
-}
-template <typename F>
-consteval std::size_t find_if(CTypeList auto l, F) noexcept {
-  return mp::mp_find_if_q<decltype(l), detail::test<F>>::value;
-}
-template <typename F> consteval auto filter(CTypeList auto l, F) noexcept {
-  return mp::mp_copy_if_q<decltype(l), detail::test<F>>{};
-}
-template <typename F> consteval auto transform(CTypeList auto l, F) noexcept {
-  return mp::mp_transform_q<detail::map<F>, decltype(l)>{};
-}
 // Stable, so equal elements keep their order.
 template <typename F> consteval auto sort(CTypeList auto l, F) noexcept {
   return mp::mp_sort_q<decltype(l), detail::test<F>>{};
@@ -125,10 +111,7 @@ consteval auto rebind(CTypeList auto l) noexcept {
 DDX_ALWAYS_INLINE constexpr void for_each(CTypeList auto l, auto &&f) {
   mp::mp_for_each<decltype(l)>(DDX_FWD(f));
 }
-DDX_ALWAYS_INLINE constexpr void for_each(auto &&t, auto &&f)
-  requires(!CTypeList<decltype(t)>) &&
-          requires { std::tuple_size<std::remove_cvref_t<decltype(t)>>::value; }
-{
+DDX_ALWAYS_INLINE constexpr void for_each(CTupleLike auto &&t, auto &&f) {
   mp::tuple_for_each(DDX_FWD(t), DDX_FWD(f));
 }
 
@@ -138,10 +121,8 @@ DDX_ALWAYS_INLINE constexpr decltype(auto) unpack(mp::mp_list<Ts...>,
                                                   auto &&f) {
   return DDX_FWD(f)(Ts{}...);
 }
-DDX_ALWAYS_INLINE constexpr decltype(auto) unpack(auto &&t, auto &&f)
-  requires(!CTypeList<decltype(t)>) &&
-          requires { std::tuple_size<std::remove_cvref_t<decltype(t)>>::value; }
-{
+DDX_ALWAYS_INLINE constexpr decltype(auto) unpack(CTupleLike auto &&t,
+                                                  auto &&f) {
   return std::apply(DDX_FWD(f), DDX_FWD(t));
 }
 

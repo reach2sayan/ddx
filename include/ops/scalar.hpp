@@ -3,6 +3,8 @@
 #include "ops/numeric.hpp"
 #include "util/meta.hpp"
 
+#include <boost/hof/match.hpp>
+
 #include <concepts>
 #include <cstddef>
 #include <type_traits>
@@ -10,6 +12,7 @@
 namespace ddx::impl {
 
 template <Numeric T> class Dual;
+template <Numeric S, std::size_t N> struct TaylorDual;
 
 template <typename X>
 concept DualLike = requires {
@@ -51,17 +54,26 @@ template <Numeric T> struct nth_dual<T, 0> {
 template <Numeric T, std::size_t N>
 using nth_dual_t = typename nth_dual<T, N>::type;
 
-template <Numeric T> inline constexpr std::size_t dual_depth_v = 0;
-template <Numeric T>
-inline constexpr std::size_t dual_depth_v<Dual<T>> = 1 + dual_depth_v<T>;
+// The levels of dual nesting and the scalar under them. A TaylorDual of order
+// N counts as N levels, like nth_dual_t.
+consteval std::size_t dual_depth(auto t) noexcept {
+  return boost::hof::match(
+      []<Numeric T>(meta::Type<Dual<T>>) { return 1 + dual_depth(meta::type_c<T>); },
+      []<Numeric S, std::size_t N>(meta::Type<TaylorDual<S, N>>) { return N; },
+      [](auto) { return 0uz; })(t);
+}
+consteval auto scalar_base(auto t) noexcept {
+  return boost::hof::match(
+      []<Numeric T>(meta::Type<Dual<T>>) { return scalar_base(meta::type_c<T>); },
+      []<Numeric S, std::size_t N>(meta::Type<TaylorDual<S, N>>) {
+        return meta::type_c<S>;
+      },
+      [](auto u) { return u; })(t);
+}
 
-template <Numeric T> auto scalar_base_impl(std::type_identity<T>) -> T;
 template <Numeric T>
-auto scalar_base_impl(std::type_identity<Dual<T>>)
-    -> decltype(scalar_base_impl(std::type_identity<T>{}));
-
-template <Numeric T>
-using scalar_base_t = decltype(scalar_base_impl(std::type_identity<T>{}));
+inline constexpr std::size_t dual_depth_v = dual_depth(meta::type_c<T>);
+template <Numeric T> using scalar_base_t = DDX_TYPE(scalar_base(meta::type_c<T>));
 
 template <Numeric T, std::size_t N>
 constexpr nth_dual_t<T, N> embed_constant(T val) noexcept {

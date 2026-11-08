@@ -77,7 +77,7 @@ template <impl::Numeric U, impl::CExpression E>
 template <impl::Numeric T, impl::CExpression U>
   requires(!impl::holds_frozen(meta::type_c<U>))
 [[nodiscard]] constexpr Expression<T> to_graph(Arena<T> &b, const U &e) {
-  meta::for_each(impl::extract_symbols_from_expr_t<U>{},
+  meta::for_each(impl::expr_symbols_t<U>{},
                  [&b](auto s) { (void)var(b, s.name); });
   return detail::lower(b, e);
 }

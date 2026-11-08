@@ -55,12 +55,12 @@ void expect_agrees_with_ddx(const E &e, std::array<double, N> pt) {
   const auto g = ddx::rt::derive_jacobian(b, root.id(b));
   const auto values = ddx::rt::evaluate_all(b, std::span<const double>{pt});
 
-  const double expected = std::apply(
-      [&](auto... a) { return ddx::Equation{e}.evaluate(a...); }, pt);
+  const double expected = ddx::meta::unpack(
+      pt, [&](auto... a) { return ddx::Equation{e}.evaluate(a...); });
   expect_close(values[g.value], expected);
 
-  const auto expected_grad = std::apply(
-      [&](auto... a) { return ddx::Equation{e}.jacobian(a...); }, pt);
+  const auto expected_grad = ddx::meta::unpack(
+      pt, [&](auto... a) { return ddx::Equation{e}.jacobian(a...); });
 
   for (std::size_t i = 0; i < b.symbols().size(); ++i) {
     SCOPED_TRACE("partial d/d" + std::string{b.symbols()[i]});

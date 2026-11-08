@@ -2,6 +2,7 @@
 
 #include "rt/derivative.hpp"
 #include "rt/tensor.hpp"
+#include "util/meta.hpp"
 #include "util/ranges.hpp"
 
 #include <boost/container/small_vector.hpp>
@@ -165,7 +166,7 @@ private:
   // A tangent summed into one n x n matrix: diagonals as a vector, outer
   // products as one low-rank product, and each matrix written contiguously.
   [[nodiscard]] NodeId summed(const Terms &ts) {
-    const auto of = [&ts]<typename K>(std::type_identity<K>) {
+    const auto of = [&ts]<typename K>(meta::Type<K>) {
       return ts | std::views::filter([](const Term &t) {
                return std::holds_alternative<K>(t);
              }) |
@@ -179,13 +180,13 @@ private:
                                  return add(r, g ? g->d : ones());
                                });
     using Ids = boost::container::small_vector<NodeId, 4>;
-    auto matrices = of(std::type_identity<term::Dense>{}) |
+    auto matrices = of(meta::type_c<term::Dense>) |
                     std::views::transform(&term::Dense::block) |
                     impl::to<Ids>();
     // sum_k u_k g_k^T is computed as one product U G^T instead of K outer
     // products added together.
     const auto outers =
-        of(std::type_identity<term::Outer>{}) |
+        of(meta::type_c<term::Outer>) |
         impl::to<boost::container::small_vector<term::Outer, 4>>();
     if (outers.size() == 1) {
       matrices.push_back(

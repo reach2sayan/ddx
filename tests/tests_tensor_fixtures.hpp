@@ -29,14 +29,14 @@ struct BitHash {
 
 // The packed tensor, which skips permutations, must equal the dense tensor
 // evaluated at every multi-index.
-template <std::size_t Order, CExpression Expr, CTupleLike Values>
+template <std::size_t Order, CExpression Expr, ddx::meta::CTupleLike Values>
 void ExpectPackedMatchesDense(const Expr &expr, const Values &values) {
   const auto packed = Equation{expr}.template derivative_tensor<Order>(values);
   constexpr std::size_t N = std::tuple_size_v<Values>;
 
   using S = double;
   using U = ddx::impl::nth_dual_t<S, Order>;
-  using symbols = ddx::impl::extract_symbols_from_expr_t<Expr>;
+  using symbols = ddx::impl::expr_symbols_t<Expr>;
   // Every multi-index, in layout_right order.
   const auto grid = ddx::meta::unpack(ddx::meta::iota<Order>, [&](auto... d) {
     return std::views::cartesian_product(

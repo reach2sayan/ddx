@@ -60,8 +60,9 @@ consteval auto symbols_of(auto t) noexcept {
   }
 }
 
-template <CExpression T>
-using extract_symbols_from_expr_t = decltype(symbols_of(meta::type_c<T>));
+// An expression's canonical symbol list.
+template <CExpression E>
+using expr_symbols_t = meta::list_t<symbols_of(meta::type_c<std::remove_cvref_t<E>>)>;
 
 // Whether any variable in the tree is frozen.
 consteval bool holds_frozen(auto t) noexcept {
@@ -78,19 +79,10 @@ consteval bool holds_frozen(auto t) noexcept {
 
 namespace detail {
 
-// An expression's canonical symbol list and its length.
-template <CExpression Expr>
-using expr_symbols_t = extract_symbols_from_expr_t<std::remove_cvref_t<Expr>>;
-
+// An expression's symbol count.
 template <CExpression Expr>
 inline constexpr std::size_t expr_arity_v = meta::size(expr_symbols_t<Expr>{});
 
 } // namespace detail
-
-template <std::size_t N> using idx_t = meta::index_t<N>;
-
-template <std::size_t N> [[nodiscard]] consteval idx_t<N> idx() noexcept {
-  return {};
-}
 
 } // namespace ddx::impl

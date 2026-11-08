@@ -501,13 +501,6 @@ static_assert(Numeric<TaylorDual<double, 3>>,
 DDX_UNARY_MATH_TABLE(DDX_TAYLOR_HAS)
 #undef DDX_TAYLOR_HAS
 
-template <Numeric T, std::size_t N>
-auto scalar_base_impl(std::type_identity<TaylorDual<T, N>>) -> T;
-
-// A TaylorDual of order N counts as N levels of nesting, like nth_dual_t.
-template <Numeric S, std::size_t N>
-inline constexpr std::size_t dual_depth_v<TaylorDual<S, N>> = N;
-
 // Lets Constant::eval_seeded produce a zero-derivative TaylorDual.
 template <Numeric S, std::size_t N> struct ConstantEmbedder<TaylorDual<S, N>> {
   static constexpr TaylorDual<S, N> embed(S val) noexcept {

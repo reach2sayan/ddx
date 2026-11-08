@@ -41,11 +41,6 @@ template <typename T>
 concept CCommutativeMultiply =
     is_commutative_multiply_v<std::remove_cvref_t<T>>;
 
-// Decomposable into {value, derivative} through std::tuple_size and get<I>.
-template <typename T>
-concept CTupleLike =
-    requires { std::tuple_size<std::remove_cvref_t<T>>::value; };
-
 template <typename O>
 concept COperation =
     requires { typename O::value_type; } && Numeric<typename O::value_type>;

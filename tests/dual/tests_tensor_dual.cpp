@@ -90,7 +90,7 @@ TEST(SeededEval, CarriesDualsThroughTheTree) {
   auto x = var<"x">;
   auto y = var<"y">;
   const auto e = x * x + y;
-  using Syms = ddx::impl::detail::expr_symbols_t<decltype(e)>;
+  using Syms = ddx::impl::expr_symbols_t<decltype(e)>;
 
   using D = Dual<double>;
   const std::array<D, 2> seed{D{3.0, 1.0}, D{4.0, 0.0}};
