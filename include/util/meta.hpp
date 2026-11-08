@@ -39,7 +39,8 @@ concept CTupleLike =
 
 // Any L<Ts...> but a tuple, which for_each and unpack walk as a value.
 template <typename L>
-concept CTypeList = mp::mp_is_list<std::remove_cvref_t<L>>::value && !CTupleLike<L>;
+concept CTypeList =
+    mp::mp_is_list<std::remove_cvref_t<L>>::value && !CTupleLike<L>;
 
 template <typename... Ts> using list = mp::mp_list<Ts...>;
 template <typename... Ts> inline constexpr list<Ts...> list_c{};
@@ -115,8 +116,7 @@ DDX_ALWAYS_INLINE constexpr decltype(auto) unpack(CTupleLike auto &&t,
 
 // f(integral_constant<i>) for a runtime i < N.
 template <std::size_t N>
-DDX_ALWAYS_INLINE constexpr decltype(auto) with_index(std::size_t i,
-                                                      auto &&f) {
+DDX_ALWAYS_INLINE constexpr decltype(auto) with_index(std::size_t i, auto &&f) {
   return mp::mp_with_index<N>(i, DDX_FWD(f));
 }
 

@@ -381,7 +381,9 @@ private:
         boost::hof::match(
             [&](term::Identity) { return u.id(b_, {n_}); },
             [&](const term::Diag &k) { return (u * expr(k.d)).id(b_, {n_}); },
-            [&](const term::Outer &k) { return scaled(dot(u, expr(k.u)), k.g); },
+            [&](const term::Outer &k) {
+              return scaled(dot(u, expr(k.u)), k.g);
+            },
             [&](const term::Dense &k) {
               return b_.make(opcode<OpCode::MatVec>, Orientation::transposed,
                              {.matrix = k.block,
@@ -412,18 +414,19 @@ private:
             },
             [&](const term::Diag &k) -> Term {
               ++n2_;
-              return term::Dense{
-                  b_.make(opcode<OpCode::ColScale>, {.matrix = c, .scale = k.d})};
+              return term::Dense{b_.make(opcode<OpCode::ColScale>,
+                                         {.matrix = c, .scale = k.d})};
             },
             [&](const term::Outer &k) -> Term {
-              return term::Outer{.u = b_.make(opcode<OpCode::MatVec>, orientation,
+              return term::Outer{.u = b_.make(opcode<OpCode::MatVec>,
+                                              orientation,
                                               {.matrix = matrix, .vec = k.u}),
                                  .g = k.g};
             },
             [&](const term::Dense &k) -> Term {
               ++n3_;
-              return term::Dense{
-                  b_.make(opcode<OpCode::MatMul>, {.left = c, .right = k.block})};
+              return term::Dense{b_.make(opcode<OpCode::MatMul>,
+                                         {.left = c, .right = k.block})};
             }),
         t);
   }

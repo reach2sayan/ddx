@@ -129,8 +129,9 @@ template <impl::Numeric T, typename Built>
     static_assert(outputs > 0,
                   "equation: a system needs at least one function");
     return meta::unpack(meta::iota<outputs>, [&](auto... i) {
-      return make(meta::type_c<meta::repeat_t<impl::Equation, Expression<T>, outputs>>,
-                  built[i]...);
+      return make(
+          meta::type_c<meta::repeat_t<impl::Equation, Expression<T>, outputs>>,
+          built[i]...);
     });
   } else {
     const auto outputs = built | impl::to<std::vector<Expression<T>>>();

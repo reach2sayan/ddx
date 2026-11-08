@@ -23,7 +23,8 @@ namespace ddx::rt {
 template <impl::Numeric T = double, std::convertible_to<std::string_view>... Ss>
   requires std::floating_point<T>
 [[nodiscard]] auto equation(const std::string_view first, const Ss &...rest)
-    -> result<meta::repeat_t<impl::Equation, Expression<T>, 1 + sizeof...(Ss)>> {
+    -> result<
+        meta::repeat_t<impl::Equation, Expression<T>, 1 + sizeof...(Ss)>> {
   using Eq = meta::repeat_t<impl::Equation, Expression<T>, 1 + sizeof...(Ss)>;
   const std::array sources{first, std::string_view{rest}...};
 

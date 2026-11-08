@@ -38,8 +38,8 @@ using canonical_t = decltype(canonicalise(std::declval<const E &>()));
 constexpr auto make_derivatives(CSymbolList auto syms,
                                 const CExpression auto &expr) noexcept {
   return meta::unpack(syms, [&](auto... s) noexcept {
-    return std::tuple(canonicalise(
-        thaw_partials(make_all_constant_except<s.value>(expr).derivative()))...);
+    return std::tuple(canonicalise(thaw_partials(
+        make_all_constant_except<s.value>(expr).derivative()))...);
   });
 }
 
@@ -101,7 +101,8 @@ consteval auto simplex_index_table() noexcept {
   for (auto &slot : out) {
     slot = idx;
     // Raise the rightmost index that can grow, and set those after it equal.
-    for (const std::size_t p : std::views::iota(0uz, Order) | std::views::reverse) {
+    for (const std::size_t p :
+         std::views::iota(0uz, Order) | std::views::reverse) {
       if (idx[p] + 1 < N) {
         const std::size_t v = ++idx[p];
         std::ranges::fill(idx | std::views::drop(p + 1), v);
@@ -141,7 +142,7 @@ class Equation<TFirst, TRest...> {
 public:
   using value_type = typename TFirst::value_type;
   using symbols = meta::list_t<symbol_set(expr_symbols_t<TFirst>{},
-                                           expr_symbols_t<TRest>{}...)>;
+                                          expr_symbols_t<TRest>{}...)>;
 
   static constexpr std::size_t output_dim = 1 + sizeof...(TRest);
   static constexpr std::size_t input_dim = meta::size(symbols{});

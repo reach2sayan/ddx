@@ -17,10 +17,9 @@ namespace ddx::rt {
 namespace detail {
 
 template <typename Fn>
-inline constexpr bool is_field_op_v =
-    meta::contains(meta::list_c<std::plus<>, std::multiplies<>, std::divides<>,
-                                std::negate<>>,
-                   meta::type_c<Fn>);
+inline constexpr bool is_field_op_v = meta::contains(
+    meta::list_c<std::plus<>, std::multiplies<>, std::divides<>, std::negate<>>,
+    meta::type_c<Fn>);
 
 #define DDX_RT_PROBE1(fn, Op, label, ...)                                      \
   template <impl::Numeric T>                                                   \

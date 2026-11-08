@@ -98,7 +98,8 @@ template <impl::Numeric T = double> struct Kernels {
   [[nodiscard]] static constexpr T fold(std::array<T, N> &acc) noexcept {
     meta::for_each(meta::iota<std::bit_width(N) - 1>, [&](auto level) {
       constexpr std::size_t w = N >> (level + 1);
-      meta::for_each(meta::iota<w>, [&](auto l) { acc[l] = acc[l] + acc[l + w]; });
+      meta::for_each(meta::iota<w>,
+                     [&](auto l) { acc[l] = acc[l] + acc[l + w]; });
     });
     return acc[0];
   }
@@ -155,7 +156,8 @@ template <impl::Numeric T = double> struct Kernels {
             xj[d] = x[j0 + d];
           }
           std::array<std::array<T, L>, C> acc{};
-          for (const std::size_t i : std::views::iota(0uz, whole) | std::views::stride(L)) {
+          for (const std::size_t i :
+               std::views::iota(0uz, whole) | std::views::stride(L)) {
             for (const std::size_t l : std::views::iota(0uz, L)) {
               T yi = y[i + l];
               for (const std::size_t d : std::views::iota(0uz, C)) {
@@ -190,7 +192,8 @@ template <impl::Numeric T = double> struct Kernels {
   [[nodiscard]] static constexpr T reduce(std::size_t n, auto step) noexcept {
     std::array<T, kLanes> acc{};
     const std::size_t whole = n / kLanes * kLanes;
-    for (const std::size_t i : std::views::iota(0uz, whole) | std::views::stride(kLanes)) {
+    for (const std::size_t i :
+         std::views::iota(0uz, whole) | std::views::stride(kLanes)) {
       for (const std::size_t l : std::views::iota(0uz, kLanes)) {
         acc[l] = step(acc[l], i + l);
       }

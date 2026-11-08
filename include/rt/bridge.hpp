@@ -29,13 +29,13 @@ template <impl::Numeric T, impl::CExpression U>
   } else if constexpr (impl::CLit<U>) {
     return lit(b, static_cast<T>(val(U::value)));
   } else if constexpr (impl::CConstant<U>) {
-    return lit(b,
-               static_cast<T>(val(e.template eval_seeded<meta::list<>>(
-                   std::array<T, 1>{}))));
+    return lit(b, static_cast<T>(val(e.template eval_seeded<meta::list<>>(
+                      std::array<T, 1>{}))));
   } else {
     constexpr auto code = opcode_of(U::op_type::label);
     static_assert(code.has_value(), "no OpCode row carries this op's label");
-    return meta::unpack(e.expressions(), [&](const auto &first, const auto &...rest) {
+    return meta::unpack(
+        e.expressions(), [&](const auto &first, const auto &...rest) {
           if constexpr (sizeof...(rest) == 0) {
             return Expression<T>::form(*code, lower(b, first));
           } else if constexpr (*code == OpCode::Select) {

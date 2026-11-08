@@ -104,7 +104,9 @@ form(const Ast &ast, std::span<const Expression<T>> symbols,
                           : result<T>{fail(errc::bad_syntax)})
                   .transform([](const T v) { return Expr{v}; });
             },
-            [](std::monostate) -> result<Expr> { return fail(errc::bad_syntax); }),
+            [](std::monostate) -> result<Expr> {
+              return fail(errc::bad_syntax);
+            }),
         t.leaf);
   case Kind::Unary:
     return over(meta::index_t<1>{});

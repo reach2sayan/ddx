@@ -117,9 +117,10 @@ public:
       return shape.size() ? b.filled(shape, lit_) : b.constant(lit_);
     }
     // b may be a copy of arena_.
-    return std::visit(boost::hof::match([](NodeId at) { return at; },
-                                         [&b](const auto &at) { return b.fold_of(at); }),
-                      at_);
+    return std::visit(
+        boost::hof::match([](NodeId at) { return at; },
+                          [&b](const auto &at) { return b.fold_of(at); }),
+        at_);
   }
   // The node id in its own arena, or no_node for a pending literal.
   [[nodiscard]] constexpr NodeId id() const {
@@ -147,15 +148,13 @@ public:
   form(OpCode op, const std::same_as<Expression> auto &...xs) {
     std::optional<errc> why;
     Arena<T> *b = nullptr;
-    meta::for_each(std::tie(xs...), [&](const Expression &x) {
-      why = why ? why : x.why_;
-    });
+    meta::for_each(std::tie(xs...),
+                   [&](const Expression &x) { why = why ? why : x.why_; });
     if (why) {
       return poison(*why);
     }
-    meta::for_each(std::tie(xs...), [&](const Expression &x) {
-      b = b ? b : x.arena();
-    });
+    meta::for_each(std::tie(xs...),
+                   [&](const Expression &x) { b = b ? b : x.arena(); });
     if (b == nullptr) {
       return Expression{apply<T>(op, xs.literal()...)};
     }

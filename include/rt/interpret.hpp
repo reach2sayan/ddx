@@ -354,11 +354,9 @@ template <std::size_t W, typename Fn, impl::Numeric T, impl::Numeric U>
              { Fn{}(u, c) } -> std::same_as<U>;
              { Fn{}(c, u) } -> std::same_as<U>;
            }
-DDX_NOINLINE
-    constexpr bool lanes_by_constant(const Arena<T> &b, const Node<T> &n,
-                                     U *DDX_RESTRICT out,
-                                     const U *DDX_RESTRICT x,
-                                     const U *DDX_RESTRICT y) noexcept {
+DDX_NOINLINE constexpr bool
+lanes_by_constant(const Arena<T> &b, const Node<T> &n, U *DDX_RESTRICT out,
+                  const U *DDX_RESTRICT x, const U *DDX_RESTRICT y) noexcept {
   if (const Node<T> &c = b[n.in[1]]; c.op == OpCode::Const) {
     std::ranges::transform(x, x + W, out,
                            [&c](const U &u) { return Fn{}(u, c.value); });

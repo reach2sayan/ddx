@@ -152,8 +152,9 @@ public:
   using value_type = typename Op::value_type;
 
   [[nodiscard]] constexpr auto derivative() const noexcept {
-    return meta::unpack(this->self().expressions(),
-                        [](const auto &...e) noexcept { return Op::derivative(e...); });
+    return meta::unpack(
+        this->self().expressions(),
+        [](const auto &...e) noexcept { return Op::derivative(e...); });
   }
 
   // The seeded sweep. U is deduced from the point, so the same tree evaluates
@@ -161,9 +162,10 @@ public:
   template <CSymbolList Syms, Numeric U, std::size_t N>
   [[nodiscard]] constexpr U
   eval_seeded(const std::array<U, N> &vals) const noexcept {
-    return meta::unpack(this->self().expressions(), [&](const auto &...e) noexcept {
-      return Op::eval(e.template eval_seeded<Syms>(vals)...);
-    });
+    return meta::unpack(
+        this->self().expressions(), [&](const auto &...e) noexcept {
+          return Op::eval(e.template eval_seeded<Syms>(vals)...);
+        });
   }
 };
 
@@ -238,7 +240,8 @@ struct tuple_size<ddx::impl::Expression<Op, Children...>>
 template <size_t I, ddx::impl::COperation Op,
           ddx::impl::CExpression... Children>
 struct tuple_element<I, ddx::impl::Expression<Op, Children...>> {
-  using type = DDX_TYPE(ddx::impl::detail::expression_element<
-                        typename ddx::impl::Expression<Op, Children...>::value_type, I>());
+  using type = DDX_TYPE(
+      ddx::impl::detail::expression_element<
+          typename ddx::impl::Expression<Op, Children...>::value_type, I>());
 };
 } // namespace std

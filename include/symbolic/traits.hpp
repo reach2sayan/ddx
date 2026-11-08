@@ -52,9 +52,8 @@ consteval auto symbols_of(auto t) noexcept {
   if constexpr (CVariable<T>) {
     return meta::list_c<symbol_type<T::label>>;
   } else if constexpr (CExpressionNode<T>) {
-    return meta::unpack(children(t), [](auto... c) {
-      return symbol_set(symbols_of(c)...);
-    });
+    return meta::unpack(children(t),
+                        [](auto... c) { return symbol_set(symbols_of(c)...); });
   } else {
     return meta::list_c<>;
   }
@@ -62,7 +61,8 @@ consteval auto symbols_of(auto t) noexcept {
 
 // An expression's canonical symbol list.
 template <CExpression E>
-using expr_symbols_t = meta::list_t<symbols_of(meta::type_c<std::remove_cvref_t<E>>)>;
+using expr_symbols_t =
+    meta::list_t<symbols_of(meta::type_c<std::remove_cvref_t<E>>)>;
 
 // Whether any variable in the tree is frozen.
 consteval bool holds_frozen(auto t) noexcept {
