@@ -211,14 +211,14 @@ private:
 
     std::ranges::transform(
         std::views::iota(0uz, arity), columns_.begin(),
-        [n=n_, base = a.data()](std::size_t j) { return base + j * n; });
+        [n = n_, base = a.data()](std::size_t j) { return base + j * n; });
     held_.push_back(std::move(a));
   }
 
   boost::container::small_vector<const double *, 16> columns_;
   boost::container::small_vector<double, 16> scalars_; // fast-path values
   boost::container::small_vector<Array, 2> held_;      // arrays columns_ reads
-  boost::container::small_vector<double, 16> filled_; // broadcast scalars
+  boost::container::small_vector<double, 16> filled_;  // broadcast scalars
   std::size_t n_ = 1;
   bool batched_ = false;
 };
@@ -230,9 +230,7 @@ public:
   [[nodiscard]] std::span<double *const> rows() {
     return {rows_.data(), rows_.size()};
   }
-  [[nodiscard]] double *at(std::size_t column) {
-    return rows_[column];
-  }
+  [[nodiscard]] double *at(std::size_t column) { return rows_[column]; }
 
 protected:
   Columns(double *base, std::size_t columns, std::size_t n) {

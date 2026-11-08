@@ -142,8 +142,8 @@ public:
     const rt::Census c = unwrap(census(want));
     pyb::list rows;
     for (const auto &r : c.by_op) {
-      rows.append(pyb::make_tuple(std::string{rt::label_of(r.op)}, r.steps,
-                                  r.values));
+      rows.append(
+          pyb::make_tuple(std::string{rt::label_of(r.op)}, r.steps, r.values));
     }
     pyb::dict out;
     out["steps"] = c.steps;
@@ -193,10 +193,10 @@ private:
     case rt::BlockShape::Colours:
       return {.cells = Scratch{columns, at.size()}};
     case rt::BlockShape::Dense:
-      return {.block = Block{shape_of({ssize(height()), ssize(width()),
-                                       ssize(width())},
-                                      at),
-                             columns, at.size()}};
+      return {
+          .block = Block{
+              shape_of({ssize(height()), ssize(width()), ssize(width())}, at),
+              columns, at.size()}};
     case rt::BlockShape::Symbols:
       return {.block = Block{symbol_shape(at), columns, at.size()}};
     case rt::BlockShape::Functions:
@@ -240,18 +240,17 @@ private:
   [[nodiscard]] pyb::tuple run(const pyb::handle &x,
                                const pyb::handle *v = nullptr) {
     const auto l = pipeline(W);
-    return run_on<W>(
-        [this](auto &&...a) { return dispatch(DDX_FWD(a)...); },
-        l->graph->layout(), derivative().pattern, &l->graph->colouring(), x, v);
+    return run_on<W>([this](auto &&...a) { return dispatch(DDX_FWD(a)...); },
+                     l->graph->layout(), derivative().pattern,
+                     &l->graph->colouring(), x, v);
   }
   // The same over any dispatcher, such as a restricted view's, with its own
   // block sizes, pattern and colouring.
   template <Want W>
-  [[nodiscard]] pyb::tuple run_on(auto &&dispatcher, const rt::Layout &sizes,
-                                  const rt::Sparsity &pattern,
-                                  const rt::Colouring *colouring,
-                                  const pyb::handle &x,
-                                  const pyb::handle *v = nullptr) const {
+  [[nodiscard]] pyb::tuple
+  run_on(auto &&dispatcher, const rt::Layout &sizes,
+         const rt::Sparsity &pattern, const rt::Colouring *colouring,
+         const pyb::handle &x, const pyb::handle *v = nullptr) const {
     constexpr rt::WantInfo w = rt::want_info(W);
     const Point at{x, inputs_};
     Cell cell;
@@ -401,7 +400,8 @@ private:
         [this](auto &&...a) { return view_.dispatch(DDX_FWD(a)...); },
         {.values = eq_->height(),
          .jacobian = kept,
-         .hessian = rt::want_info(W).hessian == rt::BlockShape::None ? 0 : kept},
+         .hessian =
+             rt::want_info(W).hessian == rt::BlockShape::None ? 0 : kept},
         view_.jacobian_pattern(), nullptr, x, v);
   }
 

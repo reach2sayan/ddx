@@ -160,7 +160,9 @@ public:
   }
 
   // Null only while this is a pending literal, which has no graph yet.
-  [[nodiscard]] constexpr const SharedArena &arena() const noexcept { return arena_; }
+  [[nodiscard]] constexpr const SharedArena &arena() const noexcept {
+    return arena_;
+  }
 
 private:
   PyExpression &accumulate(const PyExpression &o, auto &&fn) {

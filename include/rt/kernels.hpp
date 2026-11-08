@@ -268,7 +268,8 @@ namespace detail {
 template <impl::Numeric T>
 DDX_TEMPLATE_API std::atomic<const TensorKernelTable<T> *> &
 default_tensor_kernels() noexcept {
-  static std::atomic<const TensorKernelTable<T> *> current{&reference_table<T>};
+  constinit static std::atomic<const TensorKernelTable<T> *> current{
+      &reference_table<T>};
   return current;
 }
 } // namespace detail

@@ -387,7 +387,7 @@ detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &scratch) {
       row.open = row.base == no_node || !row.guard.always();
       row.element.assign(rows, no_node);
     }
-    const Expression<T> c = g.always() ? a : select(expr(g.cond), a, zero);
+    const Expression c = g.always() ? a : select(expr(g.cond), a, zero);
     NodeId &e = row.element[k];
     e = e != no_node          ? (expr(e) + c).id(b)
         : row.base != no_node ? (expr(row.base)[k] + c).id(b)
@@ -476,7 +476,7 @@ detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &scratch) {
     }
     const auto node = b[v]; // A copy, since building below may reallocate.
     // The adjoint has the node's shape.
-    const Expression<T> a = expr(adj[v]);
+    const Expression a = expr(adj[v]);
     const Guard g = guard[v];
     const OpCode op = detail::effective_op(node);
     switch (kind_of(op)) {
@@ -499,10 +499,10 @@ detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &scratch) {
       // its step hands its left operand.
       const OpCode step = fold_op(op);
       const auto steps = detail::fold_steps(b, v);
-      Expression<T> carried = a;
+      Expression carried = a;
       for (const auto &[left, term] : steps | std::views::reverse) {
-        const Expression<T> l = expr(left);
-        const Expression<T> r = expr(term);
+        const Expression l = expr(left);
+        const Expression r = expr(term);
         add_to(term, g,
                [&] { return detail::contribution_to<1>(step, carried, l, r); });
         carried = detail::contribution_to<0>(step, carried, l, r);
@@ -520,7 +520,7 @@ detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &scratch) {
       // different types. The condition receives no adjoint.
       const auto [c, then, otherwise] =
           detail::operands<OpCode::Select>(node.in);
-      const Expression<T> cond = expr(c);
+      const Expression cond = expr(c);
       if (moves(then)) {
         add_to(then, Guard{both(g, cond).id(b)}, [&] { return a; });
       }
@@ -532,8 +532,8 @@ detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &scratch) {
     }
     case Kind::Binary: {
       // Build both rules before either sum.
-      const Expression<T> l = expr(node.in[0]);
-      const Expression<T> r = expr(node.in[1]);
+      const Expression l = expr(node.in[0]);
+      const Expression r = expr(node.in[1]);
       // A pair, not a structured binding, because clang will not
       // constant-evaluate a binding captured by reference.
       const auto c = detail::contributions(
@@ -696,7 +696,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
   const auto cone = detail::cone_of(b, roots, moves);
   detail::mark_moving(b, cone, moves);
   b.reserve(n + 2 * cone.size());
-  std::vector<NodeId> d(n, no_node);
+  std::vector d(n, no_node);
   // A node that holds still has a zero tangent of its shape, made only when an
   // arm reads it.
   const auto at = [&](NodeId u) {
@@ -706,8 +706,8 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
     }
     return d[u];
   };
-  const auto expr = [&b](NodeId id) { return Expression<T>{b, id}; };
-  const auto dv = [&](NodeId u) { return Expression<T>{b, at(u)}; };
+  const auto expr = [&b](NodeId id) { return Expression{b, id}; };
+  const auto dv = [&](NodeId u) { return Expression{b, at(u)}; };
   // Only the product-rule terms whose operand moves, since a zero tensor term
   // would not fold away. At least one operand moves, or `v` would not.
   const auto moved = [&](NodeId v, NodeId l, auto &&dl, NodeId r, auto &&dr) {
@@ -728,7 +728,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
     case Kind::Extern: {
       Expression<T> sum{0};
       detail::extern_partials(b, v, [&](NodeId arg, const Expression<T> &c) {
-        sum = sum + c * Expression<T>{b, at(arg)};
+        sum = sum + c * Expression{b, at(arg)};
       });
       d[v] = sum.id(b);
       break;
@@ -737,7 +737,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       if (op == OpCode::SumN) { // The sum of the terms' tangents.
         Expression<T> sum{0};
         for (const NodeId t : arguments(b, v)) {
-          sum += Expression<T>{b, at(t)};
+          sum += Expression{b, at(t)};
         }
         d[v] = sum.id(b);
         break;
@@ -749,15 +749,15 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       const Expression<T> one{1};
       Expression<T> carried{b, at(steps.front().first)};
       for (const auto &[left, term] : steps) {
-        const Expression<T> l{b, left};
-        const Expression<T> r{b, term};
-        const Expression<T> pl = detail::contribution_to<0>(step, one, l, r);
+        const Expression l{b, left};
+        const Expression r{b, term};
+        const Expression pl = detail::contribution_to<0>(step, one, l, r);
         if (!moves[term]) {
           carried = pl * carried;
           continue;
         }
-        const Expression<T> pr = detail::contribution_to<1>(step, one, l, r);
-        carried = pl * carried + pr * Expression<T>{b, at(term)};
+        const Expression pr = detail::contribution_to<1>(step, one, l, r);
+        carried = pl * carried + pr * Expression{b, at(term)};
       }
       d[v] = carried.id(b);
       break;
@@ -772,7 +772,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
                    std::views::zip(dz, tangent) |
                        std::views::transform([&b](const auto &pair) {
                          const auto [zs, ts] = pair;
-                         return Expression<T>{b, zs} * Expression<T>{b, ts};
+                         return Expression{b, zs} * Expression{b, ts};
                        }),
                    Expression<T>{0}, std::plus<>{})
                    .id(b);
@@ -781,10 +781,10 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       }
       break;
     case Kind::Unary: {
-      const Expression<T> u{b, node.in[0]};
-      const Expression<T> self{b, v};
-      d[v] = (detail::partial(op, u, self) * Expression<T>{b, at(node.in[0])})
-                 .id(b);
+      const Expression u{b, node.in[0]};
+      const Expression self{b, v};
+      d[v] =
+          (detail::partial(op, u, self) * Expression{b, at(node.in[0])}).id(b);
       break;
     }
     case Kind::Ternary:
@@ -793,15 +793,15 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       {
         const auto [cond, then, otherwise] =
             detail::operands<OpCode::Select>(node.in);
-        d[v] = select(Expression<T>{b, cond}, Expression<T>{b, at(then)},
-                      Expression<T>{b, at(otherwise)})
+        d[v] = select(Expression{b, cond}, Expression{b, at(then)},
+                      Expression{b, at(otherwise)})
                    .id(b);
       }
       break;
     case Kind::Binary: {
       // Build both partials before either product, as in the reverse sweep.
-      const Expression<T> l{b, node.in[0]};
-      const Expression<T> r{b, node.in[1]};
+      const Expression l{b, node.in[0]};
+      const Expression r{b, node.in[1]};
       const Expression<T> one{1};
       const auto p = detail::contributions(
           op, one, l, r,

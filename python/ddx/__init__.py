@@ -45,13 +45,11 @@ if TYPE_CHECKING:
 	from collections.abc import Callable
 	import ddx._ddx as _extension
 	
-	
 	# Declares what the runtime adds and the generated stub cannot see, such as
 	# Error.code and the members installed below.
 	class Error(_extension.Error):
 		"""A refusal from ddx, carrying the code it refused with."""
 		code: errc
-	
 	
 	class Equation(_extension.Equation):
 		"""A frozen model, with the conveniences this module installs."""
@@ -61,9 +59,7 @@ if TYPE_CHECKING:
 		def compile(self, **kwargs: Any) -> Equation:  # noqa: ANN401, D102
 			pass
 	
-	
 	Model = Callable[[], Expression | tuple[Expression, ...]]
-	
 	
 	def equation(model: Model | str | list[str]) -> Equation:
 		"""Build an equation from a model, or from expressions written as text --
@@ -76,15 +72,12 @@ else:
 # also works for an in-tree build that was never installed.
 from ._ddx import __version__
 
-
 # Equation.options converts between the pydantic model and the native struct.
 def _get_options(self: Equation) -> Options:
 	return Options._from_native(self._options)
 
-
 def _set_options(self: Equation, options: Options) -> None:
 	self._options = options._native()
-
 
 def _compile(self: Equation, **kwargs: Any) -> Equation:  # noqa: ANN401
 	"""Compile this equation's graph, and answer once the kernel is built.
@@ -96,7 +89,6 @@ def _compile(self: Equation, **kwargs: Any) -> Equation:  # noqa: ANN401
 	self.options = Options(**kwargs)
 	self.uses_kernel()
 	return self
-
 
 Equation.options = property(_get_options, _set_options)  # type: ignore[assignment]
 Equation.compile = _compile  # type: ignore[method-assign]

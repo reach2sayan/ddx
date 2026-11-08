@@ -33,7 +33,7 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
   std::array<S, N + 1> c{};
 
   // Precomputed 1/k, so the recurrences multiply instead of dividing.
-  static constexpr std::array<S, N + 1> inv_k = []() consteval {
+  static constexpr std::array inv_k = []() consteval {
     std::array<S, N + 1> r{};
     for (auto &&[k, rk] : r | std::views::enumerate | std::views::drop(1)) {
       rk = S{1} / static_cast<S>(k);
@@ -60,7 +60,7 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
   [[nodiscard]] static constexpr TaylorDual variable(S x0) noexcept
     requires(N >= 1)
   {
-    TaylorDual r{x0};
+    TaylorDual r{std::move(x0)};
     r.c[1] = S{1};
     return r;
   }

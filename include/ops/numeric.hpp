@@ -62,7 +62,7 @@ template <Numeric T, auto... V> class Lit;
 template <Numeric T> using Constant = Lit<T>;
 
 namespace detail {
-template <CArithmetic T> consteval T compile_time_factorial(T Order) {
+template <CArithmetic T> consteval T compile_time_factorial(const T &Order) {
   return std::ranges::fold_left(std::views::iota(T{1}, T(Order + 1)), T{1},
                                 std::multiplies{});
 }

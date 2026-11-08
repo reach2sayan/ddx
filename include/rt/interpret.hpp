@@ -225,10 +225,10 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
                       const U>{b.tensors()[get<TensorRef>(b[source]).value]
                                    .data}
                 : in(source, k);
-        for (const auto [i, j] : std::views::cartesian_product(
-                 std::views::iota(0uz, std::size_t{m.cols}),
-                 std::views::iota(0uz, std::size_t{m.rows}))) {
-          to[j + i * m.rows] = from[i + j * m.cols];
+        for (std::size_t i = 0; i < m.cols; ++i) {
+          for (std::size_t j = 0; j < m.rows; ++j) {
+            to[j + i * m.rows] = from[i + j * m.cols];
+          }
         }
         break;
       }
@@ -252,8 +252,8 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
           break;
         }
         const auto c = in(cond, k);
-        for (auto &&[dst, ci, yes, no] : std::views::zip(to, c, on, off)) {
-          dst = chosen(ci) ? yes : no;
+        for (std::size_t j = 0; j < to.size(); ++j) {
+          to[j] = chosen(c[j]) ? on[j] : off[j];
         }
         break;
       }
@@ -354,9 +354,11 @@ template <std::size_t W, typename Fn, impl::Numeric T, impl::Numeric U>
              { Fn{}(u, c) } -> std::same_as<U>;
              { Fn{}(c, u) } -> std::same_as<U>;
            }
-DDX_NOINLINE constexpr bool
-lanes_by_constant(const Arena<T> &b, const Node<T> &n, U *DDX_RESTRICT out,
-                  const U *DDX_RESTRICT x, const U *DDX_RESTRICT y) noexcept {
+DDX_NOINLINE
+    constexpr bool lanes_by_constant(const Arena<T> &b, const Node<T> &n,
+                                     U *DDX_RESTRICT out,
+                                     const U *DDX_RESTRICT x,
+                                     const U *DDX_RESTRICT y) noexcept {
   if (const Node<T> &c = b[n.in[1]]; c.op == OpCode::Const) {
     std::ranges::transform(x, x + W, out,
                            [&c](const U &u) { return Fn{}(u, c.value); });

@@ -406,6 +406,7 @@ private:
                       table ? operands<OpCode::MatRow>(b_[matrix]).source
                             : matrix)
             : matrix;
+
     return std::visit(
         boost::hof::match(
             [&](term::Identity) -> Term {

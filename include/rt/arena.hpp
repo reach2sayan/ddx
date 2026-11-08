@@ -1538,7 +1538,7 @@ step_inputs(const CNodeSource auto &nodes, NodeId v, const Contraction &c) {
 // The tape rows of `ids` in a tape indexed by id.
 [[nodiscard]] constexpr std::array<TapeRow, 3>
 rows_of(const std::array<NodeId, 3> &ids) {
-  std::array<TapeRow, 3> rows{no_row, no_row, no_row};
+  std::array rows{no_row, no_row, no_row};
   std::ranges::transform(ids, rows.begin(), [](NodeId u) {
     return u == no_node ? no_row : TapeRow{u};
   });
@@ -1621,7 +1621,7 @@ reads_of(const auto &s, const Step &step) {
 [[nodiscard]] constexpr std::vector<NodeId>
 fused_into(const auto &s, std::span<const Step> schedule,
            std::span<const NodeId> outputs) {
-  std::vector<NodeId> into(s.size(), no_node);
+  std::vector into(s.size(), no_node);
   std::vector<std::uint32_t> uses(s.size(), 0);
   for (const Step &step : schedule) {
     for_each_operand(s, step.node, [&](NodeId u) { ++uses[u]; });
@@ -1695,7 +1695,7 @@ struct Packed {
                                          std::span<const NodeId> outputs) {
   const auto last = last_uses(s, schedule, outputs);
   Packed out{.by_id = std::vector<TapeRow>(s.size(), no_row)};
-  std::vector<TapeRow> taken(s.size(), no_row); // A node's row while live.
+  std::vector taken(s.size(), no_row); // A node's row while live.
   std::vector<TapeRow> free;
   TapeRow next{0};
   for (const auto [p, step] : schedule | std::views::enumerate) {

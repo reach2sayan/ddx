@@ -8,8 +8,8 @@
 #include "rt/tensor.hpp"
 #include "rt/text/ast.hpp"
 #include "rt/text/lower.hpp"
-#include "util/ranges.hpp"
 #include "util/meta.hpp"
+#include "util/ranges.hpp"
 #include "util/scope_guard.hpp"
 #include "util/version.hpp"
 
@@ -261,18 +261,15 @@ PYBIND11_MODULE(_ddx, m) {
   infix("__ne__", nullptr, std::not_equal_to<>{});
   // Applied to a copy, so `y = acc; acc += t` leaves y unchanged. A loop of
   // +=, *= or /= builds one node over all its terms.
-  binop("__iadd__", [](PyExpression acc, const PyExpression &r) {
-    return acc += r;
-  });
+  binop("__iadd__",
+        [](PyExpression acc, const PyExpression &r) { return acc += r; });
   binop("__isub__", [](PyExpression acc, const PyExpression &r) {
     return acc += unary(rt::OpCode::Neg, r);
   });
-  binop("__imul__", [](PyExpression acc, const PyExpression &r) {
-    return acc *= r;
-  });
-  binop("__itruediv__", [](PyExpression acc, const PyExpression &r) {
-    return acc /= r;
-  });
+  binop("__imul__",
+        [](PyExpression acc, const PyExpression &r) { return acc *= r; });
+  binop("__itruediv__",
+        [](PyExpression acc, const PyExpression &r) { return acc /= r; });
   expression
       .def(
           "__neg__",
@@ -392,14 +389,17 @@ PYBIND11_MODULE(_ddx, m) {
       },
       pyb::arg("scalars"));
   // Read in place when already column-major, otherwise copied once.
-  using Columns = pyb::array_t<double, pyb::array::f_style | pyb::array::forcecast>;
+  using Columns =
+      pyb::array_t<double, pyb::array::f_style | pyb::array::forcecast>;
   const auto data_of = [](const Columns &a) {
-    return std::span<const double>{a.data(), static_cast<std::size_t>(a.size())};
+    return std::span<const double>{a.data(),
+                                   static_cast<std::size_t>(a.size())};
   };
   m.def(
       "vec_constant",
       [in_arena, data_of](const Columns &data) {
-        return in_arena([&](auto &b) { return rt::vec_constant(b, data_of(data)); });
+        return in_arena(
+            [&](auto &b) { return rt::vec_constant(b, data_of(data)); });
       },
       pyb::arg("data"));
   m.def(
@@ -483,8 +483,9 @@ PYBIND11_MODULE(_ddx, m) {
   };
   const auto described = [&]<typename E>(const char *name, const char *doc) {
     pyb::native_enum<E> e{m, name, "enum.IntEnum", doc};
-    ddx::meta::for_each(boost::describe::describe_enumerators<E>{},
-                        [&](auto d) { e.value(upper(d.name).c_str(), d.value); });
+    ddx::meta::for_each(
+        boost::describe::describe_enumerators<E>{},
+        [&](auto d) { e.value(upper(d.name).c_str(), d.value); });
     e.finalize();
   };
   described.operator()<jit::Backend>("Backend",

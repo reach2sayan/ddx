@@ -381,7 +381,7 @@ private:
       schedule_ = detail::schedule_of(*this, live_order_, Contract::off);
       return;
     }
-    const std::vector<bool> live = detail::reachable(
+    const std::vector live = detail::reachable(
         *this, outputs_, [](const Graph &g, NodeId v, auto &&mark) {
           std::ranges::for_each(
               detail::reads_of(g, Step{.node = v,

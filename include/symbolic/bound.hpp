@@ -83,7 +83,7 @@ template <FixedString... Syms, Numeric... Vs>
   const auto args = std::tuple<Vs...>{nv.value...};
   return meta::unpack(meta::iota<N>, [&](auto... i) {
     return ValueMap<Scalar, SymList>{
-        std::array<Scalar, N>{static_cast<Scalar>(std::get<pos[i]>(args))...}};
+        std::array{static_cast<Scalar>(std::get<pos[i]>(args))...}};
   });
 }
 
@@ -92,7 +92,7 @@ template <CExpression Expr>
 [[nodiscard]] consteval auto symbol_order() noexcept {
   using SymList = expr_symbols_t<Expr>;
   return meta::unpack(SymList{}, [](auto... s) {
-    return std::array<std::string_view, sizeof...(s)>{s.name...};
+    return std::array{s.name...};
   });
 }
 template <CExpression Expr>
@@ -170,7 +170,7 @@ make_point(const Args &...args) noexcept {
     static_assert(sizeof...(Args) == N,
                   "eval: supply exactly one value per symbol, in canonical "
                   "order (see symbol_order<Expr>())");
-    return std::array<U, N>{static_cast<U>(args)...};
+    return std::array{static_cast<U>(args)...};
   }
   //clang-format on
 }

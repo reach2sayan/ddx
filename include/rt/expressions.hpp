@@ -496,7 +496,7 @@ namespace detail {
 // The thread-local arena that var() registers into during an equation()
 // callback.
 template <impl::Numeric T>
-inline thread_local Arena<T> *current_arena = nullptr;
+constinit inline thread_local Arena<T> *current_arena = nullptr;
 
 // Sets the current arena for the lifetime of the returned guard.
 template <impl::Numeric T>
