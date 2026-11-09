@@ -25,12 +25,12 @@ namespace {
 // overloads, since one taking both is ambiguous for a non-const vector.
 [[nodiscard]] std::vector<double *> out_columns(std::vector<double> &values) {
   return values | std::views::transform([](double &v) { return &v; }) |
-         ddx::impl::to<std::vector<double *>>();
+         ddx::impl::to<std::vector>();
 }
 
 [[nodiscard]] std::vector<const double *> in_columns(const auto &values) {
   return values | std::views::transform([](const double &v) { return &v; }) |
-         ddx::impl::to<std::vector<const double *>>();
+         ddx::impl::to<std::vector>();
 }
 
 // An overflow is an answer both engines must reach, which EXPECT_NEAR cannot
@@ -293,9 +293,10 @@ TEST(RtJacobian, ABandedSystemKeepsOnlyTheCellsThatExist) {
     rows.push_back(r);
   }
 
-  const auto j = ddx::rt::derive_jacobian(
-      b, rows | std::views::transform([&](auto &r) { return r.id(b); }) |
-             ddx::impl::to<std::vector>());
+  const auto j =
+      ddx::rt::derive_jacobian(b, rows | std::views::transform([&](auto &r) {
+                                    return r.id(b);
+                                  }) | ddx::impl::to<std::vector>());
 
   const auto &pattern = j.pattern;
   EXPECT_EQ(pattern.size(), n);
@@ -328,7 +329,7 @@ TEST(RtJacobian, DenseCompressedAndTheNodesAllAgree) {
   const auto eq = ddx::rt::equation(x * log(x) + y, y * y + z, exp(x * z));
 
   const std::vector<double> at{0.6, 1.4, 0.9};
-  const auto dense = *eq.jacobian(std::span<const double>{at});
+  const auto dense = *eq.jacobian(at);
   ASSERT_EQ(dense.size(), 3u * 3u);
 
   const ddx::rt::Sparsity &pattern = eq.jacobian_pattern()->get();
@@ -382,7 +383,7 @@ TEST(RtJacobian, AFoldedPartialIsAStructuralHole) {
   EXPECT_FALSE(pattern.at(0, 1).has_value()); // b
 
   const std::vector<double> at{0.3, 0.7, 1.1, 0.5, 0.2, 0.9};
-  const auto dense = *eq.jacobian(std::span<const double>{at});
+  const auto dense = *eq.jacobian(at);
   ASSERT_EQ(dense.size(), 18u);
   EXPECT_EQ(dense[0 * 6 + 2], 1.0); // d/dc of (... + c)
   EXPECT_EQ(dense[1 * 6 + 3], 2.0); // d/dd of (d + d)
@@ -410,7 +411,7 @@ TEST(RtJacobian, HessianCellPlacesEveryCompressedColumn) {
   const auto eq = ddx::rt::equation(energy);
 
   const std::vector<double> at{0.3, 0.7, 1.1, 0.5, 0.2, 0.9};
-  const auto dense = *eq.hessian(std::span<const double>{at});
+  const auto dense = *eq.hessian(at);
   ASSERT_EQ(dense.size(), n * n);
 
   std::vector<double> cells(*eq.hessian_columns());
@@ -455,14 +456,13 @@ TEST(RtJacobian, SelectDifferentiatesTheArmTheConditionTakes) {
   for (const auto &[px, py] : {std::pair{1.0, 3.0}, std::pair{3.0, 1.0}}) {
     const std::array<double, 2> at{px, py};
     const bool takes_x = px < py;
-    EXPECT_DOUBLE_EQ(*eq.evaluate(std::span<const double>{at}),
-                     takes_x ? px * px : py * py * py);
+    EXPECT_DOUBLE_EQ(*eq.evaluate(at), takes_x ? px * px : py * py * py);
 
-    const auto g = *eq.jacobian(std::span<const double>{at});
+    const auto g = *eq.jacobian(at);
     EXPECT_DOUBLE_EQ(g[0], takes_x ? 2 * px : 0.0) << "d/dx at " << px;
     EXPECT_DOUBLE_EQ(g[1], takes_x ? 0.0 : 3 * py * py) << "d/dy at " << px;
 
-    const auto h = *eq.hessian(std::span<const double>{at});
+    const auto h = *eq.hessian(at);
     EXPECT_DOUBLE_EQ(h[0], takes_x ? 2.0 : 0.0);
     EXPECT_DOUBLE_EQ(h[3], takes_x ? 0.0 : 6 * py);
   }
@@ -527,9 +527,9 @@ TEST(RtJacobian, SelectReadsAnyNonzeroConditionAsTrue) {
   const std::array<double, 1> zero{0.0};
   const std::array<double, 1> two{2.0};
   const std::array<double, 1> negative{-3.0};
-  EXPECT_DOUBLE_EQ(*eq.evaluate(std::span<const double>{zero}), 9.0);
-  EXPECT_DOUBLE_EQ(*eq.evaluate(std::span<const double>{two}), 7.0);
-  EXPECT_DOUBLE_EQ(*eq.evaluate(std::span<const double>{negative}), 7.0);
+  EXPECT_DOUBLE_EQ(*eq.evaluate(zero), 9.0);
+  EXPECT_DOUBLE_EQ(*eq.evaluate(two), 7.0);
+  EXPECT_DOUBLE_EQ(*eq.evaluate(negative), 7.0);
 }
 
 // eq is a <= b && b <= a, which gives 0 when an operand is NaN, where
@@ -543,7 +543,7 @@ TEST(RtJacobian, ComparisonsComposeFromTheTwoOpcodes) {
       return build(x, ddx::rt::var("y"));
     });
     const std::array<double, 2> at{a, b};
-    return *eq.evaluate(std::span<const double>{at});
+    return *eq.evaluate(at);
   };
   const auto less = [](auto x, auto y) { return x < y; };
   const auto greater = [](auto x, auto y) { return x > y; };
@@ -576,13 +576,13 @@ TEST(RtJacobian, SelectSurvivesEveryWalkerThatRebuildsANode) {
     return select(le(x, y), exp(x) * y, log(y) + x * x);
   });
   const std::array<double, 2> at{0.6, 1.4};
-  const auto swept = *eq.jacobian(std::span<const double>{at});
-  const auto swept_h = *eq.hessian(std::span<const double>{at});
+  const auto swept = *eq.jacobian(at);
+  const auto swept_h = *eq.hessian(at);
 
 #ifdef DDX_HAS_JIT
   eq.options({.backend = ddx::jit::Backend::Compile, .points = 1});
   ASSERT_TRUE(eq.uses_kernel());
-  const auto compiled = *eq.jacobian(std::span<const double>{at});
+  const auto compiled = *eq.jacobian(at);
   EXPECT_EQ(swept, compiled) << "the kernel and the sweep disagree on a select";
 #endif
   EXPECT_EQ(swept_h.size(), 4u);
@@ -623,7 +623,7 @@ TEST(RtJacobian, ComparisonsAgreeWithTheKernelAtNaN) {
       return select(c, t, f);
     });
     const std::array<double, 3> at{nan, 1.0, 2.0}; // c, f, t
-    const double interpreted = *raw.evaluate(std::span<const double>{at});
+    const double interpreted = *raw.evaluate(at);
     raw.options({.backend = ddx::jit::Backend::Compile, .points = 1});
     ASSERT_TRUE(raw.uses_kernel());
     // Through jacobian() rather than evaluate(): uses_kernel() builds the
@@ -641,14 +641,13 @@ TEST(RtJacobian, ComparisonsAgreeWithTheKernelAtNaN) {
 
   std::array<double, 7> swept{};
   for (const auto [i, at] : std::views::enumerate(points)) {
-    swept[static_cast<std::size_t>(i)] =
-        *model.evaluate(std::span<const double>{at});
+    swept[static_cast<std::size_t>(i)] = *model.evaluate(at);
   }
 
   model.options({.backend = ddx::jit::Backend::Compile, .points = 1});
   ASSERT_TRUE(model.uses_kernel());
   for (const auto [i, at] : std::views::enumerate(points)) {
-    const double compiled = *model.evaluate(std::span<const double>{at});
+    const double compiled = *model.evaluate(at);
     const double interpreted = swept[static_cast<std::size_t>(i)];
     EXPECT_EQ(std::isnan(compiled), std::isnan(interpreted))
         << "at (" << at[0] << ", " << at[1] << ")";
@@ -762,8 +761,8 @@ TEST(RtJacobian, DerivativeBuildsOnTheGraph) {
            P * (1.0 + ddx::rt::derivative(h, "P"));
   });
   const double T = 1.3, Tr = 0.7, P = 2.0;
-  const double ps = std::exp(1.0 - 2.0 / T), D = 2 * Tr * std::log(ps) +
-                                                 std::cos(Tr) * ps;
+  const double ps = std::exp(1.0 - 2.0 / T),
+               D = 2 * Tr * std::log(ps) + std::cos(Tr) * ps;
   expect_close(*eq.evaluate(T, Tr, P), T * T * D + P);
   const auto J = *eq.jacobian(T, Tr, P);
   expect_close(J[0], 2 * T * D + 4 * Tr + 2 * std::cos(Tr) * ps);
@@ -777,10 +776,9 @@ TEST(RtJacobian, DerivativeRefusals) {
   const auto refused = [](auto make) {
     return ddx::rt::equation([&] { return make(); }).evaluate(1.0).error().code;
   };
-  EXPECT_EQ(refused([] {
-              return ddx::rt::derivative(ddx::rt::var("x") * 2.0, "y");
-            }),
-            ddx::errc::unknown_symbol);
+  EXPECT_EQ(
+      refused([] { return ddx::rt::derivative(ddx::rt::var("x") * 2.0, "y"); }),
+      ddx::errc::unknown_symbol);
   EXPECT_EQ(refused([] {
               const RE x = ddx::rt::var("x");
               return x + ddx::rt::derivative(x * ddx::rt::param("p"), "p");

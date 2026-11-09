@@ -71,7 +71,7 @@ pack(Arena<T> &b, std::span<const Expression<T>> scalars) {
     return detail::refused<T>(errc::tensor_shape);
   }
   const auto ids = detail::Router::scalar_ids(b, scalars);
-  return ids ? Expression<T>{b, b.pack(*ids)}
+  return ids ? Expression{b, b.pack(*ids)}
              : detail::refused<T>(ids.error().code);
 }
 template <impl::Numeric T = double>
@@ -98,7 +98,7 @@ template <impl::Numeric T>
                       std::views::transform([&](std::size_t i) {
                         return named(b, kind, std::format("{}[{}]", name, i));
                       }) |
-                      impl::to<std::vector<Expression<T>>>();
+                      impl::to<std::vector>();
   return pack(b, std::span<const Expression<T>>{leaves});
 }
 } // namespace detail

@@ -101,7 +101,7 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr std::vector<std::pair<NodeId, NodeId>>
 fold_steps(Arena<T> &b, NodeId v) {
   const OpCode op = fold_op(b.op_of(v));
-  const auto terms = arguments(b, v) | impl::to<std::vector<NodeId>>();
+  const auto terms = arguments(b, v) | impl::to<std::vector>();
   std::vector<std::pair<NodeId, NodeId>> steps{{terms[0], terms[1]}};
   for (const NodeId t : terms | std::views::drop(2)) {
     const auto [l, r] = steps.back();
@@ -190,9 +190,9 @@ struct Implicits {
       row = f.partial | std::views::transform([&](NodeId fs) {
               return b.is_constant(fs, T{0})
                          ? fs
-                         : (-(Expression<T>{b, fs} / fz)).id(b);
+                         : (-(Expression{b, fs} / fz)).id(b);
             }) |
-            impl::to<std::vector<NodeId>>();
+            impl::to<std::vector>();
     }
     return *row;
   }
@@ -206,7 +206,7 @@ constexpr void extern_partials(Arena<T> &b, NodeId v, Sink &&sink) {
   const ExternRecord &e = b.externs()[fn];
   for (const auto [l, arg] : arguments(b, v) | std::views::enumerate) {
     if (const auto up = e.up(at, static_cast<std::size_t>(l))) {
-      sink(arg, Expression<T>{b, b.extern_component(v, *up)});
+      sink(arg, Expression{b, b.extern_component(v, *up)});
     }
   }
 }
@@ -328,7 +328,7 @@ detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &scratch) {
 
   const Expression<T> zero{0};
   const Expression<T> one{1};
-  const auto expr = [&b](NodeId id) { return Expression<T>{b, id}; };
+  const auto expr = [&b](NodeId id) { return Expression{b, id}; };
   const auto both = [&](Guard g, const Expression<T> &cond) {
     return g.always() ? cond : select(expr(g.cond), cond, zero);
   };
@@ -857,7 +857,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
   }
 
   return roots | std::views::transform([&](NodeId r) { return at(r); }) |
-         impl::to<std::vector<NodeId>>();
+         impl::to<std::vector>();
 }
 
 // One forward sweep per symbol, kept as a check on the reverse Jacobian, which
@@ -962,9 +962,9 @@ template <impl::Numeric T>
   }
   return derive_jacobian(**b, f.id(**b)).partial |
          std::views::transform([&b](NodeId p) {
-           return p == no_node ? Expression<T>{T{0}} : Expression<T>{**b, p};
+           return p == no_node ? Expression<T>{T{0}} : Expression{**b, p};
          }) |
-         impl::to<std::vector<Expression<T>>>();
+         impl::to<std::vector>();
 }
 // df/dx for one symbol by name, or unknown_symbol for anything but a var.
 template <impl::Numeric T>
@@ -1013,7 +1013,7 @@ template <impl::Numeric T>
     // Summing a colour's partials first lets one sweep do |colour| sweeps'
     // work.
     auto make_partial_expression = [&](std::size_t j) {
-      return Expression<T>{b, h.partial[j]};
+      return Expression{b, h.partial[j]};
     };
     const auto seed = std::ranges::fold_left(
         h.colouring.columns_of(c) |
@@ -1034,7 +1034,7 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> seeded_sum(Arena<T> &b,
                                                  std::span<const NodeId> ids) {
   auto term = [&b, ids](std::size_t j) {
-    return seed(b, static_cast<std::uint32_t>(j)) * Expression<T>{b, ids[j]};
+    return seed(b, static_cast<std::uint32_t>(j)) * Expression{b, ids[j]};
   };
   return std::ranges::fold_left(std::views::iota(0uz, ids.size()) |
                                     std::views::transform(std::move(term)),
@@ -1076,7 +1076,7 @@ template <impl::Numeric T>
   return std::views::iota(0u, static_cast<std::uint32_t>(b.symbols().size())) |
          std::views::transform(
              [&b](std::uint32_t j) { return seed(b, j).id(b); }) |
-         impl::to<std::vector<NodeId>>();
+         impl::to<std::vector>();
 }
 } // namespace detail
 

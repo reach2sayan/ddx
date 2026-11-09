@@ -53,7 +53,7 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
   }
 
   constexpr TaylorDual() noexcept = default;
-  constexpr explicit TaylorDual(S val) noexcept : c{} { c[0] = val; }
+  constexpr explicit TaylorDual(S val) noexcept : c{} { c[0] = std::move(val); }
 
   // The independent variable at x0. Its unit first coefficient makes the
   // sweep's c[k] come out as f^(k)(x0)/k!.

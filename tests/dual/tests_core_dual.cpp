@@ -39,21 +39,21 @@ TEST(ForwardModeAD, AcosDerivative) {
 TEST(ForwardModeAD, AtanDerivative) {
   double x0 = 0.5;
   Variable<Dual<double>, FixedString{"x"}> x;
-  auto [f, df] = atan(x).eval(Dual<double>{x0, 1.0});
+  auto [f, df] = atan(x).eval(Dual{x0, 1.0});
   ASSERT_DOUBLE_EQ(f, std::atan(x0));
   ASSERT_DOUBLE_EQ(df, 1.0 / (1.0 + x0 * x0));
 }
 TEST(ForwardModeAD, SinhDerivative) {
   double x0 = 0.5;
   Variable<Dual<double>, FixedString{"x"}> x;
-  auto [f, df] = sinh(x).eval(Dual<double>{x0, 1.0});
+  auto [f, df] = sinh(x).eval(Dual{x0, 1.0});
   ASSERT_DOUBLE_EQ(f, std::sinh(x0));
   ASSERT_DOUBLE_EQ(df, std::cosh(x0));
 }
 TEST(ForwardModeAD, CoshDerivative) {
   double x0 = 0.5;
   Variable<Dual<double>, FixedString{"x"}> x;
-  auto [f, df] = cosh(x).eval(Dual<double>{x0, 1.0});
+  auto [f, df] = cosh(x).eval(Dual{x0, 1.0});
   ASSERT_DOUBLE_EQ(f, std::cosh(x0));
   ASSERT_DOUBLE_EQ(df, std::sinh(x0));
 }
@@ -350,7 +350,7 @@ TEST(ReverseModeAD_Dual, AgreesWithPVResult) {
   auto gp =
       Equation{xp * yp + sin(xp) + yp * yp + exp(xp + yp)}.jacobian(xv, yv);
   auto gd = Equation{xd * yd + sin(xd) + yd * yd + exp(xd + yd)}.jacobian(
-      Dual<double>{xv, 0.0}, Dual<double>{yv, 0.0});
+      Dual{xv, 0.0}, Dual{yv, 0.0});
   EXPECT_DOUBLE_EQ(gd[0], gp[0]);
   EXPECT_DOUBLE_EQ(gd[1], gp[1]);
 }
@@ -703,7 +703,7 @@ TEST(TutorialForward, SingleVar_DualNumbers) {
   double x0 = 2.0;
   Variable<Dual<double>, FixedString{"x"}> x;
   auto f = 1.0 + x + x * x + 1.0 / x + log(x);
-  auto [fv, df] = f.eval(Dual<double>{x0, 1.0});
+  auto [fv, df] = f.eval(Dual{x0, 1.0});
   EXPECT_NEAR(fv, 1.0 + x0 + x0 * x0 + 1.0 / x0 + std::log(x0), 1e-12);
   EXPECT_NEAR(df, 1.0 + 2.0 * x0 - 1.0 / (x0 * x0) + 1.0 / x0, 1e-12);
 }
@@ -798,8 +798,7 @@ TEST(TutorialDirectional, FirstOrder_DualSeeding) {
   double u = 1.0 / std::sqrt(2.0);
   Variable<Dual<double>, FixedString{"x"}> x;
   Variable<Dual<double>, FixedString{"y"}> y;
-  auto [fv, dfdu] =
-      (exp(x) * sin(y)).eval(Dual<double>{xv, u}, Dual<double>{yv, u});
+  auto [fv, dfdu] = (exp(x) * sin(y)).eval(Dual{xv, u}, Dual{yv, u});
   EXPECT_NEAR(fv, std::exp(xv) * std::sin(yv), 1e-12);
   EXPECT_NEAR(dfdu, std::exp(xv), 1e-12);
 }
@@ -941,7 +940,7 @@ TEST(DualScalarContract, Val) {
 }
 TEST(DualScalarContract, ScalarMixingAtDepth) {
   // The outer first-derivative slot is seeded, so it tracks d/dx at x = 2.
-  const dual2nd x{Dual<double>{2.0, 1.0}, Dual<double>{1.0, 0.0}};
+  const dual2nd x{Dual{2.0, 1.0}, Dual{1.0, 0.0}};
   const dual2nd f = 3.0 * x + x * 2.0 - 1.0;
   EXPECT_DOUBLE_EQ(val(f), 9.0);
   EXPECT_DOUBLE_EQ(f.get<1>().get<0>(), 5.0);
@@ -973,7 +972,7 @@ TEST(DualScalarContract, ImplicitConstantFromScalarAtDepth) {
 }
 TEST(ScopedValue, NestedGuardsOverSiblingScalarsOfOneDual) {
   // Two independently scoped guards over the seeds of one dual2nd.
-  dual2nd d{Dual<double>{2.0, 0.0}, Dual<double>{0.0, 0.0}};
+  dual2nd d{Dual{2.0, 0.0}, Dual{0.0, 0.0}};
   {
     const scoped_value inner{d.value().deriv(), 1.0};
     {
@@ -998,7 +997,7 @@ TEST(ScopedValue, UsableDuringConstantEvaluation) {
       const scoped_value seed{slot, 1.0};
       seen = slot;
     }
-    return std::array<double, 2>{seen, slot};
+    return std::array{seen, slot};
   }();
   static_assert(probe[0] == 1.0);
   static_assert(probe[1] == 3.0);

@@ -418,7 +418,7 @@ public:
                                              tensor_kernels(), contraction());
       return closures |
              std::views::transform([&values](NodeId f) { return values[f]; }) |
-             impl::to<std::vector<T>>();
+             impl::to<std::vector>();
     });
   }
 
@@ -802,7 +802,7 @@ protected:
     auto roots = outputs | std::views::transform([&arena](const auto &e) {
                    return e.id(*arena);
                  }) |
-                 impl::to<std::vector<NodeId>>();
+                 impl::to<std::vector>();
     return {std::move(arena), std::move(roots)};
   }
 
@@ -973,7 +973,7 @@ private:
       return roots_ | std::views::transform([this](NodeId r) {
                return derive_hessian(*arena_, r);
              }) |
-             impl::to<std::vector<Hessian>>();
+             impl::to<std::vector>();
     });
   }
   [[nodiscard]] const DenseHessian &dense_sweep() const {
@@ -1257,7 +1257,7 @@ private:
       added.hessian = cells.kept
                           ? *cells.kept | std::views::transform([&](auto k) {
                               return tangent[k];
-                            }) | impl::to<std::vector<NodeId>>()
+                            }) | impl::to<std::vector>()
                           : tangent;
       break;
     }

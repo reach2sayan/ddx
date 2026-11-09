@@ -84,9 +84,8 @@ template <COperation Op, CExpression A, CExpression B>
                   CCommutativeMultiply<typename Op::value_type>) &&
                  holds<Op, A, B>(rule.when);
         });
-    return r == std::ranges::cend(algebra::kRules)
-               ? std::nullopt
-               : std::optional<algebra::Rule>{*r};
+    return r == std::ranges::cend(algebra::kRules) ? std::nullopt
+                                                   : std::optional{*r};
   }
 }
 

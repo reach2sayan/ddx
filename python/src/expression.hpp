@@ -60,7 +60,7 @@ public:
       fail_with(errc::outside_equation);
     }
     const auto bases = scalars | std::views::transform(&PyExpression::base) |
-                       impl::to<std::vector<Base>>();
+                       impl::to<std::vector>();
     return checked(rt::pack(*arena, std::span<const Base>{bases}), arena);
   }
 

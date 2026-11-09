@@ -1,5 +1,5 @@
-#include "graph_builder.hpp"
 #include "energy_models.hpp"
+#include "graph_builder.hpp"
 #include "rt/equation.hpp"
 #include "rt/kernels.hpp"
 #include "rt/tensor.hpp"
@@ -155,11 +155,11 @@ struct Batch {
   std::vector<std::vector<double>> g;
   [[nodiscard]] std::vector<double> point(std::size_t p) const {
     return xs | std::views::transform([p](const auto &c) { return c[p]; }) |
-           ddx::impl::to<std::vector<double>>();
+           ddx::impl::to<std::vector>();
   }
   [[nodiscard]] std::vector<double> gradient(std::size_t p) const {
     return g | std::views::transform([p](const auto &c) { return c[p]; }) |
-           ddx::impl::to<std::vector<double>>();
+           ddx::impl::to<std::vector>();
   }
 };
 Batch batch_jacobian(const auto &eq, std::size_t width, std::size_t points,
@@ -173,13 +173,12 @@ Batch batch_jacobian(const auto &eq, std::size_t width, std::size_t points,
       r.xs[i][p] = x[i];
     }
   }
-  const auto columns = r.xs | std::views::transform([](const auto &c) {
-                         return c.data();
-                       }) |
-                       ddx::impl::to<std::vector<const double *>>();
-  const auto gcols =
-      r.g | std::views::transform([](auto &c) { return c.data(); }) |
-      ddx::impl::to<std::vector<double *>>();
+  const auto columns =
+      r.xs | std::views::transform([](const auto &c) { return c.data(); }) |
+      ddx::impl::to<std::vector>();
+  const auto gcols = r.g |
+                     std::views::transform([](auto &c) { return c.data(); }) |
+                     ddx::impl::to<std::vector>();
   double *const values[]{r.f.data()};
   EXPECT_TRUE(eq.jacobian(columns, values, gcols, points).has_value());
   return r;
@@ -188,8 +187,8 @@ Batch batch_jacobian(const auto &eq, std::size_t width, std::size_t points,
 void expect_batch_matches(const auto &eq, const Batch &r) {
   for (const std::size_t p : std::views::iota(0uz, r.f.size())) {
     const auto at = r.point(p);
-    EXPECT_EQ(r.f[p], *eq.evaluate(std::span<const double>{at})) << p;
-    EXPECT_EQ(r.gradient(p), *eq.gradient(std::span<const double>{at})) << p;
+    EXPECT_EQ(r.f[p], *eq.evaluate(at)) << p;
+    EXPECT_EQ(r.gradient(p), *eq.gradient(at)) << p;
   }
 }
 // Eight threads at once, each of which must answer what call answers alone.
@@ -252,11 +251,11 @@ TEST(RtTensor, DotSumAndScale) {
         return d * s;
       },
       [](const RV &x) {
-        const auto rolled =
-            std::views::iota(0uz, x.size()) |
-            std::views::transform(
-                [&](std::size_t i) { return x[(i + 1) % x.size()]; }) |
-            ddx::impl::to<std::vector>();
+        const auto rolled = std::views::iota(0uz, x.size()) |
+                            std::views::transform([&](std::size_t i) {
+                              return x[(i + 1) % x.size()];
+                            }) |
+                            ddx::impl::to<std::vector>();
         return dot(x, ddx::rt::pack(rolled)) * sum((3.0 * x[0]) * x);
       });
 }
@@ -305,10 +304,10 @@ TEST(RtTensor, GemvBothWays) {
       },
       [&](const RV &x) {
         const auto M = ddx::rt::mat_constant(rows, cols, m);
-        const auto head = std::views::iota(0uz, rows) |
-                          std::views::transform(
-                              [&](std::size_t i) { return x[i]; }) |
-                          ddx::impl::to<std::vector>();
+        const auto head =
+            std::views::iota(0uz, rows) |
+            std::views::transform([&](std::size_t i) { return x[i]; }) |
+            ddx::impl::to<std::vector>();
         const RV y = gemv(M, x);
         return sum(y * y) + dot(gemv(M, ddx::rt::pack(head), true), x);
       });
@@ -331,8 +330,7 @@ TEST(RtTensor, OperatorsAreTheCalls) {
   EXPECT_EQ((C % x).id(), gemv(C, x).id());
   EXPECT_EQ((ddx::rt::transpose(M) % y).id(), gemv(M, y, true).id());
   EXPECT_EQ((ddx::rt::transpose(C) % y).id(), gemv(C, y, true).id());
-  EXPECT_EQ((y % (M % x) + x % x).id(),
-            (dot(y, gemv(M, x)) + dot(x, x)).id());
+  EXPECT_EQ((y % (M % x) + x % x).id(), (dot(y, gemv(M, x)) + dot(x, x)).id());
   EXPECT_EQ((2.0 * x % x).id(), dot(2.0 * x, x).id());
 
   const auto why = [](const RE &e) {
@@ -442,15 +440,16 @@ TEST(RtTensor, BatchesAndThreadsAreBitIdentical) {
   const auto eq = tensor_mse(n);
   ASSERT_FALSE(eq.poisoned());
   // Past block_lanes, with a ragged tail.
-  expect_batch_matches(eq, batch_jacobian(eq, n, 64, [](std::size_t p) { return drifted(n, p); }));
+  expect_batch_matches(eq, batch_jacobian(eq, n, 64, [](std::size_t p) {
+                         return drifted(n, p);
+                       }));
 
   ASSERT_TRUE(
       eq.prepare({ddx::rt::Want::Jacobian, ddx::rt::Want::Hvp}).has_value());
   const auto at = composition(n);
   const auto d = direction(n);
   expect_threads_agree([&] {
-    return std::pair{*eq.gradient(std::span<const double>{at}),
-                     *eq.hvp(d, std::span<const double>{at})};
+    return std::pair{*eq.gradient(at), *eq.hvp(d, std::span<const double>{at})};
   });
 }
 
@@ -473,8 +472,7 @@ TEST(RtTensor, TakesAKernelTable) {
   auto own = tensor_mse(n);
   own.tensor_kernels(table);
   const auto at = composition(n);
-  EXPECT_EQ(*plain.gradient(std::span<const double>{at}),
-            *own.gradient(std::span<const double>{at}));
+  EXPECT_EQ(*plain.gradient(at), *own.gradient(at));
   EXPECT_EQ(own.tensor_kernels().name, "renamed");
   EXPECT_EQ(plain.tensor_kernels().name, "reference");
 }
@@ -511,14 +509,14 @@ TEST(RtTensor, AFloatEquationComputesItsTensorRows) {
   const auto narrow = scalar_typed_tensor_model<float>(n);
   const auto at = composition(n);
   const auto at_f = narrowed(at);
-  const double v = *wide.evaluate(std::span<const double>{at});
-  const float vf = *narrow.evaluate(std::span<const float>{at_f});
+  const double v = *wide.evaluate(at);
+  const float vf = *narrow.evaluate(at_f);
   expect_close(v, double{vf}, 1e-5, "value");
-  const auto g = *wide.gradient(std::span<const double>{at});
-  const auto gf = *narrow.gradient(std::span<const float>{at_f});
+  const auto g = *wide.gradient(at);
+  const auto gf = *narrow.gradient(at_f);
   expect_close(g, std::vector<double>(gf.begin(), gf.end()), 1e-5, "gradient");
-  const auto h = *wide.dense_hessian(std::span<const double>{at});
-  const auto hf = *narrow.dense_hessian(std::span<const float>{at_f});
+  const auto h = *wide.dense_hessian(at);
+  const auto hf = *narrow.dense_hessian(at_f);
   expect_close(h, std::vector<double>(hf.begin(), hf.end()), 1e-4,
                "dense hessian");
 }
@@ -540,21 +538,21 @@ TEST(RtTensor, EachScalarHasItsOwnDefaultTable) {
   const auto at = composition(n);
   const auto at_f = narrowed(at);
   const auto plain = scalar_typed_tensor_model<float>(n);
-  const auto want = *plain.gradient(std::span<const float>{at_f});
+  const auto want = *plain.gradient(at_f);
 
   ddx::rt::use_tensor_kernels(renamed_f_table);
   EXPECT_EQ(ddx::rt::tensor_kernels<float>().name, "renamed-f");
   EXPECT_EQ(ddx::rt::tensor_kernels().name, "reference");
   const auto defaulted = scalar_typed_tensor_model<float>(n);
   EXPECT_EQ(defaulted.tensor_kernels().name, "renamed-f");
-  EXPECT_EQ(*defaulted.gradient(std::span<const float>{at_f}), want);
+  EXPECT_EQ(*defaulted.gradient(at_f), want);
   ddx::rt::use_tensor_kernels(ddx::rt::reference_table<float>);
 
   auto own = scalar_typed_tensor_model<float>(n);
   own.tensor_kernels(renamed_f_table);
   EXPECT_EQ(own.tensor_kernels().name, "renamed-f");
   EXPECT_EQ(ddx::rt::tensor_kernels<float>().name, "reference");
-  EXPECT_EQ(*own.gradient(std::span<const float>{at_f}), want);
+  EXPECT_EQ(*own.gradient(at_f), want);
 }
 
 // The tensor graph is O(n) nodes and its sweep a few GEMVs, where the scalar
@@ -580,7 +578,7 @@ TEST(RtTensor, StaysSmallAtAThousandSpecies) {
   ASSERT_FALSE(eq.poisoned());
   const auto at = composition(n);
   const auto t0 = std::chrono::steady_clock::now();
-  const auto grad = eq.gradient(std::span<const double>{at});
+  const auto grad = eq.gradient(at);
   const auto t1 = std::chrono::steady_clock::now();
   const auto h = eq.hvp(direction(n), std::span<const double>{at});
   const auto t2 = std::chrono::steady_clock::now();
@@ -651,7 +649,7 @@ TEST(RtTensorHvp, ColumnsAssembleTheColouredHessian) {
   ASSERT_FALSE(eq.poisoned());
   const auto at = composition(n);
   const auto by_hvp = hessian_by_hvp(eq, at, 0, n);
-  const auto coloured = *eq.hessian(std::span<const double>{at});
+  const auto coloured = *eq.hessian(at);
   expect_close(coloured, by_hvp, 1e-10, "H by n hvp vs coloured");
   // Symmetric, as a Hessian is, to rounding.
   for (const std::size_t i : std::views::iota(0uz, n)) {
@@ -682,8 +680,7 @@ TEST(RtTensorHvp, APoolSplitsTheBatchByColumnAndAgreesToTheBit) {
     }
   }
   for (const auto [t, i, k] : std::views::cartesian_product(
-           std::views::iota(0uz, threads),
-           std::views::iota(0uz, n),
+           std::views::iota(0uz, threads), std::views::iota(0uz, n),
            std::views::iota(0uz, slice))) {
     EXPECT_EQ(parts[t][i * slice + k], whole[i * n + t * slice + k])
         << t << "," << i << "," << k;
@@ -706,8 +703,8 @@ TEST(RtTensorHvp, JacobianJvpAlongTemperatureMatchesDifferences) {
   auto hi = at, lo = at;
   hi[0] += h;
   lo[0] -= h;
-  const auto ghi = *eq.gradient(std::span<const double>{hi});
-  const auto glo = *eq.gradient(std::span<const double>{lo});
+  const auto ghi = *eq.gradient(hi);
+  const auto glo = *eq.gradient(lo);
   ASSERT_EQ(dj.size(), ghi.size());
   for (const auto [j, tangent, above, below] :
        std::views::zip(std::views::iota(0uz), dj, ghi, glo)) {
@@ -849,7 +846,7 @@ TEST(RtTensorDense, BatchColumnsAreThePointsBlockRowMajor) {
   constexpr std::size_t n = 5;
   const auto eq = tensor_mse(n);
   const auto at = composition(n);
-  const auto want = *eq.dense_hessian(std::span<const double>{at});
+  const auto want = *eq.dense_hessian(at);
   ASSERT_EQ(*eq.dense_hessian_columns(), n * n);
   constexpr std::size_t points = 3;
   std::vector<std::vector<double>> xs(n, std::vector<double>(points));
@@ -868,8 +865,7 @@ TEST(RtTensorDense, BatchColumnsAreThePointsBlockRowMajor) {
   double *const fcol[]{f.data()};
   ASSERT_TRUE(eq.dense_hessian(xcols, fcol, gcols, hcols, points).has_value());
   for (const auto [i, j, p] : std::views::cartesian_product(
-           std::views::iota(0uz, n),
-           std::views::iota(0uz, n),
+           std::views::iota(0uz, n), std::views::iota(0uz, n),
            std::views::iota(0uz, points))) {
     EXPECT_EQ(h[i * n + j][p], want[i * n + j]) << i << "," << j;
   }
@@ -878,11 +874,10 @@ TEST(RtTensorDense, BatchColumnsAreThePointsBlockRowMajor) {
 TEST(RtTensorDense, RefusesASystem) {
   const auto sys = ddx::rt::equation([] {
     const RV x = ddx::rt::vec("x", 3);
-    return std::vector<RE>{sum(x * x), dot(x, x) * x[0]};
+    return std::vector{sum(x * x), dot(x, x) * x[0]};
   });
-  EXPECT_EQ(
-      sys.dense_hessian(std::span<const double>{composition(3)}).error().code,
-      ddx::errc::not_single_output);
+  EXPECT_EQ(sys.dense_hessian(composition(3)).error().code,
+            ddx::errc::not_single_output);
   EXPECT_EQ(sys.dense_hessian_cost().error().code,
             ddx::errc::not_single_output);
   EXPECT_FALSE(sys.uses_kernel(ddx::rt::Want::DenseHessian));
@@ -894,9 +889,9 @@ TEST(RtTensorDense, CostAtManySpecies) {
   ASSERT_FALSE(eq.poisoned());
   const auto at = composition(n);
   const auto t0 = std::chrono::steady_clock::now();
-  const auto first = eq.dense_hessian(std::span<const double>{at});
+  const auto first = eq.dense_hessian(at);
   const auto t1 = std::chrono::steady_clock::now();
-  const auto second = eq.dense_hessian(std::span<const double>{at});
+  const auto second = eq.dense_hessian(at);
   const auto t2 = std::chrono::steady_clock::now();
   ASSERT_TRUE(first.has_value());
   ASSERT_TRUE(second.has_value());
@@ -977,13 +972,15 @@ TEST(RtMatrix, SelectAcrossShapes) {
   };
   EXPECT_EQ(refused([] {
               const RV x = ddx::rt::vec("x", n);
-              const auto B = ddx::rt::mat_constant(n, n, pair_table(n, 0, 0, 1));
+              const auto B =
+                  ddx::rt::mat_constant(n, n, pair_table(n, 0, 0, 1));
               return x % (select(x > 0.5, exp(B * x[0]), B) % x);
             }),
             ddx::errc::tensor_shape); // a vector condition, matrix arms
   EXPECT_EQ(refused([] {
               const RV x = ddx::rt::vec("x", n);
-              const auto B = ddx::rt::mat_constant(n, n, pair_table(n, 0, 0, 1));
+              const auto B =
+                  ddx::rt::mat_constant(n, n, pair_table(n, 0, 0, 1));
               return sum(select(x[0] > 0.5, exp(B * x[0]), x));
             }),
             ddx::errc::tensor_shape); // arms of two shapes
@@ -1229,8 +1226,8 @@ TEST(RtMatrix, DenseHessianOverAMatrixThatMovesWithTemperature) {
 
     auto point = composition(n);
     point.push_back(298.15);
-    const auto x_block = *fixed.dense_hessian(std::span<const double>{point});
-    const auto dense = *var.dense_hessian(std::span<const double>{at});
+    const auto x_block = *fixed.dense_hessian(point);
+    const auto dense = *var.dense_hessian(at);
     const std::size_t w = n + 1;
     const auto from_var =
         std::views::cartesian_product(std::views::iota(1uz, w),
@@ -1239,7 +1236,7 @@ TEST(RtMatrix, DenseHessianOverAMatrixThatMovesWithTemperature) {
           const auto [j, i] = ij; // column-major: i fastest
           return dense[i + j * w];
         }) |
-        ddx::impl::to<std::vector<double>>();
+        ddx::impl::to<std::vector>();
     expect_close(x_block, from_var, 1e-12, "x block vs T held");
   }
 }
@@ -1341,8 +1338,7 @@ TEST(RtMatrix, DenseHessianRefusesACompositionDependentMatrix) {
     return acc;
   });
   const auto at = composition(n);
-  EXPECT_EQ(got.dense_hessian(std::span<const double>{at}).error().code,
-            ddx::errc::dense_refused);
+  EXPECT_EQ(got.dense_hessian(at).error().code, ddx::errc::dense_refused);
   EXPECT_EQ(got.dense_hessian_cost().error().code, ddx::errc::dense_refused);
   EXPECT_EQ(got.compile_status(ddx::rt::Want::DenseHessian).error().code,
             ddx::errc::dense_refused);
@@ -1489,7 +1485,7 @@ TEST(RtTensorDense, TheBlockIsSummedNotStacked) {
                  std::views::transform([&](std::size_t i) {
                    return ddx::rt::var(scalar, std::format("x[{}]", i));
                  }) |
-                 ddx::impl::to<std::vector<RE>>();
+                 ddx::impl::to<std::vector>();
   const RE g = models::mse(x);
   ASSERT_FALSE(g.poisoned());
   const auto hs = ddx::rt::derive_dense_hessian(scalar, g.id(scalar));
@@ -1507,9 +1503,8 @@ TEST(RtMatrix, AParamVectorIsTheConstantItCarries) {
     return dot(x, gemv(ddx::rt::mat_constant(n, n, b), x)) +
            dot(weights, log(x));
   };
-  const auto baked = ddx::rt::equation([&] {
-    return model(ddx::rt::vec_constant(std::span<const double>{c}));
-  });
+  const auto baked = ddx::rt::equation(
+      [&] { return model(ddx::rt::vec_constant(std::span<const double>{c})); });
   const auto param =
       ddx::rt::equation([&] { return model(ddx::rt::vec_param("c", n)); });
   ASSERT_FALSE(param.poisoned()) << param.status()->code;
@@ -1532,8 +1527,7 @@ TEST(RtMatrix, AParamVectorIsTheConstantItCarries) {
 
   auto other = with;
   other.back() *= 2.0;
-  EXPECT_NE(*param.evaluate(std::span<const double>{other}),
-            *param.evaluate(wat));
+  EXPECT_NE(*param.evaluate(other), *param.evaluate(wat));
   expect_batch_matches(param,
                        batch_jacobian(param, 2 * n, 16, [&](std::size_t p) {
                          auto at_p = drifted(n, p);
@@ -1561,10 +1555,12 @@ TEST(RtMatrix, NodesDoNotGrowWithTheSquare) {
     const std::size_t model = b.size() - n; // past the n Var leaves
     const auto row = ddx::rt::build_reverse_jacobian(b, f.id(b));
     // dT reads the table through gemvs, so no n x n adjoint is formed for it.
-    const auto live = ddx::rt::detail::reachable(b, std::span{&row.partial[0], 1});
-    for (const auto v : std::views::iota(ddx::rt::NodeId{0},
-                                         static_cast<ddx::rt::NodeId>(b.size()))) {
-      EXPECT_FALSE(live[v] && b[v].op == ddx::rt::OpCode::Outer) << "node " << v;
+    const auto live =
+        ddx::rt::detail::reachable(b, std::span{&row.partial[0], 1});
+    for (const auto v : std::views::iota(
+             ddx::rt::NodeId{0}, static_cast<ddx::rt::NodeId>(b.size()))) {
+      EXPECT_FALSE(live[v] && b[v].op == ddx::rt::OpCode::Outer)
+          << "node " << v;
     }
     return std::pair{model, b.size()};
   };
@@ -1583,7 +1579,8 @@ TEST(RtTensor, ReleasedTapesGrowBackToTheSameBits) {
   const auto eq = tensor_mse(n);
   ASSERT_FALSE(eq.poisoned());
   const auto sweep = [&] { // the block_lanes path, with a tail
-    const Batch r = batch_jacobian(eq, n, 64, [&](std::size_t p) { return drifted(n, p); });
+    const Batch r =
+        batch_jacobian(eq, n, 64, [&](std::size_t p) { return drifted(n, p); });
     return std::pair{r.f, r.g};
   };
   const auto before = sweep();
@@ -1607,9 +1604,9 @@ TEST(RtMatrix, CostAtAThousandSpecies) {
   const auto dh = ddx::rt::equation(
       [] { return debye_hueckel_and_double_sum(ddx::rt::vec("x", n)); });
   ASSERT_TRUE(dh.prepare({ddx::rt::Want::DenseHessian}).has_value());
-  (void)dh.dense_hessian(std::span<const double>{at}); // warm
+  (void)dh.dense_hessian(at); // warm
   const auto t0 = std::chrono::steady_clock::now();
-  ASSERT_TRUE(dh.dense_hessian(std::span<const double>{at}).has_value());
+  ASSERT_TRUE(dh.dense_hessian(at).has_value());
   const auto t1 = std::chrono::steady_clock::now();
 
   const auto b1 = pair_table(n, 6, -1.0, 1.0);
@@ -1692,13 +1689,13 @@ TEST(RtTensorGraph, ConstantsFoldToTheirTable) {
 
   const RV p = gemv(ddx::rt::mat_constant(3, 3, m), ddx::rt::vec_constant(u));
   ASSERT_EQ(b.op_of(p.id(b)), OpCode::VecConst);
-  EXPECT_EQ(b.tensors()[ddx::rt::detail::get<ddx::rt::TensorRef>(b[p.id(b)])
-                            .value]
-                .data,
-            (std::vector<double>{30, 36, 42}));
+  EXPECT_EQ(
+      b.tensors()[ddx::rt::detail::get<ddx::rt::TensorRef>(b[p.id(b)]).value]
+          .data,
+      (std::vector<double>{30, 36, 42}));
 
-  EXPECT_TRUE(ddx::rt::is_table(
-      b, exp(-0.5 * ddx::rt::mat_constant(3, 3, m)).id(b)));
+  EXPECT_TRUE(
+      ddx::rt::is_table(b, exp(-0.5 * ddx::rt::mat_constant(3, 3, m)).id(b)));
   // A symbol in the way leaves the node as it is.
   const RV x = ddx::rt::vec(b, "x", 3);
   EXPECT_EQ(b.op_of(dot(x, ddx::rt::vec_constant(u)).id(b)), OpCode::Dot);
@@ -1722,15 +1719,14 @@ TEST(RtTensorGraph, AQuadraticFormsTwoProductsAreAPair) {
   const auto arena = ddx::rt::detail::scoped_arena(b);
   const RV x = ddx::rt::vec(b, "x", n);
   const RE f = dot(x, gemv(ddx::rt::mat_constant(n, n, matrix(n, n)), x));
-  const auto g =
-      ddx::test::GraphBuilder{b}.value(f).build_jacobian().finish();
+  const auto g = ddx::test::GraphBuilder{b}.value(f).build_jacobian().finish();
   const auto steps = g.schedule();
-  const auto products = std::views::iota(0uz, steps.size()) |
-                        std::views::filter([&](std::size_t p) {
-                          return g.op_of(steps[p].node) ==
-                                 ddx::rt::OpCode::MatVec;
-                        }) |
-                        ddx::impl::to<std::vector<std::size_t>>();
+  const auto products =
+      std::views::iota(0uz, steps.size()) |
+      std::views::filter([&](std::size_t p) {
+        return g.op_of(steps[p].node) == ddx::rt::OpCode::MatVec;
+      }) |
+      ddx::impl::to<std::vector>();
   ASSERT_EQ(products.size(), 2u);
   EXPECT_EQ(products[1], products[0] + 1);
   EXPECT_EQ(g.pairs()[steps[products[0]].node], steps[products[1]].node);
@@ -1750,10 +1746,9 @@ TEST(RtTensorDense, ASelectOverANonSquareTableKeepsItsTangent) {
   });
   ASSERT_FALSE(eq.poisoned());
   const std::array<double, 3> at{0.5, -0.25, 1.0};
-  const auto dense = eq.dense_hessian(std::span<const double>{at});
+  const auto dense = eq.dense_hessian(at);
   ASSERT_TRUE(dense.has_value()) << dense.error().code;
-  expect_close(std::vector{28.0, 64.0, 64.0, 154.0}, *dense, 1e-12,
-               "2 M^T M");
+  expect_close(std::vector{28.0, 64.0, 64.0, 154.0}, *dense, 1e-12, "2 M^T M");
 }
 
 // A matrix chosen by a select and moved by a symbol has no dense form; it must
@@ -1771,10 +1766,9 @@ TEST(RtTensorDense, ASelectOverAComputedMatrixRefusesOrAgrees) {
     });
     ASSERT_FALSE(eq.poisoned()) << eq.status()->code;
     const std::array<double, 4> at{0.5, 0.25, 1.5, 1.0};
-    const auto dense = eq.dense_hessian(std::span<const double>{at});
+    const auto dense = eq.dense_hessian(at);
     if (dense) {
-      expect_close(*eq.hessian(std::span<const double>{at}), *dense, 1e-10,
-                   "dense vs coloured");
+      expect_close(*eq.hessian(at), *dense, 1e-10, "dense vs coloured");
     } else {
       EXPECT_EQ(dense.error().code, ddx::errc::dense_refused);
     }
@@ -1793,11 +1787,9 @@ TEST(RtTensor, AScalarFactorOfAVectorOfOneKeepsItsPartial) {
   });
   ASSERT_FALSE(eq.poisoned());
   const std::array<double, 2> right{1.0, 2.0};
-  EXPECT_EQ(*eq.jacobian(std::span<const double>{right}),
-            (std::vector{1.0, 1.0}));
+  EXPECT_EQ(*eq.jacobian(right), (std::vector{1.0, 1.0}));
   const std::array<double, 2> left{-1.0, 2.0};
-  EXPECT_EQ(*eq.jacobian(std::span<const double>{left}),
-            (std::vector{2.0, 0.0}));
+  EXPECT_EQ(*eq.jacobian(left), (std::vector{2.0, 0.0}));
 }
 
 TEST(RtTensor, DotRefusesHandlesOfTwoArenas) {
@@ -1825,7 +1817,7 @@ TEST(RtTensorDense, ATableAloneIsTheBlock) {
   });
   ASSERT_FALSE(eq.poisoned());
   const auto at = composition(n);
-  const auto got = eq.dense_hessian(std::span<const double>{at});
+  const auto got = eq.dense_hessian(at);
   ASSERT_TRUE(got.has_value()) << got.error().code;
   ASSERT_EQ(got->size(), n * n);
   for (const auto [i, j] : std::views::cartesian_product(
@@ -1843,7 +1835,7 @@ TEST(RtTensorDense, AnEquationOfParamsHasAnEmptyDenseBlock) {
   });
   ASSERT_FALSE(eq.poisoned());
   const std::array<double, 1> at{2.0};
-  const auto dense = eq.dense_hessian(std::span<const double>{at});
+  const auto dense = eq.dense_hessian(at);
   ASSERT_TRUE(dense.has_value()) << dense.error().code;
   EXPECT_TRUE(dense->empty());
   ASSERT_TRUE(eq.dense_hessian_cost().has_value());

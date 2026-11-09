@@ -49,10 +49,10 @@ TEST(RtParam, TextSymbolsTakeTheOrderTheyFirstAppearIn) {
 TEST(RtParam, AParamIsAnInputWithNoColumn) {
   const auto eq = scaled();
   ASSERT_FALSE(eq.poisoned());
-  EXPECT_TRUE(std::ranges::equal(*eq.symbols(),
-                                 std::array<std::string_view, 1>{"x"}));
-  EXPECT_TRUE(std::ranges::equal(*eq.params(),
-                                 std::array<std::string_view, 1>{"a"}));
+  EXPECT_TRUE(
+      std::ranges::equal(*eq.symbols(), std::array<std::string_view, 1>{"x"}));
+  EXPECT_TRUE(
+      std::ranges::equal(*eq.params(), std::array<std::string_view, 1>{"a"}));
   EXPECT_EQ(eq.arity(), 1u);
   EXPECT_EQ(eq.input_count(), 2u);
   EXPECT_EQ(*eq.inputs(), (std::vector<std::string>{"x", "a"}));

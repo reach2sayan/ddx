@@ -29,12 +29,12 @@ namespace detail {
 
 // Applies one op across W lanes for any arity. supported() keeps the loop
 // compiling at scalars where the op is undefined.
-template <std::size_t W, typename Fn, impl::Numeric T, bool Ok,
+template <std::size_t W, typename Fn, impl::Numeric T, bool Computes,
           std::same_as<T>... Ts>
 constexpr void lanes(T *DDX_RESTRICT out,
                      const Ts *DDX_RESTRICT... in) noexcept {
   for (std::size_t k = 0; k < W; ++k) {
-    out[k] = supported<Fn, T, Ok>(in[k]...);
+    out[k] = supported<Fn, T, Computes>(in[k]...);
   }
 }
 
@@ -298,9 +298,9 @@ DDX_NOINLINE constexpr void lanes_fold(const Arena<T> &b, NodeId v, OpCode op,
         for (const auto [i, term] : arguments(b, v) | std::views::enumerate) {
           const U *const r = row(term);
           for (std::size_t k = 0; k < W; ++k) {
-            out[k] =
-                i == 0 ? r[k]
-                       : supported<typename R::functor, U, R::ok>(out[k], r[k]);
+            out[k] = i == 0 ? r[k]
+                            : supported<typename R::functor, U, R::computes>(
+                                  out[k], r[k]);
           }
         }
       }
@@ -354,11 +354,9 @@ template <std::size_t W, typename Fn, impl::Numeric T, impl::Numeric U>
              { Fn{}(u, c) } -> std::same_as<U>;
              { Fn{}(c, u) } -> std::same_as<U>;
            }
-DDX_NOINLINE
-    constexpr bool lanes_by_constant(const Arena<T> &b, const Node<T> &n,
-                                     U *DDX_RESTRICT out,
-                                     const U *DDX_RESTRICT x,
-                                     const U *DDX_RESTRICT y) noexcept {
+DDX_NOINLINE constexpr bool
+lanes_by_constant(const Arena<T> &b, const Node<T> &n, U *DDX_RESTRICT out,
+                  const U *DDX_RESTRICT x, const U *DDX_RESTRICT y) noexcept {
   if (const Node<T> &c = b[n.in[1]]; c.op == OpCode::Const) {
     std::ranges::transform(x, x + W, out,
                            [&c](const U &u) { return Fn{}(u, c.value); });
@@ -393,7 +391,7 @@ lanes_apply(const Arena<T> &b, NodeId i, const Node<T> &n, U *DDX_RESTRICT out,
       // would trigger MSVC warning C4702 on the return below.
       static_assert(R::arity >= 1 && R::arity <= 3);
       if constexpr (R::arity == 1) {
-        lanes<W, Fn, U, R::ok>(out, lane(in[0]));
+        lanes<W, Fn, U, R::computes>(out, lane(in[0]));
       } else if constexpr (R::arity == 2) {
         if constexpr (requires {
                         lanes_by_constant<W, Fn>(b, n, out, lane(in[0]),
@@ -403,9 +401,10 @@ lanes_apply(const Arena<T> &b, NodeId i, const Node<T> &n, U *DDX_RESTRICT out,
             return false;
           }
         }
-        lanes<W, Fn, U, R::ok>(out, lane(in[0]), lane(in[1]));
+        lanes<W, Fn, U, R::computes>(out, lane(in[0]), lane(in[1]));
       } else {
-        lanes<W, Fn, U, R::ok>(out, lane(in[0]), lane(in[1]), lane(in[2]));
+        lanes<W, Fn, U, R::computes>(out, lane(in[0]), lane(in[1]),
+                                     lane(in[2]));
       }
       return false;
     }
@@ -439,7 +438,7 @@ mates_of(const auto &nodes, std::span<const Step> schedule) {
                  return Candidate{pairing_of(s.op) - paired_ops.begin(),
                                   nodes[s.node].in[0], s.node};
                }) |
-               impl::to<std::vector<Candidate>>();
+               impl::to<std::vector>();
   std::ranges::sort(found);
   std::vector<NodeId> mates;
   for (const auto run :

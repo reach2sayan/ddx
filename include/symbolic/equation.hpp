@@ -359,8 +359,8 @@ public:
         rt::detail::computes_at_tree<Taylor, std::tuple_element_t<0, Exprs>>(),
         "an operation the Taylor arithmetic does not define");
     const Lowered l = lower();
-    const auto v = rt::evaluate_reachable(
-        l.arena, l.roots, std::array<Taylor, 1>{Taylor::variable(x0)});
+    const auto v = rt::evaluate_reachable(l.arena, l.roots,
+                                          std::array{Taylor::variable(x0)});
     return v[l.roots[0]].c[Order] *
            static_cast<scalar>(detail::compile_time_factorial(Order));
   }

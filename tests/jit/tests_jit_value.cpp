@@ -56,7 +56,7 @@ void expect_matches_interpreter(auto build, std::size_t nvars,
   }
   const auto xs =
       columns | std::views::transform([](const auto &c) { return c.data(); }) |
-      ddx::impl::to<std::vector<const double *>>();
+      ddx::impl::to<std::vector>();
 
   std::vector<double> got(n, std::numeric_limits<double>::quiet_NaN());
   double *const value_columns[]{got.data()};

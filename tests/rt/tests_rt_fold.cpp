@@ -1,6 +1,6 @@
-#include "graph_builder.hpp"
 #include "dual/dual.hpp"
 #include "energy_models.hpp"
+#include "graph_builder.hpp"
 #include "rt/coupling.hpp"
 #include "rt/derivative.hpp"
 #include "rt/equation.hpp"
@@ -173,8 +173,7 @@ TEST_P(RtFold, ACopyOfAnAccumulatorKeepsItsValue) {
   const auto step = f.step;
   const double three = step(step(p[0], p[1]), p[2]);
   EXPECT_DOUBLE_EQ(values[kept], three);
-  EXPECT_DOUBLE_EQ(values[grown],
-                   step(step(three, p[0] * p[1]), p[1] * p[2]));
+  EXPECT_DOUBLE_EQ(values[grown], step(step(three, p[0] * p[1]), p[1] * p[2]));
 }
 
 TEST_P(RtFold, ValueGradientHvpAndHessianMatchTheChain) {
@@ -252,9 +251,9 @@ TEST_P(RtFold, CouplingPatternIsTheChains) {
     return acc;
   };
   const auto fs = build(x, GetParam().assign).id(fold);
-  const auto fc =
-      build(y, [&](RE &a, const RE &t) { a = GetParam().chain(a, t); })
-          .id(chain);
+  const auto fc = build(y, [&](RE &a, const RE &t) {
+                    a = GetParam().chain(a, t);
+                  }).id(chain);
   ASSERT_EQ(fold[fs].op, GetParam().op);
   EXPECT_EQ(ddx::rt::coupling_pattern(fold, fs),
             ddx::rt::coupling_pattern(chain, fc));

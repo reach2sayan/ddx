@@ -143,7 +143,7 @@ private:
     const auto rows = ids | std::views::transform([this](NodeId g) {
                         return row(g) == no_node ? zeros() : row(g);
                       }) |
-                      impl::to<std::vector<NodeId>>();
+                      impl::to<std::vector>();
     return b_.pack(rows, OpCode::StackRows);
   }
 
@@ -230,7 +230,7 @@ private:
                                           : b_.make(opcode<OpCode::RowOf>,
                                                     Element{s - at_}, m);
                          }) |
-                         impl::to<std::vector<NodeId>>(),
+                         impl::to<std::vector>(),
                      OpCode::StackRows);
     };
     const auto transposed = [this](NodeId m) {

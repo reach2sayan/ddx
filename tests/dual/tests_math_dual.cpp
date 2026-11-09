@@ -19,8 +19,8 @@ TEST(NewMathFunctions, MaxMinTiesAverageAndNaNPropagatesSymmetrically) {
   EXPECT_TRUE(std::isnan(gnan[0]));
   EXPECT_TRUE(std::isnan(gnan[1]));
   // The derivative of abs uses sign(0) = 0 and sign(NaN) = NaN.
-  EXPECT_DOUBLE_EQ(abs(Dual<double>{0.0, 1.0}).deriv(), 0.0);
-  EXPECT_TRUE(std::isnan(abs(Dual<double>{qnan, 1.0}).deriv()));
+  EXPECT_DOUBLE_EQ(abs(Dual{0.0, 1.0}).deriv(), 0.0);
+  EXPECT_TRUE(std::isnan(abs(Dual{qnan, 1.0}).deriv()));
 }
 
 // The scalar-first overloads compare in the opposite order, and Dual's
@@ -64,12 +64,12 @@ TEST(NewMathFunctions, ForwardDualUnary) {
   double x0 = 0.5;
   Variable<Dual<double>, FixedString{"x"}> x;
   {
-    auto [f, df] = erf(x).eval(Dual<double>{x0, 1.0});
+    auto [f, df] = erf(x).eval(Dual{x0, 1.0});
     EXPECT_DOUBLE_EQ(f, std::erf(x0));
     EXPECT_DOUBLE_EQ(df, k2OverSqrtPi * std::exp(-x0 * x0));
   }
   {
-    auto [f, df] = atanh(x).eval(Dual<double>{x0, 1.0});
+    auto [f, df] = atanh(x).eval(Dual{x0, 1.0});
     EXPECT_DOUBLE_EQ(f, std::atanh(x0));
     EXPECT_DOUBLE_EQ(df, 1.0 / (1.0 - x0 * x0));
   }
@@ -78,12 +78,12 @@ TEST(NewMathFunctions, ForwardDualBinary) {
   double x0 = 3.0;
   Variable<Dual<double>, FixedString{"x"}> x;
   {
-    auto [f, df] = hypot(x, 4.0).eval(Dual<double>{x0, 1.0});
+    auto [f, df] = hypot(x, 4.0).eval(Dual{x0, 1.0});
     EXPECT_DOUBLE_EQ(f, 5.0);
     EXPECT_DOUBLE_EQ(df, x0 / 5.0);
   }
   {
-    auto [f, df] = pow(x, 3.0).eval(Dual<double>{x0, 1.0});
+    auto [f, df] = pow(x, 3.0).eval(Dual{x0, 1.0});
     EXPECT_DOUBLE_EQ(f, 27.0);
     EXPECT_DOUBLE_EQ(df, 3.0 * x0 * x0);
   }
@@ -376,7 +376,7 @@ TEST(NewMathFunctions, TaylorPowOfANonWholeExponentAtZero) {
   EXPECT_EQ(w.c[1], 0.0);
   EXPECT_EQ(w.c[2], 0.0);
   EXPECT_TRUE(std::isnan(w.c[3]));
-  EXPECT_EQ(pow(Dual<double>{0.0, 1.0}, 2.5).deriv(), 0.0);
+  EXPECT_EQ(pow(Dual{0.0, 1.0}, 2.5).deriv(), 0.0);
 }
 
 // A constant on either side agrees with the same constant embedded as a
@@ -417,7 +417,7 @@ TEST(NewMathFunctions, TaylorAtan2OfHugeOperands) {
 // A whole-number constant divided by a Dual: no narrowing in the quotient.
 TEST(NewMathFunctions, AnIntOverADual) {
   const int two = 2;
-  const auto q = two / Dual<double>{4.0, 1.0};
+  const auto q = two / Dual{4.0, 1.0};
   EXPECT_DOUBLE_EQ(q.value(), 0.5);
   EXPECT_DOUBLE_EQ(q.deriv(), -2.0 / 16.0);
 }

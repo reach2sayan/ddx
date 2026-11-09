@@ -87,9 +87,8 @@ inline RE peng_robinson(const std::vector<RE> &x, const RE &Z) {
 inline RE mse(const std::vector<RE> &x) {
   const std::size_t n = x.size();
   const auto zc = std::views::iota(0uz, n) |
-                  std::views::transform([](std::size_t i) {
-                    return pseudo(i, 5, -2.0, 2.0);
-                  }) |
+                  std::views::transform(
+                      [](std::size_t i) { return pseudo(i, 5, -2.0, 2.0); }) |
                   ddx::impl::to<std::vector>();
 
   RE ionic{0};

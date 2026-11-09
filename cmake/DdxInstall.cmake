@@ -16,15 +16,17 @@ install(TARGETS ${DDX_EXPORT_TARGETS}
 # Install the Boost headers ddx needs only when ddx fetched Boost itself. A
 # supplied Boost stays the consumer's, and the config finds it again.
 if (DDX_BOOST_VENDORED)
-    foreach (dir IN LISTS DDX_BOOST_HEADER_DIRS)
-        file(GLOB headers LIST_DIRECTORIES false "${DDX_BOOST_ROOT}/${dir}/*")
-        if (NOT headers)
+    file(GLOB headers LIST_DIRECTORIES false "${DDX_BOOST_ROOT}/boost/*")
+    install(FILES ${headers} DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/boost")
+    foreach (lib IN LISTS DDX_BOOST_LIBRARIES)
+        if (NOT IS_DIRECTORY "${DDX_BOOST_ROOT}/${lib}")
             message(FATAL_ERROR
-                    "DdxBoostHeaders names ${dir}, which holds no files under "
+                    "DdxBoostHeaders names ${lib}, which is not under "
                     "${DDX_BOOST_ROOT}.  The list and the tree disagree; "
                     "regenerate it with `python3 scripts/boost_headers.py`.")
         endif ()
-        install(FILES ${headers} DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/${dir}")
+        install(DIRECTORY "${DDX_BOOST_ROOT}/${lib}"
+                DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/boost")
     endforeach ()
 endif ()
 

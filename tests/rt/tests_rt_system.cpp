@@ -59,8 +59,8 @@ TEST(RtSystem, JacobianStacksTheScalarRows) {
     for (const std::size_t j : std::views::iota(0uz, 3uz)) {
       EXPECT_DOUBLE_EQ(J[k * 3 + j], row[j]) << "d f" << k << " / d x" << j;
     }
-    EXPECT_TRUE(std::ranges::equal(
-        pattern.rows()[k], eq.jacobian_pattern()->get().rows()[0]))
+    EXPECT_TRUE(std::ranges::equal(pattern.rows()[k],
+                                   eq.jacobian_pattern()->get().rows()[0]))
         << "row " << k;
   }
 }
@@ -81,12 +81,12 @@ TEST(RtSystem, BatchJacobianMatchesThePointCalls) {
   std::vector<std::vector<double>> g(cells, std::vector<double>(n));
   const auto pointers = [](auto &columns) {
     return columns | std::views::transform([](auto &c) { return c.data(); }) |
-           ddx::impl::to<std::vector<double *>>();
+           ddx::impl::to<std::vector>();
   };
   const auto in = pointers(xs) | std::views::transform([](double *p) {
                     return static_cast<const double *>(p);
                   }) |
-                  ddx::impl::to<std::vector<const double *>>();
+                  ddx::impl::to<std::vector>();
   ASSERT_TRUE(sys.jacobian(in, pointers(f), pointers(g), n).has_value());
 
   for (const std::size_t i : std::views::iota(0uz, n)) {
@@ -162,11 +162,11 @@ TEST(RtSystem, AHessianAtAPointContractsAsTheEquationSays) {
 TEST(RtSystem, ALiteralFirstOutputTakesTheArenaOfTheNext) {
   const auto first = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
-    return std::vector<RE>{RE{2.5}, x * x};
+    return std::vector{RE{2.5}, x * x};
   });
   const auto last = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
-    return std::vector<RE>{x * x, RE{2.5}};
+    return std::vector{x * x, RE{2.5}};
   });
   ASSERT_FALSE(first.poisoned()) << first.status()->code;
   ASSERT_FALSE(last.poisoned()) << last.status()->code;
@@ -225,9 +225,9 @@ TEST(RtSystem, PreparedLanesServeManyThreads) {
     std::vector<std::vector<double>> g(cells, std::vector<double>(n));
     std::array<const double *, 3> in{xs[0].data(), xs[1].data(), xs[2].data()};
     auto fs = f | std::views::transform([](auto &c) { return c.data(); }) |
-              ddx::impl::to<std::vector<double *>>();
+              ddx::impl::to<std::vector>();
     auto gs = g | std::views::transform([](auto &c) { return c.data(); }) |
-              ddx::impl::to<std::vector<double *>>();
+              ddx::impl::to<std::vector>();
     if (together) {
       start.arrive_and_wait();
     }

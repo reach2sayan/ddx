@@ -657,8 +657,7 @@ public:
   // Every named input in column order: kinds in table order, each in
   // declaration order.
   [[nodiscard]] constexpr std::vector<std::string> names() const {
-    return model_.names | std::views::join |
-           impl::to<std::vector<std::string>>();
+    return model_.names | std::views::join | impl::to<std::vector>();
   }
   // Each implicit's residual by slot, or no_node if never closed. broken() is
   // the first misuse of implicit(), which the equation then refuses with.
@@ -825,8 +824,7 @@ private:
   // In pool order, so a repeated tensor keeps its first index, as a scan
   // would find it.
   constexpr void rehash_tensors(std::size_t tensors) {
-    tensor_table_.assign(std::bit_ceil(std::max<std::size_t>(64, 2 * tensors)),
-                         kFreeList);
+    tensor_table_.assign(std::bit_ceil(std::max(64uz, 2 * tensors)), kFreeList);
     for (const auto [k, t] : model_.tensors | std::views::enumerate) {
       const std::size_t i = tensor_slot(t.rows, t.cols, t.data);
       if (tensor_table_[i] == kFreeList) {
@@ -835,8 +833,7 @@ private:
     }
   }
   constexpr void rehash_lists(std::size_t lists) {
-    list_table_.assign(std::bit_ceil(std::max<std::size_t>(64, 2 * lists)),
-                       kFreeList);
+    list_table_.assign(std::bit_ceil(std::max(64uz, 2 * lists)), kFreeList);
     for (const auto [k, key] : listed_ | std::views::enumerate) {
       auto run =
           probe(hash_ids(std::span{model_.lists}.subspan(key.at, key.size)),
@@ -997,7 +994,7 @@ private:
   // Rebuilds the table for `nodes` nodes, at a power-of-two size (as the mask
   // needs) at most half full, where linear probing starts to degrade.
   constexpr void rehash(std::size_t nodes) {
-    table_.assign(std::bit_ceil(std::max<std::size_t>(64, 2 * nodes)), no_node);
+    table_.assign(std::bit_ceil(std::max(64uz, 2 * nodes)), no_node);
     for (const auto [id, n] : model_.nodes | std::views::enumerate) {
       auto run = probe(hash_of(n), table_.size());
       table_[*std::ranges::find_if(run, [this](std::size_t i) {
@@ -1192,7 +1189,7 @@ private:
 
   [[nodiscard]] static constexpr std::array<NodeId, 3>
   padded(std::same_as<NodeId> auto... ids) {
-    std::array<NodeId, 3> in{no_node, no_node, no_node};
+    std::array in{no_node, no_node, no_node};
     std::ranges::copy(std::array<NodeId, sizeof...(ids)>{ids...}, in.begin());
     return in;
   }
@@ -1566,7 +1563,7 @@ schedule_of(const CNodeSource auto &nodes,
                        .fused = on && op == OpCode::SumN,
                        .op = op};
          }) |
-         impl::to<std::vector<Step>>();
+         impl::to<std::vector>();
 }
 
 // The ids a step reads, which liveness is computed over: an fma's three, a

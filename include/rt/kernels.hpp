@@ -219,7 +219,7 @@ template <impl::Numeric T = double> struct Kernels {
       using Fn = typename R::functor;
       if constexpr (!std::is_void_v<Fn> && R::arity == 1) {
         std::ranges::transform(v, out.begin(), [](T x) {
-          return detail::supported<Fn, T, R::ok>(x);
+          return detail::supported<Fn, T, R::computes>(x);
         });
       } else {
         std::ranges::fill(out, T{});
@@ -232,7 +232,7 @@ template <impl::Numeric T = double> struct Kernels {
       using Fn = typename R::functor;
       if constexpr (!std::is_void_v<Fn> && R::arity == 2) {
         std::ranges::transform(u, v, out.begin(), [](T a, T b) {
-          return detail::supported<Fn, T, R::ok>(a, b);
+          return detail::supported<Fn, T, R::computes>(a, b);
         });
       } else {
         std::ranges::fill(out, T{});

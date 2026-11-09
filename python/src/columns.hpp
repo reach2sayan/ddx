@@ -48,7 +48,7 @@ public:
                 PyUnicode_InternInPlace(&key);
                 return pyb::reinterpret_steal<pyb::object>(key);
               }) |
-              impl::to<std::vector<pyb::object>>()),
+              impl::to<std::vector>()),
         listed_{keys_.size()} {
     for (const auto [i, key] : keys_ | std::views::enumerate) {
       listed_[static_cast<std::size_t>(i)] = key;

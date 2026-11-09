@@ -871,7 +871,7 @@ emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops, const rt::Graph<T> &g,
         const auto args =
             rt::arguments(g, v) |
             std::views::transform([&value](rt::NodeId a) { return value[a]; }) |
-            impl::to<std::vector<llvm::Value *>>();
+            impl::to<std::vector>();
         answers->second = emit.extern_call(g.externs()[fn], args);
       }
       value[v] = emit.component(answers->second, component);

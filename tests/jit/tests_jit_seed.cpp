@@ -49,7 +49,7 @@ TEST(JitSeed, MatchesTheInterpreterToTheBit) {
   }
   const auto xs =
       columns | std::views::transform([](const auto &c) { return c.data(); }) |
-      ddx::impl::to<std::vector<const double *>>();
+      ddx::impl::to<std::vector>();
 
   std::vector<double> got(n);
   double *const values[]{got.data()};

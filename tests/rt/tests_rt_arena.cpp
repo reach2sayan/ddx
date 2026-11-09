@@ -174,30 +174,29 @@ using ddx::rt::opcode;
 // Detects whether build(arena, u, m) compiles.
 template <typename Build>
 constexpr bool compiles = std::is_invocable_v<Build, Arena<> &, NodeId, NodeId>;
-static_assert(!compiles<decltype([](auto &b, auto u, auto m)
-                                     -> decltype(b.make(
-                                         opcode<OpCode::RowScale>,
-                                         ddx::rt::NoPayload{}, u, m)) {
-  return {};
-})>);
-static_assert(compiles<decltype([](auto &b, auto u, auto m)
-                                    -> decltype(b.make(
-                                        opcode<OpCode::RowScale>,
-                                        {.scale = u, .matrix = m})) {
-  return {};
-})>);
-static_assert(!compiles<decltype([](auto &b, auto u, auto m)
-                                     -> decltype(b.make(
-                                         opcode<OpCode::RowScale>,
-                                         {.matrix = m, .scale = u})) {
-  return {};
-})>);
-static_assert(compiles<decltype([](auto &b, auto u, auto m)
-                                    -> decltype(b.make(
-                                        opcode<OpCode::ColScale>,
-                                        {.matrix = m, .scale = u})) {
-  return {};
-})>);
+static_assert(
+    !compiles<decltype([](auto &b, auto u,
+                          auto m) -> decltype(b.make(opcode<OpCode::RowScale>,
+                                                     ddx::rt::NoPayload{}, u,
+                                                     m)) { return {}; })>);
+static_assert(
+    compiles<decltype([](auto &b, auto u, auto m)
+                          -> decltype(b.make(opcode<OpCode::RowScale>,
+                                             {.scale = u, .matrix = m})) {
+      return {};
+    })>);
+static_assert(
+    !compiles<decltype([](auto &b, auto u, auto m)
+                           -> decltype(b.make(opcode<OpCode::RowScale>,
+                                              {.matrix = m, .scale = u})) {
+      return {};
+    })>);
+static_assert(
+    compiles<decltype([](auto &b, auto u, auto m)
+                          -> decltype(b.make(opcode<OpCode::ColScale>,
+                                             {.matrix = m, .scale = u})) {
+      return {};
+    })>);
 } // namespace named
 
 // Compound assignment builds the same node as the long form, which interning

@@ -1,6 +1,6 @@
-#include "graph_builder.hpp"
 #include "ddx.hpp"
 #include "energy_models.hpp"
+#include "graph_builder.hpp"
 #include "rt/bridge.hpp"
 #include "rt/derivative.hpp"
 #include "rt/graph.hpp"
