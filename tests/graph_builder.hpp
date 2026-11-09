@@ -25,7 +25,7 @@ public:
     return values_from(roots | std::views::transform([&](const auto &e) {
                          return e.id(*arena_);
                        }) |
-                       impl::to<std::vector<rt::NodeId>>());
+                       impl::to<std::vector>());
   }
 
   // Takes the functions to differentiate only, so the graph has no value

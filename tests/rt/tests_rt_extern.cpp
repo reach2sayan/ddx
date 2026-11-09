@@ -234,7 +234,7 @@ TEST(RtExtern, ASystemThroughOneFunction) {
     const auto a = ddx::rt::var("a");
     const auto b = ddx::rt::var("b");
     const auto g = ddx::rt::extern_fn({.name = "g", .arity = 2}, g_of)(a, b);
-    return std::vector<RE>{g, g * a};
+    return std::vector{g, g * a};
   });
   const auto ref = native();
   const auto &at = points[2];
@@ -272,10 +272,10 @@ void expect_reentry_matches(auto inner_model, auto native_model,
     return 0.25 + 0.5 * std::abs(std::sin(1.0 + phase));
   };
   for (const std::size_t p : std::views::iota(0uz, 3uz)) {
-    const auto at = std::views::iota(0uz, symbols) |
-                    std::views::transform(
-                        [&](std::size_t j) { return column(j, p); }) |
-                    ddx::impl::to<std::vector>();
+    const auto at =
+        std::views::iota(0uz, symbols) |
+        std::views::transform([&](std::size_t j) { return column(j, p); }) |
+        ddx::impl::to<std::vector>();
     const std::span<const double> point{at};
     EXPECT_NEAR(*eq.evaluate(point), *native.evaluate(point), 1e-10);
     expect_close(*eq.jacobian(point), *native.jacobian(point), 1e-10);

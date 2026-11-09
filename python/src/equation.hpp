@@ -75,8 +75,7 @@ public:
 
   [[nodiscard]] pyb::list symbols_list() const { return symbols_.listed(); }
   [[nodiscard]] pyb::list params_list() const {
-    return pyb::cast(
-        std::vector<std::string>(params()->begin(), params()->end()));
+    return pyb::cast(std::vector(params()->begin(), params()->end()));
   }
   // The inputs a point supplies: the symbols, then the parameters.
   [[nodiscard]] pyb::list inputs_list() const { return inputs_.listed(); }
@@ -374,8 +373,8 @@ public:
       : eq_(&eq), view_(std::move(view)) {}
 
   [[nodiscard]] pyb::list symbols() const {
-    return pyb::cast(std::vector<std::string>(view_.symbols().begin(),
-                                              view_.symbols().end()));
+    return pyb::cast(
+        std::vector(view_.symbols().begin(), view_.symbols().end()));
   }
   [[nodiscard]] std::size_t jacobian_columns() const {
     return view_.jacobian_columns();

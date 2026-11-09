@@ -5,7 +5,7 @@
 // value_type that is not arithmetic.
 TEST(ExpressionPrinting, DualValuedLeavesPrint) {
   const ddx::impl::Constant<ddx::impl::Dual<double>> c{
-      ddx::impl::Dual<double>{1.5, 2.0}};
+      ddx::impl::Dual{1.5, 2.0}};
   EXPECT_EQ(std::format("{}", c), "1.5+2ε");
   EXPECT_EQ(std::format("{::.2f}", c), "1.50+2.00ε");
 }
@@ -30,8 +30,8 @@ TEST(DualPrinting, OneSpecReachesEveryPart) {
 }
 // Without bracketing, Dual<Dual<double>> reads as one four-term series.
 TEST(DualPrinting, NestedCoefficientsAreBracketed) {
-  const ddx::impl::Dual<ddx::impl::Dual<double>> d{
-      ddx::impl::Dual<double>{1.0, 2.0}, ddx::impl::Dual<double>{3.0, 4.0}};
+  const ddx::impl::Dual<ddx::impl::Dual<double>> d{ddx::impl::Dual{1.0, 2.0},
+                                                   ddx::impl::Dual{3.0, 4.0}};
   EXPECT_EQ(std::format("{}", d), "(1+2ε)+(3+4ε)ε");
 }
 TEST(DualPrinting, StreamInserterMatchesFormat) {
@@ -47,7 +47,7 @@ TEST(DualPrinting, StreamInserterMatchesFormat) {
 TEST(DualPrinting, AllThreeWorkAsExpressionLeaves) {
   EXPECT_EQ(std::format("{}",
                         ddx::impl::Constant<ddx::impl::Dual<double>>{
-                            ddx::impl::Dual<double>{5.0, 1.0}}),
+                            ddx::impl::Dual{5.0, 1.0}}),
             "5+1ε");
   EXPECT_EQ(std::format("{}",
                         ddx::impl::Constant<ddx::impl::TaylorDual<double, 2>>{

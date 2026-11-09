@@ -219,7 +219,7 @@ TEST(SymbolTest, SingleVariable) {
   static_assert(ddx::meta::size(Syms{}) == 1);
   static_assert(
       ddx::meta::at<0>(Syms{}) ==
-                     ddx::meta::type_c<ddx::impl::symbol_type<ddx::impl::FixedString{"x"}>>);
+      ddx::meta::type_c<ddx::impl::symbol_type<ddx::impl::FixedString{"x"}>>);
 }
 TEST(SymbolTest, TwoVariables) {
   using E =
@@ -230,10 +230,10 @@ TEST(SymbolTest, TwoVariables) {
   // Symbols are sorted lexicographically, so "x" comes before "y".
   static_assert(
       ddx::meta::at<0>(Syms{}) ==
-                     ddx::meta::type_c<ddx::impl::symbol_type<ddx::impl::FixedString{"x"}>>);
+      ddx::meta::type_c<ddx::impl::symbol_type<ddx::impl::FixedString{"x"}>>);
   static_assert(
       ddx::meta::at<1>(Syms{}) ==
-                     ddx::meta::type_c<ddx::impl::symbol_type<ddx::impl::FixedString{"y"}>>);
+      ddx::meta::type_c<ddx::impl::symbol_type<ddx::impl::FixedString{"y"}>>);
 }
 TEST(SymbolTest, DuplicateSymbolsDeduplicated) {
   using E =
@@ -258,11 +258,11 @@ TEST(SymbolTest, CanonicalOrderIsAlphabetical) {
   using ddx::impl::FixedString;
   static_assert(ddx::meta::size(Syms{}) == 4);
   static_assert(
-      std::is_same_v<Syms, ddx::meta::list<
-                               ddx::impl::symbol_type<FixedString{"a"}>,
-                               ddx::impl::symbol_type<FixedString{"b"}>,
-                               ddx::impl::symbol_type<FixedString{"m"}>,
-                               ddx::impl::symbol_type<FixedString{"z"}>>>,
+      std::is_same_v<Syms,
+                     ddx::meta::list<ddx::impl::symbol_type<FixedString{"a"}>,
+                                     ddx::impl::symbol_type<FixedString{"b"}>,
+                                     ddx::impl::symbol_type<FixedString{"m"}>,
+                                     ddx::impl::symbol_type<FixedString{"z"}>>>,
       "canonical symbol order must stay alphabetical and deduplicated");
 }
 TEST(ExpressionTest, StaticTests) {
@@ -925,8 +925,7 @@ TEST(EquationTest, SymbolicPowAtAZeroBaseOrExponent) {
   EXPECT_DOUBLE_EQ(at_zero_base[1], 0.0);
   const auto origin = eq.jacobian<DiffMode::Symbolic>(0.0, 0.0);
   EXPECT_DOUBLE_EQ(origin[0], 0.0);
-  const auto stored =
-      Equation{pow(x, 0.0)}.jacobian<DiffMode::Symbolic>(0.0);
+  const auto stored = Equation{pow(x, 0.0)}.jacobian<DiffMode::Symbolic>(0.0);
   EXPECT_DOUBLE_EQ(stored[0], 0.0);
   const auto plain = eq.jacobian<DiffMode::Symbolic>(2.0, 3.0);
   EXPECT_DOUBLE_EQ(plain[0], 12.0);

@@ -157,18 +157,18 @@ TEST(RtImplicit, ABatchCarriesAColumnOfRoots) {
   }
   const auto in =
       columns | std::views::transform([](const auto &c) { return c.data(); }) |
-      ddx::impl::to<std::vector<const double *>>();
+      ddx::impl::to<std::vector>();
   std::vector<double> values(n);
   std::vector<std::vector<double>> g(*eq.jacobian_columns(),
                                      std::vector<double>(n));
   const std::array<double *, 1> fs{values.data()};
   const auto gs = g | std::views::transform([](auto &c) { return c.data(); }) |
-                  ddx::impl::to<std::vector<double *>>();
+                  ddx::impl::to<std::vector>();
   ASSERT_TRUE(eq.jacobian(in, fs, gs, n).has_value());
   for (const std::size_t i : std::views::iota(0uz, n)) {
-    const auto at =
-        columns | std::views::transform([i](const auto &c) { return c[i]; }) |
-        ddx::impl::to<std::vector>();
+    const auto at = columns |
+                    std::views::transform([i](const auto &c) { return c[i]; }) |
+                    ddx::impl::to<std::vector>();
     const auto J = *eq.jacobian(at);
     for (const auto [cell, j] :
          std::views::enumerate(eq.jacobian_pattern()->get().rows()[0].cols)) {
@@ -263,7 +263,7 @@ TEST(RtImplicit, ASystemOfOutputsThroughZ) {
     const auto a = ddx::rt::var("a");
     const auto z =
         ddx::rt::implicit("z", [&](const RE &z) { return z * z - a; });
-    return std::vector<RE>{z, z * a};
+    return std::vector{z, z * a};
   });
   // d(z a)/da = z + a dz/da = 2 + 4 * 0.25.
   const auto J = *sys.jacobian(4.0, 2.0);

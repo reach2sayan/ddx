@@ -415,7 +415,7 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> named(Arena<T> &b, OpCode op,
                                             std::string_view name) {
   const auto id = b.input(op, name);
-  return id ? Expression<T>{b, *id} : Expression<T>::poison(errc::name_clash);
+  return id ? Expression{b, *id} : Expression<T>::poison(errc::name_clash);
 }
 // An implicit input z with residual F(z, x) = 0 at every supplied point. ddx
 // never solves F; it differentiates as though F held.
@@ -434,11 +434,11 @@ implicit(Arena<T> &b, std::string_view name, F &&residual) {
 // The direction a seeded product is taken along.
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> seed(Arena<T> &b, std::uint32_t slot) {
-  return Expression<T>{b, b.seed_node(Slot{slot})};
+  return Expression{b, b.seed_node(Slot{slot})};
 }
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> lit(Arena<T> &b, const T &v) {
-  return Expression<T>{b, b.constant(v)};
+  return Expression{b, b.constant(v)};
 }
 
 // A user function returned by extern_fn(). Calling it adds a node whose
@@ -458,7 +458,7 @@ public:
       return Expression<T>::poison(errc::wrong_argument_count);
     }
     const auto ids = detail::Router::scalar_ids(*b_, args);
-    return ids ? Expression<T>{*b_, b_->extern_call(index_, *ids)}
+    return ids ? Expression{*b_, b_->extern_call(index_, *ids)}
                : Expression<T>::poison(ids.error().code);
   }
   template <typename... A>

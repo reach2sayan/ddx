@@ -102,7 +102,7 @@ pyb::handle error_class;
            }
            return e.root_in(arena);
          }) |
-         impl::to<std::vector<rt::NodeId>>();
+         impl::to<std::vector>();
 }
 
 // ddx.equation over source strings instead of a callback. Every source is
@@ -458,7 +458,7 @@ PYBIND11_MODULE(_ddx, m) {
         return rt::gradient(e) | std::views::transform([&](const auto &d) {
                  return PyExpression::checked(d, arena);
                }) |
-               impl::to<std::vector<PyExpression>>();
+               impl::to<std::vector>();
       },
       pyb::arg("f"), "df/dx for every symbol, in declaration order.");
   m.def(

@@ -294,7 +294,7 @@ constexpr auto hypot(A &&a, DualCompatible<A> auto &&b,
   const auto &[yv, yd] = y;
   const auto &[zv, zd] = z;
   const T h = hypot(xv, yv, zv);
-  return Dual<T>{h, (xv / h) * xd + (yv / h) * yd + (zv / h) * zd};
+  return Dual{h, (xv / h) * xd + (yv / h) * yd + (zv / h) * zd};
 }
 
 static_assert(Numeric<Dual<double>>);

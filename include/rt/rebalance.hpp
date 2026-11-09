@@ -54,7 +54,7 @@ template <impl::Numeric T>
 blocked_sum(Arena<T> &b, std::span<const NodeId> terms, std::size_t blocks) {
   // Sized to the default block count so a round never allocates.
   using Partials = boost::container::small_vector<Expression<T>, 16>;
-  const auto as_expr = [&b](NodeId t) { return Expression<T>{b, t}; };
+  const auto as_expr = [&b](NodeId t) { return Expression{b, t}; };
   Partials partials;
   for (std::size_t j = 0; j < std::min(blocks, terms.size()); ++j) {
     partials.push_back(*std::ranges::fold_left_first(
@@ -124,7 +124,7 @@ rebalance(Arena<T> &b, std::span<const NodeId> roots, std::size_t blocks = 16,
 
   return roots |
          std::views::transform([&remap](NodeId r) { return remap[r]; }) |
-         impl::to<std::vector<NodeId>>();
+         impl::to<std::vector>();
 }
 
 } // namespace detail

@@ -221,8 +221,7 @@ TEST(RtEquation, HessianMatchesTheCompileTimeEquation) {
   ASSERT_EQ(got.size(), 4u);
   for (const auto [i, j] : std::views::cartesian_product(
            std::views::iota(0uz, 2uz), std::views::iota(0uz, 2uz))) {
-    EXPECT_NEAR(got[i * 2 + j], ddx::impl::get_real_part<1>(want[i, j]),
-                1e-10)
+    EXPECT_NEAR(got[i * 2 + j], ddx::impl::get_real_part<1>(want[i, j]), 1e-10)
         << "H[" << i << "][" << j << "]";
   }
   EXPECT_TRUE(std::isfinite(got[1]));
@@ -396,7 +395,7 @@ TEST(RtEquation, BatchHessianFillsTheCompressedColumns) {
   std::vector<std::vector<double>> blocks(columns, std::vector<double>(n));
   const auto block_ptrs =
       blocks | std::views::transform([](auto &c) { return c.data(); }) |
-      ddx::impl::to<std::vector<double *>>();
+      ddx::impl::to<std::vector>();
   const double *const inputs[]{cx.data(), cy.data()};
   double *const values[]{f.data()};
   double *const partials[]{dx.data(), dy.data()};
@@ -732,15 +731,15 @@ TEST(RtEquation, ScalarAccessorsAgreeWithTheArenaWalkToTheBit) {
   const auto values = ddx::rt::evaluate_all(b, at);
   const std::size_t n = at.size();
 
-  EXPECT_EQ(*eq.evaluate(std::span<const double>{at}), values[root]);
+  EXPECT_EQ(*eq.evaluate(at), values[root]);
 
-  const auto g = *eq.jacobian(std::span<const double>{at});
+  const auto g = *eq.jacobian(at);
   ASSERT_EQ(g.size(), n);
   for (const auto [i, p] : std::views::enumerate(row.partial)) {
     EXPECT_EQ(g[static_cast<std::size_t>(i)], values[p]) << "d/d" << i;
   }
 
-  const auto h = *eq.hessian(std::span<const double>{at});
+  const auto h = *eq.hessian(at);
   ASSERT_EQ(h.size(), n * n);
   auto dims = std::views::iota(0uz, n);
   for (const auto [i, j] : std::views::cartesian_product(dims, dims)) {
@@ -780,10 +779,10 @@ TEST(RtEquation, ShortSpinesSurviveTheSwitchoverToTheBit) {
   for (const std::size_t terms : {4uz, 8uz, 15uz}) {
     auto eq = spine(terms);
     const auto at = point(terms);
-    const double swept = *eq.evaluate(std::span<const double>{at});
+    const double swept = *eq.evaluate(at);
     eq.options({.backend = ddx::jit::Backend::Compile, .points = 1});
     ASSERT_TRUE(eq.uses_kernel());
-    const double compiled = *eq.evaluate(std::span<const double>{at});
+    const double compiled = *eq.evaluate(at);
     EXPECT_EQ(ulps(swept, compiled), 0)
         << terms << " terms is below the rewrite threshold";
   }
@@ -795,10 +794,10 @@ TEST(RtEquation, ShortSpinesSurviveTheSwitchoverToTheBit) {
                   std::pair{80uz, std::int64_t{16}}}) {
     auto eq = spine(terms);
     const auto at = point(terms);
-    const double swept = *eq.evaluate(std::span<const double>{at});
+    const double swept = *eq.evaluate(at);
     eq.options({.backend = ddx::jit::Backend::Compile, .points = 1});
     ASSERT_TRUE(eq.uses_kernel());
-    const double compiled = *eq.evaluate(std::span<const double>{at});
+    const double compiled = *eq.evaluate(at);
     EXPECT_LE(ulps(swept, compiled), bound) << terms << " terms drifted";
     EXPECT_NEAR(swept, compiled, 1e-12 * std::abs(swept));
   }
@@ -953,7 +952,7 @@ TEST(RtEquation, TheColumnCountsCompileNothing) {
   std::vector<double> cx(n, 0.6), cy(n, 0.9), f(n), dx(n), dy(n);
   std::vector<std::vector<double>> hb(hc, std::vector<double>(n));
   const auto hp = hb | std::views::transform([](auto &c) { return c.data(); }) |
-                  ddx::impl::to<std::vector<double *>>();
+                  ddx::impl::to<std::vector>();
   const double *const columns[]{cx.data(), cy.data()};
   double *const values[]{f.data()};
   double *const partials[]{dx.data(), dy.data()};
@@ -1141,9 +1140,9 @@ TEST(RtEquation, ConcurrentConstCallsAgreeWithOneThread) {
   const auto once = [&] {
     std::vector<double> f(n), dx(n), dy(n);
     std::vector<std::vector<double>> hs(hcols, std::vector<double>(n));
-    const auto hp =
-        hs | std::views::transform([](auto &c) { return c.data(); }) |
-        ddx::impl::to<std::vector<double *>>();
+    const auto hp = hs |
+                    std::views::transform([](auto &c) { return c.data(); }) |
+                    ddx::impl::to<std::vector>();
     double *const values[]{f.data()};
     double *const partials[]{dx.data(), dy.data()};
     EXPECT_TRUE(eq.hessian(columns, values, partials, hp, n).has_value());
@@ -1223,7 +1222,7 @@ TEST(RtEquation, EvaluatingABatchComputesNoPartials) {
         << "value at " << i;
     // Bit-exact against the scalar accessor, which uses the same graph.
     const std::vector<double> at{cx[i], cy[i]};
-    EXPECT_EQ(f[i], *eq.evaluate(std::span<const double>{at}));
+    EXPECT_EQ(f[i], *eq.evaluate(at));
   }
 }
 
@@ -1236,7 +1235,7 @@ TEST(RtEquation, EvaluatingUsesAValuesOnlyGraph) {
   const auto eq = ddx::rt::equation(x * log(x), y * y + x, exp(x * y));
 
   const std::vector<double> at{0.6, 1.4};
-  const auto v = *eq.evaluate(std::span<const double>{at});
+  const auto v = *eq.evaluate(at);
   ASSERT_EQ(v.size(), 3u);
 
   // Bit-exact against the values-and-Jacobian lane, which is a different graph
@@ -1256,7 +1255,7 @@ TEST(RtEquation, EvaluatingUsesAValuesOnlyGraph) {
   std::vector<double> cells(*eq.jacobian_columns());
   const auto partials = cells |
                         std::views::transform([](double &c) { return &c; }) |
-                        ddx::impl::to<std::vector<double *>>();
+                        ddx::impl::to<std::vector>();
   ASSERT_TRUE(eq.jacobian(columns, values, partials, 1).has_value());
   EXPECT_EQ(v[0], f0);
   EXPECT_EQ(v[1], f1);
@@ -1285,7 +1284,7 @@ TEST(RtEquation, GradientIsTheJacobianWithoutTheValue) {
   ASSERT_EQ(g.size(), 2u);
   EXPECT_EQ(g[0], j[0]);
   EXPECT_EQ(g[1], j[1]);
-  EXPECT_EQ(g, *eq.gradient(std::vector<double>{0.6, 1.4}));
+  EXPECT_EQ(g, *eq.gradient(std::vector{0.6, 1.4}));
 
   constexpr std::size_t n = 4;
   std::vector<double> cx(n), cy(n), gx(n), gy(n);
@@ -1311,7 +1310,7 @@ TEST(RtEquation, ScalarAndBatchAgreeAtTheSamePoint) {
 
   const std::vector<double> at{0.6, 1.4};
   // Scalar first, so the scalar accessor freezes the lane, not a batch call.
-  const auto dense = *eq.hessian(std::span<const double>{at});
+  const auto dense = *eq.hessian(at);
   ASSERT_EQ(dense.size(), 4u);
 
   std::vector<double> h(*eq.hessian_columns());
@@ -1323,8 +1322,8 @@ TEST(RtEquation, ScalarAndBatchAgreeAtTheSamePoint) {
   double *const partials[]{&dx, &dy};
   ASSERT_TRUE(eq.hessian(columns, values, partials, hc, 1).has_value());
 
-  EXPECT_EQ(f, *eq.evaluate(std::span<const double>{at}));
-  const auto g = *eq.jacobian(std::span<const double>{at});
+  EXPECT_EQ(f, *eq.evaluate(at));
+  const auto g = *eq.jacobian(at);
   EXPECT_EQ(g[0], dx);
   EXPECT_EQ(g[1], dy);
 }
@@ -1339,8 +1338,7 @@ TEST(RtEquation, EvaluatingUnderInterpretCompilesNothing) {
   eq.options({.backend = ddx::rt::Backend::Interpret});
 
   const std::vector<double> at{0.6, 1.4};
-  EXPECT_NEAR(*eq.evaluate(std::span<const double>{at}),
-              0.6 * std::log(0.6) + 1.4 * 1.4, 1e-12);
+  EXPECT_NEAR(*eq.evaluate(at), 0.6 * std::log(0.6) + 1.4 * 1.4, 1e-12);
   EXPECT_FALSE(eq.uses_kernel());
   EXPECT_FALSE(eq.uses_kernel());
 }
@@ -1479,7 +1477,7 @@ TEST(RtEquation, ElementReadsSumIntoTheirOwnElements) {
                     return 0.01 * static_cast<double>(i);
                   }) |
                   ddx::impl::to<std::vector>();
-  const auto g = eq.gradient(std::span<const double>{at});
+  const auto g = eq.gradient(at);
   ASSERT_TRUE(g.has_value());
   EXPECT_EQ((*g)[0], at[1]);
   EXPECT_EQ((*g)[n - 1], at[n - 2]);

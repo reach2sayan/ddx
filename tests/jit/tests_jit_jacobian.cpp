@@ -45,13 +45,13 @@ void expect_jacobian_matches_interpreter(auto build, std::size_t nvars,
   }
   const auto xs =
       columns | std::views::transform([](const auto &c) { return c.data(); }) |
-      ddx::impl::to<std::vector<const double *>>();
+      ddx::impl::to<std::vector>();
 
   std::vector<double> value(n);
   std::vector<std::vector<double>> grad(nvars, std::vector<double>(n));
-  const auto gp =
-      grad | std::views::transform([](auto &c) { return c.data(); }) |
-      ddx::impl::to<std::vector<double *>>();
+  const auto gp = grad |
+                  std::views::transform([](auto &c) { return c.data(); }) |
+                  ddx::impl::to<std::vector>();
   double *const value_columns[]{value.data()};
   kernel(xs, value_columns, gp, {}, n);
 
@@ -156,7 +156,7 @@ TEST(JitHessian, ThirdBlockCarriesTheColouredHessian) {
   double *const values[]{value.data()};
   const auto columns_of = [](auto &blocks) {
     return blocks | std::views::transform([](auto &c) { return c.data(); }) |
-           ddx::impl::to<std::vector<double *>>();
+           ddx::impl::to<std::vector>();
   };
   auto jp = columns_of(jac);
   auto hp = columns_of(hess);

@@ -14,11 +14,14 @@ if (DDX_SANITIZE STREQUAL "thread")
         "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan.supp:ignore_noninstrumented_modules=1")
 endif ()
 
-function(ddx_test name glob)
-    file(GLOB sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${glob}")
+# ddx_test(<name> SOURCES <glob|file>... [LIBS <target>...])
+function(ddx_test name)
+    cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "SOURCES;LIBS")
+    list(TRANSFORM arg_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
+    file(GLOB sources CONFIGURE_DEPENDS ${arg_SOURCES})
     add_executable(${name} ${sources})
     target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(${name} PRIVATE gtest_main ddx::rt)
+    target_link_libraries(${name} PRIVATE gtest_main ddx::rt ${arg_LIBS})
     ddx_target_flags(${name})
     ddx_runtime_deps(${name})
     if (DDX_TEST_PCH AND name STREQUAL "tests")
@@ -31,12 +34,12 @@ function(ddx_test name glob)
     gtest_discover_tests(${name} ${DDX_TEST_ENV})
 endfunction()
 
-ddx_test(tests "*.cpp")
-ddx_test(tests_dual "dual/*.cpp")
-ddx_test(tests_rt "rt/*.cpp")
+ddx_test(tests SOURCES "*.cpp")
+ddx_test(tests_dual SOURCES "dual/*.cpp")
+ddx_test(tests_rt SOURCES "rt/*.cpp")
 
 if (DDX_BUILD_JIT)
-    ddx_test(tests_jit "jit/*.cpp")
+    ddx_test(tests_jit SOURCES "jit/*.cpp")
     if (DDX_SANITIZE STREQUAL "off")
         if (MSVC)
             set(exports_tool "${CMAKE_LINKER}")
@@ -53,23 +56,15 @@ endif ()
 # each built only when that library is found.
 find_package(Eigen3 3.3 QUIET CONFIG ${DDX_FIND_NO_REGISTRY})
 if (TARGET Eigen3::Eigen)
-    add_executable(tests_eigen eigen/tests_eigen.cpp)
-    target_link_libraries(tests_eigen PRIVATE gtest_main ddx::rt Eigen3::Eigen)
-    ddx_target_flags(tests_eigen)
-    ddx_runtime_deps(tests_eigen)
-    gtest_discover_tests(tests_eigen ${DDX_TEST_ENV})
+    ddx_test(tests_eigen SOURCES eigen/tests_eigen.cpp LIBS Eigen3::Eigen)
 endif ()
 
 # Any CBLAS as a kernel table.
 find_package(BLAS QUIET)
 find_path(DDX_CBLAS_INCLUDE_DIR cblas.h PATH_SUFFIXES openblas)
 if (TARGET BLAS::BLAS AND DDX_CBLAS_INCLUDE_DIR)
-    add_executable(tests_cblas cblas/tests_cblas.cpp)
+    ddx_test(tests_cblas SOURCES cblas/tests_cblas.cpp LIBS BLAS::BLAS)
     target_include_directories(tests_cblas SYSTEM PRIVATE "${DDX_CBLAS_INCLUDE_DIR}")
-    target_link_libraries(tests_cblas PRIVATE gtest_main ddx::rt BLAS::BLAS)
-    ddx_target_flags(tests_cblas)
-    ddx_runtime_deps(tests_cblas)
-    gtest_discover_tests(tests_cblas ${DDX_TEST_ENV})
 endif ()
 
 option(DDX_TEST_PACKAGE "Build the out-of-tree consumer tests" ${PROJECT_IS_TOP_LEVEL})
@@ -92,15 +87,21 @@ if (DDX_TEST_PACKAGE AND DDX_INSTALL AND DDX_SANITIZE STREQUAL "off")
         set(DDX_PACKAGE_CONFIG -C $<CONFIG>)
         set(DDX_PACKAGE_INSTALL_CONFIG --config $<CONFIG>)
     endif ()
-    set(DDX_PACKAGE_PROJECT --build-project ddx_package_consumer)
 
-    add_test(NAME package.build_tree
-            COMMAND ${CMAKE_CTEST_COMMAND} ${DDX_PACKAGE_CONFIG}
-            --build-and-test "${CMAKE_CURRENT_SOURCE_DIR}/package"
-                             "${CMAKE_CURRENT_BINARY_DIR}/package/build_tree"
-            --build-generator ${CMAKE_GENERATOR} ${DDX_PACKAGE_PROJECT}
-            --build-options -Dddx_DIR=${PROJECT_BINARY_DIR} ${DDX_PACKAGE_COMMON_OPTIONS}
-            --test-command ${CMAKE_CTEST_COMMAND} ${DDX_PACKAGE_CONFIG} --output-on-failure)
+    # ddx_package_test(<name> <cmake options>...): configure, build and test
+    # tests/package against this ddx.
+    function(ddx_package_test name)
+        add_test(NAME package.${name}
+                COMMAND ${CMAKE_CTEST_COMMAND} ${DDX_PACKAGE_CONFIG}
+                --build-and-test "${CMAKE_CURRENT_SOURCE_DIR}/package"
+                                 "${CMAKE_CURRENT_BINARY_DIR}/package/${name}"
+                --build-generator ${CMAKE_GENERATOR}
+                --build-project ddx_package_consumer
+                --build-options ${ARGN}
+                --test-command ${CMAKE_CTEST_COMMAND} ${DDX_PACKAGE_CONFIG} --output-on-failure)
+    endfunction()
+
+    ddx_package_test(build_tree -Dddx_DIR=${PROJECT_BINARY_DIR} ${DDX_PACKAGE_COMMON_OPTIONS})
 
     # Emptied first, because an install never removes files and all_headers
     # globs the prefix.
@@ -114,26 +115,14 @@ if (DDX_TEST_PACKAGE AND DDX_INSTALL AND DDX_SANITIZE STREQUAL "off")
     set_tests_properties(package.install PROPERTIES FIXTURES_SETUP ddx_installed
             DEPENDS package.install_clean)
 
-    add_test(NAME package.install_tree
-            COMMAND ${CMAKE_CTEST_COMMAND} ${DDX_PACKAGE_CONFIG}
-            --build-and-test "${CMAKE_CURRENT_SOURCE_DIR}/package"
-                             "${CMAKE_CURRENT_BINARY_DIR}/package/install_tree"
-            --build-generator ${CMAKE_GENERATOR} ${DDX_PACKAGE_PROJECT}
-            --build-options -DCMAKE_PREFIX_PATH=${DDX_PACKAGE_PREFIX} ${DDX_PACKAGE_COMMON_OPTIONS}
-            --test-command ${CMAKE_CTEST_COMMAND} ${DDX_PACKAGE_CONFIG} --output-on-failure)
+    ddx_package_test(install_tree -DCMAKE_PREFIX_PATH=${DDX_PACKAGE_PREFIX} ${DDX_PACKAGE_COMMON_OPTIONS})
     set_tests_properties(package.install_tree PROPERTIES FIXTURES_REQUIRED ddx_installed)
 
     # A component this build lacks must fail at configure time.
     if (NOT DDX_BUILD_JIT)
-        add_test(NAME package.missing_component
-                COMMAND ${CMAKE_CTEST_COMMAND} ${DDX_PACKAGE_CONFIG}
-                --build-and-test "${CMAKE_CURRENT_SOURCE_DIR}/package"
-                                 "${CMAKE_CURRENT_BINARY_DIR}/package/missing_component"
-                --build-generator ${CMAKE_GENERATOR} ${DDX_PACKAGE_PROJECT}
-                --build-options -Dddx_DIR=${PROJECT_BINARY_DIR}
-                                -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
-                                -DBoost_DIR=${Boost_DIR}
-                                -DDDX_CONSUMER_COMPONENTS=jit)
+        ddx_package_test(missing_component -Dddx_DIR=${PROJECT_BINARY_DIR}
+                -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER} -DBoost_DIR=${Boost_DIR}
+                -DDDX_CONSUMER_COMPONENTS=jit)
         set_tests_properties(package.missing_component PROPERTIES WILL_FAIL TRUE)
     endif ()
 endif ()

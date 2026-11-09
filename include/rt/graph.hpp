@@ -243,7 +243,7 @@ public:
                        r.rows = shape_of(b, o).rows;
                        return r;
                      }) |
-                     impl::to<std::vector<TensorRow>>();
+                     impl::to<std::vector>();
     return g;
   }
 

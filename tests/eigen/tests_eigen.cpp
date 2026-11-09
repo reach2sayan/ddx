@@ -28,7 +28,7 @@ std::vector<const double *> columns_of(const Eigen::PlainObjectBase<D> &m) {
   return std::views::iota(Eigen::Index{0}, m.cols()) |
          std::views::transform(
              [&m](Eigen::Index j) { return m.data() + j * m.outerStride(); }) |
-         ddx::impl::to<std::vector<const double *>>();
+         ddx::impl::to<std::vector>();
 }
 template <typename D>
   requires(!D::IsRowMajor && D::InnerStrideAtCompileTime == 1)
@@ -36,7 +36,7 @@ std::vector<double *> columns_of(Eigen::PlainObjectBase<D> &m) {
   return std::views::iota(Eigen::Index{0}, m.cols()) |
          std::views::transform(
              [&m](Eigen::Index j) { return m.data() + j * m.outerStride(); }) |
-         ddx::impl::to<std::vector<double *>>();
+         ddx::impl::to<std::vector>();
 }
 
 // Expands one point's Jacobian block into a dense m x symbols matrix, with the
@@ -209,8 +209,8 @@ template <typename T> void eigen_agrees_with_the_reference_table(double tol) {
                     return static_cast<T>(0.5 + 0.01 * static_cast<double>(i));
                   }) |
                   ddx::impl::to<std::vector>();
-  const auto want_g = *reference.gradient(std::span<const T>{at});
-  const auto got_g = *eigen.gradient(std::span<const T>{at});
+  const auto want_g = *reference.gradient(at);
+  const auto got_g = *eigen.gradient(at);
   const auto want_h = *reference.hvp(at, std::span<const T>{at});
   const auto got_h = *eigen.hvp(at, std::span<const T>{at});
   for (const std::size_t i : std::views::iota(0uz, n)) {

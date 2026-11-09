@@ -77,36 +77,36 @@ template <impl::Numeric T> inline constexpr bool probes_Sign = probes_Lt<T>;
 
 // Every row instantiates for every T, so an op the scalar lacks returns T{}.
 // Callers check supports() before relying on the result.
-template <typename Fn, impl::Numeric T, bool Ok>
+template <typename Fn, impl::Numeric T, bool Computes>
 [[nodiscard]] constexpr T
 supported([[maybe_unused]] const impl::Numeric auto &...args) noexcept {
-  if constexpr (Ok) {
+  if constexpr (Computes) {
     return static_cast<T>(Fn{}(args...));
   } else {
     return T{};
   }
 }
 
-// One table row as a type: the functor, whether T supports it, and its arity.
-// A leaf row has a void functor.
-template <typename Fn, bool Ok, std::size_t Arity> struct Row {
+// One table row as a type: the functor, whether it computes at T, and its
+// arity. A leaf row has a void functor.
+template <typename Fn, bool Computes, std::size_t Arity> struct OpRow {
   using functor = Fn;
-  static constexpr bool ok = Ok;
+  static constexpr bool computes = Computes;
   static constexpr std::size_t arity = Arity;
 };
 // Field ops (+, *, /, negate) are supported at every T regardless of probe.
 template <typename Fn, bool Probed, std::size_t Arity>
-using row_t = Row<Fn, Probed || is_field_op_v<Fn>, Arity>;
+using op_row_t = OpRow<Fn, Probed || is_field_op_v<Fn>, Arity>;
 
 // The single switch over the opcode tables. Every per-opcode query is a
-// visitor over the Row, so the operation set is spelled out only here.
+// visitor over the OpRow, so the operation set is spelled out only here.
 template <impl::Numeric T>
 [[nodiscard]] DDX_ALWAYS_INLINE constexpr decltype(auto)
 dispatch(OpCode op, auto &&visit) {
   switch (op) {
 #define DDX_RT_DISPATCH(fn, Op, label, functor, ...)                           \
   case OpCode::Op:                                                             \
-    return visit(row_t<functor, probes_##Op<T>, arity_of(OpCode::Op)>{});
+    return visit(op_row_t<functor, probes_##Op<T>, arity_of(OpCode::Op)>{});
     DDX_RT_UNARY_TABLE(DDX_RT_DISPATCH)
     DDX_RT_BINARY_TABLE(DDX_RT_DISPATCH)
     DDX_RT_COMPARE_TABLE(DDX_RT_DISPATCH)
@@ -114,26 +114,26 @@ dispatch(OpCode op, auto &&visit) {
 #undef DDX_RT_DISPATCH
 #define DDX_RT_DISPATCH(fn, Op, label)                                         \
   case OpCode::Op:                                                             \
-    return visit(Row<impl::detail::Op##Fn<T>, probes_##Op<T>, 1>{});
+    return visit(OpRow<impl::detail::Op##Fn<T>, probes_##Op<T>, 1>{});
     DDX_UNARY_MATH_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
 #define DDX_RT_DISPATCH(fn, Op, label, ...)                                    \
   case OpCode::Op:                                                             \
-    return visit(Row<void, true, 0>{});
+    return visit(OpRow<void, true, 0>{});
     DDX_RT_LEAF_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
     // Extern calls are unsupported at every scalar so Taylor sweeps avoid
     // them. N-ary folds use a field op, so they are supported everywhere.
 #define DDX_RT_DISPATCH(fn, Op, label, arity, kind, ...)                       \
   case OpCode::Op:                                                             \
-    return visit(Row<void, Kind::kind == Kind::Nary, arity>{});
+    return visit(OpRow<void, Kind::kind == Kind::Nary, arity>{});
     DDX_RT_EXTERN_TABLE(DDX_RT_DISPATCH)
     DDX_RT_NARY_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
     // Tensor rows run only through the interpreter's kernel table.
 #define DDX_RT_DISPATCH(fn, Op, label, arity, ...)                             \
   case OpCode::Op:                                                             \
-    return visit(Row<void, false, arity>{});
+    return visit(OpRow<void, false, arity>{});
     DDX_RT_TENSOR_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
   }
@@ -146,7 +146,7 @@ dispatch(OpCode op, auto &&visit) {
 // supported.
 template <impl::Numeric T>
 [[nodiscard]] constexpr bool supports(OpCode op) noexcept {
-  return detail::dispatch<T>(op, []<typename R>(R) { return R::ok; });
+  return detail::dispatch<T>(op, []<typename R>(R) { return R::computes; });
 }
 
 // Computes op at double and builds a node at Expression, so the interpreter,
@@ -159,7 +159,7 @@ template <impl::Numeric T>
   return detail::dispatch<T>(op, [&]<typename R>(R) -> T {
     if constexpr (R::arity == sizeof...(args) &&
                   !std::is_void_v<typename R::functor>) {
-      return detail::supported<typename R::functor, T, R::ok>(args...);
+      return detail::supported<typename R::functor, T, R::computes>(args...);
     } else {
       return T{};
     }

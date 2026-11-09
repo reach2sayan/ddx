@@ -107,7 +107,7 @@ TEST(RtJacobianJvp, TheBatchMatchesThePointCalls) {
   std::vector<std::vector<double>> dg(cells, std::vector<double>(n));
   const auto ptrs = [](auto &columns) {
     return columns | std::views::transform([](auto &c) { return c.data(); }) |
-           ddx::impl::to<std::vector<double *>>();
+           ddx::impl::to<std::vector>();
   };
   const std::array<const double *, 2> in{xs.data(), ys.data()};
   const std::array<const double *, 2> dir{vx.data(), vy.data()};
@@ -130,7 +130,7 @@ TEST(RtJacobianJvp, ASystemTakesItInOneSweep) {
   const auto sys = ddx::rt::equation([] {
     const auto x = ddx::rt::var("x");
     const auto y = ddx::rt::var("y");
-    return std::vector<RE>{x * x * y, sin(x * y)};
+    return std::vector{x * x * y, sin(x * y)};
   });
   expect_near_all(*sys.jacobian_jvp("x", px, py), d_dx(), 1e-14);
 }
@@ -230,13 +230,13 @@ TEST(RtRestrict, ABatchThroughTheView) {
   }
   const auto in =
       columns | std::views::transform([](const auto &c) { return c.data(); }) |
-      ddx::impl::to<std::vector<const double *>>();
+      ddx::impl::to<std::vector>();
   std::vector<double> f(n);
   std::vector<std::vector<double>> g(tp.jacobian_columns(),
                                      std::vector<double>(n));
   const std::array<double *, 1> fs{f.data()};
   const auto gs = g | std::views::transform([](auto &c) { return c.data(); }) |
-                  ddx::impl::to<std::vector<double *>>();
+                  ddx::impl::to<std::vector>();
   ASSERT_TRUE(tp.jacobian(in, fs, gs, n).has_value());
   for (const std::size_t i : std::views::iota(0uz, n)) {
     const auto point =
@@ -251,7 +251,7 @@ TEST(RtRestrict, ABatchThroughTheView) {
                                         std::vector<double>(n));
   const auto ws = wide |
                   std::views::transform([](auto &c) { return c.data(); }) |
-                  ddx::impl::to<std::vector<double *>>();
+                  ddx::impl::to<std::vector>();
   EXPECT_EQ(tp.jacobian(in, fs, ws, n).error().code,
             ddx::errc::wrong_column_count);
 }

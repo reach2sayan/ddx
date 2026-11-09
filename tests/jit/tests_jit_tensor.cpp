@@ -305,11 +305,9 @@ TEST(JitTensor, CompilesAndAnswersTheSweep) {
                       return 0.2 + 0.03 * static_cast<double>(p + i);
                     }) |
                     ddx::impl::to<std::vector>();
-    EXPECT_NEAR(*eq.evaluate(std::span<const double>{at}),
-                *swept.evaluate(std::span<const double>{at}), 1e-12);
-    const auto g = *eq.gradient(std::span<const double>{at});
-    for (const auto [a, b] :
-         std::views::zip(g, *swept.gradient(std::span<const double>{at}))) {
+    EXPECT_NEAR(*eq.evaluate(at), *swept.evaluate(at), 1e-12);
+    const auto g = *eq.gradient(at);
+    for (const auto [a, b] : std::views::zip(g, *swept.gradient(at))) {
       EXPECT_NEAR(a, b, 1e-12);
     }
   }
@@ -443,7 +441,7 @@ TEST(JitRebalance, AKernelKeepsTheLayoutOfTheSweep) {
     for (const RE &term : y) {
       folded += term;
     }
-    return std::vector<RE>{chain / folded, chain};
+    return std::vector{chain / folded, chain};
   });
   // A partial whose constant adjoints cancel in only one summation order.
   check([&]() -> RE {

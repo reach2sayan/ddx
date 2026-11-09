@@ -164,7 +164,7 @@ TEST(RtScalar, TensorsAtADualArenaAreRefused) {
     return sum(x * x);
   });
   const std::array<D, 3> at{D{1.0, 0.0}, D{2.0, 0.0}, D{3.0, 0.0}};
-  const auto f = eq.evaluate(std::span<const D>{at});
+  const auto f = eq.evaluate(at);
   ASSERT_FALSE(f.has_value());
   EXPECT_EQ(f.error().code, ddx::errc::unsupported_scalar);
 }

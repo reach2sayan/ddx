@@ -227,7 +227,7 @@ template <auto Seed, CExpression Expr, CEvalArg... Args>
         constexpr std::size_t seed = symbol_index<Seed, Syms>();
         const auto seeds = meta::unpack(meta::iota<N>, [&](auto... i) {
           return std::array<Dual<VT>, N>{
-              Dual<VT>{vals[i], i == seed ? VT{1} : VT{}}...};
+              Dual{vals[i], i == seed ? VT{1} : VT{}}...};
         });
         return e.template eval_seeded<Syms>(seeds);
       },
