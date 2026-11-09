@@ -5,7 +5,7 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO reach2sayan/ddx
     REF "v${VERSION}"
-    SHA512 194f4d5f428cf6eeeb9d6429b18ae7a1edcfaf4422a7345d6aee97aa02eb26884235b1e07df24ce4a9a01fe1b19610b5fc34404412bc427bfe5ed3b6dc5174d5
+    SHA512 038e9ffbb8d73c6623e4915a4bca9ba83e66f2df218eb5fe6f5d54511ae4a4c16d59f3a860e9e5ca2ee8d2c58764f38ae1edc31a4f2f06dc702bbca1bfb64b4d
     HEAD_REF main
 )
 
