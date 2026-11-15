@@ -277,13 +277,19 @@ template <impl::Numeric T>
   // Couples the operands of a field op and returns true. Returns false for any
   // other op, whose caller then couples the union with itself.
   const auto step = [&rows](OpCode op, const auto &l, const auto &r) {
-    if (op == OpCode::Mul) {
+    switch (coupling_of(op)) {
+    case Coupling::product:
       detail::couple(rows, l, r);
-    } else if (op == OpCode::Div) {
+      return true;
+    case Coupling::quotient:
       detail::couple(rows, l, r);
       detail::couple(rows, r, r);
+      return true;
+    case Coupling::linear:
+      return true;
+    default:
+      return false;
     }
-    return op == OpCode::Add || op == OpCode::Mul || op == OpCode::Div;
   };
   // Applies a binary op element by element, coupling like the Binary arm.
   const auto zipped = [&](OpCode op, const Elements &l,
@@ -291,7 +297,7 @@ template <impl::Numeric T>
     if (l.empty() || r.size() != l.size()) {
       return std::nullopt;
     }
-    if (op == OpCode::Lt || op == OpCode::Le) {
+    if (coupling_of(op) == Coupling::none) {
       return Elements(l.size());
     }
     Elements out(l.size());
@@ -315,7 +321,7 @@ template <impl::Numeric T>
     case OpCode::VecConst:
       return Elements(shape_of(b, v).rows);
     case OpCode::Map:
-      if (op != OpCode::Neg) {
+      if (coupling_of(op) != Coupling::linear) {
         for (const auto &e : each(node.in[0])) {
           detail::couple(rows, e, e);
         }
@@ -404,7 +410,7 @@ template <impl::Numeric T>
       break;
     case Kind::Unary:
       here = of(node.in[0]);
-      if (op != OpCode::Neg) {
+      if (coupling_of(op) != Coupling::linear) {
         detail::couple(rows, here, here);
       }
       break;
@@ -427,7 +433,7 @@ template <impl::Numeric T>
       break;
     case Kind::Binary:
       // Comparisons have zero derivative, so they get no support or coupling.
-      if (op == OpCode::Lt || op == OpCode::Le) {
+      if (coupling_of(op) == Coupling::none) {
         break;
       }
       here = of(node.in[0]);
@@ -440,8 +446,7 @@ template <impl::Numeric T>
       // Conservatively the union of the operands' supports. Products couple
       // their two operands; the remaining tensor ops are linear.
       detail::for_each_operand(b, v, [&](NodeId u) { here |= of(u); });
-      if (op == OpCode::Scale || op == OpCode::Dot || op == OpCode::MatVec ||
-          op == OpCode::Outer) {
+      if (coupling_of(op) == Coupling::product) {
         detail::couple(rows, of(node.in[0]), of(node.in[1]));
       }
       break;

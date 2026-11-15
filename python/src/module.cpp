@@ -328,9 +328,9 @@ PYBIND11_MODULE(_ddx, m) {
   for (const auto i : std::views::iota(0uz, rt::detail::op_count)) {
     const auto op = static_cast<rt::OpCode>(i);
     // These are already bound as operators.
-    if (std::ranges::contains(std::array{rt::OpCode::Neg, rt::OpCode::Add,
-                                         rt::OpCode::Mul, rt::OpCode::Div,
-                                         rt::OpCode::Lt, rt::OpCode::Le},
+    if (rt::detail::compares(op) ||
+        std::ranges::contains(std::array{rt::OpCode::Neg, rt::OpCode::Add,
+                                         rt::OpCode::Mul, rt::OpCode::Div},
                               op)) {
       continue;
     }

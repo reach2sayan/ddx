@@ -207,6 +207,23 @@ enum class Kind : std::uint8_t {
   Tensor
 };
 
+// How an op couples its operands in the Hessian: not at all (a comparison,
+// whose derivative is zero), linearly, as a product of the two, as a quotient
+// (the denominator also with itself), or every operand with every other.
+enum class Coupling : std::uint8_t { none, linear, product, quotient, full };
+
+// The ops whose coupling is not their kind's default: full for a scalar op,
+// linear for a tensor op, none for a comparison.
+#define DDX_RT_COUPLING_TABLE(X)                                               \
+  X(Neg, linear)                                                               \
+  X(Add, linear)                                                               \
+  X(Mul, product)                                                              \
+  X(Div, quotient)                                                             \
+  X(Scale, product)                                                            \
+  X(Dot, product)                                                              \
+  X(MatVec, product)                                                           \
+  X(Outer, product)
+
 struct OpInfo {
   std::string_view name; // the factory spelling and the Python name
   std::string_view label;
@@ -214,6 +231,8 @@ struct OpInfo {
   Kind kind;
   std::uint8_t payload = payload_index<NoPayload>; // an index into Payloads
   Yields yields = Yields::Scalar;
+  Coupling coupling = Coupling::full;
+  bool compares = false; // a comparison, though its kind is Binary
 };
 
 // Fills one entry per opcode from each sub-table, indexed by enumerator so
@@ -235,6 +254,14 @@ inline constexpr std::array op_info = [] {
 #define DDX_RT_ROW(fn, Op, label, ...)                                         \
   t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 2, Kind::Binary};
   DDX_RT_BINARY_TABLE(DDX_RT_ROW)
+#undef DDX_RT_ROW
+#define DDX_RT_ROW(fn, Op, text, ...)                                          \
+  t[static_cast<std::size_t>(OpCode::Op)] = {.name = #fn,                      \
+                                             .label = text,                    \
+                                             .arity = 2,                       \
+                                             .kind = Kind::Binary,             \
+                                             .coupling = Coupling::none,       \
+                                             .compares = true};
   DDX_RT_COMPARE_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
 #define DDX_RT_ROW(fn, Op, label, functor, yields, names)                      \
@@ -253,9 +280,18 @@ inline constexpr std::array op_info = [] {
   DDX_RT_NARY_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
 #define DDX_RT_ROW(fn, Op, label, arity, kind, payload, yields, names)         \
-  t[static_cast<std::size_t>(OpCode::Op)] = {                                  \
-      #fn, label, arity, Kind::kind, payload_index<payload>, Yields::yields};
+  t[static_cast<std::size_t>(OpCode::Op)] = {#fn,                              \
+                                             label,                            \
+                                             arity,                            \
+                                             Kind::kind,                       \
+                                             payload_index<payload>,           \
+                                             Yields::yields,                   \
+                                             Coupling::linear};
   DDX_RT_TENSOR_TABLE(DDX_RT_ROW)
+#undef DDX_RT_ROW
+#define DDX_RT_ROW(Op, how)                                                    \
+  t[static_cast<std::size_t>(OpCode::Op)].coupling = Coupling::how;
+  DDX_RT_COUPLING_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
   return t;
 }();
@@ -294,6 +330,12 @@ namespace ddx::rt::detail {
 }
 [[nodiscard]] constexpr Kind kind_of(OpCode op) noexcept {
   return detail::info(op).kind;
+}
+[[nodiscard]] constexpr Coupling coupling_of(OpCode op) noexcept {
+  return info(op).coupling;
+}
+[[nodiscard]] constexpr bool compares(OpCode op) noexcept {
+  return info(op).compares;
 }
 [[nodiscard]] constexpr Yields yields_of(OpCode op) noexcept {
   return detail::info(op).yields;

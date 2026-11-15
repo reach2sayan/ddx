@@ -27,8 +27,10 @@ inline constexpr std::array spellings = [] {
   for (const OpCode op : {OpCode::Add, OpCode::Mul, OpCode::Div}) {
     set(op, Form::Infix);
   }
-  for (const OpCode op : {OpCode::Lt, OpCode::Le}) {
-    set(op, Form::Compare);
+  for (const auto i : std::views::iota(0uz, op_count)) {
+    if (compares(static_cast<OpCode>(i))) {
+      set(static_cast<OpCode>(i), Form::Compare);
+    }
   }
   set(OpCode::Abs, Form::Call, "fabs"); // C's abs is the integer one
   for (const OpCode op : {OpCode::Pow, OpCode::Atan2, OpCode::Hypot}) {
