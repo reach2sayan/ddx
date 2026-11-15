@@ -1,5 +1,4 @@
 #include "rt/equation.hpp"
-#include "rt/text/equation.hpp"
 
 #include <gtest/gtest.h>
 
@@ -164,10 +163,6 @@ TEST(RtExtern, AMisshapenRegistrationOrCallIsRefused) {
     return ddx::rt::extern_fn({.name = "g", .arity = 400, .order = 2}, g_of)(a);
   });
   EXPECT_EQ(wide.status()->code, ddx::errc::extern_shape);
-  for (const auto *text : {"extern(x)", "extern_d(x)", "extern_args(x, y)"}) {
-    EXPECT_EQ(ddx::rt::equation(text).error().code, ddx::errc::unknown_function)
-        << text;
-  }
 }
 
 TEST(RtExtern, ABatchMatchesThePointCalls) {

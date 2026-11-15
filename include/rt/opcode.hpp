@@ -315,7 +315,7 @@ static_assert([] {
 } // namespace ddx::rt::detail
 
 namespace ddx::rt {
-// An opcode's label, as census() rows and text spell it.
+// An opcode's label, as census() rows spell it.
 [[nodiscard]] constexpr std::string_view label_of(OpCode op) noexcept {
   return detail::info(op).label;
 }
@@ -353,7 +353,7 @@ using payload_of_t = DDX_TYPE(meta::at<detail::info(Op).payload>(Payloads{}));
 template <OpCode Op>
 inline constexpr std::integral_constant<OpCode, Op> opcode{};
 
-// Looks up an opcode by label, for the bridge and the text parser.
+// Looks up an opcode by label, for the bridge.
 [[nodiscard]] constexpr std::optional<OpCode>
 opcode_of(std::string_view label) noexcept {
   const auto row =
@@ -399,7 +399,7 @@ static_assert(std::ranges::all_of(std::views::iota(0uz, op_count), [](auto i) {
   const auto payload = detail::info(op).payload;
   return payload == payload_index<Count> || payload == payload_index<ExternRef>;
 }
-// Whether text and Python may call the op by name: scalar operand ops only.
+// Whether Python may call the op by name: scalar operand ops only.
 [[nodiscard]] constexpr bool callable(OpCode op) noexcept {
   return !is_leaf(op) && !has_list(op) && kind_of(op) != Kind::Tensor &&
          yields_of(op) == Yields::Scalar;

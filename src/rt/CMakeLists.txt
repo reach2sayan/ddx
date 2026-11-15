@@ -14,4 +14,3 @@ ddx_target_flags(ddx_rt LIBRARY)
 # Defines boost::throw_exception, which Boost requires under -fno-exceptions.
 target_sources(ddx_rt PRIVATE boost_no_exceptions.cpp)
 
-add_subdirectory(text)

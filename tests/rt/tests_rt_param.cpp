@@ -1,6 +1,5 @@
 #include "ddx.hpp"
 #include "rt/equation.hpp"
-#include "rt/text/equation.hpp"
 
 #include <gtest/gtest.h>
 
@@ -29,13 +28,6 @@ TEST(RtParam, SymbolsTakeTheOrderTheyAreNamedIn) {
   const auto row = eq.jacobian_pattern()->get().rows()[0];
   EXPECT_EQ(std::vector(row.begin(), row.end()),
             (std::vector{static_cast<std::uint32_t>(0), static_cast<std::uint32_t>(1)}));
-}
-
-TEST(RtParam, TextSymbolsTakeTheOrderTheyFirstAppearIn) {
-  const auto eq = ddx::rt::equation("y * x");
-  ASSERT_TRUE(eq.has_value());
-  EXPECT_TRUE(std::ranges::equal(*eq->symbols(),
-                                 std::array<std::string_view, 2>{"y", "x"}));
 }
 
 [[nodiscard]] auto scaled() {

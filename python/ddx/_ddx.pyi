@@ -269,12 +269,10 @@ class errc(enum.IntEnum):
     jit_module: typing.ClassVar[errc]  # value = <errc.jit_module: 19>
     jit_verify: typing.ClassVar[errc]  # value = <errc.jit_verify: 20>
     jit_lookup: typing.ClassVar[errc]  # value = <errc.jit_lookup: 21>
-    bad_syntax: typing.ClassVar[errc]  # value = <errc.bad_syntax: 22>
-    unknown_function: typing.ClassVar[errc]  # value = <errc.unknown_function: 23>
-    wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 24>
-    unclosed_implicit: typing.ClassVar[errc]  # value = <errc.unclosed_implicit: 25>
-    not_compiling: typing.ClassVar[errc]  # value = <errc.not_compiling: 26>
-    dense_refused: typing.ClassVar[errc]  # value = <errc.dense_refused: 27>
+    wrong_argument_count: typing.ClassVar[errc]  # value = <errc.wrong_argument_count: 22>
+    unclosed_implicit: typing.ClassVar[errc]  # value = <errc.unclosed_implicit: 23>
+    not_compiling: typing.ClassVar[errc]  # value = <errc.not_compiling: 24>
+    dense_refused: typing.ClassVar[errc]  # value = <errc.dense_refused: 25>
     @classmethod
     def __new__(cls, value):
         ...
@@ -304,13 +302,6 @@ def cos(x: Expression) -> Expression:
     ...
 def cosh(x: Expression) -> Expression:
     ...
-@typing.overload
-def equation(source: str) -> Equation:
-    ...
-@typing.overload
-def equation(source: list[str]) -> Equation:
-    ...
-@typing.overload
 def equation(model: typing.Any) -> typing.Any:
     ...
 def erf(x: Expression) -> Expression:

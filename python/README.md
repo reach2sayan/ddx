@@ -129,24 +129,6 @@ the end, raises `errc.tensor_shape`. An output is always a scalar: a model
 that returns a vector raises `errc.tensor_shape` too, so reduce it or return
 its elements as a system. A model holding vector nodes compiles like any other: each vector operation is a vectorised loop in the kernel, and the answers agree with the interpreter's to a few ulps, the sums being taken in a different order.
 
-### Written down instead
-
-A model can be a string, or a list of strings for a system:
-
-```python
-g   = ddx.equation("exp(x) * sin(y)")
-sys = ddx.equation(["x*x + y*y - 4", "x*y - 1"])
-```
-
-Free identifiers become the symbols, in the order they first appear. The grammar
-is Python's arithmetic: `+ - * /`, `**` for exponentiation (`^` is not an
-operator), parentheses, unary signs, decimals and exponent notation, and the
-functions in the table above. Comparisons bind looser than arithmetic, so
-`select(x*x < y + 1, x, y)` needs no parentheses, and there is **one
-comparison per expression**: `a < b < c` is refused rather than read. A string
-that does not parse raises `ddx.Error` with `bad_syntax`, `unknown_function` or
-`wrong_argument_count`.
-
 ## Points
 
 A point is a sequence, or a dict keyed by input name. A 2-D array is a
@@ -267,9 +249,6 @@ is the spelling.
 | `closed_twice`, `nested_implicit` | an implicit input named twice, or a residual reading another implicit |
 | `not_single_output` | `hvp`, `dense_hessian` or `hessian_colours` on a system |
 | `tensor_shape` | vector operands of mismatched shapes, an element index past the end, or a vector returned as an output |
-| `bad_syntax` | a string the grammar does not accept |
-| `unknown_function` | a string calls a function that does not exist |
-| `wrong_argument_count` | a string calls one with the wrong arity |
 | `jit_target`, `jit_module`, `jit_verify`, `jit_lookup` | the compiler could not produce or link a kernel |
 | `not_compiling` | `compile_status` on an equation whose backend is `INTERPRET` |
 | `dense_refused` | `dense_hessian` on a model whose matrix the symbols move, such as `gemv(exp(outer(x, x)), x)`; `hessian` and `hvp` answer it |

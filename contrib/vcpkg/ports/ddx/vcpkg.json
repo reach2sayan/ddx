@@ -15,7 +15,6 @@
     "boost-hash2",
     "boost-integer",
     "boost-mp11",
-    "boost-parser",
     "boost-property-map",
     "boost-range",
     "boost-stl-interfaces",

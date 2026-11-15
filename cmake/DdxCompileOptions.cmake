@@ -62,7 +62,7 @@ if (NOT DDX_SANITIZE STREQUAL "off")
 endif ()
 
 # ddx_target_flags(<target> [EXCEPTIONS] [LIBRARY])
-# EXCEPTIONS keeps exceptions enabled, as pybind11 and Boost.Parser need.
+# EXCEPTIONS keeps exceptions enabled, as pybind11 needs.
 # LIBRARY marks code linked into libddx: PIC, hidden visibility, DDX_BUILDING.
 function(ddx_target_flags target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "EXCEPTIONS;LIBRARY" "" "")

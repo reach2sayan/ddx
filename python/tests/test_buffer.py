@@ -161,7 +161,7 @@ def test_a_want_the_buffer_cannot_bind_is_refused_up_front(
     assert caught.value.code is ddx.errc.wrong_column_count
 
 def test_a_jacobian_of_no_nonzero_cells_is_a_block_of_zeros() -> None:
-    eq = ddx.equation("x < 1")
+    eq = ddx.equation(lambda: ddx.var("x") < 1.0)
     call = eq.buffer(np.array([0.0]))
     call()
     _, partials = eq.jacobian(np.array([0.0]))
