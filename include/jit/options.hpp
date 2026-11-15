@@ -13,12 +13,10 @@
 
 // Compile options only, present in every build so an Equation has one shape
 // with or without the JIT. jit/kernel.hpp holds the LLVM side.
-namespace ddx::rt {
+namespace ddx::rt::detail {
 template <impl::Numeric T> class Graph;
-namespace detail {
 template <impl::Numeric T> struct TensorCall;
-} // namespace detail
-} // namespace ddx::rt
+} // namespace ddx::rt::detail
 
 namespace ddx::jit {
 
@@ -45,9 +43,11 @@ enum class OptLevel : std::uint8_t { O0, O1, O2, O3 };
 BOOST_DESCRIBE_ENUM(OptLevel, O0, O1, O2, O3)
 
 static_assert(DDX_JIT_DEFAULT_OPT >= 0 && DDX_JIT_DEFAULT_OPT <= 3);
+namespace detail {
 inline constexpr OptLevel default_opt_level =
     static_cast<OptLevel>(DDX_JIT_DEFAULT_OPT);
 inline constexpr bool default_contract = DDX_JIT_DEFAULT_CONTRACT != 0;
+} // namespace detail
 
 // Points per loop iteration; derived means the host's register width. Every
 // width gives the same bits.
@@ -78,7 +78,7 @@ BOOST_DESCRIBE_ENUM(Backend, Interpret, Compile)
 // Everything that decides the machine code, and nothing else.
 struct Codegen {
   Lanes lanes = Lanes::derived();
-  OptLevel opt_level = default_opt_level;
+  OptLevel opt_level = detail::default_opt_level;
   // Kept low, since selection and register allocation are ~95% of a compile.
   OptLevel codegen_level = OptLevel::O1;
   // Vectorises within one point; off because the gain depends on the model.
@@ -86,7 +86,7 @@ struct Codegen {
   // With a vector library, derived lanes become the widest width it serves,
   // four doubles for libmvec.
   VecLib veclib = VecLib::None;
-  bool contract = default_contract; // follows DDX_FP_FLAGS
+  bool contract = detail::default_contract; // follows DDX_FP_FLAGS
 
   friend bool operator==(const Codegen &, const Codegen &) = default;
 };
@@ -104,6 +104,7 @@ struct Options {
   friend bool operator==(const Options &, const Options &) = default;
 };
 
+namespace detail {
 // A batch too short to fill one sweep block compiles scalar, so kernel and
 // sweep agree. A stated lane width is kept.
 [[nodiscard]] constexpr Options for_batch(Options opt,
@@ -115,7 +116,7 @@ struct Options {
 }
 
 // The column counts a kernel is called with, read off its graph. A flat copy of
-// rt::Layout, because jit may not include rt/.
+// rt::detail::Layout, because jit may not include rt/.
 struct KernelShape {
   std::size_t arity = 0;
   std::size_t values = 0;
@@ -126,7 +127,7 @@ struct KernelShape {
   std::size_t tapes = 0;
 
   template <impl::Numeric T>
-  [[nodiscard]] static KernelShape of(const rt::Graph<T> &g,
+  [[nodiscard]] static KernelShape of(const rt::detail::Graph<T> &g,
                                       std::size_t lanes = 1) {
     const auto &layout = g.layout();
     return KernelShape{
@@ -142,5 +143,6 @@ struct KernelShape {
   }
   friend constexpr bool operator==(KernelShape, KernelShape) noexcept = default;
 };
+} // namespace detail
 
 } // namespace ddx::jit

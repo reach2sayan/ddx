@@ -318,20 +318,24 @@ TEST(RtTensor, GemvBothWays) {
 TEST(RtTensor, OperatorsAreTheCalls) {
   constexpr std::size_t rows = 4, cols = 6;
   const auto m = matrix(rows, cols);
-  ddx::rt::Arena<> b;
-  const RV x = ddx::rt::vec(b, "x", cols);
-  const RV y = ddx::rt::vec(b, "y", rows);
-  const RE T = ddx::rt::var(b, "T");
-  const auto M = ddx::rt::mat_constant(b, rows, cols, std::span{m});
+  ddx::rt::detail::Arena<> b;
+  const RV x = ddx::rt::detail::vec(b, "x", cols);
+  const RV y = ddx::rt::detail::vec(b, "y", rows);
+  const RE T = ddx::rt::detail::var(b, "T");
+  const auto M = ddx::rt::detail::mat_constant(b, rows, cols, std::span{m});
   const auto C = exp(T * M);
 
-  EXPECT_EQ((x % x).id(), dot(x, x).id());
-  EXPECT_EQ((M % x).id(), gemv(M, x).id());
-  EXPECT_EQ((C % x).id(), gemv(C, x).id());
-  EXPECT_EQ((ddx::rt::transpose(M) % y).id(), gemv(M, y, true).id());
-  EXPECT_EQ((ddx::rt::transpose(C) % y).id(), gemv(C, y, true).id());
-  EXPECT_EQ((y % (M % x) + x % x).id(), (dot(y, gemv(M, x)) + dot(x, x)).id());
-  EXPECT_EQ((2.0 * x % x).id(), dot(2.0 * x, x).id());
+  using ddx::rt::detail::Router;
+  EXPECT_EQ(Router::id(x % x), Router::id(dot(x, x)));
+  EXPECT_EQ(Router::id(M % x), Router::id(gemv(M, x)));
+  EXPECT_EQ(Router::id(C % x), Router::id(gemv(C, x)));
+  EXPECT_EQ(Router::id(ddx::rt::transpose(M) % y),
+            Router::id(gemv(M, y, true)));
+  EXPECT_EQ(Router::id(ddx::rt::transpose(C) % y),
+            Router::id(gemv(C, y, true)));
+  EXPECT_EQ(Router::id(y % (M % x) + x % x),
+            Router::id(dot(y, gemv(M, x)) + dot(x, x)));
+  EXPECT_EQ(Router::id(2.0 * x % x), Router::id(dot(2.0 * x, x)));
 
   const auto why = [](const RE &e) {
     return ddx::rt::equation(e).status()->code;
@@ -412,9 +416,9 @@ TEST(RtTensor, RefusesMismatchedWidthsAndVectorRoots) {
   EXPECT_EQ(gemv_shape.status()->code, ddx::errc::tensor_shape);
 
   // A vector output where a scalar is required, built on the arena directly.
-  ddx::rt::Arena<> b;
-  const RV v = ddx::rt::vec(b, "x", 3);
-  const auto rooted = ddx::rt::equation(RE{b, v.id()});
+  ddx::rt::detail::Arena<> b;
+  const RV v = ddx::rt::detail::vec(b, "x", 3);
+  const auto rooted = ddx::rt::equation(RE{b, ddx::rt::detail::Router::id(v)});
   EXPECT_EQ(rooted.status()->code, ddx::errc::tensor_shape);
 
   EXPECT_EQ(
@@ -546,7 +550,7 @@ TEST(RtTensor, EachScalarHasItsOwnDefaultTable) {
   const auto defaulted = scalar_typed_tensor_model<float>(n);
   EXPECT_EQ(defaulted.tensor_kernels().name, "renamed-f");
   EXPECT_EQ(*defaulted.gradient(at_f), want);
-  ddx::rt::use_tensor_kernels(ddx::rt::reference_table<float>);
+  ddx::rt::use_tensor_kernels(ddx::rt::detail::reference_table<float>);
 
   auto own = scalar_typed_tensor_model<float>(n);
   own.tensor_kernels(renamed_f_table);
@@ -560,14 +564,14 @@ TEST(RtTensor, EachScalarHasItsOwnDefaultTable) {
 TEST(RtTensor, StaysSmallAtAThousandSpecies) {
   constexpr std::size_t n = 1000;
   const auto start = std::chrono::steady_clock::now();
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto scope = ddx::rt::detail::scoped_arena(b);
-  const RE f = mse_tensor(ddx::rt::vec(b, "x", n));
+  const RE f = mse_tensor(ddx::rt::detail::vec(b, "x", n));
   ASSERT_FALSE(f.poisoned());
-  const auto g = ddx::rt::build_reverse_jacobian(b, f.id(b));
+  const auto g = ddx::rt::detail::build_reverse_jacobian(b, f.id(b));
   const auto gradient_nodes = b.size();
   const auto along = ddx::rt::detail::seeded_sum(b, g.partial);
-  (void)ddx::rt::build_reverse_jacobian(b, along.id(b));
+  (void)ddx::rt::detail::build_reverse_jacobian(b, along.id(b));
   const auto hvp_nodes = b.size();
   const std::chrono::duration<double, std::milli> built =
       std::chrono::steady_clock::now() - start;
@@ -985,9 +989,10 @@ TEST(RtMatrix, SelectAcrossShapes) {
             }),
             ddx::errc::tensor_shape); // arms of two shapes
 
-  ddx::rt::Arena<> b;
-  const RV x = ddx::rt::vec(b, "x", 3);
-  EXPECT_EQ(select(RE{1.0}, x, x * x).id(), x.id()); // folded as a scalar's is
+  ddx::rt::detail::Arena<> b;
+  const RV x = ddx::rt::detail::vec(b, "x", 3);
+  EXPECT_EQ(ddx::rt::detail::Router::id(select(RE{1.0}, x, x * x)),
+            ddx::rt::detail::Router::id(x)); // folded as a scalar's is
 }
 
 TEST(RtMatrix, ExpOfTemperatureTimesATableMatchesTheScalarGraph) {
@@ -1349,25 +1354,26 @@ TEST(RtMatrix, DenseHessianRefusesACompositionDependentMatrix) {
 // Sweeps must not build adjoints or tangents for params, constant vectors or
 // tables; a node nobody reads still costs every later sweep its interning.
 TEST(RtTensor, SweepsBuildNothingForWhatHoldsStill) {
-  const auto count = [](const ddx::rt::Arena<> &b, ddx::rt::OpCode op) {
-    return std::ranges::count(b.nodes(), op, &ddx::rt::Node<double>::op);
+  const auto count = [](const ddx::rt::detail::Arena<> &b, ddx::rt::OpCode op) {
+    return std::ranges::count(b.nodes(), op,
+                              &ddx::rt::detail::Node<double>::op);
   };
   {
-    ddx::rt::Arena<> b;
-    const RE s = ddx::rt::param(b, "s");
-    const RV x = ddx::rt::vec(b, "x", 3);
+    ddx::rt::detail::Arena<> b;
+    const RE s = ddx::rt::detail::param(b, "s");
+    const RV x = ddx::rt::detail::vec(b, "x", 3);
     const auto root = sum(s * x).id(b);
-    (void)ddx::rt::derive_jacobian(b, std::span{&root, 1});
+    (void)ddx::rt::detail::derive_jacobian(b, std::span{&root, 1});
     EXPECT_EQ(count(b, ddx::rt::OpCode::Dot), 0) << "an adjoint for the param";
   }
   {
-    ddx::rt::Arena<> b;
+    ddx::rt::detail::Arena<> b;
     const std::vector<double> c{1.0, 2.0, 3.0};
-    const RV x = ddx::rt::vec(b, "x", 3);
-    const RV k = ddx::rt::vec_constant(b, std::span<const double>{c});
+    const RV x = ddx::rt::detail::vec(b, "x", 3);
+    const RV k = ddx::rt::detail::vec_constant(b, std::span<const double>{c});
     const auto root = sum(gemv(ddx::rt::outer(x, k), k)).id(b);
-    (void)ddx::rt::tangent_sweep(b, std::span{&root, 1},
-                                 ddx::rt::detail::seeds_along(b));
+    (void)ddx::rt::detail::tangent_sweep(b, std::span{&root, 1},
+                                         ddx::rt::detail::seeds_along(b));
     // d(x) k^T is read through the gemv as d(x) (k . k), so only the primal's
     // outer is a node.
     EXPECT_EQ(count(b, ddx::rt::OpCode::Outer), 1)
@@ -1391,11 +1397,13 @@ TEST(RtMatrix, RefusesMismatchedShapesAndMatrixRoots) {
   });
   EXPECT_EQ(not_a_vector.status()->code, ddx::errc::tensor_shape);
 
-  ddx::rt::Arena<> b;
-  const RE T = ddx::rt::var(b, "T");
-  const RE m = T * ddx::rt::mat_constant(b, 2, 3, std::span<const double>{six});
-  EXPECT_EQ(ddx::rt::equation(RE{b, m.id()}).status()->code,
-            ddx::errc::tensor_shape);
+  ddx::rt::detail::Arena<> b;
+  const RE T = ddx::rt::detail::var(b, "T");
+  const RE m =
+      T * ddx::rt::detail::mat_constant(b, 2, 3, std::span<const double>{six});
+  EXPECT_EQ(
+      ddx::rt::equation(RE{b, ddx::rt::detail::Router::id(m)}).status()->code,
+      ddx::errc::tensor_shape);
 
   // A table has no width, so nothing that counts widths may take it for a
   // scalar, whether as an output, an element or a moved entry.
@@ -1442,20 +1450,21 @@ struct Census {
   std::size_t elements = 0;
   std::size_t row_reads = 0; // RowOf: a row read back out of a matrix
 };
-Census census(const ddx::rt::Arena<> &b, const ddx::rt::DenseHessian &h) {
+Census census(const ddx::rt::detail::Arena<> &b,
+              const ddx::rt::detail::DenseHessian &h) {
   const auto block = ddx::rt::detail::reachable(b, std::span{&h.block, 1});
   const auto gradient = ddx::rt::detail::reachable(b, h.partial);
   Census c;
-  for (const ddx::rt::NodeId v : ddx::rt::detail::live_ids(block)) {
+  for (const ddx::rt::detail::NodeId v : ddx::rt::detail::live_ids(block)) {
     const auto op = b.op_of(v);
     // A table's MatRow is read in place, never written.
-    const bool in_place = ddx::rt::is_table(b, v) &&
-                          ddx::rt::detail::get<ddx::rt::Orientation>(b[v]) ==
-                              ddx::rt::Orientation::plain;
+    const bool in_place = ddx::rt::detail::is_table(b, v) &&
+                          ddx::rt::detail::get<ddx::rt::detail::Orientation>(
+                              b[v]) == ddx::rt::detail::Orientation::plain;
     if (gradient[v] || !ddx::rt::detail::is_tensor(b[v]) || in_place) {
       continue;
     }
-    c.elements += ddx::rt::width_of(b, v);
+    c.elements += ddx::rt::detail::width_of(b, v);
     c.row_reads += op == ddx::rt::OpCode::RowOf;
   }
   return c;
@@ -1466,11 +1475,11 @@ Census census(const ddx::rt::Arena<> &b, const ddx::rt::DenseHessian &h) {
 // so no row is read back; that writes about 7.3 n^2 elements here.
 TEST(RtTensorDense, TheBlockIsSummedNotStacked) {
   constexpr std::size_t n = 200;
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto arena = ddx::rt::detail::scoped_arena(b); // as equation() runs it
-  const RE f = debye_hueckel_and_double_sum(ddx::rt::vec(b, "x", n));
+  const RE f = debye_hueckel_and_double_sum(ddx::rt::detail::vec(b, "x", n));
   ASSERT_FALSE(f.poisoned());
-  const auto h = ddx::rt::derive_dense_hessian(b, f.id(b));
+  const auto h = ddx::rt::detail::derive_dense_hessian(b, f.id(b));
   const Census c = census(b, h);
   EXPECT_EQ(c.row_reads, 0u);
   std::printf("[ ddx ] dense block, Debye-Hueckel + double sum, n = %zu: "
@@ -1480,15 +1489,15 @@ TEST(RtTensorDense, TheBlockIsSummedNotStacked) {
   EXPECT_NE(b.op_of(h.block), ddx::rt::OpCode::StackRows);
 
   // A scalar model's partials are not vector elements, so its rows are stacked.
-  ddx::rt::Arena<> scalar;
+  ddx::rt::detail::Arena<> scalar;
   const auto x = std::views::iota(0uz, 6uz) |
                  std::views::transform([&](std::size_t i) {
-                   return ddx::rt::var(scalar, std::format("x[{}]", i));
+                   return ddx::rt::detail::var(scalar, std::format("x[{}]", i));
                  }) |
                  ddx::impl::to<std::vector>();
   const RE g = models::mse(x);
   ASSERT_FALSE(g.poisoned());
-  const auto hs = ddx::rt::derive_dense_hessian(scalar, g.id(scalar));
+  const auto hs = ddx::rt::detail::derive_dense_hessian(scalar, g.id(scalar));
   EXPECT_EQ(scalar.op_of(hs.block), ddx::rt::OpCode::StackRows);
 }
 
@@ -1545,20 +1554,21 @@ TEST(RtMatrix, AParamVectorIsTheConstantItCarries) {
 TEST(RtMatrix, NodesDoNotGrowWithTheSquare) {
   const auto nodes = [](std::size_t n) {
     const auto table = pair_table(n, 12, -0.5, 0.5);
-    ddx::rt::Arena<> b;
-    const RE T = ddx::rt::var(b, "T");
-    const RV x = ddx::rt::vec(b, "x", n);
+    ddx::rt::detail::Arena<> b;
+    const RE T = ddx::rt::detail::var(b, "T");
+    const RV x = ddx::rt::detail::vec(b, "x", n);
     const auto B =
-        ddx::rt::mat_constant(b, n, n, std::span<const double>{table});
+        ddx::rt::detail::mat_constant(b, n, n, std::span<const double>{table});
     const RE f = dot(x, gemv(exp(T * B), x));
     EXPECT_FALSE(f.poisoned());
     const std::size_t model = b.size() - n; // past the n Var leaves
-    const auto row = ddx::rt::build_reverse_jacobian(b, f.id(b));
+    const auto row = ddx::rt::detail::build_reverse_jacobian(b, f.id(b));
     // dT reads the table through gemvs, so no n x n adjoint is formed for it.
     const auto live =
         ddx::rt::detail::reachable(b, std::span{&row.partial[0], 1});
-    for (const auto v : std::views::iota(
-             ddx::rt::NodeId{0}, static_cast<ddx::rt::NodeId>(b.size()))) {
+    for (const auto v :
+         std::views::iota(ddx::rt::detail::NodeId{0},
+                          static_cast<ddx::rt::detail::NodeId>(b.size()))) {
       EXPECT_FALSE(live[v] && b[v].op == ddx::rt::OpCode::Outer)
           << "node " << v;
     }
@@ -1666,10 +1676,10 @@ TEST(RtMatrix, CostAtAThousandSpecies) {
 // A commutative Zip or Dot is one node either way round, constants fold to a
 // table, and a gemv of a scaled vector becomes the scale of the gemv.
 TEST(RtTensorGraph, CommutativeOpsAreOneNodeEitherWayRound) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto arena = ddx::rt::detail::scoped_arena(b);
-  const RV x = ddx::rt::vec(b, "x", 4);
-  const RV y = ddx::rt::vec(b, "y", 4);
+  const RV x = ddx::rt::detail::vec(b, "x", 4);
+  const RV y = ddx::rt::detail::vec(b, "y", 4);
   EXPECT_EQ((x + y).id(b), (y + x).id(b));
   EXPECT_EQ((x * y).id(b), (y * x).id(b));
   EXPECT_EQ(dot(x, y).id(b), dot(y, x).id(b));
@@ -1678,7 +1688,7 @@ TEST(RtTensorGraph, CommutativeOpsAreOneNodeEitherWayRound) {
 
 TEST(RtTensorGraph, ConstantsFoldToTheirTable) {
   using ddx::rt::OpCode;
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto arena = ddx::rt::detail::scoped_arena(b);
   const std::vector<double> u{1, 2, 3};
   const std::vector<double> w{0.5, -1, 4};
@@ -1690,23 +1700,24 @@ TEST(RtTensorGraph, ConstantsFoldToTheirTable) {
   const RV p = gemv(ddx::rt::mat_constant(3, 3, m), ddx::rt::vec_constant(u));
   ASSERT_EQ(b.op_of(p.id(b)), OpCode::VecConst);
   EXPECT_EQ(
-      b.tensors()[ddx::rt::detail::get<ddx::rt::TensorRef>(b[p.id(b)]).value]
+      b.tensors()[ddx::rt::detail::get<ddx::rt::detail::TensorRef>(b[p.id(b)])
+                      .value]
           .data,
       (std::vector<double>{30, 36, 42}));
 
-  EXPECT_TRUE(
-      ddx::rt::is_table(b, exp(-0.5 * ddx::rt::mat_constant(3, 3, m)).id(b)));
+  EXPECT_TRUE(ddx::rt::detail::is_table(
+      b, exp(-0.5 * ddx::rt::mat_constant(3, 3, m)).id(b)));
   // A symbol in the way leaves the node as it is.
-  const RV x = ddx::rt::vec(b, "x", 3);
+  const RV x = ddx::rt::detail::vec(b, "x", 3);
   EXPECT_EQ(b.op_of(dot(x, ddx::rt::vec_constant(u)).id(b)), OpCode::Dot);
 }
 
 TEST(RtTensorGraph, AGemvOfAScaledVectorIsTheScaledGemv) {
   using ddx::rt::OpCode;
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto arena = ddx::rt::detail::scoped_arena(b);
-  const RV x = ddx::rt::vec(b, "x", 3);
-  const RE s = ddx::rt::var(b, "s");
+  const RV x = ddx::rt::detail::vec(b, "x", 3);
+  const RE s = ddx::rt::detail::var(b, "s");
   const std::vector<double> m{1, 2, 3, 4, 5, 6, 7, 8, 9};
   const RE g = gemv(ddx::rt::mat_constant(3, 3, m), s * x);
   ASSERT_EQ(b.op_of(g.id(b)), OpCode::Scale);
@@ -1715,9 +1726,9 @@ TEST(RtTensorGraph, AGemvOfAScaledVectorIsTheScaledGemv) {
 
 TEST(RtTensorGraph, AQuadraticFormsTwoProductsAreAPair) {
   constexpr std::size_t n = 5;
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto arena = ddx::rt::detail::scoped_arena(b);
-  const RV x = ddx::rt::vec(b, "x", n);
+  const RV x = ddx::rt::detail::vec(b, "x", n);
   const RE f = dot(x, gemv(ddx::rt::mat_constant(n, n, matrix(n, n)), x));
   const auto g = ddx::test::GraphBuilder{b}.value(f).build_jacobian().finish();
   const auto steps = g.schedule();
@@ -1793,9 +1804,11 @@ TEST(RtTensor, AScalarFactorOfAVectorOfOneKeepsItsPartial) {
 }
 
 TEST(RtTensor, DotRefusesHandlesOfTwoArenas) {
-  ddx::rt::Arena<> a;
-  ddx::rt::Arena<> b;
-  EXPECT_TRUE(dot(ddx::rt::vec(a, "u", 2), ddx::rt::vec(b, "w", 2)).poisoned());
+  ddx::rt::detail::Arena<> a;
+  ddx::rt::detail::Arena<> b;
+  EXPECT_TRUE(
+      dot(ddx::rt::detail::vec(a, "u", 2), ddx::rt::detail::vec(b, "w", 2))
+          .poisoned());
 }
 
 // For x^T A x the block is the table A + A^T itself, with no node over it, yet
@@ -1803,13 +1816,13 @@ TEST(RtTensor, DotRefusesHandlesOfTwoArenas) {
 TEST(RtTensorDense, ATableAloneIsTheBlock) {
   constexpr std::size_t n = 5;
   const auto a = pair_table(n, 12, -0.5, 1.5);
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto arena = ddx::rt::detail::scoped_arena(b);
-  const RV x = ddx::rt::vec(b, "x", n);
+  const RV x = ddx::rt::detail::vec(b, "x", n);
   const RE f = dot(x, gemv(ddx::rt::mat_constant(n, n, a), x));
   ASSERT_FALSE(f.poisoned());
-  const auto h = ddx::rt::derive_dense_hessian(b, f.id(b));
-  EXPECT_TRUE(ddx::rt::is_table(b, h.block));
+  const auto h = ddx::rt::detail::derive_dense_hessian(b, f.id(b));
+  EXPECT_TRUE(ddx::rt::detail::is_table(b, h.block));
 
   const auto eq = ddx::rt::equation([&] {
     const RV y = ddx::rt::vec("x", n);
@@ -1843,10 +1856,10 @@ TEST(RtTensorDense, AnEquationOfParamsHasAnEmptyDenseBlock) {
 
 // rows * cols wraps long before a table that size could be supplied.
 TEST(RtTensor, ATableWhoseSizeOverflowsIsRefused) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto refused = [&](std::size_t rows, std::size_t cols,
                            std::span<const double> data) {
-    return ddx::rt::mat_constant(b, rows, cols, data).poisoned();
+    return ddx::rt::detail::mat_constant(b, rows, cols, data).poisoned();
   };
   EXPECT_TRUE(refused(1uz << 32, 1uz << 32, {}));
   const std::array<double, 4> four{1.0, 2.0, 3.0, 4.0};

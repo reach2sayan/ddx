@@ -220,7 +220,8 @@ TEST(RtImplicit, AResidualOverAnotherImplicitIsRefused) {
 
 TEST(RtImplicit, AnImplicitWithNoResidualIsRefused) {
   const auto eq = ddx::rt::equation([] {
-    return ddx::rt::var("a") * ddx::rt::named(ddx::rt::OpCode::Implicit, "z");
+    return ddx::rt::var("a") *
+           ddx::rt::detail::named(ddx::rt::OpCode::Implicit, "z");
   });
   ASSERT_TRUE(eq.poisoned());
   EXPECT_EQ(eq.status()->code, ddx::errc::unclosed_implicit);

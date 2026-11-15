@@ -127,7 +127,7 @@ template <typename T> void gemm_agrees_with_the_reference_row() {
   const auto b = filled<T>(k * c, 2);
   std::vector<T> got(r * c), want(r * c);
   cblas_table<T>.gemm(r, k, c, a, b, got);
-  ddx::rt::reference_table<T>.gemm(r, k, c, a, b, want);
+  ddx::rt::detail::reference_table<T>.gemm(r, k, c, a, b, want);
   expect_close<T>(got, want);
 }
 

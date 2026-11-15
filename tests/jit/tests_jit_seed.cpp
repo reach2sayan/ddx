@@ -14,8 +14,8 @@
 // because a mix-up gives silently wrong arithmetic rather than a crash.
 
 namespace {
-using ddx::rt::Arena;
-using ddx::rt::Graph;
+using ddx::rt::detail::Arena;
+using ddx::rt::detail::Graph;
 
 
 // The inputs are x, y, then v0, v1, the order input_column() states.
@@ -59,7 +59,7 @@ TEST(JitSeed, MatchesTheInterpreterToTheBit) {
     const auto point =
         columns | std::views::transform([i](const auto &c) { return c[i]; }) |
         ddx::impl::to<std::vector>();
-    const auto want = ddx::rt::evaluate_all(b, point);
+    const auto want = ddx::rt::detail::evaluate_all(b, point);
     EXPECT_EQ(got[i], want[graph.outputs()[0]]) << "at point " << i;
   }
 }

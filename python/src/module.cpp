@@ -41,7 +41,7 @@ namespace {
 
 // The arena the running model builds into. It is separate from rt's own
 // because Python needs shared ownership of it.
-thread_local std::shared_ptr<rt::Arena<double>> current_arena;
+thread_local std::shared_ptr<rt::detail::Arena<double>> current_arena;
 
 // The exception type Python sees. It is leaked on purpose, because the
 // translator is a plain function pointer and cannot capture it.
@@ -59,7 +59,7 @@ pyb::handle error_class;
 // poison, Python raises at once, since the extra branch costs nothing here.
 [[nodiscard]] PyExpression make_input(rt::OpCode kind, std::string_view name) {
   const auto arena = arena_now();
-  const auto e = rt::named(*arena, kind, name);
+  const auto e = rt::detail::named(*arena, kind, name);
   if (e.poisoned()) {
     fail_with(errc::name_clash);
   }
@@ -72,7 +72,7 @@ pyb::handle error_class;
                                          const pyb::function &residual) {
   const auto arena = arena_now();
   const auto z =
-      rt::implicit(*arena, name, [&](const rt::Expression<double> &e) {
+      rt::detail::implicit(*arena, name, [&](const rt::Expression<double> &e) {
         return residual(PyExpression{e, arena}).cast<PyExpression>().base();
       });
   if (z.poisoned()) {
@@ -82,8 +82,8 @@ pyb::handle error_class;
 }
 
 // The roots of a model's result, one expression or a tuple or list of them.
-[[nodiscard]] std::vector<rt::NodeId> roots_of(const pyb::object &built,
-                                               rt::Arena<double> &arena) {
+[[nodiscard]] std::vector<rt::detail::NodeId>
+roots_of(const pyb::object &built, rt::detail::Arena<double> &arena) {
   const bool many =
       pyb::isinstance<pyb::tuple>(built) || pyb::isinstance<pyb::list>(built);
   const auto returned =
@@ -108,12 +108,12 @@ pyb::handle error_class;
 // ddx.equation over source strings instead of a callback. Every source is
 // parsed into one arena before the equation is formed.
 [[nodiscard]] pyb::object text_equation(std::span<const std::string> sources) {
-  auto arena = std::make_shared<rt::Arena<double>>();
+  auto arena = std::make_shared<rt::detail::Arena<double>>();
   pyb::list built;
   for (const std::string &source : sources) {
-    const rt::text::Ast ast = unwrap(rt::text::parse(source));
-    built.append(
-        pyb::cast(PyExpression{unwrap(rt::text::lower(*arena, ast)), arena}));
+    const rt::detail::text::Ast ast = unwrap(rt::detail::text::parse(source));
+    built.append(pyb::cast(
+        PyExpression{unwrap(rt::detail::text::lower(*arena, ast)), arena}));
   }
   auto roots = roots_of(built, *arena);
   return pyb::cast(PyEquation{std::move(arena), std::move(roots)});
@@ -122,7 +122,7 @@ pyb::handle error_class;
 // ddx.equation: installs an arena, runs the model in it, and forms an
 // equation from what the model returns.
 [[nodiscard]] pyb::object make_equation(const pyb::object &model) {
-  auto arena = std::make_shared<rt::Arena<double>>();
+  auto arena = std::make_shared<rt::detail::Arena<double>>();
   pyb::object built;
   {
     // Restores the previous arena even when the model raises, or one failing
@@ -251,7 +251,7 @@ PYBIND11_MODULE(_ddx, m) {
   infix("__mul__", "__rmul__", std::multiplies<>{});
   infix("__truediv__", "__rtruediv__", std::divides<>{});
   infix("__pow__", "__rpow__", [](const Base &l, const Base &r) {
-    return Base::form(rt::OpCode::Pow, l, r);
+    return rt::detail::Router::form(rt::OpCode::Pow, l, r);
   });
   infix("__lt__", nullptr, std::less<>{});
   infix("__le__", nullptr, std::less_equal<>{});
@@ -327,7 +327,7 @@ PYBIND11_MODULE(_ddx, m) {
 
   // Generated from the opcode table, so new opcodes reach Python with no edit
   // here.
-  for (const auto i : std::views::iota(0uz, rt::op_count)) {
+  for (const auto i : std::views::iota(0uz, rt::detail::op_count)) {
     const auto op = static_cast<rt::OpCode>(i);
     // These are already bound as operators.
     if (std::ranges::contains(std::array{rt::OpCode::Neg, rt::OpCode::Add,
@@ -336,14 +336,14 @@ PYBIND11_MODULE(_ddx, m) {
                               op)) {
       continue;
     }
-    const std::string name{rt::name_of(op)};
-    switch (rt::kind_of(op)) {
-    case rt::Kind::Unary:
+    const std::string name{rt::detail::name_of(op)};
+    switch (rt::detail::kind_of(op)) {
+    case rt::detail::Kind::Unary:
       m.def(
           name.c_str(), [op](const PyExpression &u) { return unary(op, u); },
           pyb::arg("x"));
       break;
-    case rt::Kind::Binary:
+    case rt::detail::Kind::Binary:
       m.def(
           name.c_str(),
           [op](const PyExpression &l, const PyExpression &r) {
@@ -373,13 +373,14 @@ PYBIND11_MODULE(_ddx, m) {
   m.def(
       "vec",
       [in_arena](std::string_view name, std::size_t n) {
-        return in_arena([&](auto &b) { return rt::vec(b, name, n); });
+        return in_arena([&](auto &b) { return rt::detail::vec(b, name, n); });
       },
       pyb::arg("name"), pyb::arg("n"));
   m.def(
       "vec_param",
       [in_arena](std::string_view name, std::size_t n) {
-        return in_arena([&](auto &b) { return rt::vec_param(b, name, n); });
+        return in_arena(
+            [&](auto &b) { return rt::detail::vec_param(b, name, n); });
       },
       pyb::arg("name"), pyb::arg("n"));
   m.def(
@@ -398,8 +399,9 @@ PYBIND11_MODULE(_ddx, m) {
   m.def(
       "vec_constant",
       [in_arena, data_of](const Columns &data) {
-        return in_arena(
-            [&](auto &b) { return rt::vec_constant(b, data_of(data)); });
+        return in_arena([&](auto &b) {
+          return rt::detail::vec_constant(b, data_of(data));
+        });
       },
       pyb::arg("data"));
   m.def(
@@ -409,9 +411,9 @@ PYBIND11_MODULE(_ddx, m) {
           ddx::py::fail_with(errc::tensor_shape);
         }
         return in_arena([&](auto &b) {
-          return rt::mat_constant(b, static_cast<std::size_t>(m.shape(0)),
-                                  static_cast<std::size_t>(m.shape(1)),
-                                  data_of(m));
+          return rt::detail::mat_constant(
+              b, static_cast<std::size_t>(m.shape(0)),
+              static_cast<std::size_t>(m.shape(1)), data_of(m));
         });
       },
       pyb::arg("matrix"), "A constant matrix from a 2-D array.");
@@ -496,8 +498,8 @@ PYBIND11_MODULE(_ddx, m) {
       "OptLevel", "LLVM's -O0 to -O3, for the IR pipeline and for codegen.");
   pyb::native_enum<PyEquation::Want> wants{m, "Want", "enum.IntEnum",
                                            "Which blocks a bound call fills."};
-  for (const rt::Want w : rt::want_values) {
-    wants.value(upper(rt::name_of(w)).c_str(), w);
+  for (const rt::Want w : rt::detail::want_values) {
+    wants.value(upper(rt::detail::name_of(w)).c_str(), w);
   }
   wants.finalize();
 

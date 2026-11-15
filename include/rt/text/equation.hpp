@@ -28,15 +28,15 @@ template <impl::Numeric T = double, std::convertible_to<std::string_view>... Ss>
   using Eq = meta::repeat_t<impl::Equation, Expression<T>, 1 + sizeof...(Ss)>;
   const std::array sources{first, std::string_view{rest}...};
 
-  auto arena = std::make_unique<Arena<T>>();
+  auto arena = std::make_unique<detail::Arena<T>>();
   std::vector<Expression<T>> roots;
   roots.reserve(sources.size());
 
   // Every source is parsed before create() seals the arena, so symbols
   // first named in a later function still get a slot.
   for (const std::string_view source : sources) {
-    DDX_TRY(ast, text::parse(source));
-    DDX_TRY(root, text::lower(*arena, *ast));
+    DDX_TRY(ast, detail::text::parse(source));
+    DDX_TRY(root, detail::text::lower(*arena, *ast));
     roots.push_back(*std::move(root));
   }
   return meta::unpack(meta::iota<1 + sizeof...(Ss)>, [&](auto... i) {

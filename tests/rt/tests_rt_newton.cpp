@@ -12,7 +12,7 @@
 // convergence is the sharp test.
 
 namespace {
-using ddx::rt::Arena;
+using ddx::rt::detail::Arena;
 using models::RE;
 
 // Solved by hand, since a linear solver would be more machinery than the test.

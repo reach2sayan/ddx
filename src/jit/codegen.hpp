@@ -32,8 +32,8 @@ inline constexpr std::string_view tensor_table_symbol = "ddx_tensor_table";
 // the body over <lanes x T>, or over T when lanes is 1.
 template <CKernelScalar T>
 [[nodiscard]] std::unique_ptr<llvm::Module>
-emit_module(llvm::LLVMContext &ctx, const rt::Graph<T> &g, llvm::StringRef name,
-            unsigned lanes, const llvm::DataLayout &layout,
-            llvm::StringRef triple);
+emit_module(llvm::LLVMContext &ctx, const rt::detail::Graph<T> &g,
+            llvm::StringRef name, unsigned lanes,
+            const llvm::DataLayout &layout, llvm::StringRef triple);
 
 } // namespace ddx::jit::detail

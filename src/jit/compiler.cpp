@@ -38,7 +38,7 @@
 #include <string>
 #include <utility>
 
-namespace ddx::jit {
+namespace ddx::jit::detail {
 namespace {
 
 // Converts an llvm::Error into a compile_error.
@@ -71,14 +71,14 @@ template <typename X>
 // Opcodes of any other form define nothing.
 template <CKernelScalar T, rt::OpCode Op, typename Functor>
 void define_call(auto &def) {
-  if constexpr (rt::spelling_of(Op).form == rt::Form::Call) {
-    if constexpr (rt::arity_of(Op) == 1) {
+  if constexpr (rt::detail::spelling_of(Op).form == rt::detail::Form::Call) {
+    if constexpr (rt::detail::arity_of(Op) == 1) {
       def(
-          detail::libm_name<T>(rt::spelling_of(Op).name),
+          detail::libm_name<T>(rt::detail::spelling_of(Op).name),
           +[](T u) noexcept { return T{Functor{}(u)}; });
     } else {
       def(
-          detail::libm_name<T>(rt::spelling_of(Op).name),
+          detail::libm_name<T>(rt::detail::spelling_of(Op).name),
           +[](T l, T r) noexcept { return T{Functor{}(l, r)}; });
     }
   }
@@ -98,7 +98,7 @@ template <CKernelScalar T> void define_scalar(auto &def) {
 #undef DDX_JIT_RUNTIME
 #define DDX_JIT_RUNTIME(fn, Op, label)                                         \
   def(                                                                         \
-      detail::libm_name<T>(rt::spelling_of(rt::OpCode::Op).name),              \
+      detail::libm_name<T>(rt::detail::spelling_of(rt::OpCode::Op).name),      \
       +[](T u) noexcept { return std::fn(u); });
   DDX_UNARY_MATH_TABLE(DDX_JIT_RUNTIME)
 #undef DDX_JIT_RUNTIME
@@ -116,8 +116,8 @@ template <CKernelScalar T> void define_scalar(auto &def) {
       detail::libm_name<T>(detail::tensor_step_symbol),
       +[](const rt::detail::TensorCall<T> *c, std::uint64_t node,
           std::uint64_t lanes, T *tape, T *vtape) noexcept {
-        const auto v = static_cast<rt::NodeId>(node);
-        const rt::Graph<T> &g = *c->graph;
+        const auto v = static_cast<rt::detail::NodeId>(node);
+        const rt::detail::Graph<T> &g = *c->graph;
         const auto t = rt::detail::TapeView<T>::of(g, vtape, c->kernels);
         meta::with_index<tensor_widths>(
             static_cast<std::size_t>(std::countr_zero(lanes)), [&](auto i) {
@@ -134,15 +134,15 @@ template <CKernelScalar T> void define_scalar(auto &def) {
       +[](const rt::detail::TensorCall<T> *c, T *const *f, T *const *g,
           T *const *h, std::uint64_t i, std::uint64_t live, std::uint64_t lanes,
           const T *tape, const T *vtape) noexcept {
-        const rt::Graph<T> &graph = *c->graph;
-        const rt::Layout &layout = graph.layout();
-        rt::scatter_blocks(
+        const rt::detail::Graph<T> &graph = *c->graph;
+        const rt::detail::Layout &layout = graph.layout();
+        rt::detail::scatter_blocks(
             graph.output_rows(),
             std::span<const T>{tape, graph.tape_rows() * lanes},
             std::span<const T>{vtape, graph.tensors().extent * lanes},
-            rt::Columns<T>{.values = {f, layout.values},
-                           .jacobian = {g, layout.jacobian},
-                           .hessian = {h, layout.hessian}},
+            rt::detail::Columns<T>{.values = {f, layout.values},
+                                   .jacobian = {g, layout.jacobian},
+                                   .hessian = {h, layout.hessian}},
             static_cast<std::size_t>(i), static_cast<std::size_t>(lanes),
             static_cast<std::size_t>(live));
       });
@@ -160,7 +160,7 @@ template <CKernelScalar T> void define_scalar(auto &def) {
                                          const llvm::DataLayout &dl) {
   llvm::orc::MangleAndInterner mangle(es, dl);
   llvm::orc::SymbolMap syms;
-  syms.reserve(2 * (rt::op_count + 3));
+  syms.reserve(2 * (rt::detail::op_count + 3));
   // The unary + turns each lambda into a plain function pointer.
   const auto def = [&](const std::string &name, auto *fn) {
     syms[mangle(name)] = {llvm::orc::ExecutorAddr::fromPtr(fn),
@@ -370,8 +370,8 @@ struct Compiler::Impl {
 
   template <CKernelScalar T>
   [[nodiscard]] compile_result<std::unique_ptr<llvm::Module>>
-  module(llvm::LLVMContext &ctx, const rt::Graph<T> &g, const Options &opt,
-         const std::string &name) const {
+  module(llvm::LLVMContext &ctx, const rt::detail::Graph<T> &g,
+         const Options &opt, const std::string &name) const {
     DDX_TRY(tm, target());
     quiet_vectoriser(ctx);
     auto m = detail::emit_module(ctx, g, name, lanes<T>(opt, g.has_tensors()),
@@ -404,7 +404,7 @@ struct Compiler::Impl {
 
   template <CKernelScalar T>
   [[nodiscard]] static compile_result<Kernel<T>>
-  compile(const std::shared_ptr<Impl> &self, const rt::Graph<T> &g,
+  compile(const std::shared_ptr<Impl> &self, const rt::detail::Graph<T> &g,
           const Options &opt) {
     const std::string name = "ddx_kernel_" + std::to_string(self->counter++);
     llvm::LLVMContext ctx;
@@ -431,13 +431,13 @@ compile_result<Compiler> Compiler::create() {
 }
 
 template <CKernelScalar T>
-compile_result<Kernel<T>> Compiler::compile(const rt::Graph<T> &g,
+compile_result<Kernel<T>> Compiler::compile(const rt::detail::Graph<T> &g,
                                             const Options &opt) {
   return Impl::compile(impl_, g, opt);
 }
 
 template <CKernelScalar T>
-compile_result<std::string> Compiler::ir(const rt::Graph<T> &g,
+compile_result<std::string> Compiler::ir(const rt::detail::Graph<T> &g,
                                          const Options &opt) const {
   llvm::LLVMContext ctx;
   return impl_->module(ctx, g, opt, "ddx_kernel_dump")
@@ -451,11 +451,11 @@ compile_result<std::string> Compiler::ir(const rt::Graph<T> &g,
 
 #define DDX_JIT_INSTANCES(T)                                                   \
   template DDX_INSTANCE_API compile_result<Kernel<T>> Compiler::compile(       \
-      const rt::Graph<T> &, const Options &);                                  \
+      const rt::detail::Graph<T> &, const Options &);                          \
   template DDX_INSTANCE_API compile_result<std::string> Compiler::ir(          \
-      const rt::Graph<T> &, const Options &) const;
+      const rt::detail::Graph<T> &, const Options &) const;
 DDX_JIT_INSTANCES(double)
 DDX_JIT_INSTANCES(float)
 #undef DDX_JIT_INSTANCES
 
-} // namespace ddx::jit
+} // namespace ddx::jit::detail

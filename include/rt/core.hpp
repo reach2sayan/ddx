@@ -500,8 +500,7 @@ public:
   // find their pipelines built and never take a write lock.
   [[nodiscard]] result<void> prepare(std::initializer_list<Want> wants) const {
     for (const Want want : wants) {
-      DDX_CHECK(ready(want));
-      (void)pipeline(want);
+      DDX_CHECK(pipeline(want));
     }
     return {};
   }
@@ -515,19 +514,19 @@ public:
   // What one call for `want` steps through, counted on its frozen graph. Builds
   // the pipeline as prepare() does but evaluates nothing.
   [[nodiscard]] result<Census> census(Want want = Want::Jacobian) const {
-    return ready(want).transform(
-        [&] { return detail::census_of(*pipeline(want)->graph); });
+    return pipeline(want).transform(
+        [](const auto &c) { return detail::census_of(*c->graph); });
   }
 
   // uses_kernel() with the reason when it is false: the equation's own error,
   // not_compiling under Interpret, or the JIT's refusal and its detail.
   [[nodiscard]] jit::compile_result<void>
   compile_status(Want want = Want::Jacobian) const {
-    return ready(want)
+    return pipeline(want)
         .transform_error([](error e) {
           return jit::compile_error{.code = e.code, .detail = {}};
         })
-        .and_then([&] { return pipeline(want)->status; });
+        .and_then([](const auto &c) { return c->status; });
   }
 
   // One Taylor sweep seeded with c[0] = x0 and c[1] = 1; the derivative is
@@ -840,12 +839,15 @@ protected:
     return {.jacobian = jacobian_};
   }
 
-  // The pipeline for `want`, frozen and compiled on first ask.
-  [[nodiscard]] std::shared_ptr<const Compiled> pipeline(Want want) const {
+  // The pipeline for `want`, frozen and compiled on first ask, once ready()
+  // lets it through.
+  [[nodiscard]] result<std::shared_ptr<const Compiled>>
+  pipeline(Want want) const {
     return pipeline_in(*pipelines_, every_cell(), want);
   }
-  [[nodiscard]] std::shared_ptr<const Compiled>
+  [[nodiscard]] result<std::shared_ptr<const Compiled>>
   pipeline_in(Pipelines &pipelines, const Cells &cells, Want want) const {
+    DDX_CHECK(ready(want));
     return pipelines[std::to_underlying(want)].template snapshot<Yield>(
         compiling(), [&] { return frozen_for(want, cells); });
   }
@@ -861,22 +863,22 @@ protected:
                                          std::span<const T *const> xs,
                                          const Columns<T> &out,
                                          std::size_t n) const {
-    return checked(pipelines, cells, want, xs, out)
-        .transform([&](const std::shared_ptr<const Compiled> &c) {
-          run(*c, xs, out, n);
+    return pipeline_in(pipelines, cells, want)
+        .and_then([&](const std::shared_ptr<const Compiled> &c) {
+          return dispatch_on(*c, xs, out, n);
         });
   }
 
-  // The pipeline a call runs on, once the call is known to fit it.
-  [[nodiscard]] result<std::shared_ptr<const Compiled>>
-  checked(Pipelines &pipelines, const Cells &cells, Want want,
-          std::span<const T *const> xs, const Columns<T> &out) const {
-    DDX_CHECK(ready(want));
-    auto c = pipeline_in(pipelines, cells, want);
+  // Runs a call on a pipeline already fetched, once the call is known to fit
+  // it.
+  [[nodiscard]] result<void> dispatch_on(const Compiled &c,
+                                         std::span<const T *const> xs,
+                                         const Columns<T> &out,
+                                         std::size_t n) const {
     // Count columns, not nodes, since a vector output is one column per
     // element.
-    const bool fits = xs.size() == c->graph->arity() &&
-                      std::ranges::none_of(zip_blocks(out, c->graph->layout()),
+    const bool fits = xs.size() == c.graph->arity() &&
+                      std::ranges::none_of(zip_blocks(out, c.graph->layout()),
                                            [](const auto &pair) {
                                              const auto &[columns, count] =
                                                  pair;
@@ -885,7 +887,8 @@ protected:
     if (!fits) {
       return fail(errc::wrong_column_count);
     }
-    return c;
+    run(c, xs, out, n);
+    return {};
   }
 
   // A system's Hessians read off the arena one point at a time, since a frozen
@@ -1226,10 +1229,11 @@ private:
 
   // The options a pipeline compiles under, and none under Interpret.
   [[nodiscard]] std::optional<jit::Options> compiling() const {
-    if (jit::CKernelScalar<T> && options_.backend == jit::Backend::Compile) {
+    if (jit::detail::CKernelScalar<T> &&
+        options_.backend == jit::Backend::Compile) {
       // A short batch emits scalar, the threshold the sweep uses; an explicit
       // `lanes` is honoured.
-      return jit::for_batch(options_, block_lanes);
+      return jit::detail::for_batch(options_, block_lanes);
     }
     return std::nullopt;
   }
@@ -1319,7 +1323,7 @@ private:
   // ask; null where the kernel is lowered from the equation's own roots.
   [[nodiscard]] const Rebalanced *rebalanced([[maybe_unused]] Want want) const {
 #ifdef DDX_HAS_JIT
-    if constexpr (jit::CKernelScalar<T>) {
+    if constexpr (jit::detail::CKernelScalar<T>) {
       // A graph with tensor steps is never rebalanced. The roots' cone is read,
       // not the whole arena, and under the lock since another sweep may append.
       const auto tensors = [this] {
@@ -1357,7 +1361,7 @@ private:
            const Columns<T> &out, std::size_t n) const {
     [[maybe_unused]] const auto held = sweeping();
     TapeLease<T> lease{calls_out_};
-    if constexpr (jit::CKernelScalar<T>) {
+    if constexpr (jit::detail::CKernelScalar<T>) {
       if (c.kernel) {
         const detail::TensorCall<T> call{.arena = arena_.get(),
                                          .graph = c.compile_graph.get(),

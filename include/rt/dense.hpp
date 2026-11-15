@@ -19,7 +19,7 @@
 
 // The dense Hessian as one O(n^2) matrix node, from a forward sweep carrying
 // tangents as sums of Identity, Diag, Outer and Dense terms.
-namespace ddx::rt {
+namespace ddx::rt::detail {
 
 struct DenseHessian {
   NodeId value = no_node;
@@ -29,8 +29,6 @@ struct DenseHessian {
   std::uint32_t n2_terms = 0; // matrix terms that stayed O(n^2)
   std::uint32_t n3_terms = 0; // O(n^3) MatMul fallbacks
 };
-
-namespace detail {
 
 // One w x n term of a vector node's tangent with respect to the n symbols.
 namespace term {
@@ -282,7 +280,7 @@ private:
   // m * term, where a vector m means diag(m) on the left and a scalar m is a
   // multiple. A diagonal folds into an existing diag so no matrix is copied.
   [[nodiscard]] Term scale(const E &m, const Term &t) {
-    const bool vector = m.size() != 0 || m.pending();
+    const bool vector = m.size() != 0 || Router::pending(m);
     return std::visit(
         boost::hof::match(
             [&](term::Identity) -> Term {
@@ -654,8 +652,6 @@ private:
   std::optional<NodeId> source_; // the vector the partials are gathered from
 };
 
-} // namespace detail
-
 template <impl::Numeric T>
 [[nodiscard]] DenseHessian derive_dense_hessian(Arena<T> &b, NodeId root) {
   const auto g = build_reverse_jacobian(b, root);
@@ -670,4 +666,4 @@ template <impl::Numeric T>
           .n3_terms = sweep.n3()};
 }
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail

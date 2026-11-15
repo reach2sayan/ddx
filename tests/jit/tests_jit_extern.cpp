@@ -121,17 +121,17 @@ TEST(JitExtern, EveryFunctionAndComponentSurvivesTheRebuild) {
 // The kernel holds the functions it calls and no address of its own, so it
 // runs after its graph is gone.
 TEST(JitExtern, AKernelOutlivesItsGraphAndKeepsItsObject) {
-  auto c = ddx::jit::Compiler::create();
+  auto c = ddx::jit::detail::Compiler::create();
   ASSERT_TRUE(c.has_value()) << c.error().detail;
   const auto kernel = [&] {
-    ddx::rt::Arena<> b;
-    const auto a = ddx::rt::var(b, "a");
-    const auto bb = ddx::rt::var(b, "b");
-    const auto g = ddx::rt::extern_fn(b, {.name = "g", .arity = 2}, g_of);
+    ddx::rt::detail::Arena<> b;
+    const auto a = ddx::rt::detail::var(b, "a");
+    const auto bb = ddx::rt::detail::var(b, "b");
+    const auto g = ddx::rt::detail::extern_fn(b, {.name = "g", .arity = 2}, g_of);
     const auto graph = ddx::test::freeze_values(b, std::array{(g(a, bb) * 2.0).id(b)});
     auto k = c->compile(graph);
     EXPECT_TRUE(k.has_value()) << (k ? "" : k.error().detail);
-    return k ? std::move(*k) : ddx::jit::Kernel<double>{};
+    return k ? std::move(*k) : ddx::jit::detail::Kernel<double>{};
   }();
   ASSERT_TRUE(kernel);
   const std::array as{0.3, -0.7}, bs{1.1, 0.4};

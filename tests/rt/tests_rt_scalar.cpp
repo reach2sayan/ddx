@@ -51,19 +51,19 @@ static_assert(!ddx::impl::CCommutativeMultiply<M2>,
               "and its * does not commute");
 
 TEST(RtScalar, CommutativeSwapIsAskedNotAssumed) {
-  ddx::rt::Arena<M2> b;
+  ddx::rt::detail::Arena<M2> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   EXPECT_NE((x * y).id(b), (y * x).id(b));
 
-  ddx::rt::Arena<double> d;
+  ddx::rt::detail::Arena<double> d;
   const auto dx = var(d, "x");
   const auto dy = var(d, "y");
   EXPECT_EQ((dx * dy).id(d), (dy * dx).id(d));
 }
 
 TEST(RtScalar, OnlyTheCancellationThatHoldsForAnyScalarFires) {
-  ddx::rt::Arena<M2> b;
+  ddx::rt::detail::Arena<M2> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   // (n/d)*d is n for any T, because / is right division, so d^-1 meets d.
@@ -73,39 +73,50 @@ TEST(RtScalar, OnlyTheCancellationThatHoldsForAnyScalarFires) {
 }
 
 TEST(RtScalar, EvaluatesInTheScalarsOwnArithmetic) {
-  ddx::rt::Arena<M2> b;
+  ddx::rt::detail::Arena<M2> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const std::array<M2, 2> pt{M2{1, 2, 3, 4}, M2{5, 6, 7, 8}};
-  const auto v = ddx::rt::evaluate(b, (x * y).id(b), pt);
+  const auto v = ddx::rt::detail::evaluate(b, (x * y).id(b), pt);
   EXPECT_EQ(v, (M2{19, 22, 43, 50}));
 }
 
 // A transcendental over a matrix is meaningless, but must not stop the type
 // from being usable at all.
 TEST(RtScalar, UnsupportedOpsDoNotBreakTheInstantiation) {
-  ddx::rt::Arena<M2> b;
+  ddx::rt::detail::Arena<M2> b;
   const auto x = var(b, "x");
   // The check is only that the type instantiates and builds a node.
-  EXPECT_NE((x + x * x - x / x).id(b), ddx::rt::no_node);
+  EXPECT_NE((x + x * x - x / x).id(b), ddx::rt::detail::no_node);
 }
+
+namespace {
+// Whether every op the roots reach is supported at U.
+template <ddx::impl::Numeric U>
+bool scalar_computes_at(const ddx::rt::detail::Arena<> &b,
+                        std::span<const ddx::rt::detail::NodeId> roots) {
+  namespace d = ddx::rt::detail;
+  return d::ArenaWalk{b, d::live_ids(d::reachable(b, roots))}
+      .template computes<U>(b);
+}
+} // namespace
 
 // apply() answers zero for what it cannot compute, so a sweep asks first.
 TEST(RtScalar, ComputesAtSaysWhichOpsTheScalarHas) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto field = (x + x * x - x / x).id(b);
   const auto kink = max(x, x * x).id(b);
   const auto wave = sin(x).id(b);
-  EXPECT_TRUE(ddx::rt::computes_at<M2>(b, std::span{&field, 1}));
-  EXPECT_FALSE(ddx::rt::computes_at<M2>(b, std::span{&kink, 1}));
-  EXPECT_FALSE(ddx::rt::computes_at<M2>(b, std::span{&wave, 1}));
+  EXPECT_TRUE(scalar_computes_at<M2>(b, std::span{&field, 1}));
+  EXPECT_FALSE(scalar_computes_at<M2>(b, std::span{&kink, 1}));
+  EXPECT_FALSE(scalar_computes_at<M2>(b, std::span{&wave, 1}));
   using Taylor = ddx::impl::TaylorDual<double, 3>;
-  EXPECT_TRUE(ddx::rt::computes_at<Taylor>(b, std::span{&kink, 1}));
-  EXPECT_TRUE(ddx::rt::computes_at<Taylor>(b, std::span{&wave, 1}));
-  EXPECT_TRUE(ddx::rt::supports<M2>(ddx::rt::OpCode::Mul));
-  EXPECT_FALSE(ddx::rt::supports<M2>(ddx::rt::OpCode::Max));
-  EXPECT_TRUE(ddx::rt::supports<Taylor>(ddx::rt::OpCode::Max));
+  EXPECT_TRUE(scalar_computes_at<Taylor>(b, std::span{&kink, 1}));
+  EXPECT_TRUE(scalar_computes_at<Taylor>(b, std::span{&wave, 1}));
+  EXPECT_TRUE(ddx::rt::detail::supports<M2>(ddx::rt::OpCode::Mul));
+  EXPECT_FALSE(ddx::rt::detail::supports<M2>(ddx::rt::OpCode::Max));
+  EXPECT_TRUE(ddx::rt::detail::supports<Taylor>(ddx::rt::OpCode::Max));
 }
 
 } // namespace
@@ -115,21 +126,21 @@ namespace {
 // Forward mode comes from the interpreter rather than a second engine, since
 // evaluate_all takes its arithmetic from the point's element type.
 TEST(RtScalar, ADualPointCarriesDerivativesThroughTheSameWalk) {
-  ddx::rt::Arena<> b; // the graph itself is over double
+  ddx::rt::detail::Arena<> b; // the graph itself is over double
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = exp(x) * sin(y);
 
   using D = ddx::dual;
   const std::array<D, 2> seeded{D{1.0, 1.0}, D{2.0, 0.0}}; // seed x
-  const auto v = ddx::rt::evaluate(b, f.id(b), seeded);
+  const auto v = ddx::rt::detail::evaluate(b, f.id(b), seeded);
 
   EXPECT_NEAR(v.value(), std::exp(1.0) * std::sin(2.0), 1e-14);
   EXPECT_NEAR(v.deriv(), std::exp(1.0) * std::sin(2.0), 1e-14);
 
   // It also agrees with the reverse sweep over the same graph.
-  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
-  const auto plain = ddx::rt::evaluate_all(b, std::array{1.0, 2.0});
+  const auto g = ddx::rt::detail::derive_jacobian(b, f.id(b));
+  const auto plain = ddx::rt::detail::evaluate_all(b, std::array{1.0, 2.0});
   EXPECT_NEAR(plain[g.partial[0]], v.deriv(), 1e-14);
 }
 

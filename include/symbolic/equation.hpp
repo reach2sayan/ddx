@@ -140,8 +140,8 @@ private:
   // Symbols are declared first, in Equation order, so a column is the symbol's
   // slot in the point even when a folded tree such as (y*x)/(x*y) loses it.
   struct Lowered {
-    rt::Arena<scalar> arena;
-    std::array<rt::NodeId, output_dim> roots;
+    rt::detail::Arena<scalar> arena;
+    std::array<rt::detail::NodeId, output_dim> roots;
   };
   [[nodiscard]] constexpr Lowered lower() const {
     Lowered l{};
@@ -150,9 +150,11 @@ private:
                         (node_count_v<detail::canonical_t<TFirst>> + ... +
                          node_count_v<detail::canonical_t<TRest>>),
                     input_dim);
-    meta::for_each(symbols{}, [&l](auto s) { (void)rt::var(l.arena, s.name); });
+    meta::for_each(symbols{},
+                   [&l](auto s) { (void)rt::detail::var(l.arena, s.name); });
     meta::for_each(meta::iota<output_dim>, [&](auto i) {
-      l.roots[i] = rt::to_graph(l.arena, std::get<i>(expressions)).id(l.arena);
+      l.roots[i] =
+          rt::detail::to_graph(l.arena, std::get<i>(expressions)).id(l.arena);
     });
     return l;
   }
@@ -206,7 +208,7 @@ public:
     return detail::with_point<symbols, value_type, input_dim>(
         [&](const point_t &vals) {
           const Lowered l = lower();
-          const auto v = rt::evaluate_reachable(l.arena, l.roots, vals);
+          const auto v = rt::detail::evaluate_reachable(l.arena, l.roots, vals);
           if constexpr (output_dim == 1) {
             return v[l.roots[0]];
           } else {
@@ -228,30 +230,33 @@ public:
     return detail::with_point<symbols, value_type, input_dim>(
         [&](const point_t &vals) {
           Lowered l = lower();
-          std::array<rt::NodeId, output_dim * input_dim> cells{};
+          std::array<rt::detail::NodeId, output_dim * input_dim> cells{};
           if constexpr (Mode == DiffMode::Symbolic) {
             const auto rows = jacobian_rows();
             meta::for_each(meta::iota<output_dim>, [&](auto i) {
               meta::for_each(meta::iota<input_dim>, [&](auto j) {
                 cells[i * input_dim + j] =
-                    rt::to_graph(l.arena, std::get<j>(std::get<i>(rows)))
+                    rt::detail::to_graph(l.arena,
+                                         std::get<j>(std::get<i>(rows)))
                         .id(l.arena);
               });
             });
           } else {
-            const rt::Jacobian j = rt::derive_jacobian(l.arena, l.roots);
+            const rt::detail::Jacobian j =
+                rt::detail::derive_jacobian(l.arena, l.roots);
             for (const std::size_t i : std::views::iota(0uz, output_dim)) {
               for (const std::size_t k : std::views::iota(0uz, input_dim)) {
                 cells[i * input_dim + k] = j.at(i, k);
               }
             }
           }
-          const auto v = rt::evaluate_reachable(l.arena, cells, vals);
+          const auto v = rt::detail::evaluate_reachable(l.arena, cells, vals);
           if constexpr (output_dim == 1) {
             std::array<S, input_dim> row{};
-            std::ranges::transform(cells, row.begin(), [&v](rt::NodeId c) {
-              return detail::strip_seed(v[c]);
-            });
+            std::ranges::transform(cells, row.begin(),
+                                   [&v](rt::detail::NodeId c) {
+                                     return detail::strip_seed(v[c]);
+                                   });
             return row;
           } else {
             md_tensor<S, md::extents<std::size_t, output_dim, input_dim>> J{};
@@ -274,13 +279,13 @@ public:
     return detail::with_point<symbols, S, input_dim>(
         [&](const std::array<S, input_dim> &vals) {
           Lowered l = lower();
-          std::array<rt::Hessian, output_dim> hs;
-          std::vector<rt::NodeId> wanted;
+          std::array<rt::detail::Hessian, output_dim> hs;
+          std::vector<rt::detail::NodeId> wanted;
           for (const std::size_t k : std::views::iota(0uz, output_dim)) {
-            hs[k] = rt::derive_hessian(l.arena, l.roots[k]);
+            hs[k] = rt::detail::derive_hessian(l.arena, l.roots[k]);
             append(wanted, hs[k].compressed);
           }
-          const auto v = rt::evaluate_reachable(l.arena, wanted, vals);
+          const auto v = rt::detail::evaluate_reachable(l.arena, wanted, vals);
           constexpr auto dims = std::views::iota(0uz, input_dim);
           if constexpr (output_dim == 1) {
             nd_tensor_t<S, input_dim, 2> H{};
@@ -359,8 +364,8 @@ public:
         rt::detail::computes_at_tree<Taylor, std::tuple_element_t<0, Exprs>>(),
         "an operation the Taylor arithmetic does not define");
     const Lowered l = lower();
-    const auto v = rt::evaluate_reachable(l.arena, l.roots,
-                                          std::array{Taylor::variable(x0)});
+    const auto v = rt::detail::evaluate_reachable(
+        l.arena, l.roots, std::array{Taylor::variable(x0)});
     return v[l.roots[0]].c[Order] *
            static_cast<scalar>(detail::compile_time_factorial(Order));
   }

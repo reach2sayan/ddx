@@ -49,7 +49,7 @@ class Equation<rt::Expression<T>, Rest...> : public rt::detail::Core<T> {
   // A null owned arena means the outputs live in the caller's arena, which is
   // then copied. Build failures are carried by the equation; see poisoned().
   [[nodiscard]] static constexpr Equation
-  create(std::unique_ptr<rt::Arena<T>> owned,
+  create(std::unique_ptr<rt::detail::Arena<T>> owned,
          std::span<const rt::Expression<T>> outputs) {
     return Base::template make<Equation>(outputs, std::move(owned));
   }
@@ -58,7 +58,7 @@ class Equation<rt::Expression<T>, Rest...> : public rt::detail::Core<T> {
     requires(Outputs::expected == sizeof...(Es) + 1 &&
              (std::same_as<Es, rt::Expression<T>> && ...))
   [[nodiscard]] static constexpr Equation
-  create(std::unique_ptr<rt::Arena<T>> owned, rt::Expression<T> first,
+  create(std::unique_ptr<rt::detail::Arena<T>> owned, rt::Expression<T> first,
          Es... rest) {
     const std::array outputs{first, rest...};
     return create(std::move(owned),

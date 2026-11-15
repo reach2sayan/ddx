@@ -258,11 +258,11 @@ static_assert(TensorKernels<Kernels<float>, float>);
 
 } // namespace reference
 
+namespace detail {
 template <impl::Numeric T = double>
 inline constexpr TensorKernelTable<T> reference_table =
     tensor_kernel_table<reference::Kernels<T>, T>();
 
-namespace detail {
 // The default table per scalar. libddx exports the double and float ones so
 // a program and the library share them.
 template <impl::Numeric T>

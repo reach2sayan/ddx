@@ -208,7 +208,7 @@ Columns<T> batch(const auto &eq, Want want, std::size_t n) {
     }
     std::unreachable();
   }();
-  EXPECT_TRUE(ok.has_value()) << ddx::rt::name_of(want);
+  EXPECT_TRUE(ok.has_value()) << ddx::rt::detail::name_of(want);
   return std::views::join(out) | ddx::impl::to<std::vector>();
 }
 
@@ -236,7 +236,7 @@ std::string spelled(ddx::jit::Lanes lanes) {
   return lanes.stated() ? std::to_string(*lanes.stated()) : "host";
 }
 
-const auto every_want = ddx::rt::want_values;
+const auto every_want = ddx::rt::detail::want_values;
 const std::initializer_list<ddx::jit::Lanes> every_width{
     ddx::jit::Lanes::scalar(), *ddx::jit::Lanes::exactly(2),
     *ddx::jit::Lanes::exactly(4), *ddx::jit::Lanes::exactly(8),
@@ -258,7 +258,7 @@ template <typename T> void expect_kernel_is_the_sweep(auto &&model) {
     eq.options(compiled(lanes));
     for (const Want want : every_want) {
       const std::string what =
-          std::string{ddx::rt::name_of(want)} + ", lanes " + spelled(lanes);
+          std::string{ddx::rt::detail::name_of(want)} + ", lanes " + spelled(lanes);
       ASSERT_TRUE(eq.uses_kernel(want)) << what;
       for (const std::size_t n : {13uz, 1uz}) {
         expect_close(batch<T>(swept, want, n), batch<T>(eq, want, n),
@@ -270,13 +270,13 @@ template <typename T> void expect_kernel_is_the_sweep(auto &&model) {
 
 // Collects the ops that a model's dense block reads.
 std::set<OpCode> dense_ops(auto &&expression) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto arena = ddx::rt::detail::scoped_arena(b);
   const auto f = expression();
-  const auto h = ddx::rt::derive_dense_hessian(b, f.id(b));
+  const auto h = ddx::rt::detail::derive_dense_hessian(b, f.id(b));
   const auto live = ddx::rt::detail::reachable(b, std::span{&h.block, 1});
   return ddx::rt::detail::live_ids(live) |
-         std::views::transform([&b](ddx::rt::NodeId v) { return b.op_of(v); }) |
+         std::views::transform([&b](ddx::rt::detail::NodeId v) { return b.op_of(v); }) |
          ddx::impl::to<std::set>();
 }
 

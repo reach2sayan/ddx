@@ -20,12 +20,10 @@
 #include <utility>
 #include <vector>
 
-namespace ddx::rt {
+namespace ddx::rt::detail {
 
 // Points per block sweep, which is two AVX2 registers of doubles.
 inline constexpr std::size_t block_lanes = 8;
-
-namespace detail {
 
 // Applies one op across W lanes for any arity. supported() keeps the loop
 // compiling at scalars where the op is undefined.
@@ -517,8 +515,6 @@ sweep_step(const Arena<T> &b, std::span<const Node<T>> nodes,
   }
 }
 
-} // namespace detail
-
 // Evaluates schedule at W points at once. point_lanes is symbol-major (s * W +
 // k) and tape is node-major, so every lane loop is contiguous.
 template <std::size_t W, impl::Numeric T, std::ranges::random_access_range R,
@@ -553,7 +549,6 @@ constexpr void evaluate_into(const Arena<T> &b, const R &point,
   evaluate_block<1>(b, point, schedule, v, tensors);
 }
 
-namespace detail {
 // A cached schedule and tensor layout for walking ids at many points. values
 // is id-indexed and arena-sized, and vtape is extent() long.
 class ArenaWalk {
@@ -616,7 +611,6 @@ private:
   TensorLayout layout_;
   std::vector<NodeId> mates_;
 };
-} // namespace detail
 
 // evaluate_all restricted to the nodes the roots reach. The result is still
 // id-indexed; entries the roots do not reach must not be read.
@@ -631,15 +625,6 @@ evaluate_reachable(const Arena<T> &b, std::span<const NodeId> roots,
                            contract}(b, point, kernels);
 }
 
-// Whether every op the roots reach is supported at U; ArenaWalk::computes over
-// the walk the roots would sweep.
-template <impl::Numeric U, impl::Numeric T>
-[[nodiscard]] constexpr bool computes_at(const Arena<T> &b,
-                                         std::span<const NodeId> roots) {
-  return detail::ArenaWalk{b, detail::live_ids(detail::reachable(b, roots))}
-      .template computes<U>(b);
-}
-
 // Evaluates every node in id order; this is the reference the JIT is checked
 // against. The point's element type picks the arithmetic, so duals work too.
 template <impl::Numeric T, std::ranges::random_access_range R>
@@ -650,4 +635,4 @@ evaluate_all(const Arena<T> &b, const R &point,
   return detail::ArenaWalk{b}(b, point, kernels);
 }
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail

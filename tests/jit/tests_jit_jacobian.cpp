@@ -20,8 +20,8 @@
 // the value and partials yields the Jacobian columns.
 
 namespace {
-using ddx::rt::Arena;
-using ddx::rt::Graph;
+using ddx::rt::detail::Arena;
+using ddx::rt::detail::Graph;
 
 void expect_jacobian_matches_interpreter(auto build, std::size_t nvars,
                                          std::size_t n = 32) {
@@ -33,7 +33,7 @@ void expect_jacobian_matches_interpreter(auto build, std::size_t nvars,
   }
   const auto root = build(b, vars);
   // The reference sweep is run separately; the arena runs its own.
-  const auto reference_jacobian = ddx::rt::derive_jacobian(b, root.id(b));
+  const auto reference_jacobian = ddx::rt::detail::derive_jacobian(b, root.id(b));
   const auto kernel = must_compile(
       ddx::test::GraphBuilder{b}.value(root).build_jacobian().finish());
   ASSERT_EQ(kernel.shape().outputs(), nvars + 1);
@@ -59,7 +59,7 @@ void expect_jacobian_matches_interpreter(auto build, std::size_t nvars,
     const auto point =
         columns | std::views::transform([i](const auto &c) { return c[i]; }) |
         ddx::impl::to<std::vector>();
-    const auto reference = ddx::rt::evaluate_all(b, point);
+    const auto reference = ddx::rt::detail::evaluate_all(b, point);
     EXPECT_NEAR(value[i], reference[reference_jacobian.value], 1e-12);
     for (const std::size_t j : std::views::iota(0uz, nvars)) {
       const double want = reference[reference_jacobian.partial[j]];
@@ -98,7 +98,7 @@ TEST(JitJacobian, MatchesDdxThroughTheBridge) {
   const auto f = exp(x) * sin(y) + x * y;
 
   Arena<> b;
-  const auto root = ddx::rt::to_graph(b, f);
+  const auto root = ddx::rt::detail::to_graph(b, f);
   const auto kernel = must_compile(
       ddx::test::GraphBuilder{b}.value(root).build_jacobian().finish());
 
@@ -167,7 +167,7 @@ TEST(JitHessian, ThirdBlockCarriesTheColouredHessian) {
   const auto &colouring = graph.colouring();
   for (const std::size_t point : std::views::iota(0uz, n)) {
     const std::array<double, 2> at{cx[point], cy[point]};
-    const auto reference = ddx::rt::evaluate_all(b, at);
+    const auto reference = ddx::rt::detail::evaluate_all(b, at);
     const auto outputs = graph.outputs();
 
     EXPECT_NEAR(value[point], reference[outputs[0]], 1e-12);

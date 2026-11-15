@@ -17,7 +17,7 @@
 #include <vector>
 
 // A parser for Python's arithmetic grammar.
-namespace ddx::rt::text {
+namespace ddx::rt::detail::text {
 namespace {
 
 namespace bp = boost::parser;
@@ -49,7 +49,7 @@ inline constexpr std::uint32_t deepest = 200;
 // Appends an `Op` term over its operands, with the arity checked at compile
 // time.
 template <OpCode Op, std::same_as<std::uint32_t>... Ids>
-  requires(sizeof...(Ids) == arity_of(Op))
+  requires(sizeof...(Ids) == rt::detail::arity_of(Op))
 [[nodiscard]] constexpr std::uint32_t
 append(Ast &ast, std::integral_constant<OpCode, Op>, const Ids... in) {
   Term t{.op = Op};
@@ -275,4 +275,4 @@ result<Ast> parse(const std::string_view source) {
   return std::move(building.ast);
 }
 
-} // namespace ddx::rt::text
+} // namespace ddx::rt::detail::text

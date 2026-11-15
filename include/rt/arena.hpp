@@ -33,7 +33,7 @@
 #include <utility>
 #include <vector>
 
-namespace ddx::rt {
+namespace ddx::rt::detail {
 
 // A typed index that reads as a plain index but is only made explicitly, so
 // one kind of index, or a count, never becomes another by accident.
@@ -79,17 +79,17 @@ inline constexpr NodeId no_node{~std::uint32_t{0}};
 inline constexpr TapeRow no_row{~std::uint32_t{0}};
 inline constexpr ListOffset no_list{~std::uint32_t{0}};
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail
 
 template <typename Tag>
-struct std::formatter<ddx::rt::Id<Tag>> : std::formatter<std::uint32_t> {
-  auto format(ddx::rt::Id<Tag> id, auto &ctx) const {
+struct std::formatter<ddx::rt::detail::Id<Tag>>
+    : std::formatter<std::uint32_t> {
+  auto format(ddx::rt::detail::Id<Tag> id, auto &ctx) const {
     return std::formatter<std::uint32_t>::format(id.value, ctx);
   }
 };
 
-namespace ddx::rt {
-namespace detail {
+namespace ddx::rt::detail {
 // A tensor op's or a select's operands under their table names, in slot
 // order, as make() takes them and operands() returns them.
 template <OpCode Op> struct Operands;
@@ -142,22 +142,12 @@ inline constexpr PendingEntry no_entry{~std::uint32_t{0}};
 template <OpCode Fold> struct Folding {
   PendingEntry entry;
 };
-} // namespace detail
 
+} // namespace ddx::rt::detail
+
+namespace ddx::rt {
 template <impl::Numeric T> class Expression;
-template <impl::Numeric T = double> class DDX_TEMPLATE_API Arena;
-
-// The one primitive that names an input; var(), param() and implicit() all
-// call it, and Arena befriends it.
-template <impl::Numeric T>
-[[nodiscard]] constexpr Expression<T> named(Arena<T> &b, OpCode op,
-                                            std::string_view name);
-template <impl::Numeric T, std::invocable<const Expression<T> &> F>
-[[nodiscard]] constexpr Expression<T>
-implicit(Arena<T> &b, std::string_view name, F &&residual);
-namespace detail {
-struct Implicits;
-}
+template <impl::Numeric T> class ExternFunction;
 
 // A caller-supplied function: `fn(in, out)` writes its answer in ExternRecord's
 // layout. It may evaluate another ddx equation; see TapeLease in rt/core.hpp.
@@ -203,18 +193,30 @@ struct ExternRecord {
   }
 };
 
+} // namespace ddx::rt
+
+namespace ddx::rt::detail {
+template <impl::Numeric T = double> class DDX_TEMPLATE_API Arena;
+
+// The one primitive that names an input; var(), param() and implicit() all
+// call it, and Arena befriends it.
+template <impl::Numeric T>
+[[nodiscard]] constexpr Expression<T> named(Arena<T> &b, OpCode op,
+                                            std::string_view name);
+template <impl::Numeric T, std::invocable<const Expression<T> &> F>
+[[nodiscard]] constexpr Expression<T>
+implicit(Arena<T> &b, std::string_view name, F &&residual);
+struct Implicits;
+
 template <impl::Numeric T> struct ExternEntry : ExternRecord {
   std::shared_ptr<const ExternFn<T>> fn;
 };
 
-template <impl::Numeric T> class ExternFunction;
 template <impl::Numeric T>
 [[nodiscard]] ExternFunction<T> extern_fn(Arena<T> &b, ExternRecord record,
                                           std::type_identity_t<ExternFn<T>> fn);
-namespace detail {
 template <impl::Numeric T, typename Sink>
 constexpr void extern_partials(Arena<T> &b, NodeId v, Sink &&sink);
-}
 
 // A named input: its kind of leaf and its slot among that kind.
 struct Input {
@@ -251,8 +253,6 @@ struct Step {
 };
 static_assert(sizeof(Step) == 40);
 
-namespace detail {
-
 template <typename P> [[nodiscard]] constexpr P get(const auto &node) noexcept {
   assert(info(node.op).payload == payload_index<P>);
   return from_word<P>(node.payload);
@@ -279,8 +279,6 @@ template <typename P> [[nodiscard]] constexpr P get(const auto &node) noexcept {
   return nodes.operands(v) |
          std::views::filter([](NodeId u) { return u != no_node; });
 }
-
-} // namespace detail
 
 // Unused operands are no_node; a node with a list uses `list` instead. The
 // payload is a word that detail::get reads as the op's payload type.
@@ -339,7 +337,6 @@ template <impl::Numeric T> struct Model {
   return s.lists().subspan(s.list_of(v), count);
 }
 
-namespace detail {
 // Calls `f` on every id a node reads, its list or its operands. Every
 // reachability walk uses this one definition of a node's children.
 constexpr void for_each_operand(const auto &s, NodeId v, auto &&f) {
@@ -371,7 +368,6 @@ reachable(const auto &nodes, std::span<const NodeId> roots,
   }
   return live;
 }
-} // namespace detail
 
 // A row's shape as rows x cols, column-major, with cols 1 for a vector.
 struct Shape {
@@ -651,9 +647,6 @@ public:
   [[nodiscard]] constexpr const std::vector<std::string> &params() const {
     return names(OpCode::Param);
   }
-  [[nodiscard]] constexpr const std::vector<std::string> &implicits() const {
-    return names(OpCode::Implicit);
-  }
   // Every named input in column order: kinds in table order, each in
   // declaration order.
   [[nodiscard]] constexpr std::vector<std::string> names() const {
@@ -767,7 +760,7 @@ private:
   }
 
   // The call node for the function's value; sweeps ask for other components.
-  template <impl::Numeric U> friend class ExternFunction;
+  template <impl::Numeric U> friend class rt::ExternFunction;
   constexpr NodeId extern_call(std::uint32_t function,
                                std::span<const NodeId> args) {
     return make(opcode<OpCode::Extern>, ExternRef{.function = function},
@@ -846,7 +839,7 @@ private:
 
   // An `op=` fold's terms, as a list sharing its prefix with copied handles so
   // each copy keeps its value. The fold becomes a node only when first read.
-  template <impl::Numeric U> friend class Expression;
+  template <impl::Numeric U> friend class rt::Expression;
   struct Pending {
     NodeId term = no_node;
     detail::PendingEntry prev = detail::no_entry; // None for the first term.
@@ -1544,7 +1537,6 @@ rows_of(const std::array<NodeId, 3> &ids) {
 
 // The steps of `order` with each node's contraction resolved once, rather than
 // re-derived per point inside the sweep.
-namespace detail {
 [[nodiscard]] constexpr std::vector<Step>
 schedule_of(const CNodeSource auto &nodes,
             std::ranges::input_range auto &&order,
@@ -1722,7 +1714,6 @@ struct Packed {
   out.rows = next;
   return out;
 }
-} // namespace detail
 
 // A tensor node's place in the tensor tape, per lane; width 0 means no row.
 // An output matrix records `rows` too, since it leaves row-major.
@@ -1740,7 +1731,6 @@ struct TensorLayout {
 
 // Packs the tensor tape by liveness like the scalar rows, reusing a freed row
 // for the next node of the same width.
-namespace detail {
 [[nodiscard]] constexpr TensorLayout
 tensor_layout(const auto &s, std::span<const Step> schedule,
               std::span<const NodeId> outputs = {},
@@ -1810,9 +1800,7 @@ reaches(const auto &nodes, std::span<const NodeId> roots, auto &&pred) {
                              [&](NodeId v) { return pred(nodes[v]); });
 }
 
-} // namespace detail
+} // namespace ddx::rt::detail
 
-} // namespace ddx::rt
-
-DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::Arena<double>)
-DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::Arena<float>)
+DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::detail::Arena<double>)
+DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::detail::Arena<float>)

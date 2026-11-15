@@ -39,6 +39,9 @@ enum class Want : std::uint8_t {
   DDX_RT_WANT_TABLE(DDX_RT_WANT)
 #undef DDX_RT_WANT
 };
+} // namespace ddx::rt
+
+namespace ddx::rt::detail {
 enum class Direction : std::uint8_t { None, Symbols, Functions };
 enum class BlockShape : std::uint8_t {
   None,
@@ -92,7 +95,8 @@ inline constexpr std::array want_values{
 }
 
 // One Per for each output block, in the order the kernel writes them.
-// jit::KernelShape cannot reuse it because the JIT core may not include rt/.
+// jit::detail::KernelShape cannot reuse it because the JIT core may not include
+// rt/.
 template <std::semiregular Per> struct PerBlock {
   Per values{};
   Per jacobian{};
@@ -193,7 +197,6 @@ public:
     g.inputs_.directions = directions;
     g.externs_.assign(b.externs().begin(), b.externs().end());
     g.lists_.assign(b.lists().begin(), b.lists().end());
-    g.names_ = b.names();
     g.properties_.reserve(b.size());
     g.operands_.reserve(b.size());
     for (const Node<T> &n : b.nodes()) {
@@ -258,9 +261,8 @@ public:
   [[nodiscard]] const Sparsity &jacobian_pattern() const {
     return jacobian_pattern_;
   }
-  // The input column count of each kind, and the input names in column order.
+  // The input column count of each kind.
   [[nodiscard]] const Inputs &inputs() const { return inputs_; }
-  [[nodiscard]] const std::vector<std::string> &names() const { return names_; }
 
   // The extern functions, shared with the arena and called by index.
   [[nodiscard]] std::span<const ExternEntry<T>> externs() const {
@@ -290,8 +292,6 @@ public:
   [[nodiscard]] std::size_t arity() const { return inputs_.total(); }
 
   [[nodiscard]] bool live(NodeId v) const { return live_[v]; }
-
-  [[nodiscard]] std::size_t live_count() const { return live_order_.size(); }
 
   // The steps to compute in topological order, with FMA contraction already
   // decided. Multiplies absorbed into an FMA are omitted.
@@ -403,7 +403,6 @@ private:
   Colouring colouring_;
   Sparsity jacobian_pattern_;
   Inputs inputs_;
-  std::vector<std::string> names_;
   std::vector<ExternEntry<T>> externs_;
   std::vector<NodeId> lists_;
   bool has_tensors_ = false;
@@ -418,6 +417,9 @@ private:
   std::vector<Step> schedule_;
 };
 
+} // namespace ddx::rt::detail
+
+namespace ddx::rt {
 // Static counts of the steps a call executes and the values they write,
 // taken from a frozen graph. A call's cost is proportional to values.
 struct Census {
@@ -432,8 +434,10 @@ struct Census {
   // Per-opcode counts, sorted by values written, largest first.
   std::vector<Row> by_op;
 };
+} // namespace ddx::rt
 
-namespace detail {
+namespace ddx::rt::detail {
+
 template <impl::Numeric T> [[nodiscard]] Census census_of(const Graph<T> &g) {
   std::array<Census::Row, op_count> rows{};
   Census out{.steps = g.schedule().size(), .values = 0, .by_op = {}};
@@ -452,9 +456,8 @@ template <impl::Numeric T> [[nodiscard]] Census census_of(const Graph<T> &g) {
                            &Census::Row::values);
   return out;
 }
-} // namespace detail
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail
 
-DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::Graph<double>)
-DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::Graph<float>)
+DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::detail::Graph<double>)
+DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::detail::Graph<float>)

@@ -176,7 +176,7 @@ TEST(RtEquationHvp, BatchAgreesWithThePointSpelling) {
 // do the same arithmetic in the same order and bit equality is a fair test.
 #ifdef DDX_HAS_JIT
 TEST(RtEquationHvp, TheKernelAgreesWithTheSweepToTheBit) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto z = var(b, "z");

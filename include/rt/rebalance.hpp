@@ -15,12 +15,10 @@
 #include <stack>
 #include <vector>
 
-namespace ddx::rt {
+namespace ddx::rt::detail {
 
 // Blocked summation of long Add chains, which a kernel otherwise pays as
 // latency. Only the kernel graph uses it, so it may differ by a few ULP.
-
-namespace detail {
 
 // The terms of a maximal single-use Add spine, in left-to-right order.
 template <impl::Numeric T>
@@ -127,5 +125,4 @@ rebalance(Arena<T> &b, std::span<const NodeId> roots, std::size_t blocks = 16,
          impl::to<std::vector>();
 }
 
-} // namespace detail
-} // namespace ddx::rt
+} // namespace ddx::rt::detail

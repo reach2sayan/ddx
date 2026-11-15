@@ -34,7 +34,7 @@ constexpr auto sy = ddx::var<"y">;
 // constexpr rather than consteval, so one implementation serves both a
 // static_assert and a value read at run time.
 consteval double slope_at_two() {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto eq = ddx::rt::equation(x * x + 3.0 * x);
   return (*eq.jacobian(2.0))[0];
@@ -45,8 +45,8 @@ TEST(RtEquation, MatchesTheCompileTimeEquation) {
   const auto f = exp(sx) * sin(sy) + sx * sy;
   const ddx::Equation compile_time{f};
 
-  ddx::rt::Arena<> b;
-  const auto runtime = ddx::rt::equation(ddx::rt::to_graph(b, f));
+  ddx::rt::detail::Arena<> b;
+  const auto runtime = ddx::rt::equation(ddx::rt::detail::to_graph(b, f));
 
   EXPECT_EQ(runtime.arity(), 2u);
   EXPECT_NEAR(*runtime.evaluate(1.3, 0.7), compile_time.evaluate(1.3, 0.7),
@@ -63,7 +63,7 @@ TEST(RtEquation, MatchesTheCompileTimeEquation) {
 // The runtime side resolves names against a run-time symbol list, where
 // make_point uses a compile-time one.
 TEST(RtEquation, EveryCallSpellingAgrees) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(log(x) * sqrt(y));
@@ -117,7 +117,7 @@ TEST(RtEquation, NamesAndPointsBothComeFromRunTimeStrings) {
 // equation(expr) copies the arena, so a pending += is materialised in the
 // copy and not in the caller's arena.
 TEST(RtEquation, APendingSumRootsInTheCopiedArena) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   auto acc = x * y;
@@ -131,14 +131,14 @@ TEST(RtEquation, APendingSumRootsInTheCopiedArena) {
 }
 
 TEST(RtEquation, AnEmptyPointIsSpellable) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto eq = ddx::rt::equation(x * x);
   EXPECT_EQ(eq.evaluate().error().code, ddx::errc::wrong_arity);
 }
 
 TEST(RtEquation, EveryNamedPointMustNameEverySymbolAndOnlyRealOnes) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x * y);
@@ -165,7 +165,7 @@ TEST(RtEquation, EveryNamedPointMustNameEverySymbolAndOnlyRealOnes) {
 }
 
 TEST(RtEquation, SystemsGiveAJacobian) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x * y + sin(x), exp(x) - y * y);
@@ -182,7 +182,7 @@ TEST(RtEquation, SystemsGiveAJacobian) {
 }
 
 TEST(RtEquation, MultipleOutputsEvaluateToAVector) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto eq = ddx::rt::equation(x * x, sin(x));
   const auto v = *eq.evaluate(0.5);
@@ -192,7 +192,7 @@ TEST(RtEquation, MultipleOutputsEvaluateToAVector) {
 }
 
 TEST(RtEquation, AWrongSizedPointIsRejected) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x + y);
@@ -213,8 +213,8 @@ TEST(RtEquation, HessianMatchesTheCompileTimeEquation) {
   constexpr auto dy = ddx::var<"y", D>;
   const auto f = exp(dx) * sin(dy) + dx * dx * dy;
 
-  ddx::rt::Arena<> b;
-  const auto eq = ddx::rt::equation(ddx::rt::to_graph(b, f));
+  ddx::rt::detail::Arena<> b;
+  const auto eq = ddx::rt::equation(ddx::rt::detail::to_graph(b, f));
   const auto got = *eq.hessian(0.7, 1.1);
   const auto want = ddx::Equation{f}.hessian(0.7, 1.1);
 
@@ -229,7 +229,7 @@ TEST(RtEquation, HessianMatchesTheCompileTimeEquation) {
 }
 
 TEST(RtEquation, HessianColoursReflectTheCoupling) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto z = var(b, "z");
@@ -237,7 +237,7 @@ TEST(RtEquation, HessianColoursReflectTheCoupling) {
   const auto coupled = ddx::rt::equation(x * y + y * z + x * z);
   EXPECT_EQ(coupled.hessian_colours(), 3u) << "every pair couples";
 
-  ddx::rt::Arena<> b2;
+  ddx::rt::detail::Arena<> b2;
   const auto a = var(b2, "a");
   const auto c = var(b2, "c");
   const auto d = var(b2, "d");
@@ -280,7 +280,7 @@ TEST(RtEquation, AnOwningEquationOutlivesItsScope) {
 
 // The compiled kernel and the interpreter must give the same answers.
 TEST(RtEquation, BatchAgreesWithPerPoint) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(exp(x) * sin(y) + x * y);
@@ -308,38 +308,39 @@ TEST(RtEquation, BatchAgreesWithPerPoint) {
 // Each block lane runs the scalar sweep's operations in the same order, so the
 // two agree to the bit, including the contracted steps the block sweep packs.
 TEST(RtEquation, BlockSweepAgreesWithTheScalarSweepToTheBit) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto z = var(b, "z");
   const auto expr = sqrt(abs(x * y + z)) * exp(-(y * z) + x) + x * x * y;
   const auto root = expr.id(b);
-  std::ignore = ddx::rt::derive_jacobian(b, root);
+  std::ignore = ddx::rt::detail::derive_jacobian(b, root);
 
   const auto schedule = ddx::rt::detail::schedule_of(
-      b, std::views::iota(ddx::rt::NodeId{0},
-                          static_cast<ddx::rt::NodeId>(b.size())));
+      b, std::views::iota(ddx::rt::detail::NodeId{0},
+                          static_cast<ddx::rt::detail::NodeId>(b.size())));
   const auto contracted = [&](bool negated) {
-    return std::ranges::any_of(schedule, [negated](const ddx::rt::Step &s) {
-      return s.fma && s.fma.negated == negated;
-    });
+    return std::ranges::any_of(schedule,
+                               [negated](const ddx::rt::detail::Step &s) {
+                                 return s.fma && s.fma.negated == negated;
+                               });
   };
   ASSERT_TRUE(contracted(false));
   ASSERT_TRUE(contracted(true));
 
-  constexpr std::size_t w = ddx::rt::block_lanes;
+  constexpr std::size_t w = ddx::rt::detail::block_lanes;
   constexpr std::size_t symbols = 3;
   std::vector<double> lanes(symbols * w);
   for (const auto [k, v] : std::views::enumerate(lanes)) {
     v = std::sin(1.7 * static_cast<double>(k) + 0.3) * 2.5;
   }
   std::vector<double> block(b.size() * w);
-  ddx::rt::evaluate_block<w>(b, lanes, schedule, std::span{block});
+  ddx::rt::detail::evaluate_block<w>(b, lanes, schedule, std::span{block});
 
   std::vector<double> tape(b.size());
   for (const std::size_t k : std::views::iota(0uz, w)) {
     const std::array at{lanes[k], lanes[w + k], lanes[2 * w + k]};
-    ddx::rt::evaluate_into(b, at, schedule, std::span{tape});
+    ddx::rt::detail::evaluate_into(b, at, schedule, std::span{tape});
     for (const std::size_t v : std::views::iota(0uz, b.size())) {
       EXPECT_EQ(std::bit_cast<std::uint64_t>(block[v * w + k]),
                 std::bit_cast<std::uint64_t>(tape[v]))
@@ -350,14 +351,14 @@ TEST(RtEquation, BlockSweepAgreesWithTheScalarSweepToTheBit) {
 
 // Two whole blocks and a tail, each point checked against the scalar accessor.
 TEST(RtEquation, BatchAgreesWithPerPointToTheBit) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto z = var(b, "z");
   const auto eq =
       ddx::rt::equation(sqrt(abs(x * y + z)) * exp(-(y * z) + x) + x * x * y);
 
-  constexpr std::size_t n = 2 * ddx::rt::block_lanes + 3;
+  constexpr std::size_t n = 2 * ddx::rt::detail::block_lanes + 3;
   std::vector<double> cx(n), cy(n), cz(n), f(n), dx(n), dy(n), dz(n);
   for (const std::size_t i : std::views::iota(0uz, n)) {
     const auto t = static_cast<double>(i);
@@ -382,7 +383,7 @@ TEST(RtEquation, BatchAgreesWithPerPointToTheBit) {
 }
 
 TEST(RtEquation, BatchHessianFillsTheCompressedColumns) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(exp(x) * sin(y) + x * x * y);
@@ -414,7 +415,7 @@ TEST(RtEquation, BatchHessianFillsTheCompressedColumns) {
 namespace {
 
 TEST(RtEquation, BatchTakesAnyContiguousRange) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x * y);
@@ -442,7 +443,7 @@ TEST(RtEquation, BatchTakesAnyContiguousRange) {
 
 // A wrong column count would silently corrupt memory inside the kernel.
 TEST(RtEquation, AMismatchedColumnCountIsRejected) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x * y);
@@ -491,7 +492,7 @@ TEST(RtEquation, TheArenaIsInvisible) {
   spreading += 2.0;
   EXPECT_TRUE(spreading.poisoned());
   {
-    ddx::rt::Arena<> other;
+    ddx::rt::detail::Arena<> other;
     auto adopting = stray;
     adopting *= var(other, "x");
     EXPECT_TRUE(adopting.poisoned());
@@ -517,7 +518,7 @@ TEST(RtEquation, TheArenaIsInvisible) {
 // An equation copies the arena it is lent, so new symbols in the caller's
 // arena move nothing that the equation reads.
 TEST(RtEquation, ALentArenaIsCopiedAndStaysOpen) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto eq = ddx::rt::equation(x * x);
   ASSERT_EQ(eq.arity(), 1u);
@@ -536,7 +537,7 @@ TEST(RtEquation, ALentArenaIsCopiedAndStaysOpen) {
 
 // Sealing stops new symbols from being added, but existing ones can be named.
 TEST(RtEquation, ASealedArenaStillNamesTheSymbolsItHas) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto first = ddx::rt::equation(x * y);
@@ -713,7 +714,7 @@ TEST(RtEquation, UnivariateDerivativeOfPairedSeries) {
 // The graph changes which nodes are visited but never the arithmetic at any of
 // them, so the scalar accessors match the arena walk exactly.
 TEST(RtEquation, ScalarAccessorsAgreeWithTheArenaWalkToTheBit) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto z = var(b, "z");
@@ -723,12 +724,12 @@ TEST(RtEquation, ScalarAccessorsAgreeWithTheArenaWalkToTheBit) {
 
   // Taken before the equation, so interning reuses these same nodes.
   const auto root = expr.id(b);
-  const auto row = ddx::rt::derive_jacobian(b, root);
-  const auto hess = ddx::rt::derive_hessian(b, root);
+  const auto row = ddx::rt::detail::derive_jacobian(b, root);
+  const auto hess = ddx::rt::detail::derive_hessian(b, root);
   const auto eq = ddx::rt::equation(expr);
 
   const std::vector<double> at{0.7, 1.3, 2.1};
-  const auto values = ddx::rt::evaluate_all(b, at);
+  const auto values = ddx::rt::detail::evaluate_all(b, at);
   const std::size_t n = at.size();
 
   EXPECT_EQ(*eq.evaluate(at), values[root]);
@@ -804,7 +805,7 @@ TEST(RtEquation, ShortSpinesSurviveTheSwitchoverToTheBit) {
 }
 
 TEST(RtEquation, InterpretDeclinesTheBackendAndAgreesWithIt) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   auto eq = ddx::rt::equation(x * log(x) + y * exp(x * y) + sqrt(x + y));
@@ -854,7 +855,7 @@ TEST(RtEquation, InterpretDeclinesTheBackendAndAgreesWithIt) {
 // The two kernel widths must agree to the bit, since each lane performs its
 // own IEEE operations.
 TEST(RtEquation, PointsPicksTheKernelWidthAndTheAnswerIsTheSame) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * log(x) + y * exp(x * y) + sqrt(x + y);
@@ -899,7 +900,7 @@ TEST(RtEquation, PointsPicksTheKernelWidthAndTheAnswerIsTheSame) {
 }
 
 TEST(RtEquation, TheDefaultCompilesNothing) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x * log(x) + y * y);
@@ -921,7 +922,7 @@ TEST(RtEquation, TheDefaultCompilesNothing) {
 }
 
 TEST(RtEquation, IdenticalOptionsKeepTheKernel) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   auto eq = ddx::rt::equation(x * log(x) + exp(x));
 
@@ -936,7 +937,7 @@ TEST(RtEquation, IdenticalOptionsKeepTheKernel) {
 // Sizing a buffer must not build a kernel, because the constructor already
 // knows the counts.
 TEST(RtEquation, TheColumnCountsCompileNothing) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   auto eq = ddx::rt::equation(x * log(x) + y * exp(x * y));
@@ -1034,7 +1035,7 @@ TEST(RtEquation, DifferentEquationTypesShareOneCompilerSafely) {
 // Changing the backend discards the kernel: Interpret falls back to the sweep,
 // and switching back to Compile builds a new kernel.
 TEST(RtEquation, ChangingTheBackendDiscardsTheKernel) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   auto eq = ddx::rt::equation(x * log(x) + exp(x));
 
@@ -1057,7 +1058,7 @@ TEST(RtEquation, ChangingTheBackendDiscardsTheKernel) {
 }
 
 TEST(RtEquation, TheFirstCallBuildsTheKernel) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   auto eq = ddx::rt::equation(x * log(x) + exp(x));
   eq.options({.backend = ddx::rt::Backend::Compile});
@@ -1072,7 +1073,7 @@ TEST(RtEquation, TheFirstCallBuildsTheKernel) {
 }
 
 TEST(RtEquation, OptionsReachTheCompilerAndDoNotChangeTheAnswer) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   auto eq = ddx::rt::equation(x * log(x) + y * exp(x * y) + sqrt(x + y));
@@ -1122,7 +1123,7 @@ TEST(RtEquation, OptionsReachTheCompilerAndDoNotChangeTheAnswer) {
 // std::thread rather than std::jthread, which libc++ shipped late. The threads
 // deliberately race to build the one kernel.
 TEST(RtEquation, ConcurrentConstCallsAgreeWithOneThread) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   auto eq = ddx::rt::equation(x * log(x) + y * exp(x * y) + sqrt(x + y));
@@ -1181,7 +1182,7 @@ TEST(RtEquation, ConcurrentConstCallsAgreeWithOneThread) {
 // derive_hessian appends to the shared arena, so this is safe only because the
 // sweep runs in the constructor rather than under a per-Equation lock.
 TEST(RtEquation, TwoEquationsSharingAnArenaDoNotRaceIt) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   auto first = ddx::rt::equation(x * log(x) + y * y);
@@ -1202,7 +1203,7 @@ TEST(RtEquation, TwoEquationsSharingAnArenaDoNotRaceIt) {
 }
 
 TEST(RtEquation, EvaluatingABatchComputesNoPartials) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x * log(x) + y * y);
@@ -1229,7 +1230,7 @@ TEST(RtEquation, EvaluatingABatchComputesNoPartials) {
 // The values lane's graph carries no Jacobian block. A system is used rather
 // than one root, because there the sizes differ.
 TEST(RtEquation, EvaluatingUsesAValuesOnlyGraph) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x * log(x), y * y + x, exp(x * y));
@@ -1273,7 +1274,7 @@ TEST(RtEquation, EvaluatingUsesAValuesOnlyGraph) {
 // The gradient lane sweeps a graph with no value block, and its answers match
 // the Jacobian lane to the bit.
 TEST(RtEquation, GradientIsTheJacobianWithoutTheValue) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   // The product is dead for the gradient, and erf's derivative never calls erf.
@@ -1303,7 +1304,7 @@ TEST(RtEquation, GradientIsTheJacobianWithoutTheValue) {
 }
 
 TEST(RtEquation, ScalarAndBatchAgreeAtTheSamePoint) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x * log(x) * y + y * y * y);
@@ -1331,7 +1332,7 @@ TEST(RtEquation, ScalarAndBatchAgreeAtTheSamePoint) {
 // The scalar accessors touch the lane cache and must not reach for a compiler
 // under a backend that declines one.
 TEST(RtEquation, EvaluatingUnderInterpretCompilesNothing) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   auto eq = ddx::rt::equation(x * log(x) + y * y);
@@ -1344,7 +1345,7 @@ TEST(RtEquation, EvaluatingUnderInterpretCompilesNothing) {
 }
 
 TEST(RtEquation, InterpretNeverCompilesBehindTheCaller) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   auto eq = ddx::rt::equation(x * log(x));
   eq.options({.backend = ddx::rt::Backend::Interpret});

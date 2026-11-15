@@ -15,7 +15,7 @@
 
 // The JIT compiler and the kernels it returns. No LLVM type appears here; the
 // caller's options are in jit/options.hpp.
-namespace ddx::jit {
+namespace ddx::jit::detail {
 
 // The scalars the JIT compiles for; any other scalar is interpreted.
 template <typename T>
@@ -26,7 +26,7 @@ concept CKernelScalar = std::same_as<T, double> || std::same_as<T, float>;
 using Externs = std::vector<std::shared_ptr<const void>>;
 
 template <impl::Numeric T>
-[[nodiscard]] Externs externs_of(const rt::Graph<T> &g) {
+[[nodiscard]] Externs externs_of(const rt::detail::Graph<T> &g) {
   return g.externs() |
          std::views::transform(
              [](const auto &e) -> std::shared_ptr<const void> {
@@ -95,12 +95,12 @@ public:
   // Instantiated in the library for each CKernelScalar.
   template <CKernelScalar T>
   [[nodiscard]] DDX_API compile_result<Kernel<T>>
-  compile(const rt::Graph<T> &g, const Options &opt = {});
+  compile(const rt::detail::Graph<T> &g, const Options &opt = {});
 
   // The LLVM IR that compile() would hand to the backend, as text.
   template <CKernelScalar T>
   [[nodiscard]] DDX_API compile_result<std::string>
-  ir(const rt::Graph<T> &g, const Options &opt = {}) const;
+  ir(const rt::detail::Graph<T> &g, const Options &opt = {}) const;
 
 private:
   struct Impl;
@@ -108,4 +108,4 @@ private:
   std::shared_ptr<Impl> impl_;
 };
 
-} // namespace ddx::jit
+} // namespace ddx::jit::detail

@@ -22,7 +22,7 @@
 #include <utility>
 #include <vector>
 
-namespace ddx::rt {
+namespace ddx::rt::detail {
 
 inline constexpr std::size_t no_column = static_cast<std::size_t>(-1);
 
@@ -71,6 +71,9 @@ static_assert(std::forward_iterator<SetBits>);
                           impl::md::dextents<std::size_t, 2>{colours, n}};
 }
 
+} // namespace ddx::rt::detail
+
+namespace ddx::rt {
 // A stored cell of a derivative block: its dense (row, column) position and
 // the slot where its value is kept in the compressed block.
 struct Cell {
@@ -165,7 +168,7 @@ struct Colouring {
   // The compressed block's width, which is the number of owned cells.
   [[nodiscard]] constexpr std::size_t width() const noexcept {
     return static_cast<std::size_t>(std::ranges::count_if(
-        cell, [](std::size_t k) { return k != no_column; }));
+        cell, [](std::size_t k) { return k != detail::no_column; }));
   }
   [[nodiscard]] constexpr auto colours() const noexcept {
     return std::views::iota(0uz, count());
@@ -179,14 +182,15 @@ struct Colouring {
   // skipped.
   [[nodiscard]] constexpr auto owned_cells(std::size_t c) const {
     const auto n = colour.size();
-    const auto owner = by_colour(scatter, count(), n);
-    const auto slot = by_colour(cell, count(), n);
+    const auto owner = detail::by_colour(scatter, count(), n);
+    const auto slot = detail::by_colour(cell, count(), n);
     return std::views::iota(0uz, n) |
            std::views::transform([c, owner, slot](std::size_t i) {
              return Cell{.row = i, .column = owner[c, i], .slot = slot[c, i]};
            }) |
-           std::views::filter(
-               [](const Cell &owned) { return owned.column != no_column; });
+           std::views::filter([](const Cell &owned) {
+             return owned.column != detail::no_column;
+           });
   }
   // Every stored cell, in colour-major order.
   [[nodiscard]] constexpr auto entries() const {
@@ -201,13 +205,14 @@ struct Colouring {
     const auto n = colour.size();
     const auto colours = count();
     const std::size_t c = colour[j];
-    return by_colour(scatter, colours, n)[c, i] == j
-               ? std::optional{by_colour(cell, colours, n)[c, i]}
+    return detail::by_colour(scatter, colours, n)[c, i] == j
+               ? std::optional{detail::by_colour(cell, colours, n)[c, i]}
                : std::nullopt;
   }
 };
+} // namespace ddx::rt
 
-namespace detail {
+namespace ddx::rt::detail {
 
 // Nested loops, as views::cartesian_product measured 7-21% slower here. The
 // size_t constraint keeps a dynamic_bitset, a range of bools, out of this one.
@@ -241,8 +246,6 @@ using Indices = boost::container::small_vector<std::size_t, 2>;
   std::ranges::set_union(a, b, std::back_inserter(out));
   return out;
 }
-
-} // namespace detail
 
 // rows[i][j] is true when d2f/dxi dxj may be nonzero. The pattern is
 // symmetric and conservative: a superset costs sweeps, never correctness.
@@ -463,4 +466,4 @@ constexpr void scatter(const auto &layout, auto &&cell, auto &&dense,
 // Ref: Coleman & Moré, SIAM J. Numer. Anal. 20(1) (1983) 187.
 [[nodiscard]] DDX_API Colouring colour_columns(const CouplingRows &rows);
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail

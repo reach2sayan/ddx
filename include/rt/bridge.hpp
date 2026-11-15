@@ -13,9 +13,7 @@
 
 // Lowers a compile-time expression tree into the runtime graph by a
 // compile-time recursion over its type.
-namespace ddx::rt {
-
-namespace detail {
+namespace ddx::rt::detail {
 
 // Sum and Multiply are n-ary in the type but binary in the graph, so a wide
 // node is folded left into a chain of binary nodes.
@@ -37,15 +35,15 @@ template <impl::Numeric T, impl::CExpression U>
     return meta::unpack(
         e.expressions(), [&](const auto &first, const auto &...rest) {
           if constexpr (sizeof...(rest) == 0) {
-            return Expression<T>::form(*code, lower(b, first));
+            return Router::form(*code, lower(b, first));
           } else if constexpr (*code == OpCode::Select) {
             // Brace initialisation guarantees left-to-right lowering order.
             const std::array arms{lower(b, first), lower(b, rest)...};
-            return Expression<T>::form(*code, arms[0], arms[1], arms[2]);
+            return Router::form(*code, arms[0], arms[1], arms[2]);
           } else {
             Expression acc = lower(b, first);
             meta::for_each(std::forward_as_tuple(rest...), [&](const auto &r) {
-              acc = Expression<T>::form(*code, acc, lower(b, r));
+              acc = Router::form(*code, acc, lower(b, r));
             });
             return acc;
           }
@@ -70,8 +68,6 @@ template <impl::Numeric U, impl::CExpression E>
   }
 }
 
-} // namespace detail
-
 // Symbols are declared first in the compile-time Equation's order so their
 // columns match. Trees with frozen leaves are refused, as a Var is always live.
 template <impl::Numeric T, impl::CExpression U>
@@ -82,4 +78,4 @@ template <impl::Numeric T, impl::CExpression U>
   return detail::lower(b, e);
 }
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail

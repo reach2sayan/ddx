@@ -27,7 +27,7 @@
 
 // Lowers an Ast into an arena through Expression::form, which interns, folds
 // and propagates poison exactly as hand-built expressions do.
-namespace ddx::rt::text {
+namespace ddx::rt::detail::text {
 
 namespace detail {
 
@@ -80,7 +80,7 @@ form(const Ast &ast, std::span<const Expression<T>> symbols,
       return fail(errc::bad_syntax);
     }
     return meta::unpack(meta::iota<arity>, [&](auto... i) {
-      return Expr::form(t.op, built[t.in[i]]...);
+      return rt::detail::Router::form(t.op, built[t.in[i]]...);
     });
   };
 
@@ -150,4 +150,4 @@ template <std::floating_point T>
   return built[ast.root];
 }
 
-} // namespace ddx::rt::text
+} // namespace ddx::rt::detail::text

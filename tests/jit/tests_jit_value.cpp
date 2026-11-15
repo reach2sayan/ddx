@@ -25,8 +25,8 @@
 // a disagreement between them is a codegen bug.
 
 namespace {
-using ddx::rt::Arena;
-using ddx::rt::Graph;
+using ddx::rt::detail::Arena;
+using ddx::rt::detail::Graph;
 
 // Names the stated lane width for a failure message, or "derived" if none.
 std::string spelled(ddx::jit::Lanes lanes) {
@@ -66,7 +66,7 @@ void expect_matches_interpreter(auto build, std::size_t nvars,
     const auto point =
         columns | std::views::transform([i](const auto &c) { return c[i]; }) |
         ddx::impl::to<std::vector>();
-    const double want = ddx::rt::evaluate(b, root.id(b), point);
+    const double want = ddx::rt::detail::evaluate(b, root.id(b), point);
     ASSERT_NEAR(got[i], want, 1e-12 * std::max(1.0, std::abs(want)))
         << "at point " << i;
   }
@@ -75,10 +75,10 @@ void expect_matches_interpreter(auto build, std::size_t nvars,
 // A Kernel points into code its Compiler owns, so the Compiler has one owner,
 // but it must move because Equation keeps one in a static.
 TEST(JitValue, CompilerIsMovableButNotCopyable) {
-  static_assert(!std::is_copy_constructible_v<ddx::jit::Compiler>);
-  static_assert(!std::is_copy_assignable_v<ddx::jit::Compiler>);
-  static_assert(std::is_move_constructible_v<ddx::jit::Compiler>);
-  static_assert(std::is_move_assignable_v<ddx::jit::Compiler>);
+  static_assert(!std::is_copy_constructible_v<ddx::jit::detail::Compiler>);
+  static_assert(!std::is_copy_assignable_v<ddx::jit::detail::Compiler>);
+  static_assert(std::is_move_constructible_v<ddx::jit::detail::Compiler>);
+  static_assert(std::is_move_assignable_v<ddx::jit::detail::Compiler>);
   SUCCEED();
 }
 
@@ -143,7 +143,7 @@ TEST(JitValue, PowWithAConstantOperandIsTheSweepsPowToTheBit) {
     kernel(xs, values, {}, {}, n);
     for (const std::size_t i : std::views::iota(0uz, n)) {
       const double want =
-          ddx::rt::evaluate(b, root.id(b), std::span{&column[i], 1});
+          ddx::rt::detail::evaluate(b, root.id(b), std::span{&column[i], 1});
       EXPECT_EQ(std::bit_cast<std::uint64_t>(got[i]),
                 std::bit_cast<std::uint64_t>(want))
           << "at x = " << column[i] << ": " << got[i] << " vs " << want;
@@ -213,7 +213,7 @@ TEST(JitValue, MaxMinSignedZeroTiesMatchTheInterpreter) {
   kernel(xs, value_columns, {}, {}, cx.size());
 
   for (const std::size_t i : std::views::iota(0uz, cx.size())) {
-    const auto want = ddx::rt::evaluate_all(b, std::array{cx[i], cy[i]});
+    const auto want = ddx::rt::detail::evaluate_all(b, std::array{cx[i], cy[i]});
     EXPECT_EQ(std::signbit(got_max[i]), std::signbit(want[graph.outputs()[0]]))
         << "max at " << i;
     EXPECT_EQ(std::signbit(got_min[i]), std::signbit(want[graph.outputs()[1]]))
@@ -357,7 +357,7 @@ TEST(JitValue, AFloatGraphAgreesAcrossWidthsAndWithTheSweep) {
   }
   for (const std::size_t i : std::views::iota(0uz, n)) {
     const std::array point{cx[i], cy[i]};
-    const float want = ddx::rt::evaluate(b, f.id(b), point);
+    const float want = ddx::rt::detail::evaluate(b, f.id(b), point);
     EXPECT_EQ(std::bit_cast<std::uint32_t>(scalar[0][i]),
               std::bit_cast<std::uint32_t>(want))
         << "at " << i << ": " << scalar[0][i] << " vs " << want;
@@ -508,7 +508,7 @@ TEST(JitValue, AgreesWithDdxThroughTheBridge) {
   constexpr auto x = ddx::var<"x">;
   constexpr auto y = ddx::var<"y">;
   Arena<> b;
-  const auto root = ddx::rt::to_graph(b, exp(x) * sin(y));
+  const auto root = ddx::rt::detail::to_graph(b, exp(x) * sin(y));
   const auto graph = ddx::test::freeze_values(b, std::array{root.id(b)});
   const auto kernel = must_compile(graph);
 
@@ -528,12 +528,12 @@ TEST(JitValue, AgreesWithDdxThroughTheBridge) {
 // rt::Equation::run() interprets when there is no kernel, so an empty Kernel
 // must be falsy and bring-up must report its refusal rather than throw.
 TEST(JitValue, AnUnbuiltKernelIsFalsyAndCreateAnswersWithAResult) {
-  const ddx::jit::Kernel<double> none;
+  const ddx::jit::detail::Kernel<double> none;
   EXPECT_FALSE(static_cast<bool>(none));
   EXPECT_EQ(none.shape().arity, 0u);
   EXPECT_EQ(none.shape().outputs(), 0u);
 
-  auto c = ddx::jit::Compiler::create();
+  auto c = ddx::jit::detail::Compiler::create();
   ASSERT_TRUE(c.has_value()) << c.error().detail;
 
   Arena<> b;
@@ -596,9 +596,9 @@ TEST(JitValue, SeparateCompilesCoexist) {
 // A Kernel shares ownership of the JIT its code lives in; without that share
 // this call lands in an unmapped page.
 TEST(JitValue, KernelOutlivesItsCompiler) {
-  ddx::jit::Kernel<double> kernel;
+  ddx::jit::detail::Kernel<double> kernel;
   {
-    auto local = *ddx::jit::Compiler::create();
+    auto local = *ddx::jit::detail::Compiler::create();
     Arena<> b;
     const auto x = var(b, "x");
     auto k = local.compile(ddx::test::freeze_values(b, std::array{(x * x).id(b)}));

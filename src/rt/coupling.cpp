@@ -16,7 +16,7 @@
 #include <utility>
 #include <vector>
 
-namespace ddx::rt {
+namespace ddx::rt::detail {
 namespace {
 
 // CSR has no undirected form, so each conflict is inserted both ways. The
@@ -81,4 +81,4 @@ Colouring colour_columns(const CouplingRows &rows) {
   return out;
 }
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail

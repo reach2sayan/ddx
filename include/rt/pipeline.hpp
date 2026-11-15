@@ -19,7 +19,7 @@ namespace ddx::rt::detail {
 #ifdef DDX_HAS_JIT
 // The process-wide LLJIT, created on first use so interpret-only programs
 // never start LLVM. Defined in libddx; null on a host with no JIT.
-[[nodiscard]] DDX_API jit::Compiler *shared_compiler();
+[[nodiscard]] DDX_API jit::detail::Compiler *shared_compiler();
 #endif
 
 // The context a kernel's tensor steps run with. Read under the arena's lock.
@@ -35,7 +35,7 @@ template <impl::Numeric T> struct Compiled {
   // The kernel's graph, with reduction spines blocked; it aliases graph when
   // the two agree. The sweep skips blocking because it costs tape locality.
   std::shared_ptr<const Graph<T>> compile_graph{};
-  jit::Kernel<T> kernel{};
+  jit::detail::Kernel<T> kernel{};
   // The tensor kernel table, fixed when the pipeline froze; a new table needs a
   // new pipeline.
   const TensorKernelTable<T> *kernels = nullptr;
@@ -74,12 +74,13 @@ private:
       return held;
     }
 #ifdef DDX_HAS_JIT
-    if constexpr (jit::CKernelScalar<T>) {
-      jit::Compiler *const c = shared_compiler();
+    if constexpr (jit::detail::CKernelScalar<T>) {
+      jit::detail::Compiler *const c = shared_compiler();
       held.status =
           c ? c->compile(*held.compile_graph, *compiling)
-                  .transform(
-                      [&held](jit::Kernel<T> k) { held.kernel = std::move(k); })
+                  .transform([&held](jit::detail::Kernel<T> k) {
+                    held.kernel = std::move(k);
+                  })
             : std::unexpected{jit::compile_error{
                   .code = errc::jit_target, .detail = "no JIT on this host"}};
     }

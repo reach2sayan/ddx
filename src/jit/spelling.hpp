@@ -11,7 +11,7 @@
 
 // How the LLVM emitter writes each operation: an infix operator, a compare, a
 // named call (intrinsic or libm), or a special hand-written form.
-namespace ddx::rt {
+namespace ddx::rt::detail {
 
 enum class Form : std::uint8_t { None, Infix, Compare, Call, Special };
 struct Spelling {
@@ -19,7 +19,6 @@ struct Spelling {
   std::string_view name{};
 };
 
-namespace detail {
 inline constexpr std::array spellings = [] {
   std::array<Spelling, op_count> t{};
   const auto set = [&t](OpCode op, Form form, std::string_view name = {}) {
@@ -44,7 +43,6 @@ inline constexpr std::array spellings = [] {
   }
   return t;
 }();
-} // namespace detail
 
 [[nodiscard]] constexpr const Spelling &spelling_of(OpCode op) noexcept {
   return detail::spellings[std::to_underlying(op)];
@@ -58,4 +56,4 @@ static_assert(std::ranges::all_of(std::views::iota(0uz, op_count),
                                            spelling_of(op).form != Form::None;
                                   }));
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail

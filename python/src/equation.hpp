@@ -39,7 +39,7 @@ inline void scatter(const auto &layout, Columns &cells, Dense &dense,
                     std::size_t n, std::size_t rows, std::size_t points) {
   std::ranges::fill_n(dense.at(0),
                       static_cast<std::ptrdiff_t>(rows * n * points), 0.0);
-  rt::scatter(
+  rt::detail::scatter(
       layout, [&cells](std::size_t k) { return cells.at(k); },
       [&dense](std::size_t c) { return dense.at(c); }, n, points);
 }
@@ -55,9 +55,10 @@ public:
   using Want = rt::Want;
 
   // The arena is copied, so the expressions that built it stay usable.
-  PyEquation(const std::shared_ptr<rt::Arena<double>> &arena,
-             std::vector<rt::NodeId> roots)
-      : PyCore{std::make_unique<rt::Arena<double>>(*arena), std::move(roots)},
+  PyEquation(const std::shared_ptr<rt::detail::Arena<double>> &arena,
+             std::vector<rt::detail::NodeId> roots)
+      : PyCore{std::make_unique<rt::detail::Arena<double>>(*arena),
+               std::move(roots)},
         symbols_{*sound().symbols()}, inputs_{*inputs()} {}
 
 private:
@@ -107,13 +108,11 @@ public:
   }
   // Returns (value, gradient, H v), all from the same sweep.
   [[nodiscard]] pyb::tuple hvp(const pyb::handle &v, const pyb::handle &x) {
-    unwrap(ready(Want::Hvp));
     return run<Want::Hvp>(x, &v);
   }
   // Returns (value, gradient, H) with H dense, from one O(n^2) sweep instead of
   // the colouring hessian() uses.
   [[nodiscard]] pyb::tuple dense_hessian(const pyb::handle &x) {
-    unwrap(ready(Want::DenseHessian));
     return run<Want::DenseHessian>(x);
   }
   // Returns (value, J, dJ/dv), both dense, from one forward sweep.
@@ -183,22 +182,22 @@ private:
                      : std::span<double *const>{};
     }
   };
-  [[nodiscard]] Out out_for(rt::BlockShape shape, std::size_t columns,
+  [[nodiscard]] Out out_for(rt::detail::BlockShape shape, std::size_t columns,
                             const Point &at) const {
     switch (shape) {
-    case rt::BlockShape::None:
+    case rt::detail::BlockShape::None:
       return {};
-    case rt::BlockShape::Cells:
-    case rt::BlockShape::Colours:
+    case rt::detail::BlockShape::Cells:
+    case rt::detail::BlockShape::Colours:
       return {.cells = Scratch{columns, at.size()}};
-    case rt::BlockShape::Dense:
+    case rt::detail::BlockShape::Dense:
       return {
           .block = Block{
               shape_of({ssize(height()), ssize(width()), ssize(width())}, at),
               columns, at.size()}};
-    case rt::BlockShape::Symbols:
+    case rt::detail::BlockShape::Symbols:
       return {.block = Block{symbol_shape(at), columns, at.size()}};
-    case rt::BlockShape::Functions:
+    case rt::detail::BlockShape::Functions:
       return {.block =
                   Block{shape_of({ssize(height())}, at), columns, at.size()}};
     }
@@ -206,25 +205,25 @@ private:
   }
   // `pattern` scatters the Jacobian cells (a restricted view supplies its own),
   // and `colouring` scatters the Hessian.
-  [[nodiscard]] pyb::object finish(rt::BlockShape shape, Out &o,
+  [[nodiscard]] pyb::object finish(rt::detail::BlockShape shape, Out &o,
                                    const Point &at, const rt::Sparsity &pattern,
                                    const rt::Colouring *colouring) const {
     const std::size_t m = height();
     const std::size_t n = width();
     switch (shape) {
-    case rt::BlockShape::None:
+    case rt::detail::BlockShape::None:
       return pyb::none();
-    case rt::BlockShape::Symbols:
-    case rt::BlockShape::Functions:
-    case rt::BlockShape::Dense:
+    case rt::detail::BlockShape::Symbols:
+    case rt::detail::BlockShape::Functions:
+    case rt::detail::BlockShape::Dense:
       return std::move(*o.block).array();
-    case rt::BlockShape::Cells: {
+    case rt::detail::BlockShape::Cells: {
       Dense g{shape_of({ssize(m), ssize(pattern.columns)}, at), at.size()};
       py::scatter(pattern, *o.cells, g, pattern.columns, pattern.size(),
                   at.size());
       return std::move(g).array();
     }
-    case rt::BlockShape::Colours: {
+    case rt::detail::BlockShape::Colours: {
       Dense h{shape_of({ssize(m), ssize(n), ssize(n)}, at), at.size()};
       py::scatter(*colouring, *o.cells, h, n, n, at.size());
       return std::move(h).array();
@@ -238,19 +237,21 @@ private:
   template <Want W>
   [[nodiscard]] pyb::tuple run(const pyb::handle &x,
                                const pyb::handle *v = nullptr) {
-    const auto l = pipeline(W);
-    return run_on<W>([this](auto &&...a) { return dispatch(DDX_FWD(a)...); },
-                     l->graph->layout(), derivative().pattern,
-                     &l->graph->colouring(), x, v);
+    const auto l = unwrap(pipeline(W));
+    return run_on<W>(
+        [this, &l](Want, auto &&...a) {
+          return dispatch_on(*l, DDX_FWD(a)...);
+        },
+        l->graph->layout(), derivative().pattern, &l->graph->colouring(), x, v);
   }
   // The same over any dispatcher, such as a restricted view's, with its own
   // block sizes, pattern and colouring.
   template <Want W>
   [[nodiscard]] pyb::tuple
-  run_on(auto &&dispatcher, const rt::Layout &sizes,
+  run_on(auto &&dispatcher, const rt::detail::Layout &sizes,
          const rt::Sparsity &pattern, const rt::Colouring *colouring,
          const pyb::handle &x, const pyb::handle *v = nullptr) const {
-    constexpr rt::WantInfo w = rt::want_info(W);
+    constexpr rt::detail::WantInfo w = rt::detail::want_info(W);
     const Point at{x, inputs_};
     Cell cell;
     // The values array, or nothing when the value is a single float.
@@ -260,18 +261,18 @@ private:
     }
     Out g = out_for(w.jacobian, sizes.jacobian, at);
     Out h = out_for(w.hessian, sizes.hessian, at);
-    const rt::Columns<double> columns{
+    const rt::detail::Columns<double> columns{
         .values = w.values ? (f ? f->rows() : cell.rows())
                            : std::span<double *const>{},
         .jacobian = g.rows(),
         .hessian = h.rows()};
-    if constexpr (w.direction == rt::Direction::None) {
+    if constexpr (w.direction == rt::detail::Direction::None) {
       unwrap(dispatcher(W, at.columns(), columns, at.size()));
     } else {
       // Built by a lambda because Point is not movable and its positional
       // constructor is private, which rules out optional::emplace.
       const Point dir = [&] {
-        if constexpr (w.direction == rt::Direction::Functions) {
+        if constexpr (w.direction == rt::detail::Direction::Functions) {
           return Point(*v, height());
         } else {
           return Point(*v, symbols_);
@@ -288,10 +289,10 @@ private:
       parts.append(f ? std::move(*f).array()
                      : pyb::object{pyb::float_(cell.value)});
     }
-    if (w.jacobian != rt::BlockShape::None) {
+    if (w.jacobian != rt::detail::BlockShape::None) {
       parts.append(finish(w.jacobian, g, at, pattern, nullptr));
     }
-    if (w.hessian != rt::BlockShape::None) {
+    if (w.hessian != rt::detail::BlockShape::None) {
       parts.append(finish(w.hessian, h, at, pattern, colouring));
     }
     return pyb::tuple(parts);
@@ -400,7 +401,9 @@ private:
         {.values = eq_->height(),
          .jacobian = kept,
          .hessian =
-             rt::want_info(W).hessian == rt::BlockShape::None ? 0 : kept},
+             rt::detail::want_info(W).hessian == rt::detail::BlockShape::None
+                 ? 0
+                 : kept},
         view_.jacobian_pattern(), nullptr, x, v);
   }
 
@@ -415,17 +418,16 @@ public:
   // The equation outlives the call through pyb::keep_alive on the factory.
   PyCall(PyEquation &eq, PyEquation::Want want, const pyb::handle &x)
       : eq_(&eq), want_(want), x_(pyb::cast<Array>(x)), at_(x_, eq.inputs_) {
-    // Refuses wants with no pipeline to bind, such as a system's Hessian.
-    unwrap(eq_->ready(want_));
     // Direction columns and dense Hessian blocks are not bound, so wants that
-    // need them are refused here.
-    if (const auto &w = rt::want_info(want_);
-        w.direction != rt::Direction::None ||
-        (w.hessian != rt::BlockShape::None &&
-         w.hessian != rt::BlockShape::Colours)) {
+    // need them are refused here, before any pipeline is built.
+    if (const auto &w = rt::detail::want_info(want_);
+        w.direction != rt::detail::Direction::None ||
+        (w.hessian != rt::detail::BlockShape::None &&
+         w.hessian != rt::detail::BlockShape::Colours)) {
       fail_with(errc::wrong_column_count);
     }
-    const auto l = eq_->pipeline(want_);
+    // Refuses wants with no pipeline to bind, such as a system's Hessian.
+    const auto l = unwrap(eq_->pipeline(want_));
     const auto outputs = ssize(eq_->height());
     const auto n = eq_->width();
     // The blocks the pipeline fills: values, Jacobian cells, and the Hessian
@@ -436,8 +438,8 @@ public:
                  at_.size());
     }
     // An empty pattern still yields a block, of zeros.
-    if (!blocks.jacobian.empty() ||
-        rt::want_info(want_).jacobian == rt::BlockShape::Cells) {
+    if (!blocks.jacobian.empty() || rt::detail::want_info(want_).jacobian ==
+                                        rt::detail::BlockShape::Cells) {
       partials_.emplace(blocks.jacobian.size(), at_.size());
       g_.emplace(eq_->shape_of({outputs, ssize(n)}, at_), at_.size());
     }
@@ -450,9 +452,9 @@ public:
   // The pipeline is looked up on each call rather than cached, so a kernel
   // swapped in by adopt() is picked up.
   void operator()() {
-    const auto l = eq_->pipeline(want_);
-    unwrap(eq_->dispatch(
-        want_, at_.columns(),
+    const auto l = unwrap(eq_->pipeline(want_));
+    unwrap(eq_->dispatch_on(
+        *l, at_.columns(),
         {.values = f_ ? f_->rows() : std::span<double *const>{},
          .jacobian = partials_ ? partials_->rows() : std::span<double *const>{},
          .hessian =
@@ -475,10 +477,10 @@ public:
   [[nodiscard]] pyb::object hessian() const { return read(h_); }
 
   [[nodiscard]] std::string repr() const {
-    return std::format(
-        "<ddx.Call {} at {} point{}>",
-        boost::algorithm::to_lower_copy(std::string{rt::name_of(want_)}),
-        at_.size(), at_.size() == 1 ? "" : "s");
+    return std::format("<ddx.Call {} at {} point{}>",
+                       boost::algorithm::to_lower_copy(
+                           std::string{rt::detail::name_of(want_)}),
+                       at_.size(), at_.size() == 1 ? "" : "s");
   }
 
 private:

@@ -11,7 +11,7 @@
 // the same v, so a wrong rule for the Seed leaf shows up as a wrong number.
 
 namespace {
-using ddx::rt::Arena;
+using ddx::rt::detail::Arena;
 
 // The point followed by the direction, in the order input_column() states.
 std::vector<double> widened(std::span<const double> x,
@@ -22,7 +22,7 @@ std::vector<double> widened(std::span<const double> x,
 }
 
 // The coloured Hessian scattered to dense and multiplied by v.
-std::vector<double> reference_product(const ddx::rt::Hessian &h,
+std::vector<double> reference_product(const ddx::rt::detail::Hessian &h,
                                       std::span<const double> values,
                                       std::span<const double> v) {
   const std::size_t n = h.partial.size();
@@ -45,11 +45,11 @@ void expect_hvp_matches_hessian(auto build, std::size_t nvars,
   }
   const auto root = build(b, vars).id(b);
 
-  const auto hess = ddx::rt::derive_hessian(b, root);
-  const auto hvp = ddx::rt::derive_hvp(b, root);
+  const auto hess = ddx::rt::detail::derive_hessian(b, root);
+  const auto hvp = ddx::rt::detail::derive_hvp(b, root);
   ASSERT_EQ(hvp.product.size(), nvars);
 
-  const auto values = ddx::rt::evaluate_all(b, widened(x, v));
+  const auto values = ddx::rt::detail::evaluate_all(b, widened(x, v));
   const auto want = reference_product(hess, values, v);
   for (const std::size_t i : std::views::iota(0uz, nvars)) {
     EXPECT_NEAR(values[hvp.product[i]], want[i],
@@ -110,10 +110,10 @@ TEST(RtHvp, IsLinearInTheDirection) {
   const auto q = var(b, "b");
   const auto r = var(b, "c");
   const auto root = (exp(p * q) + r * r * p).id(b);
-  const auto hvp = ddx::rt::derive_hvp(b, root);
+  const auto hvp = ddx::rt::detail::derive_hvp(b, root);
 
-  const auto one = ddx::rt::evaluate_all(b, widened(x, v));
-  const auto two = ddx::rt::evaluate_all(b, widened(x, scaled));
+  const auto one = ddx::rt::detail::evaluate_all(b, widened(x, v));
+  const auto two = ddx::rt::detail::evaluate_all(b, widened(x, scaled));
   for (const auto node : hvp.product) {
     EXPECT_NEAR(two[node], 2.0 * one[node],
                 1e-11 * std::max(1.0, std::abs(one[node])));
@@ -126,13 +126,13 @@ TEST(RtHvp, CarriesTheGradient) {
   const auto q = var(b, "b");
   const auto root = (p * p * q).id(b);
 
-  const auto hvp = ddx::rt::derive_hvp(b, root);
-  const auto reverse = ddx::rt::build_reverse_jacobian(b, root);
+  const auto hvp = ddx::rt::detail::derive_hvp(b, root);
+  const auto reverse = ddx::rt::detail::build_reverse_jacobian(b, root);
   EXPECT_EQ(hvp.partial, reverse.partial) << "interning shares one gradient";
 
   const std::array x{3.0, 5.0};
   const std::array v{0.0, 0.0};
-  const auto values = ddx::rt::evaluate_all(b, widened(x, v));
+  const auto values = ddx::rt::detail::evaluate_all(b, widened(x, v));
   EXPECT_DOUBLE_EQ(values[hvp.partial[0]], 2.0 * 3.0 * 5.0); // d/da
   EXPECT_DOUBLE_EQ(values[hvp.partial[1]], 9.0);             // d/db
 }

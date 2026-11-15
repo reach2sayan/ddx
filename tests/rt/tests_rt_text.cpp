@@ -21,8 +21,8 @@
 namespace {
 
 using ddx::errc;
-using ddx::rt::text::lower;
-using ddx::rt::text::parse;
+using ddx::rt::detail::text::lower;
+using ddx::rt::detail::text::parse;
 
 // The value of a one-line model at a point.
 template <typename... Ts>
@@ -70,7 +70,7 @@ TEST(RtText, ALiteralPastTheRangeRounds) {
 TEST(RtText, BuildsTheSameArenaAsTheCppSpelling) {
   // One statement per subexpression, since C++ leaves operand order unspecified
   // and the arena records build order; this fixes the numbering the text uses.
-  ddx::rt::Arena<> written;
+  ddx::rt::detail::Arena<> written;
   const auto x = var(written, "x");
   const auto y = var(written, "y");
   const auto left = exp(x);
@@ -79,7 +79,7 @@ TEST(RtText, BuildsTheSameArenaAsTheCppSpelling) {
   const auto scaled = x * 2.0;
   const auto by_hand = product + scaled;
 
-  ddx::rt::Arena<> parsed;
+  ddx::rt::detail::Arena<> parsed;
   const auto ast = parse("exp(x)*sin(y) + x*2");
   ASSERT_TRUE(ast.has_value());
   const auto lowered = lower(parsed, *ast);
@@ -100,12 +100,12 @@ TEST(RtText, BuildsTheSameArenaAsTheCppSpelling) {
 // builds the same ones the operators do, node for node.
 TEST(RtText, ComposesEqualityAsTheOperatorsDo) {
   const auto same_arena = [](const std::string_view source, auto &&build) {
-    ddx::rt::Arena<> written;
+    ddx::rt::detail::Arena<> written;
     const auto x = var(written, "x");
     const auto y = var(written, "y");
     const auto by_hand = build(x, y);
 
-    ddx::rt::Arena<> parsed;
+    ddx::rt::detail::Arena<> parsed;
     const auto ast = parse(source);
     ASSERT_TRUE(ast.has_value()) << source;
     const auto lowered = lower(parsed, *ast);
@@ -139,16 +139,16 @@ TEST(RtText, ReadsEveryLiteralAtTheScalarType) {
 
   // Read at T rather than read as double and narrowed, since 0.1f is not
   // float(0.1).
-  ddx::rt::Arena<float> arena;
+  ddx::rt::detail::Arena<float> arena;
   const auto ast = parse("0.1");
   ASSERT_TRUE(ast.has_value());
   const auto lowered = lower(arena, *ast);
   ASSERT_TRUE(lowered.has_value());
-  EXPECT_EQ(lowered->literal(), 0.1F);
+  EXPECT_EQ(ddx::rt::detail::Router::literal(*lowered), 0.1F);
 }
 
 TEST(RtText, FoldsWhatNeverNeededAGraph) {
-  ddx::rt::Arena<> arena;
+  ddx::rt::detail::Arena<> arena;
   const auto ast = parse("3 + 4");
   ASSERT_TRUE(ast.has_value());
   const auto lowered = lower(arena, *ast);
@@ -157,8 +157,8 @@ TEST(RtText, FoldsWhatNeverNeededAGraph) {
   // A literal that has met no symbol stays pending, so a constant expression
   // costs no node, exactly as rt::Expression{3.0} + 4.0 does.
   EXPECT_EQ(arena.size(), 0U);
-  EXPECT_TRUE(lowered->pending());
-  EXPECT_DOUBLE_EQ(lowered->literal(), 7.0);
+  EXPECT_TRUE(ddx::rt::detail::Router::pending(*lowered));
+  EXPECT_DOUBLE_EQ(ddx::rt::detail::Router::literal(*lowered), 7.0);
 }
 
 TEST(RtText, SpellsEveryOpcodeTheTablesName) {
@@ -171,15 +171,17 @@ TEST(RtText, SpellsEveryOpcodeTheTablesName) {
   };
 
   std::size_t named = 0;
-  for (const auto &label : ddx::rt::opcode_labels()) {
-    const auto op = ddx::rt::opcode_of(label);
+  for (const std::string_view label :
+       ddx::rt::detail::op_info |
+           std::views::transform(&ddx::rt::detail::OpInfo::label)) {
+    const auto op = ddx::rt::detail::opcode_of(label);
     ASSERT_TRUE(op.has_value()) << label;
     // Skips what text may not name (leaves, externs and tensor rows) and the
     // operators, which have their own syntax.
-    if (!ddx::rt::callable(*op) || !callable(label)) {
+    if (!ddx::rt::detail::callable(*op) || !callable(label)) {
       continue;
     }
-    const auto args = ddx::rt::arity_of(*op);
+    const auto args = ddx::rt::detail::arity_of(*op);
     const auto source = args == 1   ? std::format("{}(x)", label)
                         : args == 3 ? std::format("{}(x, y, z)", label)
                                     : std::format("{}(x, y)", label);
@@ -236,7 +238,7 @@ TEST(RtText, TakesOneStringPerFunction) {
   EXPECT_EQ(sys->arity(), 2U);
 
   // The same system that tests_rt_newton.cpp builds by hand.
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto by_hand = ddx::rt::equation(x * x + y * y - 4.0, x * y - 1.0);

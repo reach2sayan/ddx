@@ -26,7 +26,7 @@ std::vector<double> dense_column(const std::vector<double> &jac, std::size_t m,
 }
 
 TEST(RtJvp, MatchesTheDenseJacobianTimesTheDirection) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(exp(x * y), x * x - y, log(x) + sin(y));
@@ -47,7 +47,7 @@ TEST(RtJvp, MatchesTheDenseJacobianTimesTheDirection) {
 
 TEST(RtJvp, AgreesWithADualPointThroughTheInterpreter) {
   using D = ddx::impl::Dual<double>;
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = exp(x * y) + sin(x) * y;
@@ -56,7 +56,7 @@ TEST(RtJvp, AgreesWithADualPointThroughTheInterpreter) {
   const std::array<double, 2> v{1.5, -0.25};
 
   const std::array<D, 2> seeded{D{point[0], v[0]}, D{point[1], v[1]}};
-  const auto dual = ddx::rt::evaluate(b, f.id(b), seeded);
+  const auto dual = ddx::rt::detail::evaluate(b, f.id(b), seeded);
 
   const auto eq = ddx::rt::equation(f);
   const auto got = *eq.jvp(std::span<const double>{v}, point);
@@ -65,7 +65,7 @@ TEST(RtJvp, AgreesWithADualPointThroughTheInterpreter) {
 }
 
 TEST(RtJvp, AUnitDirectionIsOneJacobianColumn) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x * x * y, log(x) + y);
@@ -84,7 +84,7 @@ TEST(RtJvp, AUnitDirectionIsOneJacobianColumn) {
 }
 
 TEST(RtJvp, RefusesADirectionOfTheWrongLength) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x + y);
@@ -96,7 +96,7 @@ TEST(RtJvp, RefusesADirectionOfTheWrongLength) {
 }
 
 TEST(RtJvp, BatchAgreesWithThePointSpelling) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   auto eq = ddx::rt::equation(exp(x) * y, x * x - y);
@@ -134,7 +134,7 @@ TEST(RtJvp, BatchAgreesWithThePointSpelling) {
 }
 
 TEST(RtJvp, CostsOneColumnPerFunction) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   std::vector<ddx::rt::Expression<>> v;
   for (const char *name : {"a", "b", "c", "d", "e"}) {
     v.push_back(var(b, name));
@@ -152,17 +152,18 @@ TEST(RtJvp, CostsOneColumnPerFunction) {
 // DiffMode::Symbolic runs n tangent sweeps with unit seeds and must emit the
 // same arithmetic as reverse mode.
 TEST(RtJvp, SymbolicModeStillAgreesWithReverse) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = exp(x * y) + log(x) * sin(y);
 
   const auto fwd =
-      ddx::rt::derive_jacobian<ddx::DiffMode::Symbolic>(b, f.id(b));
-  const auto rev = ddx::rt::derive_jacobian<ddx::DiffMode::Reverse>(b, f.id(b));
+      ddx::rt::detail::derive_jacobian<ddx::DiffMode::Symbolic>(b, f.id(b));
+  const auto rev =
+      ddx::rt::detail::derive_jacobian<ddx::DiffMode::Reverse>(b, f.id(b));
 
   const std::array point{1.4, 0.9};
-  const auto values = ddx::rt::evaluate_all(b, point);
+  const auto values = ddx::rt::detail::evaluate_all(b, point);
   for (const std::size_t j : std::views::iota(0uz, 2uz)) {
     EXPECT_NEAR(values[fwd.partial[j]], values[rev.partial[j]], 1e-12);
   }

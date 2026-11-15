@@ -60,6 +60,29 @@ struct Router {
         es, [](const auto &e) { return e.arena() != nullptr; });
     return named == es.end() ? nullptr : named->arena();
   }
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr NodeId id(const Expression<T> &e) {
+    return e.id();
+  }
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr bool pending(const Expression<T> &e) noexcept {
+    return e.pending();
+  }
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr const T &
+  literal(const Expression<T> &e) noexcept {
+    return e.literal();
+  }
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr Shape shape(const Expression<T> &e) noexcept {
+    return e.shape();
+  }
+  template <impl::Numeric T>
+  [[nodiscard]] static constexpr Expression<T>
+  form(OpCode op, const Expression<T> &x,
+       const std::same_as<Expression<T>> auto &...xs) {
+    return Expression<T>::form(op, x, xs...);
+  }
   // The operands' ids, or the first refusal: a poisoned or non-scalar one.
   template <impl::Numeric T>
   [[nodiscard]] static constexpr result<
@@ -85,7 +108,6 @@ struct Router {
                  [&](const auto &e) { why = why ? why : Router::why(e); });
   return why;
 }
-} // namespace detail
 
 // Declared before Expression, which befriends it. A missing arena or a
 // clashing input kind makes named() return a poisoned expression.
@@ -94,13 +116,20 @@ template <impl::Numeric T = double>
 template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> named(Arena<T> &b, OpCode op,
                                             std::string_view name);
+} // namespace detail
 
 // A handle to one graph node with arithmetic that builds more nodes. A null
 // arena means a pending literal; tensor nodes get elementwise arithmetic.
 template <impl::Numeric T> class Expression {
+  template <impl::Numeric U> using Arena = detail::Arena<U>;
+  using NodeId = detail::NodeId;
+  using Shape = detail::Shape;
+  using Element = detail::Element;
+  using Orientation = detail::Orientation;
+  static constexpr NodeId no_node = detail::no_node;
+
 public:
   using value_type = T;
-  using arena_type = Arena<T>;
 
   constexpr Expression() = default;
 
@@ -111,26 +140,21 @@ public:
              impl::Numeric<V>)
   constexpr Expression(V v) : lit_{static_cast<T>(std::move(v))} {}
 
-  constexpr Expression(Arena<T> &b, NodeId id) noexcept
+  constexpr Expression(detail::Arena<T> &b, detail::NodeId id) noexcept
       : arena_{&b}, at_{id},
-        shape_{detail::is_tensor(b[id]) ? shape_of(b, id)
+        shape_{detail::is_tensor(b[id]) ? detail::shape_of(b, id)
                                         : Shape{.rows = 0, .cols = 0}} {}
 
-  [[nodiscard]] constexpr bool pending() const noexcept {
-    return arena_ == nullptr;
-  }
   // Elements per point, which is zero for a scalar or a pending literal.
   [[nodiscard]] constexpr std::uint32_t size() const noexcept {
     return shape_.size();
   }
-  [[nodiscard]] constexpr Shape shape() const noexcept { return shape_; }
 
   // Whether building failed, for example outside an equation callback. The
   // error surfaces from equation() rather than as a silent zero.
   [[nodiscard]] constexpr bool poisoned() const noexcept {
     return why_.has_value();
   }
-  [[nodiscard]] constexpr const T &literal() const noexcept { return lit_; }
 
   // The node id in arena b, materialising a pending literal or an unfinished
   // op= fold first.
@@ -146,11 +170,6 @@ public:
                           [&b](const auto &at) { return b.fold_of(at); }),
         at_);
   }
-  // The node id in its own arena, or no_node for a pending literal.
-  [[nodiscard]] constexpr NodeId id() const {
-    return arena_ ? id(*arena_) : no_node;
-  }
-
   [[nodiscard]] constexpr Expression operator[](std::size_t i) const {
     if (why_) {
       return poison(*why_);
@@ -162,10 +181,11 @@ public:
       return poison(errc::tensor_shape);
     }
     return {*arena_,
-            arena_->make(opcode<OpCode::Gather>,
+            arena_->make(detail::opcode<OpCode::Gather>,
                          Element{static_cast<std::uint32_t>(i)}, id())};
   }
 
+private:
   // Builds one op node, folding pending literals without touching a graph.
   // Tensor operands give a Map, a Zip, a Scale or a VSelect instead.
   [[nodiscard]] static constexpr Expression
@@ -177,7 +197,7 @@ public:
     meta::for_each(std::tie(xs...),
                    [&](const Expression &x) { b = b ? b : x.arena(); });
     if (b == nullptr) {
-      return Expression{apply<T>(op, xs.literal()...)};
+      return Expression{detail::apply<T>(op, xs.literal()...)};
     }
     // Node ids are meaningless outside their own arena.
     if (((xs.arena() != nullptr && xs.arena() != b) || ...)) {
@@ -190,7 +210,7 @@ public:
       return {*b, b->make(op, xs.id(*b)...)};
     }
     if constexpr (sizeof...(xs) == 1) {
-      return {*b, b->make(opcode<OpCode::Map>, op, xs.id(*b)...)};
+      return {*b, b->make(detail::opcode<OpCode::Map>, op, xs.id(*b)...)};
     } else if constexpr (sizeof...(xs) == 2) {
       return zipped(op, *b, xs...);
     } else {
@@ -198,7 +218,6 @@ public:
     }
   }
 
-private:
   [[nodiscard]] static constexpr Expression
   zipped(OpCode op, Arena<T> &b, const Expression &l, const Expression &r) {
     if (l.size() != 0 && r.size() != 0 && l.shape_ != r.shape_) {
@@ -208,12 +227,12 @@ private:
     const Expression &other = l.size() ? r : l;
     if (other.size() == 0) {
       if (op == OpCode::Mul) {
-        return {b, b.make(opcode<OpCode::Scale>,
+        return {b, b.make(detail::opcode<OpCode::Scale>,
                           {.scalar = other.id(b), .vec = vec.id(b)})};
       }
       if (op == OpCode::Div && &other == &r) {
         return {
-            b, b.make(opcode<OpCode::Scale>,
+            b, b.make(detail::opcode<OpCode::Scale>,
                       {.scalar = (Expression{1} / r).id(b), .vec = vec.id(b)})};
       }
       if (!other.pending()) {
@@ -221,7 +240,7 @@ private:
       }
     }
     return {
-        b, b.make(opcode<OpCode::Zip>, op,
+        b, b.make(detail::opcode<OpCode::Zip>, op,
                   {.left = l.id(b, vec.shape_), .right = r.id(b, vec.shape_)})};
   }
   [[nodiscard]] static constexpr Expression picked(Arena<T> &b,
@@ -241,10 +260,10 @@ private:
     const auto arm = [&](const Expression &e) {
       return e.size() || e.pending()
                  ? e.id(b, shape)
-                 : b.make(opcode<OpCode::Scale>,
+                 : b.make(detail::opcode<OpCode::Scale>,
                           {.scalar = e.id(b), .vec = b.ones(shape)});
     };
-    return {b, b.make(opcode<OpCode::VSelect>,
+    return {b, b.make(detail::opcode<OpCode::VSelect>,
                       {.cond = c.id(b), .then = arm(t), .otherwise = arm(f)})};
   }
 
@@ -287,7 +306,7 @@ private:
   template <OpCode Fold> constexpr Expression &accumulate(const Expression &o) {
     if (why_ || o.why_ || pending() || size() || o.size() || is_matrix() ||
         o.is_matrix() || (!o.pending() && o.arena_ != arena_)) {
-      return *this = form(fold_op(Fold), *this, o);
+      return *this = form(detail::fold_op(Fold), *this, o);
     }
     const T identity = Fold == OpCode::SumN ? T{0} : T{1};
     if constexpr (std::equality_comparable<T>) {
@@ -367,11 +386,21 @@ private:
   friend struct detail::Router;
   template <impl::Numeric U> friend class ExternFunction;
   template <impl::Numeric U>
-  friend Expression<U> named(OpCode, std::string_view) noexcept;
+  friend Expression<U> detail::named(OpCode, std::string_view) noexcept;
   template <impl::Numeric U>
-  friend constexpr Expression<U> named(Arena<U> &, OpCode, std::string_view);
+  friend constexpr Expression<U> detail::named(detail::Arena<U> &, OpCode,
+                                               std::string_view);
 
   [[nodiscard]] constexpr Arena<T> *arena() const noexcept { return arena_; }
+  [[nodiscard]] constexpr bool pending() const noexcept {
+    return arena_ == nullptr;
+  }
+  [[nodiscard]] constexpr const T &literal() const noexcept { return lit_; }
+  [[nodiscard]] constexpr Shape shape() const noexcept { return shape_; }
+  // The node id in its own arena, or no_node for a pending literal.
+  [[nodiscard]] constexpr NodeId id() const {
+    return arena_ ? id(*arena_) : no_node;
+  }
 
   // A poisoned expression is not a pending literal, which would otherwise turn
   // into a zero node in the first graph it meets.
@@ -392,11 +421,11 @@ private:
            arena_->op_of(*node) == OpCode::MatConst;
   }
   [[nodiscard]] constexpr Expression row() const {
-    return is_matrix()
-               ? Expression{*arena_, arena_->make(opcode<OpCode::MatRow>,
-                                                  Orientation::plain,
-                                                  std::get<NodeId>(at_))}
-               : *this;
+    return is_matrix() ? Expression{*arena_,
+                                    arena_->make(detail::opcode<OpCode::MatRow>,
+                                                 Orientation::plain,
+                                                 std::get<NodeId>(at_))}
+                       : *this;
   }
 
   Arena<T> *arena_ = nullptr;
@@ -409,6 +438,7 @@ private:
   std::optional<errc> why_;
 };
 
+namespace detail {
 // Adds a named input: a Var is differentiated, a Param never is, and an
 // Implicit is differentiated through its residual as dz/dx = -F_x / F_z.
 template <impl::Numeric T>
@@ -423,9 +453,9 @@ template <impl::Numeric T, std::invocable<const Expression<T> &> F>
 [[nodiscard]] constexpr Expression<T>
 implicit(Arena<T> &b, std::string_view name, F &&residual) {
   const Expression<T> z = named(b, OpCode::Implicit, name);
-  if (!detail::Router::why(z)) {
+  if (!Router::why(z)) {
     const Expression<T> f = std::invoke(DDX_FWD(residual), z);
-    const auto why = detail::Router::why(f);
+    const auto why = Router::why(f);
     b.close(z.id(b), why ? std::expected<NodeId, errc>{std::unexpect, *why}
                          : std::expected<NodeId, errc>{f.id(b)});
   }
@@ -440,12 +470,13 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr Expression<T> lit(Arena<T> &b, const T &v) {
   return Expression{b, b.constant(v)};
 }
+} // namespace detail
 
 // A user function returned by extern_fn(). Calling it adds a node whose
 // derivatives use the partials the function supplies.
 template <impl::Numeric T> class ExternFunction {
 public:
-  constexpr ExternFunction(Arena<T> *b, std::uint32_t index) noexcept
+  constexpr ExternFunction(detail::Arena<T> *b, std::uint32_t index) noexcept
       : b_{b}, index_{index} {}
   constexpr explicit ExternFunction(errc why) noexcept : why_{why} {}
 
@@ -469,11 +500,12 @@ public:
   }
 
 private:
-  Arena<T> *b_ = nullptr;
+  detail::Arena<T> *b_ = nullptr;
   std::uint32_t index_ = 0;
   std::optional<errc> why_;
 };
 
+namespace detail {
 // fn(in, out) writes the value, the first partials, then at order 2 the
 // row-major upper triangle of the second. It must be re-entrant, must not
 // throw, and must not sweep the equation calling it, whose lock is already
@@ -491,8 +523,6 @@ extern_fn(Arena<T> &b, ExternRecord record,
                : ExternFunction<T>{errc::extern_shape};
 }
 
-namespace detail {
-
 // The thread-local arena that var() registers into during an equation()
 // callback.
 template <impl::Numeric T>
@@ -504,44 +534,49 @@ template <impl::Numeric T>
   return impl::scoped_value<Arena<T> *>{current_arena<T>, &b};
 }
 
-} // namespace detail
-
 // Names an input in the current callback's arena.
 template <impl::Numeric T>
 [[nodiscard]] Expression<T> named(OpCode op, std::string_view name) noexcept {
-  return (detail::current_arena<T> == nullptr)
+  return (current_arena<T> == nullptr)
              ? Expression<T>::poison(errc::outside_equation)
-             : named(*detail::current_arena<T>, op, name);
-}
-template <impl::Numeric T = double>
-[[nodiscard]] ExternFunction<T>
-extern_fn(ExternRecord record, std::type_identity_t<ExternFn<T>> fn) {
-  return detail::current_arena<T> == nullptr
-             ? ExternFunction<T>{errc::outside_equation}
-             : extern_fn(*detail::current_arena<T>, std::move(record),
-                         std::move(fn));
+             : named(*current_arena<T>, op, name);
 }
 
-// var() and param(), with and without an explicit arena.
+// var() and param() into an explicit arena.
 #define DDX_RT_INPUT(fn, Op, ...)                                              \
   template <impl::Numeric T>                                                   \
     requires(OpCode::Op != OpCode::Implicit)                                   \
   [[nodiscard]] constexpr Expression<T> fn(Arena<T> &b,                        \
                                            std::string_view name) {            \
     return named(b, OpCode::Op, name);                                         \
-  }                                                                            \
+  }
+DDX_RT_NAMED_TABLE(DDX_RT_INPUT)
+#undef DDX_RT_INPUT
+} // namespace detail
+template <impl::Numeric T = double>
+[[nodiscard]] ExternFunction<T>
+extern_fn(ExternRecord record, std::type_identity_t<ExternFn<T>> fn) {
+  return detail::current_arena<T> == nullptr
+             ? ExternFunction<T>{errc::outside_equation}
+             : detail::extern_fn(*detail::current_arena<T>, std::move(record),
+                                 std::move(fn));
+}
+
+// var() and param() in the current callback's arena.
+#define DDX_RT_INPUT(fn, Op, ...)                                              \
   template <impl::Numeric T = double>                                          \
     requires(OpCode::Op != OpCode::Implicit)                                   \
   [[nodiscard]] Expression<T> fn(std::string_view name) noexcept {             \
-    return named<T>(OpCode::Op, name);                                         \
+    return detail::named<T>(OpCode::Op, name);                                 \
   }
 DDX_RT_NAMED_TABLE(DDX_RT_INPUT)
 #undef DDX_RT_INPUT
 template <impl::Numeric T = double, std::invocable<const Expression<T> &> F>
 [[nodiscard]] Expression<T> implicit(std::string_view name, F &&residual) {
   return detail::current_arena<T> == nullptr
-             ? named<T>(OpCode::Implicit, name)
-             : implicit(*detail::current_arena<T>, name, DDX_FWD(residual));
+             ? detail::named<T>(OpCode::Implicit, name)
+             : detail::implicit(*detail::current_arena<T>, name,
+                                DDX_FWD(residual));
 }
 
 } // namespace ddx::rt

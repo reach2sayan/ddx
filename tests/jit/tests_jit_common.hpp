@@ -12,9 +12,9 @@
 namespace {
 
 // Without a native target there is no JIT to test, so report the reason once.
-ddx::jit::Compiler &compiler() {
-  static ddx::jit::compile_result<ddx::jit::Compiler> c =
-      ddx::jit::Compiler::create();
+ddx::jit::detail::Compiler &compiler() {
+  static ddx::jit::compile_result<ddx::jit::detail::Compiler> c =
+      ddx::jit::detail::Compiler::create();
   EXPECT_TRUE(c.has_value()) << (c ? "" : c.error().detail);
   return *c;
 }

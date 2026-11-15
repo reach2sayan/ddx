@@ -110,6 +110,9 @@ enum class OpCode : std::uint8_t {
   DDX_RT_OP_TABLE(DDX_RT_ENUMERATOR)
 #undef DDX_RT_ENUMERATOR
 };
+} // namespace ddx::rt
+
+namespace ddx::rt::detail {
 
 #define DDX_RT_COUNT(...) +1
 inline constexpr std::size_t op_count = 0 DDX_RT_OP_TABLE(DDX_RT_COUNT);
@@ -204,8 +207,6 @@ enum class Kind : std::uint8_t {
   Tensor
 };
 
-namespace detail {
-
 struct OpInfo {
   std::string_view name; // the factory spelling and the Python name
   std::string_view label;
@@ -274,11 +275,17 @@ static_assert([] {
   assert(i < op_count);
   return op_info[i];
 }
-} // namespace detail
 
+} // namespace ddx::rt::detail
+
+namespace ddx::rt {
+// An opcode's label, as census() rows and text spell it.
 [[nodiscard]] constexpr std::string_view label_of(OpCode op) noexcept {
   return detail::info(op).label;
 }
+} // namespace ddx::rt
+
+namespace ddx::rt::detail {
 [[nodiscard]] constexpr std::string_view name_of(OpCode op) noexcept {
   return detail::info(op).name;
 }
@@ -314,11 +321,6 @@ opcode_of(std::string_view label) noexcept {
                                             row - detail::op_info.begin())};
 }
 
-[[nodiscard]] inline std::vector<std::string> opcode_labels() {
-  return detail::op_info | std::views::transform(&detail::OpInfo::label) |
-         impl::to<std::vector<std::string>>();
-}
-
 template <impl::Numeric T>
 [[nodiscard]] constexpr bool is_commutative(OpCode op) noexcept {
   return (op == OpCode::Mul) ? impl::CCommutativeMultiply<T>
@@ -349,16 +351,6 @@ static_assert(std::ranges::all_of(std::views::iota(0uz, op_count), [](auto i) {
   default:
     std::unreachable();
   }
-}
-// The Nary opcode that folds with the given binary op, if any.
-[[nodiscard]] constexpr std::optional<OpCode> fold_of(OpCode binary) noexcept {
-#define DDX_RT_FOLD(fn, Op, label, arity, kind, bin)                           \
-  if (binary == OpCode::bin) {                                                 \
-    return OpCode::Op;                                                         \
-  }
-  DDX_RT_NARY_TABLE(DDX_RT_FOLD)
-#undef DDX_RT_FOLD
-  return std::nullopt;
 }
 // Whether the node reads a list in Model::lists rather than fixed operands.
 [[nodiscard]] constexpr bool has_list(OpCode op) noexcept {
@@ -467,4 +459,4 @@ struct Inputs {
   return start[named_index(op).value_or(named_count)] + slot.value;
 }
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail

@@ -13,7 +13,7 @@
 // graph is the boundary, since Boost.Graph containers and the JIT are not.
 
 namespace {
-using ddx::rt::Arena;
+using ddx::rt::detail::Arena;
 using RE = ddx::rt::Expression<>;
 
 consteval double build_and_evaluate() {
@@ -21,7 +21,7 @@ consteval double build_and_evaluate() {
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * x + y;
-  return ddx::rt::evaluate(b, f.id(b), std::array{3.0, 4.0});
+  return ddx::rt::detail::evaluate(b, f.id(b), std::array{3.0, 4.0});
 }
 static_assert(build_and_evaluate() == 13.0);
 
@@ -53,8 +53,8 @@ consteval double partial_of_product() {
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * y;
-  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
-  return ddx::rt::evaluate_all(b, std::array{3.0, 4.0})[g.partial[0]];
+  const auto g = ddx::rt::detail::derive_jacobian(b, f.id(b));
+  return ddx::rt::detail::evaluate_all(b, std::array{3.0, 4.0})[g.partial[0]];
 }
 static_assert(partial_of_product() == 4.0);
 
@@ -65,8 +65,8 @@ consteval double transcendental_jacobian() {
   Arena<> b;
   const auto x = var(b, "x");
   const auto f = sin(x) * x;
-  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
-  const auto v = ddx::rt::evaluate_all(b, std::array{0.0});
+  const auto g = ddx::rt::detail::derive_jacobian(b, f.id(b));
+  const auto v = ddx::rt::detail::evaluate_all(b, std::array{0.0});
   return v[g.partial[0]]; // d(x sin x)/dx at 0 is sin 0 + 0 cos 0
 }
 static_assert(transcendental_jacobian() == 0.0);
@@ -78,9 +78,9 @@ consteval bool bridge_agrees_with_equation() {
   constexpr auto x = ddx::var<"x">;
   constexpr auto y = ddx::var<"y">;
   Arena<> b;
-  const auto root = ddx::rt::to_graph(b, x * y + x);
+  const auto root = ddx::rt::detail::to_graph(b, x * y + x);
   const double viaGraph =
-      ddx::rt::evaluate(b, root.id(b), std::array{3.0, 4.0});
+      ddx::rt::detail::evaluate(b, root.id(b), std::array{3.0, 4.0});
   return viaGraph == ddx::Equation{x * y + x}.evaluate(3.0, 4.0);
 }
 static_assert(bridge_agrees_with_equation());
@@ -93,7 +93,7 @@ consteval std::size_t live_from_root() {
   const auto y = var(b, "y");
   const auto f = x * x;
   (void)(x + y); // a node the root does not reach
-  const ddx::rt::NodeId root = f.id(b);
+  const ddx::rt::detail::NodeId root = f.id(b);
   const auto live = ddx::rt::detail::reachable(b, std::span{&root, 1});
   return static_cast<std::size_t>(std::ranges::count(live, true));
 }
@@ -101,11 +101,11 @@ static_assert(live_from_root() == 2); // x and x * x
 
 // The colouring comes from Boost.Graph and so is not constexpr, but reading a
 // Hessian back through one is.
-using ddx::rt::NodeId;
+using ddx::rt::detail::NodeId;
 consteval NodeId scatter_reads() {
   // Not const, because a constant evaluation may not write through a const
   // object while its vectors are being built.
-  ddx::rt::Hessian h{
+  ddx::rt::detail::Hessian h{
       .value = NodeId{0},
       .partial = {},
       .compressed = {NodeId{7}, NodeId{8}},
@@ -119,13 +119,14 @@ static_assert(scatter_reads() == 99); // off the pattern: the zero node
 // A colour that owns only one of its two rows gives the unowned cell no
 // storage, so cells() is short of count() * n and at() still answers.
 consteval NodeId unowned_cell_reads() {
-  ddx::rt::Hessian h{.value = NodeId{0},
-                     .partial = {},
-                     .compressed = {NodeId{7}},
-                     .colouring = {.colour = {0, 0},
-                                   .scatter = {0, ddx::rt::no_column},
-                                   .cell = {0, ddx::rt::no_column}},
-                     .zero = NodeId{99}};
+  ddx::rt::detail::Hessian h{
+      .value = NodeId{0},
+      .partial = {},
+      .compressed = {NodeId{7}},
+      .colouring = {.colour = {0, 0},
+                    .scatter = {0, ddx::rt::detail::no_column},
+                    .cell = {0, ddx::rt::detail::no_column}},
+      .zero = NodeId{99}};
   return h.at(0, 0) == 7 && h.at(1, 1) == 99 ? h.at(1, 0) : NodeId{0};
 }
 static_assert(unowned_cell_reads() == 99);
