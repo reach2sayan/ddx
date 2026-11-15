@@ -175,7 +175,7 @@ protected:
   // Row-major rows x columns from the pattern's cells, with the zeros put back.
   [[nodiscard]] static constexpr std::vector<T>
   dense(const Sparsity &pattern, std::span<const T> cells) {
-    std::vector<T> out(pattern.size() * pattern.columns, T{0});
+    std::vector out(pattern.size() * pattern.columns, T{0});
     scatter(
         pattern, [&cells](std::size_t k) { return &cells[k]; },
         [&out](std::size_t c) { return &out[c]; }, pattern.columns, 1);
@@ -337,7 +337,7 @@ public:
     if (bad_) {
       return std::unexpected{*bad_};
     }
-    std::vector<T> at(arena_->inputs().named(), T{});
+    std::vector at(arena_->inputs().named(), T{});
     result<void> ok{};
     if constexpr ((impl::CEntry<Args> && ...) && sizeof...(Args) > 0) {
       ok = assign_named(
@@ -395,7 +395,7 @@ public:
                                  std::string_view>
   [[nodiscard]] result<Restricted<Core>> restrict(const R &names) const {
     DDX_CHECK(alive());
-    std::vector<bool> chosen(symbol_count(), false);
+    std::vector chosen(symbol_count(), false);
     for (const std::string_view name : names) {
       DDX_TRY(slot, arena_->symbol(name));
       chosen[*slot] = true;
@@ -587,10 +587,10 @@ public:
         // A short block repeats its last point.
         const std::size_t width = std::min(W, xs.size() - base);
         for (const auto [k, a] : at | std::views::enumerate) {
-          a = Taylor::variable(xs[base + std::min<std::size_t>(k, width - 1)]);
+          a = Taylor::variable(xs[base + std::min(static_cast<std::size_t>(k), width - 1)]);
         }
-        walk.template operator()<W>(*arena_, at, std::span<Taylor>{kept.tape},
-                                    std::span<Taylor>{kept.vtape});
+        walk.template operator()<W>(*arena_, at, std::span{kept.tape},
+                                    std::span{kept.vtape});
         std::ranges::transform(
             std::span{kept.tape}.subspan(roots_[0] * W, width),
             out.begin() + base, [](const Taylor &t) {
@@ -916,7 +916,7 @@ protected:
     [[maybe_unused]] const auto held = sweeping();
     values.resize(arena_->size());
     kept.values.vtape.resize(walk.extent());
-    walk(*arena_, at, std::span<T>{values}, std::span<T>{kept.values.vtape},
+    walk(*arena_, at, std::span{values}, std::span{kept.values.vtape},
          tensor_kernels());
     const impl::md::mdspan dense{
         h.data(), impl::md::dextents<std::size_t, 3>{roots_.size(), n, n}};
@@ -1156,7 +1156,7 @@ private:
   [[nodiscard]] constexpr result<void>
   assign_named(std::vector<T> &at,
                const rt::detail::CNamedRange auto &entries) const {
-    std::vector<bool> seen(at.size(), false);
+    std::vector seen(at.size(), false);
     for (const auto &[name, value] : entries) {
       const auto input = arena_->lookup(std::string_view{name});
       if (!input) {
@@ -1411,7 +1411,7 @@ private:
         }
       }
       evaluate_block<W>(*arena_, std::span<const T>{point}, graph.schedule(),
-                        std::span<T>{tape}, t);
+                        std::span{tape}, t);
       scatter_blocks(graph.output_rows(), std::span<const T>{tape},
                      std::span<const T>{vtape}, out, base, W, width);
     }

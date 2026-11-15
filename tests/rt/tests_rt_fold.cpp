@@ -265,7 +265,7 @@ TEST_P(RtFold, SweepsAtADualScalar) {
   Arena<> fold, chain;
   const auto fs = folded(fold_symbols(fold, 2), 20).id(fold);
   const auto fc = chained(fold_symbols(chain, 2), 20).id(chain);
-  const std::vector<D> p{D{0.7, 1.0}, D{1.3, 0.0}}; // d/dx0
+  const std::vector p{D{0.7, 1.0}, D{1.3, 0.0}}; // d/dx0
   const auto vs = ddx::rt::detail::evaluate_all(fold, p);
   const auto vc = ddx::rt::detail::evaluate_all(chain, p);
   expect_close(vs[fs].get<0>(), vc[fc].get<0>(), 1e-14);
@@ -319,7 +319,7 @@ TEST(RtFoldProd, AZeroTermHasAFiniteGradient) {
   const auto f = acc.id(b);
   ASSERT_EQ(b[f].op, OpCode::ProdN);
   const auto g = ddx::rt::detail::derive_jacobian(b, f);
-  const std::vector<double> p{2.0, 0.0, 3.0}; // x1 = 0
+  const std::vector p{2.0, 0.0, 3.0}; // x1 = 0
   const auto v = ddx::rt::detail::evaluate_all(b, p);
   // d/dx1 of x0 x1 x2 (x0 + x1) at x1 = 0 is x0 x2 (x0 + x1) = 12.
   EXPECT_DOUBLE_EQ(v[g.partial[0]], 0.0);
@@ -414,10 +414,10 @@ TEST(RtSumN, FusedAndUnfusedSchedulesAgree) {
   const auto p = ramp(6);
   std::vector<double> tf(fused.tape_rows()), tp(plain.tape_rows());
   ddx::rt::detail::evaluate_into(
-      b, p, fused.schedule(), std::span<double>{tf},
+      b, p, fused.schedule(), std::span{tf},
       ddx::rt::detail::TapeView<double>{.scalar_rows = fused.rows()});
   ddx::rt::detail::evaluate_into(
-      b, p, plain.schedule(), std::span<double>{tp},
+      b, p, plain.schedule(), std::span{tp},
       ddx::rt::detail::TapeView<double>{.scalar_rows = plain.rows()});
   expect_close(tf[fused.rows()[f]], tp[plain.rows()[f]], 1e-14);
   expect_close(tf[fused.rows()[f]], ddx::rt::detail::evaluate(b, f, p), 1e-14);

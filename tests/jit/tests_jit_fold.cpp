@@ -102,7 +102,7 @@ void expect_bit_identical(bool contract,
         columns | std::views::transform([i](const auto &c) { return c[i]; }) |
         ddx::impl::to<std::vector>();
     ddx::rt::detail::evaluate_into(
-        b, p, graph.schedule(), std::span<double>{tape},
+        b, p, graph.schedule(), std::span{tape},
         ddx::rt::detail::TapeView<double>{.scalar_rows = graph.rows()});
     EXPECT_EQ(std::bit_cast<std::uint64_t>(value[i]),
               std::bit_cast<std::uint64_t>(tape[graph.rows()[f]]))

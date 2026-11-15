@@ -56,8 +56,8 @@ TEST(JitExtern, AKernelCallsTheFunctionAndAgreesWithTheSweep) {
     std::vector<double> f(n);
     std::vector<double> ga(n);
     std::vector<double> gb(n);
-    const std::array<double *, 1> fs{f.data()};
-    const std::array<double *, 2> gs{ga.data(), gb.data()};
+    const std::array fs{f.data()};
+    const std::array gs{ga.data(), gb.data()};
     EXPECT_TRUE(eq.jacobian(in, fs, gs, n).has_value());
     return std::array{f, ga, gb};
   };
@@ -137,7 +137,7 @@ TEST(JitExtern, AKernelOutlivesItsGraphAndKeepsItsObject) {
   const std::array as{0.3, -0.7}, bs{1.1, 0.4};
   const std::array<const double *, 2> xs{as.data(), bs.data()};
   std::array<double, 2> f{};
-  const std::array<double *, 1> fs{f.data()};
+  const std::array fs{f.data()};
   kernel(xs, fs, {}, {}, 2);
   for (const auto [k, want] : std::views::zip(f, std::array{
                                                      2.0 * std::exp(0.3 * 1.1) * std::sin(1.1),

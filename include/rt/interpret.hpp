@@ -181,7 +181,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
     };
     const auto [self, w] = row(v);
     const auto mine = [self, w](std::size_t k) {
-      return std::span<U>{self + k * w, w};
+      return std::span{self + k * w, w};
     };
     const TensorKernelTable<U> &kt = *t.kernels;
     const auto at = [&](NodeId s, std::size_t k) { return lane(t.row(s))[k]; };
@@ -261,7 +261,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         if (const NodeId mate = t.pairs[v]; mate > v) {
           // The first of a pair computes both in one pass over the matrix.
           const auto [other_at, other_w] = row(mate);
-          const std::span<U> other{other_at + k * other_w, other_w};
+          const std::span other{other_at + k * other_w, other_w};
           const bool transposed =
               get<Orientation>(n) == Orientation::transposed;
           const auto [matrix, vec] = operands<OpCode::MatVec>(n);
@@ -602,7 +602,7 @@ public:
              const TensorKernelTable<T> &kernels = reference_table<T>) const {
     using U = std::ranges::range_value_t<decltype(point)>;
     std::vector<U> values(b.size()), vtape(extent());
-    (*this)(b, point, std::span<U>{values}, std::span<U>{vtape}, kernels);
+    (*this)(b, point, std::span{values}, std::span{vtape}, kernels);
     return values;
   }
 

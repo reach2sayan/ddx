@@ -109,7 +109,7 @@ TEST(RtImplicit, ACubicAgainstDifferencesThatReSolveIt) {
   const auto f = cubic();
   const auto eq = with_implicit_z();
   ASSERT_FALSE(eq.poisoned()) << eq.status()->code;
-  const std::vector<double> x{0.3, 0.25, 0.25, 0.2};
+  const std::vector x{0.3, 0.25, 0.25, 0.2};
   const double z = solve(f, x, 1.0);
   ASSERT_NEAR((*eq.residual(with(x, z)))[0], 0.0, 1e-13);
 
@@ -144,11 +144,11 @@ TEST(RtImplicit, ABatchCarriesAColumnOfRoots) {
   const auto f = cubic();
   const auto eq = with_implicit_z();
   constexpr std::size_t n = 64;
-  std::vector<std::vector<double>> columns(eos_species + 1,
+  std::vector columns(eos_species + 1,
                                            std::vector<double>(n));
   for (const std::size_t i : std::views::iota(0uz, n)) {
     const double t = static_cast<double>(i) / n;
-    const std::vector<double> x{0.3 + 0.1 * t, 0.25, 0.25 - 0.1 * t, 0.2};
+    const std::vector x{0.3 + 0.1 * t, 0.25, 0.25 - 0.1 * t, 0.2};
     const double z = solve(f, x, 1.0);
     for (const std::size_t j : std::views::iota(0uz, eos_species)) {
       columns[j][i] = x[j];
@@ -159,9 +159,9 @@ TEST(RtImplicit, ABatchCarriesAColumnOfRoots) {
       columns | std::views::transform([](const auto &c) { return c.data(); }) |
       ddx::impl::to<std::vector>();
   std::vector<double> values(n);
-  std::vector<std::vector<double>> g(*eq.jacobian_columns(),
+  std::vector g(*eq.jacobian_columns(),
                                      std::vector<double>(n));
-  const std::array<double *, 1> fs{values.data()};
+  const std::array fs{values.data()};
   const auto gs = g | std::views::transform([](auto &c) { return c.data(); }) |
                   ddx::impl::to<std::vector>();
   ASSERT_TRUE(eq.jacobian(in, fs, gs, n).has_value());

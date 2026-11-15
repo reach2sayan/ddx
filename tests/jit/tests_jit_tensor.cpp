@@ -290,8 +290,7 @@ TEST(JitTensor, CompilesAndAnswersTheSweep) {
   const auto model = [] {
     return ddx::rt::equation([] {
       const auto x = ddx::rt::vec("x", n);
-      const std::vector<double> m{1.0, 0.5, -0.25, 2.0, 0.0, 1.5,  0.75, -1.0,
-                                  0.3, 0.6, 0.9,   1.2, 2.1, -0.4, 0.8,  0.1};
+      const std::vector m{1.0, 0.5, -0.25, 2.0, 0.0, 1.5, 0.75, -1.0, 0.3, 0.6, 0.9, 1.2, 2.1, -0.4, 0.8, 0.1};
       return dot(x, gemv(ddx::rt::mat_constant(n, n, m), x)) + sum(log(x));
     });
   };
@@ -357,7 +356,7 @@ TEST(JitTensor, BatchesAndThreadsAreBitIdentical) {
   const auto want = call();
   constexpr std::size_t threads = 8;
   std::latch start{threads};
-  std::vector<char> ok(threads, 0);
+  std::vector ok(threads, '\0');
   {
     std::vector<std::jthread> pool;
     for (const std::size_t t : std::views::iota(0uz, threads)) {
@@ -379,7 +378,7 @@ TEST(JitTensor, AGatherFromAFusedMatrixReadsItsRowAndColumn) {
     auto compiled = ddx::rt::equation(element);
     compiled.options({.backend = ddx::jit::Backend::Compile, .points = 1});
     ASSERT_TRUE(compiled.uses_kernel());
-    const std::array<double, 5> at{2.0, 3.0, 5.0, 7.0, 11.0};
+    const std::array at{2.0, 3.0, 5.0, 7.0, 11.0};
     const std::span<const double> point{at};
     EXPECT_DOUBLE_EQ(*swept.evaluate(point), want);
     EXPECT_DOUBLE_EQ(*compiled.evaluate(point), want);

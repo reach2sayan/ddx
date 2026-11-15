@@ -30,7 +30,7 @@ TEST(RtNewton, SolvesASystemBuiltAtRuntime) {
   const auto y = var(b, "y");
   const auto system = ddx::rt::equation(x * x + y * y - 4.0, x * y - 1.0);
 
-  std::array<double, 2> at{1.5, 1.0};
+  std::array at{1.5, 1.0};
   int taken = 0;
   for ([[maybe_unused]] const int iteration : std::views::iota(0, 40)) {
     const auto residual = *system.evaluate(at[0], at[1]);
@@ -69,7 +69,7 @@ TEST(RtNewton, SolvesPengRobinsonForCompressibility) {
   const std::size_t z_slot =
       static_cast<std::size_t>(std::ranges::find(names, "Z") - names.begin());
 
-  std::vector<double> at(species + 1, 1.0 / species);
+  std::vector at(species + 1, 1.0 / species);
   at[z_slot] = 0.9; // Z, the unknown
 
   int taken = 0;
@@ -99,7 +99,7 @@ TEST(RtNewton, OneEquationServesAWholeSweep) {
       static_cast<std::size_t>(std::ranges::find(names, "x") - names.begin());
 
   for (double target = 0.5; target < 8.0; target += 0.37) {
-    std::vector<double> at(2, 1.0);
+    std::vector at(2, 1.0);
     at[z_slot] = 1.0;
     at[1 - z_slot] = target;
 

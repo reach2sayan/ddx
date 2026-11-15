@@ -81,7 +81,7 @@ rebalance(Arena<T> &b, std::span<const NodeId> roots, std::size_t blocks = 16,
   const auto size = static_cast<NodeId>(b.size());
   const std::vector live = detail::reachable(b, roots);
 
-  std::vector<std::uint32_t> uses(size, 0);
+  std::vector uses(size, static_cast<std::uint32_t>(0));
   for (const NodeId v : detail::live_ids(live)) {
     detail::for_each_operand(b, v, [&uses](NodeId u) { ++uses[u]; });
   }

@@ -96,15 +96,15 @@ TEST(RtJacobianJvp, TheBatchMatchesThePointCalls) {
   const std::size_t cells = *eq.jacobian_columns();
   std::vector<double> xs(n);
   std::vector<double> ys(n);
-  std::vector<double> vx(n, 1.0);
-  std::vector<double> vy(n, 0.5);
+  std::vector vx(n, 1.0);
+  std::vector vy(n, 0.5);
   for (const std::size_t i : std::views::iota(0uz, n)) {
     xs[i] = 0.1 + 0.1 * static_cast<double>(i);
     ys[i] = 1.0 - 0.05 * static_cast<double>(i);
   }
-  std::vector<std::vector<double>> f(2, std::vector<double>(n));
-  std::vector<std::vector<double>> g(cells, std::vector<double>(n));
-  std::vector<std::vector<double>> dg(cells, std::vector<double>(n));
+  std::vector f(2, std::vector<double>(n));
+  std::vector g(cells, std::vector<double>(n));
+  std::vector dg(cells, std::vector<double>(n));
   const auto ptrs = [](auto &columns) {
     return columns | std::views::transform([](auto &c) { return c.data(); }) |
            ddx::impl::to<std::vector>();
@@ -160,7 +160,7 @@ TEST(RtJacobianJvp, AWrongDirectionOrNameIsRefused) {
 }
 
 [[nodiscard]] std::vector<double> mse_point(std::size_t species) {
-  std::vector<double> at{350.0, 2.0};
+  std::vector at{350.0, 2.0};
   for (const std::size_t i : std::views::iota(0uz, species)) {
     at.push_back(1.0 / static_cast<double>(species) +
                  0.01 * static_cast<double>(i % 3));
@@ -221,7 +221,7 @@ TEST(RtRestrict, ABatchThroughTheView) {
   const auto tp = *eq.restrict({"T", "P"});
   constexpr std::size_t n = 13;
   const auto at = mse_point(species);
-  std::vector<std::vector<double>> columns(at.size(), std::vector<double>(n));
+  std::vector columns(at.size(), std::vector<double>(n));
   for (const auto [j, column] : columns | std::views::enumerate) {
     for (const auto [i, cell] : column | std::views::enumerate) {
       cell = at[static_cast<std::size_t>(j)] *
@@ -232,9 +232,9 @@ TEST(RtRestrict, ABatchThroughTheView) {
       columns | std::views::transform([](const auto &c) { return c.data(); }) |
       ddx::impl::to<std::vector>();
   std::vector<double> f(n);
-  std::vector<std::vector<double>> g(tp.jacobian_columns(),
+  std::vector g(tp.jacobian_columns(),
                                      std::vector<double>(n));
-  const std::array<double *, 1> fs{f.data()};
+  const std::array fs{f.data()};
   const auto gs = g | std::views::transform([](auto &c) { return c.data(); }) |
                   ddx::impl::to<std::vector>();
   ASSERT_TRUE(tp.jacobian(in, fs, gs, n).has_value());
@@ -247,7 +247,7 @@ TEST(RtRestrict, ABatchThroughTheView) {
     EXPECT_EQ(g[1][i], full[1]) << i;
   }
   // Two columns, so a block sized for the whole Jacobian is refused.
-  std::vector<std::vector<double>> wide(*eq.jacobian_columns(),
+  std::vector wide(*eq.jacobian_columns(),
                                         std::vector<double>(n));
   const auto ws = wide |
                   std::views::transform([](auto &c) { return c.data(); }) |

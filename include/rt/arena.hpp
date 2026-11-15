@@ -534,7 +534,7 @@ public:
   // A row of `shape` holding v everywhere; a matrix is its table's MatRow.
   [[nodiscard]] constexpr NodeId filled(Shape shape, const T &v) {
     const NodeId t =
-        tensor_const(shape.rows, shape.cols, std::vector<T>(shape.size(), v));
+        tensor_const(shape.rows, shape.cols, std::vector(shape.size(), v));
     return shape.cols == 1
                ? t
                : make(opcode<OpCode::MatRow>, Orientation::plain, t);
@@ -1401,7 +1401,7 @@ private:
     T reduced{};
     const bool computed = tensor_row(
         *this, v, [&](int i) { return i == 0 ? *u : *w; },
-        [&](int i) { return i == 0 ? *su : *sw; }, std::span<T>{out}, reduced,
+        [&](int i) { return i == 0 ? *su : *sw; }, std::span{out}, reduced,
         K{});
     if (!computed) {
       return std::nullopt;
@@ -1611,7 +1611,7 @@ reads_of(const auto &s, const Step &step) {
 fused_into(const auto &s, std::span<const Step> schedule,
            std::span<const NodeId> outputs) {
   std::vector into(s.size(), no_node);
-  std::vector<std::uint32_t> uses(s.size(), 0);
+  std::vector uses(s.size(), static_cast<std::uint32_t>(0));
   for (const Step &step : schedule) {
     for_each_operand(s, step.node, [&](NodeId u) { ++uses[u]; });
   }
@@ -1651,7 +1651,7 @@ fused_into(const auto &s, std::span<const Step> schedule,
 [[nodiscard]] constexpr std::vector<std::uint32_t>
 last_uses(const auto &s, std::span<const Step> schedule,
           std::span<const NodeId> outputs, std::span<const NodeId> fused = {}) {
-  std::vector<std::uint32_t> last(s.size(), 0);
+  std::vector last(s.size(), static_cast<std::uint32_t>(0));
   // Ascending, and a node is formed before it is read, so the last write wins.
   for (const auto [p, step] : schedule | std::views::enumerate) {
     last[step.node] = static_cast<std::uint32_t>(p);
@@ -1683,7 +1683,7 @@ struct Packed {
                                          std::span<Step> schedule,
                                          std::span<const NodeId> outputs) {
   const auto last = last_uses(s, schedule, outputs);
-  Packed out{.by_id = std::vector<TapeRow>(s.size(), no_row)};
+  Packed out{.by_id = std::vector(s.size(), no_row)};
   std::vector taken(s.size(), no_row); // A node's row while live.
   std::vector<TapeRow> free;
   TapeRow next{0};

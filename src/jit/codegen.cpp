@@ -34,8 +34,7 @@ namespace {
 // The LLVM intrinsic for each Call opcode, or not_intrinsic for a libm call.
 // Cached in a table because lookupIntrinsicID is too slow to call per node.
 llvm::Intrinsic::ID intrinsic_for(rt::OpCode op) {
-  static const std::array<llvm::Intrinsic::ID, rt::detail::op_count> table =
-      [] {
+  static const std::array table = [] {
         std::array<llvm::Intrinsic::ID, rt::detail::op_count> t{};
         for (const auto i : std::views::iota(0uz, rt::detail::op_count)) {
           const auto &[form, name] =
@@ -831,7 +830,7 @@ template <CKernelScalar T>
 emit_nodes(const Emitter<T> &emit, TensorLoops<T> *loops,
            const rt::detail::Graph<T> &g, const HoistedColumns &cols,
            llvm::Value *index, llvm::Value *mask) {
-  std::vector<llvm::Value *> value(g.size(), nullptr);
+  std::vector value(g.size(), static_cast<llvm::Value *>(nullptr));
   std::map<std::pair<std::uint32_t, rt::detail::ListOffset>,
            typename Emitter<T>::Answers>
       called;
@@ -996,7 +995,7 @@ emit_module(llvm::LLVMContext &ctx, const rt::detail::Graph<T> &g,
   }
 
   const Emitter<T> emit(*m, b, lanes, tensors);
-  const std::vector<llvm::Value *> value =
+  const std::vector value =
       emit_nodes(emit, loops ? &*loops : nullptr, g, cols, index, mask);
   if (g.has_tensors()) {
     // With tensors, outputs go through the interpreter's scatter: scalars are

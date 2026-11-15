@@ -29,7 +29,7 @@ TEST(JitParam, ColumnsAreSymbolsThenParamsThenSeeds) {
   ASSERT_TRUE(kernel.has_value()) << kernel.error().detail;
 
   static constexpr std::size_t n = 37;
-  std::vector<std::vector<double>> columns(3, std::vector<double>(n));
+  std::vector columns(3, std::vector<double>(n));
   for (const auto [j, column] : columns | std::views::enumerate) {
     for (const auto [i, cell] : column | std::views::enumerate) {
       cell = 0.3 + 0.4 * static_cast<double>((i + 3 * j) % 5) / 5.0 +

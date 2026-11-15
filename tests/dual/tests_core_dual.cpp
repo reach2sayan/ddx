@@ -359,7 +359,7 @@ TEST(HessianTest, ForwardOverReverse_FunctionValues) {
   Variable<D, FixedString{"x"}> x;
   Variable<D, FixedString{"y"}> y;
   auto ve = Equation(x * y, x * x);
-  const std::array<D, 2> pt{D{2.0}, D{3.0}};
+  const std::array pt{D{2.0}, D{3.0}};
   (void)ve.hessian(std::array{2.0, 3.0});
   auto f = ve.evaluate(pt);
   EXPECT_DOUBLE_EQ(f[0].template get<0>(), 6.0);
@@ -392,7 +392,7 @@ TEST(HessianTest, ForwardOverReverse_WithValues) {
   Variable<D, FixedString{"x"}> x;
   Variable<D, FixedString{"y"}> y;
   auto ve = Equation(x * y, x * x);
-  std::array<double, 2> pt{2.0, 3.0};
+  std::array pt{2.0, 3.0};
   auto H = ve.hessian(pt);
   auto f = ve.evaluate(std::array{D{2.0}, D{3.0}});
   EXPECT_DOUBLE_EQ(f[0].template get<0>(), 6.0);
@@ -962,7 +962,7 @@ TEST(DualScalarContract, ImplicitConstantFromScalarAtDepth) {
   // S c = 1.0 meaning a zero-derivative constant.
   const dual2nd a{0};
   const dual2nd b = 2.5;
-  const std::vector<dual2nd> v(3, dual2nd{1});
+  const std::vector v(3, dual2nd{1});
   EXPECT_DOUBLE_EQ(val(a), 0.0);
   EXPECT_DOUBLE_EQ(val(b), 2.5);
   EXPECT_DOUBLE_EQ(val(v[0]), 1.0);

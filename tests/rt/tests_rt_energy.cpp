@@ -87,7 +87,7 @@ TEST(RtEnergy, StableDownToTraceMoleFractions) {
   double previous_value = 0;
   double previous_trace = 0;
   for (const double trace : {1e-3, 1e-6, 1e-9, 1e-12, 1e-15}) {
-    std::vector<double> pt(n, (1.0 - trace) / (n - 1));
+    std::vector pt(n, (1.0 - trace) / (n - 1));
     pt[0] = trace;
     const auto values = ddx::rt::detail::evaluate_all(b, pt);
 

@@ -242,7 +242,7 @@ TEST(RtInterpreter, EvaluatesSharedNodesOnce) {
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = (x * y) + sin(x * y);
-  const std::array<double, 2> pt{0.5, 1.5};
+  const std::array pt{0.5, 1.5};
   const double xy = 0.75;
   EXPECT_NEAR(ddx::rt::detail::evaluate(b, f.id(b), pt), xy + std::sin(xy),
               1e-15);
@@ -292,8 +292,8 @@ TEST(RtArena, FloatConstantsInternByTheirBits) {
   const float nan = std::numeric_limits<float>::quiet_NaN();
   EXPECT_EQ(lit(b, nan).id(b), lit(b, nan).id(b));
 
-  const std::array<float, 2> zeros{0.0f, 0.0f};
-  const std::array<float, 2> negative_zeros{-0.0f, -0.0f};
+  const std::array zeros{0.0f, 0.0f};
+  const std::array negative_zeros{-0.0f, -0.0f};
   EXPECT_NE(ddx::rt::detail::vec_constant<float>(b, zeros).id(b),
             ddx::rt::detail::vec_constant<float>(b, negative_zeros).id(b));
 }

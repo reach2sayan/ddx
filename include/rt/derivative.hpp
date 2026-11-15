@@ -213,7 +213,7 @@ template <impl::Numeric T>
           b.externs(), [](const ExternEntry<T> &e) { return e.order >= 2; })) {
     return false;
   }
-  std::vector<NodeId> wanted(roots.begin(), roots.end());
+  std::vector wanted(roots.begin(), roots.end());
   impl::append(wanted, b.closures());
   return reaches(b, wanted, [&b](const Node<T> &node) {
     return kind_of(node.op) == Kind::Extern &&
@@ -646,8 +646,8 @@ detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &scratch) {
   }
 
   JacobianRow g{.value = root,
-                .partial = std::vector<NodeId>(b.symbols().size(), no_node),
-                .implicit = std::vector<NodeId>(implicits, no_node)};
+                .partial = std::vector(b.symbols().size(), no_node),
+                .implicit = std::vector(implicits, no_node)};
   // Only a touched id holds an adjoint; putting it back readies the next sweep.
   for (const NodeId v : touched) {
     const Node<T> &node = b[v];
@@ -859,14 +859,14 @@ template <impl::Numeric T>
                                                             NodeId root) {
   const auto nsym = b.symbols().size();
   JacobianRow g{.value = root,
-                .partial = std::vector<NodeId>(nsym, no_node),
+                .partial = std::vector(nsym, no_node),
                 .implicit = {}};
-  const std::array<NodeId, 1> roots{root};
+  const std::array roots{root};
 
   // One unit vector, reused by moving the 1 through it.
   const NodeId one = b.constant(T{1});
   const NodeId zero = b.constant(T{0});
-  std::vector<NodeId> unit(nsym, zero);
+  std::vector unit(nsym, zero);
   for (const std::size_t s : std::views::iota(0uz, nsym)) {
     unit[s] = one;
     g.partial[s] = tangent_sweep(b, roots, unit).front();

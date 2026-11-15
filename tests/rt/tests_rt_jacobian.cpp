@@ -331,7 +331,7 @@ TEST(RtJacobian, DenseCompressedAndTheNodesAllAgree) {
   // No row is dense and no column is empty.
   const auto eq = ddx::rt::equation(x * log(x) + y, y * y + z, exp(x * z));
 
-  const std::vector<double> at{0.6, 1.4, 0.9};
+  const std::vector at{0.6, 1.4, 0.9};
   const auto dense = *eq.jacobian(at);
   ASSERT_EQ(dense.size(), 3u * 3u);
 
@@ -380,12 +380,12 @@ TEST(RtJacobian, AFoldedPartialIsAStructuralHole) {
       pattern.rows() |
       std::views::transform([](const auto &row) { return row.size(); }) |
       ddx::impl::to<std::vector<std::size_t>>();
-  EXPECT_EQ(widths, (std::vector<std::size_t>{1, 1, 0}));
+  EXPECT_EQ(widths, (std::vector{1uz, 1uz, 0uz}));
   EXPECT_TRUE(pattern.at(0, 2).has_value());  // c
   EXPECT_FALSE(pattern.at(0, 0).has_value()); // a
   EXPECT_FALSE(pattern.at(0, 1).has_value()); // b
 
-  const std::vector<double> at{0.3, 0.7, 1.1, 0.5, 0.2, 0.9};
+  const std::vector at{0.3, 0.7, 1.1, 0.5, 0.2, 0.9};
   const auto dense = *eq.jacobian(at);
   ASSERT_EQ(dense.size(), 18u);
   EXPECT_EQ(dense[0 * 6 + 2], 1.0); // d/dc of (... + c)
@@ -413,7 +413,7 @@ TEST(RtJacobian, HessianCellPlacesEveryCompressedColumn) {
   }
   const auto eq = ddx::rt::equation(energy);
 
-  const std::vector<double> at{0.3, 0.7, 1.1, 0.5, 0.2, 0.9};
+  const std::vector at{0.3, 0.7, 1.1, 0.5, 0.2, 0.9};
   const auto dense = *eq.hessian(at);
   ASSERT_EQ(dense.size(), n * n);
 
@@ -457,7 +457,7 @@ TEST(RtJacobian, SelectDifferentiatesTheArmTheConditionTakes) {
   });
 
   for (const auto &[px, py] : {std::pair{1.0, 3.0}, std::pair{3.0, 1.0}}) {
-    const std::array<double, 2> at{px, py};
+    const std::array at{px, py};
     const bool takes_x = px < py;
     EXPECT_DOUBLE_EQ(*eq.evaluate(at), takes_x ? px * px : py * py * py);
 
@@ -498,12 +498,12 @@ TEST(RtJacobian, SelectDiscardsTheUnchosenArmsPartials) {
   EXPECT_DOUBLE_EQ((*log_arm.hessian(2.0))[0], -0.25);
 
   // Both arms are chosen within one batch.
-  const std::array<double, 3> xs{-1.0, 0.0, 1.0};
+  const std::array xs{-1.0, 0.0, 1.0};
   std::array<double, 3> f{};
   std::array<double, 3> g{};
   const std::array<const double *, 1> in{xs.data()};
-  const std::array<double *, 1> fv{f.data()};
-  const std::array<double *, 1> gv{g.data()};
+  const std::array fv{f.data()};
+  const std::array gv{g.data()};
   ASSERT_TRUE(log_arm.jacobian(in, fv, gv, xs.size()).has_value());
   EXPECT_EQ(g, (std::array{0.0, 0.0, 1.0}));
 }
@@ -527,9 +527,9 @@ TEST(RtJacobian, SelectReadsAnyNonzeroConditionAsTrue) {
     return select(x, ddx::rt::Expression<double>{7.0},
                   ddx::rt::Expression<double>{9.0});
   });
-  const std::array<double, 1> zero{0.0};
-  const std::array<double, 1> two{2.0};
-  const std::array<double, 1> negative{-3.0};
+  const std::array zero{0.0};
+  const std::array two{2.0};
+  const std::array negative{-3.0};
   EXPECT_DOUBLE_EQ(*eq.evaluate(zero), 9.0);
   EXPECT_DOUBLE_EQ(*eq.evaluate(two), 7.0);
   EXPECT_DOUBLE_EQ(*eq.evaluate(negative), 7.0);
@@ -545,7 +545,7 @@ TEST(RtJacobian, ComparisonsComposeFromTheTwoOpcodes) {
       const auto x = ddx::rt::var("x");
       return build(x, ddx::rt::var("y"));
     });
-    const std::array<double, 2> at{a, b};
+    const std::array at{a, b};
     return *eq.evaluate(at);
   };
   const auto less = [](auto x, auto y) { return x < y; };
@@ -578,7 +578,7 @@ TEST(RtJacobian, SelectSurvivesEveryWalkerThatRebuildsANode) {
     const auto y = ddx::rt::var("y");
     return select(le(x, y), exp(x) * y, log(y) + x * x);
   });
-  const std::array<double, 2> at{0.6, 1.4};
+  const std::array at{0.6, 1.4};
   const auto swept = *eq.jacobian(at);
   const auto swept_h = *eq.hessian(at);
 
@@ -625,7 +625,7 @@ TEST(RtJacobian, ComparisonsAgreeWithTheKernelAtNaN) {
       const auto t = ddx::rt::var("t");
       return select(c, t, f);
     });
-    const std::array<double, 3> at{nan, 1.0, 2.0}; // c, f, t
+    const std::array at{nan, 1.0, 2.0}; // c, f, t
     const double interpreted = *raw.evaluate(at);
     raw.options({.backend = ddx::jit::Backend::Compile, .points = 1});
     ASSERT_TRUE(raw.uses_kernel());
@@ -675,7 +675,7 @@ TEST(RtJacobian, BothArmsOfASelectOverASharedSubexpression) {
 
   // With the condition false, f = s*s - s.
   {
-    const std::array<double, 3> at{0.7, 0.3, 1.9};
+    const std::array at{0.7, 0.3, 1.9};
     const double s = std::sin(at[0] * at[1]) + at[2];
     const double c = std::cos(at[0] * at[1]);
     const auto span = std::span<const double>{at};
@@ -694,7 +694,7 @@ TEST(RtJacobian, BothArmsOfASelectOverASharedSubexpression) {
 
   // With the condition true, the same nodes take the other arm: f = 2 s*s.
   {
-    const std::array<double, 3> at{0.3, 0.7, 1.9};
+    const std::array at{0.3, 0.7, 1.9};
     const double s = std::sin(at[0] * at[1]) + at[2];
     const auto span = std::span<const double>{at};
     EXPECT_DOUBLE_EQ(*eq.evaluate(span), 2 * s * s);

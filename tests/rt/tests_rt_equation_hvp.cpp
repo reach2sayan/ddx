@@ -17,7 +17,7 @@ std::vector<double> dense_product(const std::vector<double> &h, std::size_t n,
                                   std::span<const double> v) {
   const ddx::impl::md::mdspan m{h.data(),
                                 ddx::impl::md::dextents<std::size_t, 2>{n, n}};
-  std::vector<double> out(n, 0.0);
+  std::vector out(n, 0.0);
   for (const auto [i, j] : std::views::cartesian_product(
            std::views::iota(0uz, n), std::views::iota(0uz, n))) {
     out[i] += m[i, j] * v[j];
@@ -36,7 +36,7 @@ TEST(RtEquationHvp, MatchesTheDenseHessianTimesTheDirection) {
   ASSERT_EQ(eq.arity(), 3u);
 
   const std::array point{0.3, 0.7, 0.5};
-  const std::array<double, 3> v{1.0, -2.0, 0.25};
+  const std::array v{1.0, -2.0, 0.25};
 
   const auto dense = *eq.hessian(point);
   const auto want = dense_product(dense, 3, v);
@@ -76,7 +76,7 @@ TEST(RtEquationHvp, ASeedTheProductDropsKeepsItsColumn) {
     const auto y = ddx::rt::var("y");
     return x * x + y;
   });
-  const std::vector<double> v{1.0, 1.0};
+  const std::vector v{1.0, 1.0};
   const auto got = eq.hvp(std::span<const double>{v}, 3.0, 4.0);
   ASSERT_TRUE(got.has_value()) << got.error().code;
   EXPECT_EQ((*got)[0], 2.0);
@@ -98,7 +98,7 @@ TEST(RtEquationHvp, RefusesADirectionOfTheWrongLength) {
     const auto y = ddx::rt::var("y");
     return x * y;
   });
-  const std::vector<double> tooLong{1.0, 2.0, 3.0};
+  const std::vector tooLong{1.0, 2.0, 3.0};
   const auto r = eq.hvp(std::span<const double>{tooLong}, 1.0, 2.0);
   ASSERT_FALSE(r.has_value());
   EXPECT_EQ(r.error().code, ddx::errc::wrong_direction);
@@ -121,7 +121,7 @@ TEST(RtEquationHvp, TakesEveryPointSpelling) {
     const auto b = ddx::rt::var("b");
     return a * a * b;
   });
-  const std::array<double, 2> v{1.0, 1.0};
+  const std::array v{1.0, 1.0};
   const auto d = std::span<const double>{v};
 
   const auto positional = *eq.hvp(d, 2.0, 3.0);
@@ -137,9 +137,9 @@ TEST(RtEquationHvp, BatchAgreesWithThePointSpelling) {
   });
 
   static constexpr std::size_t n = 40; // past the lane width, with a tail
-  std::array<std::vector<double>, 2> xs{std::vector<double>(n),
+  std::array xs{std::vector<double>(n),
                                         std::vector<double>(n)};
-  std::array<std::vector<double>, 2> vs{std::vector<double>(n),
+  std::array vs{std::vector<double>(n),
                                         std::vector<double>(n)};
   for (const std::size_t i : std::views::iota(0uz, n)) {
     xs[0][i] = 0.2 + 0.01 * static_cast<double>(i);
@@ -151,9 +151,9 @@ TEST(RtEquationHvp, BatchAgreesWithThePointSpelling) {
   const double *const vp[]{vs[0].data(), vs[1].data()};
 
   std::vector<double> f(n);
-  std::array<std::vector<double>, 2> g{std::vector<double>(n),
+  std::array g{std::vector<double>(n),
                                        std::vector<double>(n)};
-  std::array<std::vector<double>, 2> hv{std::vector<double>(n),
+  std::array hv{std::vector<double>(n),
                                         std::vector<double>(n)};
   double *const fp[]{f.data()};
   double *const gp[]{g[0].data(), g[1].data()};
@@ -162,7 +162,7 @@ TEST(RtEquationHvp, BatchAgreesWithThePointSpelling) {
   ASSERT_TRUE(eq.hvp(xp, vp, fp, gp, hp, n).has_value());
 
   for (const std::size_t i : std::views::iota(0uz, n)) {
-    const std::array<double, 2> v{vs[0][i], vs[1][i]};
+    const std::array v{vs[0][i], vs[1][i]};
     const auto want =
         *eq.hvp(std::span<const double>{v}, std::array{xs[0][i], xs[1][i]});
     EXPECT_NEAR(hv[0][i], want[0], 1e-10 * std::max(1.0, std::abs(want[0])));

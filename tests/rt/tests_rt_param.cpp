@@ -28,7 +28,7 @@ TEST(RtParam, SymbolsTakeTheOrderTheyAreNamedIn) {
   EXPECT_EQ(*eq.jacobian(1.0, 2.0), (std::vector{4.0, 4.0}));
   const auto row = eq.jacobian_pattern()->get().rows()[0];
   EXPECT_EQ(std::vector(row.begin(), row.end()),
-            (std::vector<std::uint32_t>{0, 1}));
+            (std::vector{static_cast<std::uint32_t>(0), static_cast<std::uint32_t>(1)}));
 }
 
 TEST(RtParam, TextSymbolsTakeTheOrderTheyFirstAppearIn) {
@@ -82,8 +82,8 @@ TEST(RtParam, ABatchCarriesAParamColumn) {
   std::array<double, 3> f{};
   std::array<double, 3> g{};
   const std::array<const double *, 2> in{xs.data(), as.data()};
-  const std::array<double *, 1> fv{f.data()};
-  const std::array<double *, 1> gv{g.data()};
+  const std::array fv{f.data()};
+  const std::array gv{g.data()};
   ASSERT_TRUE(eq.jacobian(in, fv, gv, 3).has_value());
   EXPECT_EQ(f, (std::array{2.0, 8.0, 45.0}));
   EXPECT_EQ(g, (std::array{4.0, 8.0, 30.0}));

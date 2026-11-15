@@ -26,7 +26,7 @@ std::vector<double> reference_product(const ddx::rt::detail::Hessian &h,
                                       std::span<const double> values,
                                       std::span<const double> v) {
   const std::size_t n = h.partial.size();
-  std::vector<double> out(n, 0.0);
+  std::vector out(n, 0.0);
   for (const auto [i, j] : std::views::cartesian_product(
            std::views::iota(0uz, n), std::views::iota(0uz, n))) {
     out[i] += values[h.at(i, j)] * v[j];

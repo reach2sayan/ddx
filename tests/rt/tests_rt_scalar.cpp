@@ -76,7 +76,7 @@ TEST(RtScalar, EvaluatesInTheScalarsOwnArithmetic) {
   ddx::rt::detail::Arena<M2> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
-  const std::array<M2, 2> pt{M2{1, 2, 3, 4}, M2{5, 6, 7, 8}};
+  const std::array pt{M2{1, 2, 3, 4}, M2{5, 6, 7, 8}};
   const auto v = ddx::rt::detail::evaluate(b, (x * y).id(b), pt);
   EXPECT_EQ(v, (M2{19, 22, 43, 50}));
 }
@@ -132,7 +132,7 @@ TEST(RtScalar, ADualPointCarriesDerivativesThroughTheSameWalk) {
   const auto f = exp(x) * sin(y);
 
   using D = ddx::dual;
-  const std::array<D, 2> seeded{D{1.0, 1.0}, D{2.0, 0.0}}; // seed x
+  const std::array seeded{D{1.0, 1.0}, D{2.0, 0.0}}; // seed x
   const auto v = ddx::rt::detail::evaluate(b, f.id(b), seeded);
 
   EXPECT_NEAR(v.value(), std::exp(1.0) * std::sin(2.0), 1e-14);
@@ -174,7 +174,7 @@ TEST(RtScalar, TensorsAtADualArenaAreRefused) {
     const auto x = ddx::rt::vec<D>("x", 3);
     return sum(x * x);
   });
-  const std::array<D, 3> at{D{1.0, 0.0}, D{2.0, 0.0}, D{3.0, 0.0}};
+  const std::array at{D{1.0, 0.0}, D{2.0, 0.0}, D{3.0, 0.0}};
   const auto f = eq.evaluate(at);
   ASSERT_FALSE(f.has_value());
   EXPECT_EQ(f.error().code, ddx::errc::unsupported_scalar);

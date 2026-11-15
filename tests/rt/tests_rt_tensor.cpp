@@ -198,7 +198,7 @@ void expect_threads_agree(auto &&call) {
   std::latch start{threads};
   // One byte per thread, since vector<bool> packs bits and eight threads
   // writing one word would be a race.
-  std::vector<char> ok(threads, 0);
+  std::vector ok(threads, '\0');
   {
     std::vector<std::jthread> pool;
     for (const std::size_t t : std::views::iota(0uz, threads)) {
@@ -355,7 +355,7 @@ TEST(RtTensor, GatherAndAddAtRoundTrip) {
       5,
       [](const std::vector<RE> &x) {
         // v is x with x[0]*x[1] added to v[2]; sum v*v, then read v[2] again.
-        std::vector<RE> v = x;
+        std::vector v = x;
         v[2] = v[2] + x[0] * x[1];
         RE acc{0};
         for (const auto &e : v) {
@@ -410,7 +410,7 @@ TEST(RtTensor, RefusesMismatchedWidthsAndVectorRoots) {
   EXPECT_EQ(out_of_range.status()->code, ddx::errc::tensor_shape);
 
   const auto gemv_shape = ddx::rt::equation([] {
-    const std::vector<double> m(6, 1.0);
+    const std::vector m(6, 1.0);
     return sum(gemv(ddx::rt::mat_constant(2, 3, m), ddx::rt::vec("a", 2)));
   });
   EXPECT_EQ(gemv_shape.status()->code, ddx::errc::tensor_shape);
@@ -604,8 +604,8 @@ namespace {
 std::vector<double> hessian_by_hvp(const auto &eq, std::span<const double> at,
                                    std::size_t from, std::size_t count) {
   const std::size_t n = at.size();
-  std::vector<std::vector<double>> xs(n, std::vector<double>(count));
-  std::vector<std::vector<double>> vs(n, std::vector<double>(count, 0.0));
+  std::vector xs(n, std::vector<double>(count));
+  std::vector vs(n, std::vector(count, 0.0));
   for (const auto [column, x] : std::views::zip(xs, at)) {
     std::ranges::fill(column, x);
   }
@@ -618,8 +618,8 @@ std::vector<double> hessian_by_hvp(const auto &eq, std::span<const double> at,
   std::ranges::transform(vs, vcols.begin(),
                          [](const auto &c) { return c.data(); });
   std::vector<double> f(count);
-  std::vector<std::vector<double>> g(n, std::vector<double>(count));
-  std::vector<std::vector<double>> hv(n, std::vector<double>(count));
+  std::vector g(n, std::vector<double>(count));
+  std::vector hv(n, std::vector<double>(count));
   std::vector<double *> gcols(n), hcols(n);
   std::ranges::transform(g, gcols.begin(), [](auto &c) { return c.data(); });
   std::ranges::transform(hv, hcols.begin(), [](auto &c) { return c.data(); });
@@ -761,7 +761,7 @@ void expect_dense_matches_coloured(const auto &eq, std::span<const double> at,
 // A select over tensors picks per element under a vector condition and whole
 // under a scalar one, so an infinite unchosen arm never yields 0 * inf.
 TEST(RtTensor, SelectOverTensorsPicksTheArmTaken) {
-  const std::vector<double> at{0.0, 0.3, 0.5, 0.2};
+  const std::vector at{0.0, 0.3, 0.5, 0.2};
   const auto want = ddx::rt::equation([] {
     const auto x = symbols(4);
     RE acc{0};
@@ -853,7 +853,7 @@ TEST(RtTensorDense, BatchColumnsAreThePointsBlockRowMajor) {
   const auto want = *eq.dense_hessian(at);
   ASSERT_EQ(*eq.dense_hessian_columns(), n * n);
   constexpr std::size_t points = 3;
-  std::vector<std::vector<double>> xs(n, std::vector<double>(points));
+  std::vector xs(n, std::vector<double>(points));
   for (const auto [column, x] : std::views::zip(xs, at)) {
     std::ranges::fill(column, x);
   }
@@ -861,8 +861,8 @@ TEST(RtTensorDense, BatchColumnsAreThePointsBlockRowMajor) {
   std::ranges::transform(xs, xcols.begin(),
                          [](const auto &c) { return c.data(); });
   std::vector<double> f(points);
-  std::vector<std::vector<double>> g(n, std::vector<double>(points));
-  std::vector<std::vector<double>> h(n * n, std::vector<double>(points));
+  std::vector g(n, std::vector<double>(points));
+  std::vector h(n * n, std::vector<double>(points));
   std::vector<double *> gcols(n), hcols(n * n);
   std::ranges::transform(g, gcols.begin(), [](auto &c) { return c.data(); });
   std::ranges::transform(h, hcols.begin(), [](auto &c) { return c.data(); });
@@ -1319,7 +1319,7 @@ TEST(RtMatrix, DenseHessianOverMostlyScalars) {
     return sum(exp(a * x)) * b + a * a * b;
   });
   ASSERT_FALSE(eq.poisoned()) << eq.status()->code;
-  const std::vector<double> at{0.3, 0.7, 1.1, -0.4};
+  const std::vector at{0.3, 0.7, 1.1, -0.4};
   expect_dense_matches(eq, at, 1e-12);
 }
 
@@ -1368,7 +1368,7 @@ TEST(RtTensor, SweepsBuildNothingForWhatHoldsStill) {
   }
   {
     ddx::rt::detail::Arena<> b;
-    const std::vector<double> c{1.0, 2.0, 3.0};
+    const std::vector c{1.0, 2.0, 3.0};
     const RV x = ddx::rt::detail::vec(b, "x", 3);
     const RV k = ddx::rt::detail::vec_constant(b, std::span<const double>{c});
     const auto root = sum(gemv(ddx::rt::outer(x, k), k)).id(b);
@@ -1382,7 +1382,7 @@ TEST(RtTensor, SweepsBuildNothingForWhatHoldsStill) {
 }
 
 TEST(RtMatrix, RefusesMismatchedShapesAndMatrixRoots) {
-  const std::vector<double> six(6, 1.0);
+  const std::vector six(6, 1.0);
   const auto transposed = ddx::rt::equation([&] {
     const RE T = ddx::rt::var("T");
     const auto m =
@@ -1690,9 +1690,9 @@ TEST(RtTensorGraph, ConstantsFoldToTheirTable) {
   using ddx::rt::OpCode;
   ddx::rt::detail::Arena<> b;
   const auto arena = ddx::rt::detail::scoped_arena(b);
-  const std::vector<double> u{1, 2, 3};
-  const std::vector<double> w{0.5, -1, 4};
-  const std::vector<double> m{1, 2, 3, 4, 5, 6, 7, 8, 9}; // column-major
+  const std::vector u{1.0, 2.0, 3.0};
+  const std::vector w{0.5, -1.0, 4.0};
+  const std::vector m{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0}; // column-major
   const RE d = dot(ddx::rt::vec_constant(u), ddx::rt::vec_constant(w));
   ASSERT_EQ(b.op_of(d.id(b)), OpCode::Const);
   EXPECT_EQ(b[d.id(b)].value, 0.5 - 2 + 12);
@@ -1703,7 +1703,7 @@ TEST(RtTensorGraph, ConstantsFoldToTheirTable) {
       b.tensors()[ddx::rt::detail::get<ddx::rt::detail::TensorRef>(b[p.id(b)])
                       .value]
           .data,
-      (std::vector<double>{30, 36, 42}));
+      (std::vector{30.0, 36.0, 42.0}));
 
   EXPECT_TRUE(ddx::rt::detail::is_table(
       b, exp(-0.5 * ddx::rt::mat_constant(3, 3, m)).id(b)));
@@ -1718,7 +1718,7 @@ TEST(RtTensorGraph, AGemvOfAScaledVectorIsTheScaledGemv) {
   const auto arena = ddx::rt::detail::scoped_arena(b);
   const RV x = ddx::rt::detail::vec(b, "x", 3);
   const RE s = ddx::rt::detail::var(b, "s");
-  const std::vector<double> m{1, 2, 3, 4, 5, 6, 7, 8, 9};
+  const std::vector m{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0};
   const RE g = gemv(ddx::rt::mat_constant(3, 3, m), s * x);
   ASSERT_EQ(b.op_of(g.id(b)), OpCode::Scale);
   EXPECT_EQ(b.op_of(b.operands(g.id(b))[1]), OpCode::MatVec);
@@ -1747,7 +1747,7 @@ TEST(RtTensorGraph, AQuadraticFormsTwoProductsAreAPair) {
 // The chosen arm's tangent through a non-square table gives the block 2 M^T M,
 // whichever way it is swept.
 TEST(RtTensorDense, ASelectOverANonSquareTableKeepsItsTangent) {
-  const std::array<double, 6> m{1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
+  const std::array m{1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
   const auto eq = ddx::rt::equation([&] {
     const RV x = ddx::rt::vec("x", 2);
     const RE s = ddx::rt::param("s");
@@ -1756,7 +1756,7 @@ TEST(RtTensorDense, ASelectOverANonSquareTableKeepsItsTangent) {
     return dot(u, u);
   });
   ASSERT_FALSE(eq.poisoned());
-  const std::array<double, 3> at{0.5, -0.25, 1.0};
+  const std::array at{0.5, -0.25, 1.0};
   const auto dense = eq.dense_hessian(at);
   ASSERT_TRUE(dense.has_value()) << dense.error().code;
   expect_close(std::vector{28.0, 64.0, 64.0, 154.0}, *dense, 1e-12, "2 M^T M");
@@ -1765,7 +1765,7 @@ TEST(RtTensorDense, ASelectOverANonSquareTableKeepsItsTangent) {
 // A matrix chosen by a select and moved by a symbol has no dense form; it must
 // be refused or match, never come back as zero.
 TEST(RtTensorDense, ASelectOverAComputedMatrixRefusesOrAgrees) {
-  const std::array<double, 4> m{1.0, 2.0, 3.0, 4.0};
+  const std::array m{1.0, 2.0, 3.0, 4.0};
   const auto check = [&](auto arm) {
     const auto eq = ddx::rt::equation([&] {
       const RV x = ddx::rt::vec("x", 2);
@@ -1776,7 +1776,7 @@ TEST(RtTensorDense, ASelectOverAComputedMatrixRefusesOrAgrees) {
       return dot(u, u) + sum(x * x);
     });
     ASSERT_FALSE(eq.poisoned()) << eq.status()->code;
-    const std::array<double, 4> at{0.5, 0.25, 1.5, 1.0};
+    const std::array at{0.5, 0.25, 1.5, 1.0};
     const auto dense = eq.dense_hessian(at);
     if (dense) {
       expect_close(*eq.hessian(at), *dense, 1e-10, "dense vs coloured");
@@ -1797,9 +1797,9 @@ TEST(RtTensor, AScalarFactorOfAVectorOfOneKeepsItsPartial) {
     return select(x < 0.0, s * x, x)[0] + s;
   });
   ASSERT_FALSE(eq.poisoned());
-  const std::array<double, 2> right{1.0, 2.0};
+  const std::array right{1.0, 2.0};
   EXPECT_EQ(*eq.jacobian(right), (std::vector{1.0, 1.0}));
-  const std::array<double, 2> left{-1.0, 2.0};
+  const std::array left{-1.0, 2.0};
   EXPECT_EQ(*eq.jacobian(left), (std::vector{2.0, 0.0}));
 }
 
@@ -1847,7 +1847,7 @@ TEST(RtTensorDense, AnEquationOfParamsHasAnEmptyDenseBlock) {
     return p * p;
   });
   ASSERT_FALSE(eq.poisoned());
-  const std::array<double, 1> at{2.0};
+  const std::array at{2.0};
   const auto dense = eq.dense_hessian(at);
   ASSERT_TRUE(dense.has_value()) << dense.error().code;
   EXPECT_TRUE(dense->empty());
@@ -1862,7 +1862,7 @@ TEST(RtTensor, ATableWhoseSizeOverflowsIsRefused) {
     return ddx::rt::detail::mat_constant(b, rows, cols, data).poisoned();
   };
   EXPECT_TRUE(refused(1uz << 32, 1uz << 32, {}));
-  const std::array<double, 4> four{1.0, 2.0, 3.0, 4.0};
+  const std::array four{1.0, 2.0, 3.0, 4.0};
   EXPECT_TRUE(refused((1uz << 63) + 2, 2, four));
   EXPECT_FALSE(refused(2, 2, four));
 }

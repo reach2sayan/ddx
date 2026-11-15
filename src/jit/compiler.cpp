@@ -123,7 +123,7 @@ template <CKernelScalar T> void define_scalar(auto &def) {
             static_cast<std::size_t>(std::countr_zero(lanes)), [&](auto i) {
               constexpr std::size_t W = std::size_t{1} << i;
               const auto lane = rt::detail::lanes_of<W>(
-                  std::span<T>{tape, g.tape_rows() * W});
+                  std::span{tape, g.tape_rows() * W});
               rt::detail::lanes_tensor<W>(*c->arena, v, (*c->arena)[v],
                                           lane(g.rows()[v]), lane, t);
             });

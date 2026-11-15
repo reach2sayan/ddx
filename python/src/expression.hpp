@@ -99,7 +99,7 @@ public:
       return {s.rows, s.cols};
     }
     return size() == 0 ? std::vector<std::size_t>{}
-                       : std::vector<std::size_t>{size()};
+                       : std::vector{size()};
   }
 
   // The node id in `arena`, refusing a handle from another arena. A pending

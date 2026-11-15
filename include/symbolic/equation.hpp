@@ -213,7 +213,7 @@ public:
             return v[l.roots[0]];
           } else {
             return meta::unpack(meta::iota<output_dim>, [&](auto... i) {
-              return std::array<value_type, output_dim>{v[l.roots[i]]...};
+              return std::array{v[l.roots[i]]...};
             });
           }
         },
@@ -333,7 +333,7 @@ public:
           for (const auto &idx :
                detail::simplex_index_table_v<input_dim, Order>) {
             walk(l.arena, detail::mixed_seeds<scalar, Order>(vals, idx),
-                 std::span<U>{v}, std::span<U>{vtape});
+                 std::span{v}, std::span{vtape});
             for (const auto [k, root] : l.roots | std::views::enumerate) {
               const auto at = [&] {
                 if constexpr (output_dim == 1) {

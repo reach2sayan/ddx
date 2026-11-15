@@ -236,7 +236,7 @@ TEST(PositionalEvalTest, AShortRangeIsAnError) {
   auto x = var<"x">;
   auto y = var<"y">;
   const auto e = (x + y) * x;
-  const std::vector<double> too_few{2.0};
+  const std::vector too_few{2.0};
   const auto v = eval(e, too_few);
   EXPECT_FALSE(v.has_value());
   EXPECT_EQ(v.error().code, ddx::errc::short_point);
@@ -256,10 +256,10 @@ TEST(PositionalEvalTest, ALongRangeIsAnError) {
   auto x = var<"x">;
   auto y = var<"y">;
   const auto e = (x + y) * x;
-  const std::vector<double> too_many{2.0, 3.0, 4.0};
+  const std::vector too_many{2.0, 3.0, 4.0};
   const auto v = eval(e, too_many);
   ASSERT_FALSE(v.has_value());
   EXPECT_EQ(v.error().code, ddx::errc::wrong_arity);
-  const std::vector<double> exact{2.0, 3.0};
+  const std::vector exact{2.0, 3.0};
   EXPECT_DOUBLE_EQ(*eval(e, exact), 10.0);
 }

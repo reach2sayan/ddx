@@ -77,8 +77,8 @@ TEST(RtSystem, BatchJacobianMatchesThePointCalls) {
           0.5 + 0.1 * static_cast<double>(i) + 0.3 * static_cast<double>(j);
     }
   }
-  std::vector<std::vector<double>> f(5, std::vector<double>(n));
-  std::vector<std::vector<double>> g(cells, std::vector<double>(n));
+  std::vector f(5, std::vector<double>(n));
+  std::vector g(cells, std::vector<double>(n));
   const auto pointers = [](auto &columns) {
     return columns | std::views::transform([](auto &c) { return c.data(); }) |
            ddx::impl::to<std::vector>();
@@ -221,8 +221,8 @@ TEST(RtSystem, PreparedLanesServeManyThreads) {
       column.assign(n, 0.4 + 0.05 * static_cast<double>(salt) +
                            0.2 * static_cast<double>(j));
     }
-    std::vector<std::vector<double>> f(5, std::vector<double>(n));
-    std::vector<std::vector<double>> g(cells, std::vector<double>(n));
+    std::vector f(5, std::vector<double>(n));
+    std::vector g(cells, std::vector<double>(n));
     std::array<const double *, 3> in{xs[0].data(), xs[1].data(), xs[2].data()};
     auto fs = f | std::views::transform([](auto &c) { return c.data(); }) |
               ddx::impl::to<std::vector>();

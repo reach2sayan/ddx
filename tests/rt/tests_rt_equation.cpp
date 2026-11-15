@@ -393,7 +393,7 @@ TEST(RtEquation, BatchHessianFillsTheCompressedColumns) {
   ASSERT_GT(columns, 0u);
 
   std::vector<double> cx(n, 0.7), cy(n, 1.1), f(n), dx(n), dy(n);
-  std::vector<std::vector<double>> blocks(columns, std::vector<double>(n));
+  std::vector blocks(columns, std::vector<double>(n));
   const auto block_ptrs =
       blocks | std::views::transform([](auto &c) { return c.data(); }) |
       ddx::impl::to<std::vector>();
@@ -425,8 +425,8 @@ TEST(RtEquation, BatchTakesAnyContiguousRange) {
 
   const std::vector<const double *> as_vector{cx.data(), cy.data()};
   const double *const as_array[]{cx.data(), cy.data()};
-  std::vector<double *> outputs{f.data()};
-  std::vector<double *> partials{dx.data(), dy.data()};
+  std::vector outputs{f.data()};
+  std::vector partials{dx.data(), dy.data()};
 
   *eq.jacobian(as_vector, outputs, partials, n);
   EXPECT_DOUBLE_EQ(f[0], 6.0);
@@ -450,15 +450,15 @@ TEST(RtEquation, AMismatchedColumnCountIsRejected) {
 
   std::vector<double> cx(2, 1.0), cy(2, 1.0), f(2), dx(2), dy(2);
   const std::vector<const double *> xs{cx.data(), cy.data()};
-  std::vector<double *> values{f.data()};
-  std::vector<double *> partials{dx.data(), dy.data()};
+  std::vector values{f.data()};
+  std::vector partials{dx.data(), dy.data()};
   EXPECT_TRUE(eq.jacobian(xs, values, partials, 2).has_value());
 
-  const std::vector<double *> one_partial{dx.data()};
+  const std::vector one_partial{dx.data()};
   EXPECT_EQ(eq.jacobian(xs, values, one_partial, 2).error().code,
             ddx::errc::wrong_column_count);
 
-  const std::vector<double *> two_values{f.data(), dy.data()};
+  const std::vector two_values{f.data(), dy.data()};
   EXPECT_EQ(eq.jacobian(xs, two_values, partials, 2).error().code,
             ddx::errc::wrong_column_count);
 
@@ -728,7 +728,7 @@ TEST(RtEquation, ScalarAccessorsAgreeWithTheArenaWalkToTheBit) {
   const auto hess = ddx::rt::detail::derive_hessian(b, root);
   const auto eq = ddx::rt::equation(expr);
 
-  const std::vector<double> at{0.7, 1.3, 2.1};
+  const std::vector at{0.7, 1.3, 2.1};
   const auto values = ddx::rt::detail::evaluate_all(b, at);
   const std::size_t n = at.size();
 
@@ -951,7 +951,7 @@ TEST(RtEquation, TheColumnCountsCompileNothing) {
   constexpr std::size_t n = 2;
   const std::size_t hc = *eq.hessian_columns();
   std::vector<double> cx(n, 0.6), cy(n, 0.9), f(n), dx(n), dy(n);
-  std::vector<std::vector<double>> hb(hc, std::vector<double>(n));
+  std::vector hb(hc, std::vector<double>(n));
   const auto hp = hb | std::views::transform([](auto &c) { return c.data(); }) |
                   ddx::impl::to<std::vector>();
   const double *const columns[]{cx.data(), cy.data()};
@@ -1140,7 +1140,7 @@ TEST(RtEquation, ConcurrentConstCallsAgreeWithOneThread) {
   const std::size_t hcols = *eq.hessian_columns();
   const auto once = [&] {
     std::vector<double> f(n), dx(n), dy(n);
-    std::vector<std::vector<double>> hs(hcols, std::vector<double>(n));
+    std::vector hs(hcols, std::vector<double>(n));
     const auto hp = hs |
                     std::views::transform([](auto &c) { return c.data(); }) |
                     ddx::impl::to<std::vector>();
@@ -1222,7 +1222,7 @@ TEST(RtEquation, EvaluatingABatchComputesNoPartials) {
     EXPECT_NEAR(f[i], cx[i] * std::log(cx[i]) + cy[i] * cy[i], 1e-12)
         << "value at " << i;
     // Bit-exact against the scalar accessor, which uses the same graph.
-    const std::vector<double> at{cx[i], cy[i]};
+    const std::vector at{cx[i], cy[i]};
     EXPECT_EQ(f[i], *eq.evaluate(at));
   }
 }
@@ -1235,7 +1235,7 @@ TEST(RtEquation, EvaluatingUsesAValuesOnlyGraph) {
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x * log(x), y * y + x, exp(x * y));
 
-  const std::vector<double> at{0.6, 1.4};
+  const std::vector at{0.6, 1.4};
   const auto v = *eq.evaluate(at);
   ASSERT_EQ(v.size(), 3u);
 
@@ -1309,7 +1309,7 @@ TEST(RtEquation, ScalarAndBatchAgreeAtTheSamePoint) {
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x * log(x) * y + y * y * y);
 
-  const std::vector<double> at{0.6, 1.4};
+  const std::vector at{0.6, 1.4};
   // Scalar first, so the scalar accessor freezes the lane, not a batch call.
   const auto dense = *eq.hessian(at);
   ASSERT_EQ(dense.size(), 4u);
@@ -1338,7 +1338,7 @@ TEST(RtEquation, EvaluatingUnderInterpretCompilesNothing) {
   auto eq = ddx::rt::equation(x * log(x) + y * y);
   eq.options({.backend = ddx::rt::Backend::Interpret});
 
-  const std::vector<double> at{0.6, 1.4};
+  const std::vector at{0.6, 1.4};
   EXPECT_NEAR(*eq.evaluate(at), 0.6 * std::log(0.6) + 1.4 * 1.4, 1e-12);
   EXPECT_FALSE(eq.uses_kernel());
   EXPECT_FALSE(eq.uses_kernel());
@@ -1445,7 +1445,7 @@ TEST(RtEquation, CensusCountsTheFrozenScheduleWithoutSweeping) {
 // A tensor step counts its whole shape, so an n x n matrix is n^2 values.
 TEST(RtEquation, CensusChargesATensorStepItsShape) {
   constexpr std::size_t n = 6;
-  const std::vector<double> b(n * n, 0.25);
+  const std::vector b(n * n, 0.25);
   const auto eq = ddx::rt::equation([&] {
     const auto x = ddx::rt::vec("x", n);
     const auto t = ddx::rt::var("T");

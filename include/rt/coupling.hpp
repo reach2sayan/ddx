@@ -260,7 +260,7 @@ template <impl::Numeric T>
 
   // One support set per reachable node, indexed by rank. Operands precede
   // their users, so they are always ranked first.
-  std::vector<NodeId> rank(b.size(), no_node);
+  std::vector rank(b.size(), no_node);
   std::vector<SymbolSet> support;
   support.reserve(static_cast<std::size_t>(std::ranges::count(live, true)));
   const auto of = [&](NodeId u) -> const SymbolSet & {

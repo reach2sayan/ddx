@@ -49,7 +49,7 @@ void expect_matches_interpreter(auto build, std::size_t nvars,
   ASSERT_EQ(kernel.shape().arity, nvars);
 
   // The sample points stay in a range that every op in the suite accepts.
-  std::vector<std::vector<double>> columns(nvars, std::vector<double>(n));
+  std::vector columns(nvars, std::vector<double>(n));
   for (const auto [j, i] : std::views::cartesian_product(
            std::views::iota(0uz, nvars), std::views::iota(0uz, n))) {
     columns[j][i] = 0.15 + 0.6 * static_cast<double>((i + 3 * j) % 11) / 11.0;
@@ -58,7 +58,7 @@ void expect_matches_interpreter(auto build, std::size_t nvars,
       columns | std::views::transform([](const auto &c) { return c.data(); }) |
       ddx::impl::to<std::vector>();
 
-  std::vector<double> got(n, std::numeric_limits<double>::quiet_NaN());
+  std::vector got(n, std::numeric_limits<double>::quiet_NaN());
   double *const value_columns[]{got.data()};
   kernel(xs, value_columns, {}, {}, n);
 
@@ -282,7 +282,7 @@ TEST(JitValue, EveryLaneWidthAgreesToTheBit) {
     const auto kernel = must_compile(graph, o);
     std::vector<double> value(n), dx(n), dy(n);
     double *const values[]{value.data()};
-    const std::array<double *, 2> partials{dx.data(), dy.data()};
+    const std::array partials{dx.data(), dy.data()};
     kernel(xs, values, partials, {}, n);
     return std::tuple{value, dx, dy};
   };
@@ -338,7 +338,7 @@ TEST(JitValue, AFloatGraphAgreesAcrossWidthsAndWithTheSweep) {
     const auto kernel = must_compile(graph, o);
     std::vector<float> value(n), dx(n), dy(n);
     float *const values[]{value.data()};
-    const std::array<float *, 2> partials{dx.data(), dy.data()};
+    const std::array partials{dx.data(), dy.data()};
     kernel(xs, values, partials, {}, n);
     return std::array{value, dx, dy};
   };
@@ -405,7 +405,7 @@ TEST(JitValue, EveryCodegenLevelAgreesToTheBit) {
     const auto kernel = must_compile(graph, o);
     std::vector<double> value(cx.size()), dx(cx.size()), dy(cx.size());
     double *const values[]{value.data()};
-    const std::array<double *, 2> partials{dx.data(), dy.data()};
+    const std::array partials{dx.data(), dy.data()};
     kernel(xs, values, partials, {}, cx.size());
     return std::tuple{value, dx, dy};
   };
@@ -451,7 +451,7 @@ TEST(JitValue, TheVectorisersDoNotMoveABit) {
     const auto kernel = must_compile(graph, o);
     std::vector<double> value(n), dx(n), dy(n);
     double *const values[]{value.data()};
-    const std::array<double *, 2> partials{dx.data(), dy.data()};
+    const std::array partials{dx.data(), dy.data()};
     kernel(xs, values, partials, {}, n);
     return std::tuple{value, dx, dy};
   };

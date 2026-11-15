@@ -38,7 +38,7 @@ void expect_jacobian_matches_interpreter(auto build, std::size_t nvars,
       ddx::test::GraphBuilder{b}.value(root).build_jacobian().finish());
   ASSERT_EQ(kernel.shape().outputs(), nvars + 1);
 
-  std::vector<std::vector<double>> columns(nvars, std::vector<double>(n));
+  std::vector columns(nvars, std::vector<double>(n));
   for (const auto [j, i] : std::views::cartesian_product(
            std::views::iota(0uz, nvars), std::views::iota(0uz, n))) {
     columns[j][i] = 0.2 + 0.5 * static_cast<double>((i + 2 * j) % 7) / 7.0;
@@ -48,7 +48,7 @@ void expect_jacobian_matches_interpreter(auto build, std::size_t nvars,
       ddx::impl::to<std::vector>();
 
   std::vector<double> value(n);
-  std::vector<std::vector<double>> grad(nvars, std::vector<double>(n));
+  std::vector grad(nvars, std::vector<double>(n));
   const auto gp = grad |
                   std::views::transform([](auto &c) { return c.data(); }) |
                   ddx::impl::to<std::vector>();
@@ -108,7 +108,7 @@ TEST(JitJacobian, MatchesDdxThroughTheBridge) {
   std::array<double, 3> value{};
   std::array<double, 3> dx{};
   std::array<double, 3> dy{};
-  std::array<double *, 2> gp{dx.data(), dy.data()};
+  std::array gp{dx.data(), dy.data()};
   double *const value_columns[]{value.data()};
   kernel(xs, value_columns, gp, {}, value.size());
 
@@ -145,13 +145,13 @@ TEST(JitHessian, ThirdBlockCarriesTheColouredHessian) {
   ASSERT_GT(kernel.shape().hessian, 0u);
 
   constexpr std::size_t n = 4;
-  std::array<double, n> cx{0.7, 0.8, 0.9, 1.0};
-  std::array<double, n> cy{1.1, 1.2, 1.3, 1.4};
+  std::array cx{0.7, 0.8, 0.9, 1.0};
+  std::array cy{1.1, 1.2, 1.3, 1.4};
   const std::array<const double *, 2> xs{cx.data(), cy.data()};
 
   std::array<double, n> value{};
-  std::vector<std::vector<double>> jac(2, std::vector<double>(n));
-  std::vector<std::vector<double>> hess(kernel.shape().hessian,
+  std::vector jac(2, std::vector<double>(n));
+  std::vector hess(kernel.shape().hessian,
                                         std::vector<double>(n));
   double *const values[]{value.data()};
   const auto columns_of = [](auto &blocks) {
@@ -166,7 +166,7 @@ TEST(JitHessian, ThirdBlockCarriesTheColouredHessian) {
   // Compare against the interpreter on the same graph, scattered the same way.
   const auto &colouring = graph.colouring();
   for (const std::size_t point : std::views::iota(0uz, n)) {
-    const std::array<double, 2> at{cx[point], cy[point]};
+    const std::array at{cx[point], cy[point]};
     const auto reference = ddx::rt::detail::evaluate_all(b, at);
     const auto outputs = graph.outputs();
 
