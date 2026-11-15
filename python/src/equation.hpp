@@ -182,12 +182,22 @@ private:
                      : std::span<double *const>{};
     }
   };
+  // A Jacobian pattern holding every cell is already the dense layout, so the
+  // sweep writes the array itself.
   [[nodiscard]] Out out_for(rt::detail::BlockShape shape, std::size_t columns,
-                            const Point &at) const {
+                            const Point &at,
+                            const rt::Sparsity *pattern = nullptr) const {
     switch (shape) {
     case rt::detail::BlockShape::None:
       return {};
     case rt::detail::BlockShape::Cells:
+      if (pattern != nullptr &&
+          pattern->nonzeros() == pattern->size() * pattern->columns) {
+        return {.block = Block{
+                    shape_of({ssize(height()), ssize(pattern->columns)}, at),
+                    columns, at.size()}};
+      }
+      return {.cells = Scratch{columns, at.size()}};
     case rt::detail::BlockShape::Colours:
       return {.cells = Scratch{columns, at.size()}};
     case rt::detail::BlockShape::Dense:
@@ -218,6 +228,9 @@ private:
     case rt::detail::BlockShape::Dense:
       return std::move(*o.block).array();
     case rt::detail::BlockShape::Cells: {
+      if (o.block) {
+        return std::move(*o.block).array();
+      }
       Dense g{shape_of({ssize(m), ssize(pattern.columns)}, at), at.size()};
       py::scatter(pattern, *o.cells, g, pattern.columns, pattern.size(),
                   at.size());
@@ -259,7 +272,7 @@ private:
     if (w.values && (height() != 1 || at.batched())) {
       f.emplace(shape_of({ssize(height())}, at), sizes.values, at.size());
     }
-    Out g = out_for(w.jacobian, sizes.jacobian, at);
+    Out g = out_for(w.jacobian, sizes.jacobian, at, &pattern);
     Out h = out_for(w.hessian, sizes.hessian, at);
     const rt::detail::Columns<double> columns{
         .values = w.values ? (f ? f->rows() : cell.rows())

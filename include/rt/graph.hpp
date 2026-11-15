@@ -197,9 +197,13 @@ public:
     g.inputs_.directions = directions;
     g.externs_.assign(b.externs().begin(), b.externs().end());
     g.lists_.assign(b.lists().begin(), b.lists().end());
-    g.properties_.reserve(b.size());
-    g.operands_.reserve(b.size());
-    for (const Node<T> &n : b.nodes()) {
+    // Ids are topological, so nothing an output reaches lies above the
+    // highest output; nodes later sweeps appended there are not copied.
+    const std::size_t bound =
+        g.outputs_.empty() ? 0 : std::size_t{std::ranges::max(g.outputs_)} + 1;
+    g.properties_.reserve(bound);
+    g.operands_.reserve(bound);
+    for (const Node<T> &n : b.nodes().first(bound)) {
       g.properties_.push_back(
           {.op = n.op, .value = n.value, .payload = n.payload, .list = n.list});
       g.operands_.push_back(n.in);
@@ -227,7 +231,7 @@ public:
     }
     g.tensors_ = detail::tensor_layout(b, g.schedule_, g.outputs_, g.fused_);
     if (g.has_tensors_) {
-      g.shapes_.resize(b.size());
+      g.shapes_.resize(bound);
       for (const Step &step : g.schedule_) {
         const NodeId v = step.node;
         if (b.op_of(v) == OpCode::MatConst) {
@@ -291,7 +295,9 @@ public:
   // The total number of input columns, which can exceed the symbol count.
   [[nodiscard]] std::size_t arity() const { return inputs_.total(); }
 
-  [[nodiscard]] bool live(NodeId v) const { return live_[v]; }
+  [[nodiscard]] bool live(NodeId v) const {
+    return v < live_.size() && live_[v];
+  }
 
   // The steps to compute in topological order, with FMA contraction already
   // decided. Multiplies absorbed into an FMA are omitted.

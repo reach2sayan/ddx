@@ -678,15 +678,14 @@ detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &scratch) {
 }
 
 // Forward mode: dv/ds carried up the roots' cone in one pass, where
-// `tangent[j]` is ds for symbol j.
+// `tangent[j]` is ds for symbol j. `cone` and `moves` depend on the roots
+// alone, so sweeps along several tangents compute them once.
 template <impl::Numeric T>
 [[nodiscard]] constexpr std::vector<NodeId>
 tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
-              std::span<const NodeId> tangent) {
+              std::span<const NodeId> tangent, std::span<const NodeId> cone,
+              const std::vector<bool> &moves) {
   const auto n = static_cast<NodeId>(b.size());
-  std::vector<bool> moves; // cone_of's marks, which come back clear
-  const auto cone = detail::cone_of(b, roots, moves);
-  detail::mark_moving(b, cone, moves);
   b.reserve(n + 2 * cone.size());
   std::vector d(n, no_node);
   // A node that holds still has a zero tangent of its shape, made only when an
@@ -848,6 +847,15 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
   return roots | std::views::transform([&](NodeId r) { return at(r); }) |
          impl::to<std::vector>();
 }
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::vector<NodeId>
+tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
+              std::span<const NodeId> tangent) {
+  std::vector<bool> moves; // cone_of's marks, which come back clear
+  const auto cone = detail::cone_of(b, roots, moves);
+  detail::mark_moving(b, cone, moves);
+  return tangent_sweep(b, roots, tangent, cone, moves);
+}
 
 // One forward sweep per symbol, kept as a check on the reverse Jacobian, which
 // builds fewer nodes everywhere except at a single variable.
@@ -863,9 +871,12 @@ template <impl::Numeric T>
   const NodeId one = b.constant(T{1});
   const NodeId zero = b.constant(T{0});
   std::vector unit(nsym, zero);
+  std::vector<bool> moves;
+  const auto cone = detail::cone_of(b, std::span{roots}, moves);
+  detail::mark_moving(b, cone, moves);
   for (const std::size_t s : std::views::iota(0uz, nsym)) {
     unit[s] = one;
-    g.partial[s] = tangent_sweep(b, roots, unit).front();
+    g.partial[s] = tangent_sweep(b, roots, unit, cone, moves).front();
     unit[s] = zero;
   }
   return g;
@@ -988,9 +999,12 @@ struct Hessian {
   }
 };
 
+// `scratch` is lent to the gradient sweep and every colour's sweep, and may be
+// lent on to the next root's.
 template <impl::Numeric T>
-[[nodiscard]] Hessian derive_hessian(Arena<T> &b, NodeId root) {
-  const auto g = build_reverse_jacobian(b, root);
+[[nodiscard]] Hessian derive_hessian(Arena<T> &b, NodeId root,
+                                     detail::SweepScratch &scratch) {
+  const auto g = build_reverse_jacobian(b, root, scratch);
   const auto rows = coupling_pattern(b, root);
   Hessian h{.value = g.value,
             .partial = g.partial,
@@ -1001,7 +1015,6 @@ template <impl::Numeric T>
   // Only the cells a column owns are kept, since each other cell would cost an
   // output column and a whole cone of nodes.
   h.compressed.assign(h.colouring.width(), h.zero);
-  detail::SweepScratch scratch;
   for (const std::size_t c : h.colouring.colours()) {
     // Summing a colour's partials first lets one sweep do |colour| sweeps'
     // work.
@@ -1018,6 +1031,11 @@ template <impl::Numeric T>
     }
   }
   return h;
+}
+template <impl::Numeric T>
+[[nodiscard]] Hessian derive_hessian(Arena<T> &b, NodeId root) {
+  detail::SweepScratch scratch;
+  return derive_hessian(b, root, scratch);
 }
 
 // Sum_j seed_j * ids[j], the root every seeded product sweeps from. Literal

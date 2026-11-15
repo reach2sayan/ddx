@@ -6,6 +6,7 @@
 #include <boost/container/small_vector.hpp>
 
 #include <llvm/ADT/SmallString.h>
+#include <llvm/ADT/StringMap.h>
 #include <llvm/ADT/Twine.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
@@ -35,22 +36,22 @@ namespace {
 // Cached in a table because lookupIntrinsicID is too slow to call per node.
 llvm::Intrinsic::ID intrinsic_for(rt::OpCode op) {
   static const std::array table = [] {
-        std::array<llvm::Intrinsic::ID, rt::detail::op_count> t{};
-        for (const auto i : std::views::iota(0uz, rt::detail::op_count)) {
-          const auto &[form, name] =
-              rt::detail::spelling_of(static_cast<rt::OpCode>(i));
-          llvm::SmallString<32> spelled{"llvm."};
-          spelled += name;
-          // Pow stays a libm call: the simplifier rewrites llvm.pow with
-          // constant exponents into sqrt or 1/x, which differ from libm's pow
-          // by an ulp.
-          t[i] = form == rt::detail::Form::Call &&
-                         i != std::to_underlying(rt::OpCode::Pow)
-                     ? llvm::Intrinsic::lookupIntrinsicID(spelled)
-                     : llvm::Intrinsic::not_intrinsic;
-        }
-        return t;
-      }();
+    std::array<llvm::Intrinsic::ID, rt::detail::op_count> t{};
+    for (const auto i : std::views::iota(0uz, rt::detail::op_count)) {
+      const auto &[form, name] =
+          rt::detail::spelling_of(static_cast<rt::OpCode>(i));
+      llvm::SmallString<32> spelled{"llvm."};
+      spelled += name;
+      // Pow stays a libm call: the simplifier rewrites llvm.pow with
+      // constant exponents into sqrt or 1/x, which differ from libm's pow
+      // by an ulp.
+      t[i] = form == rt::detail::Form::Call &&
+                     i != std::to_underlying(rt::OpCode::Pow)
+                 ? llvm::Intrinsic::lookupIntrinsicID(spelled)
+                 : llvm::Intrinsic::not_intrinsic;
+    }
+    return t;
+  }();
   return table[std::to_underlying(op)];
 }
 
@@ -245,14 +246,18 @@ public:
 private:
   // Calls a runtime entry point: the extern trampoline, the tensor step, or
   // the tensor store.
+  // Each is declared on its first call and then reused.
   void runtime_call(std::string_view symbol,
                     llvm::ArrayRef<llvm::Value *> args) const {
-    const auto types = llvm::to_vector(
-        llvm::map_range(args, [](llvm::Value *a) { return a->getType(); }));
-    b_.CreateCall(
-        declare(m_, libm_name<T>(symbol),
-                llvm::FunctionType::get(b_.getVoidTy(), types, false)),
-        args);
+    auto [at, fresh] = runtime_.try_emplace(symbol);
+    if (fresh) {
+      const auto types = llvm::to_vector(
+          llvm::map_range(args, [](llvm::Value *a) { return a->getType(); }));
+      at->second =
+          declare(m_, libm_name<T>(symbol),
+                  llvm::FunctionType::get(b_.getVoidTy(), types, false));
+    }
+    b_.CreateCall(at->second, args);
   }
 
   [[nodiscard]] llvm::Value *lanes_at(std::uint32_t row) const {
@@ -334,6 +339,7 @@ private:
     bool scalarise = false;
   };
   mutable std::array<Callee, rt::detail::op_count> callees_{};
+  mutable llvm::StringMap<llvm::Function *> runtime_;
 };
 
 // Emits tensor nodes as loop nests, columns outer and rows inner. The inner

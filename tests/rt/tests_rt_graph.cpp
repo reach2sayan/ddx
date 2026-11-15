@@ -83,7 +83,8 @@ TEST(RtGraph, EverythingTheOutputsReachIsLive) {
   EXPECT_TRUE(graph.live(x.id(b)));
   EXPECT_TRUE(graph.live(y.id(b)));
   EXPECT_FALSE(graph.live(dead.id(b)));
-  EXPECT_LT(graph_live_count(graph), graph.size());
+  // The dead node, built after the output, is not copied at all.
+  EXPECT_LT(graph.size(), b.size());
 }
 
 TEST(RtGraph, CarriesSymbolsAndOutputs) {

@@ -173,8 +173,12 @@ protected:
   }
 
   // Row-major rows x columns from the pattern's cells, with the zeros put back.
-  [[nodiscard]] static constexpr std::vector<T>
-  dense(const Sparsity &pattern, std::span<const T> cells) {
+  // A pattern holding every cell already has that layout.
+  [[nodiscard]] static constexpr std::vector<T> dense(const Sparsity &pattern,
+                                                      std::vector<T> cells) {
+    if (pattern.nonzeros() == pattern.size() * pattern.columns) {
+      return cells;
+    }
     std::vector out(pattern.size() * pattern.columns, T{0});
     scatter(
         pattern, [&cells](std::size_t k) { return &cells[k]; },
@@ -190,11 +194,9 @@ private:
   template <Want W, auto Block>
   [[nodiscard]] constexpr result<std::vector<T>>
   dense_at(std::span<const T> along, const auto &...args) const {
-    return self()
-        .template at<W>(along, args...)
-        .transform([this](const auto &b) {
-          return dense(self().jacobian_sparsity(), b.*Block);
-        });
+    return self().template at<W>(along, args...).transform([this](auto b) {
+      return dense(self().jacobian_sparsity(), std::move(b.*Block));
+    });
   }
 };
 
@@ -227,9 +229,10 @@ struct Sweeps {
   Lazy<DenseHessian> dense;
   // Indexed by Want: the extra block of Hvp, Vjp, Jvp and JacobianJvp.
   std::array<Lazy<std::vector<NodeId>>, want_count> products;
-  Lazy<ArenaWalk> hessian_walk; // a system's hessian() at a point
-  Lazy<ArenaWalk> taylor_walk;  // root 0's univariate_derivative
-  Lazy<bool> taylor_computes;   // taylor_walk at TaylorDual, any order
+  Lazy<ArenaWalk> hessian_walk;  // a system's hessian() at a point
+  Lazy<ArenaWalk> taylor_walk;   // root 0's univariate_derivative
+  Lazy<ArenaWalk> residual_walk; // every implicit's residual
+  Lazy<bool> taylor_computes;    // taylor_walk at TaylorDual, any order
 #ifdef DDX_HAS_JIT
   Lazy<Rebalanced> rebalanced;
 #endif
@@ -412,10 +415,12 @@ public:
   [[nodiscard]] result<std::vector<T>>
   residual(const rt::detail::CPointArg auto &...args) const {
     return point(args...).transform([this](const auto &at) {
+      const ArenaWalk &walk = point_walk(sweeps_->residual_walk, [this] {
+        return arena_->closures() | impl::to<std::vector>();
+      });
       [[maybe_unused]] const auto held = reading();
       const auto closures = arena_->closures();
-      const auto values = evaluate_reachable(*arena_, closures, at,
-                                             tensor_kernels(), contraction());
+      const auto values = walk(*arena_, at, tensor_kernels());
       return closures |
              std::views::transform([&values](NodeId f) { return values[f]; }) |
              impl::to<std::vector>();
@@ -971,8 +976,9 @@ private:
 
   [[nodiscard]] const std::vector<Hessian> &hessians() const {
     return sweep(sweeps_->hessians, [this] {
-      return roots_ | std::views::transform([this](NodeId r) {
-               return derive_hessian(*arena_, r);
+      detail::SweepScratch scratch;
+      return roots_ | std::views::transform([&](NodeId r) {
+               return derive_hessian(*arena_, r, scratch);
              }) |
              impl::to<std::vector>();
     });

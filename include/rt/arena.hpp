@@ -532,9 +532,14 @@ public:
   }
 
   // Reserves room for `nodes` nodes in total, in the arena and its hash table.
+  // Grows geometrically, so callers reserving a little more each time do not
+  // reallocate each time.
   constexpr void reserve(std::size_t nodes, std::size_t symbols = 0) {
-    model_.nodes.reserve(nodes);
-    shapes_.reserve(nodes);
+    if (nodes > model_.nodes.capacity()) {
+      const std::size_t room = std::max(nodes, 2 * model_.nodes.capacity());
+      model_.nodes.reserve(room);
+      shapes_.reserve(room);
+    }
     reserve_nodes(nodes);
     const auto k = *named_index(OpCode::Var);
     by_name_.reserve(by_name_.size() + symbols -
@@ -545,10 +550,12 @@ public:
 
   // A VecConst for one column of `data`, a MatConst otherwise. Interned by
   // content where T compares, so a matrix given twice is kept once.
-  [[nodiscard]] constexpr NodeId tensor_const(std::uint32_t rows,
-                                              std::uint32_t cols,
-                                              std::span<const T> data) {
-    assert(data.size() == std::size_t{rows} * cols);
+  // `data` is any sized range of T, so a fill is matched before it is built.
+  [[nodiscard]] constexpr NodeId
+  tensor_const(std::uint32_t rows, std::uint32_t cols, const auto &data)
+    requires std::same_as<std::ranges::range_value_t<decltype(data)>, T>
+  {
+    assert(std::ranges::size(data) == std::size_t{rows} * cols);
     auto k = static_cast<std::uint32_t>(model_.tensors.size());
     if constexpr (std::equality_comparable<T>) {
       tensor_table_.reserve(
@@ -581,8 +588,8 @@ public:
   }
   // A row of `shape` holding v everywhere; a matrix is its table's MatRow.
   [[nodiscard]] constexpr NodeId filled(Shape shape, const T &v) {
-    const NodeId t =
-        tensor_const(shape.rows, shape.cols, std::vector(shape.size(), v));
+    const NodeId t = tensor_const(shape.rows, shape.cols,
+                                  std::views::repeat(v, shape.size()));
     return shape.cols == 1
                ? t
                : make(opcode<OpCode::MatRow>, Orientation::plain, t);
@@ -841,7 +848,7 @@ private:
   }
   // The hash of a tensor spelled `data`.
   [[nodiscard]] static constexpr std::size_t
-  tensor_hash(std::uint32_t rows, std::uint32_t cols, std::span<const T> data) {
+  tensor_hash(std::uint32_t rows, std::uint32_t cols, const auto &data) {
     std::uint64_t h = rows;
     mix(h, cols);
     if constexpr (word_sized) {
@@ -854,7 +861,7 @@ private:
   [[nodiscard]] static constexpr bool spells(const TensorConst<T> &t,
                                              std::uint32_t rows,
                                              std::uint32_t cols,
-                                             std::span<const T> data) {
+                                             const auto &data) {
     return t.rows == rows && t.cols == cols &&
            std::ranges::equal(t.data, data, identical);
   }

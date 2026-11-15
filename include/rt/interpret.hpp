@@ -140,7 +140,7 @@ DDX_NOINLINE constexpr void lanes_extern(const Arena<T> &b, NodeId v, U *out,
     const ExternEntry<T> &e = b.externs()[fn];
     const auto args = arguments(b, v);
     boost::container::small_vector<T, 8> in(args.size());
-    boost::container::small_vector<T, 16> answer(e.size());
+    boost::container::small_vector<T, 32> answer(e.size());
     for (std::size_t k = 0; k < W; ++k) {
       for (const auto [j, arg] : args | std::views::enumerate) {
         in[static_cast<std::size_t>(j)] = lane(t.row(arg))[k];
