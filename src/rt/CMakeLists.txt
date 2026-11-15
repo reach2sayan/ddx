@@ -8,7 +8,6 @@ set_target_properties(ddx_rt PROPERTIES
         VERSION ${PROJECT_VERSION}
         SOVERSION ${PROJECT_VERSION_MAJOR})
 
-target_compile_definitions(ddx_rt PRIVATE DDX_BUILDING)
 target_link_libraries(ddx_rt PUBLIC ddx Boost::headers Threads::Threads)
 ddx_target_flags(ddx_rt LIBRARY)
 

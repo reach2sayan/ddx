@@ -21,8 +21,8 @@
 // acc = acc op term builds a chain; both agree to rounding.
 
 namespace {
-using ddx::rt::Arena;
 using ddx::rt::OpCode;
+using ddx::rt::detail::Arena;
 using models::RE;
 
 std::vector<RE> fold_symbols(Arena<> &b, std::size_t n) {
@@ -116,8 +116,9 @@ TEST_P(RtFold, ALoopIsOneNode) {
   const auto root = folded(fold_symbols(fold, 6));
   const auto &node = fold[root.id(fold)];
   EXPECT_EQ(node.op, GetParam().op);
-  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::Count>(node).value, kTerms + 1);
-  EXPECT_EQ(ddx::rt::arguments(fold, root.id(fold)).size(), kTerms + 1);
+  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::detail::Count>(node).value,
+            kTerms + 1);
+  EXPECT_EQ(ddx::rt::detail::arguments(fold, root.id(fold)).size(), kTerms + 1);
 
   Arena<> chain;
   (void)chained(fold_symbols(chain, 6)).id(chain);
@@ -169,7 +170,7 @@ TEST_P(RtFold, ACopyOfAnAccumulatorKeepsItsValue) {
   EXPECT_EQ(acc.id(b), grown);
   EXPECT_EQ(b.size(), n);
   const auto p = ramp(3);
-  const auto values = ddx::rt::evaluate_all(b, p);
+  const auto values = ddx::rt::detail::evaluate_all(b, p);
   const auto step = f.step;
   const double three = step(step(p[0], p[1]), p[2]);
   EXPECT_DOUBLE_EQ(values[kept], three);
@@ -181,19 +182,19 @@ TEST_P(RtFold, ValueGradientHvpAndHessianMatchTheChain) {
   Arena<> fold, chain;
   const auto fs = folded(fold_symbols(fold, n)).id(fold);
   const auto fc = chained(fold_symbols(chain, n)).id(chain);
-  const auto gs = ddx::rt::derive_jacobian(fold, fs);
-  const auto gc = ddx::rt::derive_jacobian(chain, fc);
-  const auto hs = ddx::rt::derive_hessian(fold, fs);
-  const auto hc = ddx::rt::derive_hessian(chain, fc);
-  const auto ps = ddx::rt::derive_hvp(fold, fs);
-  const auto pc = ddx::rt::derive_hvp(chain, fc);
+  const auto gs = ddx::rt::detail::derive_jacobian(fold, fs);
+  const auto gc = ddx::rt::detail::derive_jacobian(chain, fc);
+  const auto hs = ddx::rt::detail::derive_hessian(fold, fs);
+  const auto hc = ddx::rt::detail::derive_hessian(chain, fc);
+  const auto ps = ddx::rt::detail::derive_hvp(fold, fs);
+  const auto pc = ddx::rt::detail::derive_hvp(chain, fc);
 
   auto at = ramp(n);
   for (const std::size_t i : std::views::iota(0uz, n)) {
     at.push_back(1.0 - 0.1 * static_cast<double>(i)); // the direction
   }
-  const auto vs = ddx::rt::evaluate_all(fold, at);
-  const auto vc = ddx::rt::evaluate_all(chain, at);
+  const auto vs = ddx::rt::detail::evaluate_all(fold, at);
+  const auto vc = ddx::rt::detail::evaluate_all(chain, at);
   expect_close(vs[fs], vc[fc], 1e-14);
   for (const std::size_t i : std::views::iota(0uz, n)) {
     expect_close(vs[gs.partial[i]], vc[gc.partial[i]], 1e-13);
@@ -223,13 +224,13 @@ TEST_P(RtFold, ReadingEveryStepListsEachTermOnce) {
   EXPECT_LE(read.size(), once.size() + 2 * k);
 
   const auto at = ramp(n);
-  const auto vr = ddx::rt::evaluate_all(read, at);
-  const auto vo = ddx::rt::evaluate_all(once, at);
+  const auto vr = ddx::rt::detail::evaluate_all(read, at);
+  const auto vo = ddx::rt::detail::evaluate_all(once, at);
   EXPECT_EQ(vr[fr], vo[fo]);
-  const auto gr = ddx::rt::derive_jacobian(read, fr);
-  const auto go = ddx::rt::derive_jacobian(once, fo);
-  const auto wr = ddx::rt::evaluate_all(read, at);
-  const auto wo = ddx::rt::evaluate_all(once, at);
+  const auto gr = ddx::rt::detail::derive_jacobian(read, fr);
+  const auto go = ddx::rt::detail::derive_jacobian(once, fo);
+  const auto wr = ddx::rt::detail::evaluate_all(read, at);
+  const auto wo = ddx::rt::detail::evaluate_all(once, at);
   for (const std::size_t i : std::views::iota(0uz, n)) {
     expect_close(wr[gr.partial[i]], wo[go.partial[i]], 1e-12);
   }
@@ -255,8 +256,8 @@ TEST_P(RtFold, CouplingPatternIsTheChains) {
                     a = GetParam().chain(a, t);
                   }).id(chain);
   ASSERT_EQ(fold[fs].op, GetParam().op);
-  EXPECT_EQ(ddx::rt::coupling_pattern(fold, fs),
-            ddx::rt::coupling_pattern(chain, fc));
+  EXPECT_EQ(ddx::rt::detail::coupling_pattern(fold, fs),
+            ddx::rt::detail::coupling_pattern(chain, fc));
 }
 
 TEST_P(RtFold, SweepsAtADualScalar) {
@@ -264,9 +265,9 @@ TEST_P(RtFold, SweepsAtADualScalar) {
   Arena<> fold, chain;
   const auto fs = folded(fold_symbols(fold, 2), 20).id(fold);
   const auto fc = chained(fold_symbols(chain, 2), 20).id(chain);
-  const std::vector<D> p{D{0.7, 1.0}, D{1.3, 0.0}}; // d/dx0
-  const auto vs = ddx::rt::evaluate_all(fold, p);
-  const auto vc = ddx::rt::evaluate_all(chain, p);
+  const std::vector p{D{0.7, 1.0}, D{1.3, 0.0}}; // d/dx0
+  const auto vs = ddx::rt::detail::evaluate_all(fold, p);
+  const auto vc = ddx::rt::detail::evaluate_all(chain, p);
   expect_close(vs[fs].get<0>(), vc[fc].get<0>(), 1e-14);
   expect_close(vs[fs].get<1>(), vc[fc].get<1>(), 1e-13);
 }
@@ -317,9 +318,9 @@ TEST(RtFoldProd, AZeroTermHasAFiniteGradient) {
   acc *= x[0] + x[1];
   const auto f = acc.id(b);
   ASSERT_EQ(b[f].op, OpCode::ProdN);
-  const auto g = ddx::rt::derive_jacobian(b, f);
-  const std::vector<double> p{2.0, 0.0, 3.0}; // x1 = 0
-  const auto v = ddx::rt::evaluate_all(b, p);
+  const auto g = ddx::rt::detail::derive_jacobian(b, f);
+  const std::vector p{2.0, 0.0, 3.0}; // x1 = 0
+  const auto v = ddx::rt::detail::evaluate_all(b, p);
   // d/dx1 of x0 x1 x2 (x0 + x1) at x1 = 0 is x0 x2 (x0 + x1) = 12.
   EXPECT_DOUBLE_EQ(v[g.partial[0]], 0.0);
   EXPECT_DOUBLE_EQ(v[g.partial[1]], 12.0);
@@ -342,7 +343,7 @@ TEST(RtFoldMixed, AnotherOpStartsANewFold) {
   const auto f = acc.id(b);
   EXPECT_EQ(b[f].op, OpCode::SumN);
   const auto p = ramp(3);
-  const auto v = ddx::rt::evaluate_all(b, p);
+  const auto v = ddx::rt::detail::evaluate_all(b, p);
   const double sum = p[0] + p[1] + p[2];
   const double prod = sum * p[0] * p[1] * p[2];
   EXPECT_DOUBLE_EQ(v[f], prod / (p[1] + 1.0) - p[0] - p[2]);
@@ -380,8 +381,8 @@ TEST(RtSumN, ListsInternByContent) {
   EXPECT_EQ(b.lists().size(), pool);
   const auto three = sum(3);
   EXPECT_NE(three, four);
-  EXPECT_EQ(ddx::rt::arguments(b, three).size(), 3u);
-  EXPECT_EQ(ddx::rt::arguments(b, four).size(), 4u);
+  EXPECT_EQ(ddx::rt::detail::arguments(b, three).size(), 3u);
+  EXPECT_EQ(ddx::rt::detail::arguments(b, four).size(), 4u);
 }
 
 TEST(RtSumN, ZeroTermsAreDroppedAndMinusNegates) {
@@ -395,7 +396,7 @@ TEST(RtSumN, ZeroTermsAreDroppedAndMinusNegates) {
   acc -= x[0] * x[1];
   const auto root = acc.id(b); // formed here, so the sweep below has it
   const auto p = ramp(2);
-  const auto values = ddx::rt::evaluate_all(b, p);
+  const auto values = ddx::rt::detail::evaluate_all(b, p);
   EXPECT_DOUBLE_EQ(values[root], p[0] - p[1] - p[0] * p[1]);
 }
 
@@ -412,14 +413,14 @@ TEST(RtSumN, FusedAndUnfusedSchedulesAgree) {
 
   const auto p = ramp(6);
   std::vector<double> tf(fused.tape_rows()), tp(plain.tape_rows());
-  ddx::rt::evaluate_into(
-      b, p, fused.schedule(), std::span<double>{tf},
+  ddx::rt::detail::evaluate_into(
+      b, p, fused.schedule(), std::span{tf},
       ddx::rt::detail::TapeView<double>{.scalar_rows = fused.rows()});
-  ddx::rt::evaluate_into(
-      b, p, plain.schedule(), std::span<double>{tp},
+  ddx::rt::detail::evaluate_into(
+      b, p, plain.schedule(), std::span{tp},
       ddx::rt::detail::TapeView<double>{.scalar_rows = plain.rows()});
   expect_close(tf[fused.rows()[f]], tp[plain.rows()[f]], 1e-14);
-  expect_close(tf[fused.rows()[f]], ddx::rt::evaluate(b, f, p), 1e-14);
+  expect_close(tf[fused.rows()[f]], ddx::rt::detail::evaluate(b, f, p), 1e-14);
 }
 
 // The kernel's blocked summation treats a SumN as the spine it already is.
@@ -432,7 +433,7 @@ TEST(RtSumN, RebalanceBlocksTheSum) {
   EXPECT_NE(moved[0], f);
   EXPECT_NE(b[moved[0]].op, OpCode::SumN);
   const auto p = ramp(6);
-  const auto values = ddx::rt::evaluate_all(b, p);
+  const auto values = ddx::rt::detail::evaluate_all(b, p);
   expect_close(values[moved[0]], values[f], 1e-13);
 }
 
@@ -442,7 +443,7 @@ TEST(RtSumN, MseSumsItsPairTermsInOneNode) {
   constexpr std::size_t n = 64;
   Arena<> b;
   const auto f = models::mse(fold_symbols(b, n)).id(b);
-  const auto g = ddx::rt::derive_jacobian(b, f);
+  const auto g = ddx::rt::detail::derive_jacobian(b, f);
   std::printf("[ ARENA    ] mse n=%zu: %zu nodes with the gradient\n", n,
               b.size());
   EXPECT_EQ(g.partial.size(), n);
@@ -453,7 +454,7 @@ TEST(RtSumN, MseSumsItsPairTermsInOneNode) {
         return node.op == OpCode::SumN;
       }) |
       std::views::transform([](const auto &node) {
-        return ddx::rt::detail::get<ddx::rt::Count>(node).value;
+        return ddx::rt::detail::get<ddx::rt::detail::Count>(node).value;
       }));
   std::printf("[ ARENA    ] widest sum: %u terms\n", widest);
   EXPECT_GT(widest, n * n * 9 / 10);

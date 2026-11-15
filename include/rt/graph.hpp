@@ -39,6 +39,9 @@ enum class Want : std::uint8_t {
   DDX_RT_WANT_TABLE(DDX_RT_WANT)
 #undef DDX_RT_WANT
 };
+} // namespace ddx::rt
+
+namespace ddx::rt::detail {
 enum class Direction : std::uint8_t { None, Symbols, Functions };
 enum class BlockShape : std::uint8_t {
   None,
@@ -92,7 +95,8 @@ inline constexpr std::array want_values{
 }
 
 // One Per for each output block, in the order the kernel writes them.
-// jit::KernelShape cannot reuse it because the JIT core may not include rt/.
+// jit::detail::KernelShape cannot reuse it because the JIT core may not include
+// rt/.
 template <std::semiregular Per> struct PerBlock {
   Per values{};
   Per jacobian{};
@@ -193,10 +197,13 @@ public:
     g.inputs_.directions = directions;
     g.externs_.assign(b.externs().begin(), b.externs().end());
     g.lists_.assign(b.lists().begin(), b.lists().end());
-    g.names_ = b.names();
-    g.properties_.reserve(b.size());
-    g.operands_.reserve(b.size());
-    for (const Node<T> &n : b.nodes()) {
+    // Ids are topological, so nothing an output reaches lies above the
+    // highest output; nodes later sweeps appended there are not copied.
+    const std::size_t bound =
+        g.outputs_.empty() ? 0 : std::size_t{std::ranges::max(g.outputs_)} + 1;
+    g.properties_.reserve(bound);
+    g.operands_.reserve(bound);
+    for (const Node<T> &n : b.nodes().first(bound)) {
       g.properties_.push_back(
           {.op = n.op, .value = n.value, .payload = n.payload, .list = n.list});
       g.operands_.push_back(n.in);
@@ -215,6 +222,7 @@ public:
     if (g.has_tensors_) {
       g.pair_products();
     }
+    g.ring_externs();
     // Packs the tape rows by liveness, for scalar and tensor rows alike.
     auto packed = detail::pack_rows(b, g.schedule_, g.outputs_);
     g.rows_ = std::move(packed.by_id);
@@ -224,7 +232,7 @@ public:
     }
     g.tensors_ = detail::tensor_layout(b, g.schedule_, g.outputs_, g.fused_);
     if (g.has_tensors_) {
-      g.shapes_.resize(b.size());
+      g.shapes_.resize(bound);
       for (const Step &step : g.schedule_) {
         const NodeId v = step.node;
         if (b.op_of(v) == OpCode::MatConst) {
@@ -258,9 +266,8 @@ public:
   [[nodiscard]] const Sparsity &jacobian_pattern() const {
     return jacobian_pattern_;
   }
-  // The input column count of each kind, and the input names in column order.
+  // The input column count of each kind.
   [[nodiscard]] const Inputs &inputs() const { return inputs_; }
-  [[nodiscard]] const std::vector<std::string> &names() const { return names_; }
 
   // The extern functions, shared with the arena and called by index.
   [[nodiscard]] std::span<const ExternEntry<T>> externs() const {
@@ -289,9 +296,9 @@ public:
   // The total number of input columns, which can exceed the symbol count.
   [[nodiscard]] std::size_t arity() const { return inputs_.total(); }
 
-  [[nodiscard]] bool live(NodeId v) const { return live_[v]; }
-
-  [[nodiscard]] std::size_t live_count() const { return live_order_.size(); }
+  [[nodiscard]] bool live(NodeId v) const {
+    return v < live_.size() && live_[v];
+  }
 
   // The steps to compute in topological order, with FMA contraction already
   // decided. Multiplies absorbed into an FMA are omitted.
@@ -366,6 +373,35 @@ private:
     schedule_ = std::move(out);
   }
 
+  // Rings each extern call's components and schedules the ring right after its
+  // lowest id, which writes every member's row, so packing hands none of those
+  // rows to another node in between.
+  void ring_externs() {
+    if (!detail::ring_externs(*this, schedule_, paired_)) {
+      return;
+    }
+    std::vector<Step> at(properties_.size());
+    for (const Step &step : schedule_) {
+      at[step.node] = step;
+    }
+    std::vector<Step> out;
+    out.reserve(schedule_.size());
+    for (const Step &step : schedule_) {
+      const NodeId v = step.node;
+      const bool extern_call = kind_of(step.op) == Kind::Extern;
+      if (extern_call && paired_[v] != no_node && paired_[v] < v) {
+        continue;
+      }
+      out.push_back(step);
+      if (extern_call && paired_[v] != no_node) {
+        for (NodeId m = paired_[v]; m != v; m = paired_[m]) {
+          out.push_back(at[m]);
+        }
+      }
+    }
+    schedule_ = std::move(out);
+  }
+
   // Marks the nodes reachable from the outputs.
   void mark_live() {
     live_ = detail::reachable(*this, outputs_);
@@ -403,7 +439,6 @@ private:
   Colouring colouring_;
   Sparsity jacobian_pattern_;
   Inputs inputs_;
-  std::vector<std::string> names_;
   std::vector<ExternEntry<T>> externs_;
   std::vector<NodeId> lists_;
   bool has_tensors_ = false;
@@ -418,6 +453,9 @@ private:
   std::vector<Step> schedule_;
 };
 
+} // namespace ddx::rt::detail
+
+namespace ddx::rt {
 // Static counts of the steps a call executes and the values they write,
 // taken from a frozen graph. A call's cost is proportional to values.
 struct Census {
@@ -432,8 +470,10 @@ struct Census {
   // Per-opcode counts, sorted by values written, largest first.
   std::vector<Row> by_op;
 };
+} // namespace ddx::rt
 
-namespace detail {
+namespace ddx::rt::detail {
+
 template <impl::Numeric T> [[nodiscard]] Census census_of(const Graph<T> &g) {
   std::array<Census::Row, op_count> rows{};
   Census out{.steps = g.schedule().size(), .values = 0, .by_op = {}};
@@ -452,9 +492,8 @@ template <impl::Numeric T> [[nodiscard]] Census census_of(const Graph<T> &g) {
                            &Census::Row::values);
   return out;
 }
-} // namespace detail
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail
 
-DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::Graph<double>)
-DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::Graph<float>)
+DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::detail::Graph<double>)
+DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::detail::Graph<float>)

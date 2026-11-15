@@ -208,7 +208,7 @@ Columns<T> batch(const auto &eq, Want want, std::size_t n) {
     }
     std::unreachable();
   }();
-  EXPECT_TRUE(ok.has_value()) << ddx::rt::name_of(want);
+  EXPECT_TRUE(ok.has_value()) << ddx::rt::detail::name_of(want);
   return std::views::join(out) | ddx::impl::to<std::vector>();
 }
 
@@ -236,7 +236,7 @@ std::string spelled(ddx::jit::Lanes lanes) {
   return lanes.stated() ? std::to_string(*lanes.stated()) : "host";
 }
 
-const auto every_want = ddx::rt::want_values;
+const auto every_want = ddx::rt::detail::want_values;
 const std::initializer_list<ddx::jit::Lanes> every_width{
     ddx::jit::Lanes::scalar(), *ddx::jit::Lanes::exactly(2),
     *ddx::jit::Lanes::exactly(4), *ddx::jit::Lanes::exactly(8),
@@ -258,7 +258,7 @@ template <typename T> void expect_kernel_is_the_sweep(auto &&model) {
     eq.options(compiled(lanes));
     for (const Want want : every_want) {
       const std::string what =
-          std::string{ddx::rt::name_of(want)} + ", lanes " + spelled(lanes);
+          std::string{ddx::rt::detail::name_of(want)} + ", lanes " + spelled(lanes);
       ASSERT_TRUE(eq.uses_kernel(want)) << what;
       for (const std::size_t n : {13uz, 1uz}) {
         expect_close(batch<T>(swept, want, n), batch<T>(eq, want, n),
@@ -270,13 +270,13 @@ template <typename T> void expect_kernel_is_the_sweep(auto &&model) {
 
 // Collects the ops that a model's dense block reads.
 std::set<OpCode> dense_ops(auto &&expression) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto arena = ddx::rt::detail::scoped_arena(b);
   const auto f = expression();
-  const auto h = ddx::rt::derive_dense_hessian(b, f.id(b));
+  const auto h = ddx::rt::detail::derive_dense_hessian(b, f.id(b));
   const auto live = ddx::rt::detail::reachable(b, std::span{&h.block, 1});
   return ddx::rt::detail::live_ids(live) |
-         std::views::transform([&b](ddx::rt::NodeId v) { return b.op_of(v); }) |
+         std::views::transform([&b](ddx::rt::detail::NodeId v) { return b.op_of(v); }) |
          ddx::impl::to<std::set>();
 }
 
@@ -290,8 +290,7 @@ TEST(JitTensor, CompilesAndAnswersTheSweep) {
   const auto model = [] {
     return ddx::rt::equation([] {
       const auto x = ddx::rt::vec("x", n);
-      const std::vector<double> m{1.0, 0.5, -0.25, 2.0, 0.0, 1.5,  0.75, -1.0,
-                                  0.3, 0.6, 0.9,   1.2, 2.1, -0.4, 0.8,  0.1};
+      const std::vector m{1.0, 0.5, -0.25, 2.0, 0.0, 1.5, 0.75, -1.0, 0.3, 0.6, 0.9, 1.2, 2.1, -0.4, 0.8, 0.1};
       return dot(x, gemv(ddx::rt::mat_constant(n, n, m), x)) + sum(log(x));
     });
   };
@@ -357,7 +356,7 @@ TEST(JitTensor, BatchesAndThreadsAreBitIdentical) {
   const auto want = call();
   constexpr std::size_t threads = 8;
   std::latch start{threads};
-  std::vector<char> ok(threads, 0);
+  std::vector ok(threads, '\0');
   {
     std::vector<std::jthread> pool;
     for (const std::size_t t : std::views::iota(0uz, threads)) {
@@ -379,7 +378,7 @@ TEST(JitTensor, AGatherFromAFusedMatrixReadsItsRowAndColumn) {
     auto compiled = ddx::rt::equation(element);
     compiled.options({.backend = ddx::jit::Backend::Compile, .points = 1});
     ASSERT_TRUE(compiled.uses_kernel());
-    const std::array<double, 5> at{2.0, 3.0, 5.0, 7.0, 11.0};
+    const std::array at{2.0, 3.0, 5.0, 7.0, 11.0};
     const std::span<const double> point{at};
     EXPECT_DOUBLE_EQ(*swept.evaluate(point), want);
     EXPECT_DOUBLE_EQ(*compiled.evaluate(point), want);

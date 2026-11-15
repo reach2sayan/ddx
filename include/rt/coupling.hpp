@@ -22,7 +22,7 @@
 #include <utility>
 #include <vector>
 
-namespace ddx::rt {
+namespace ddx::rt::detail {
 
 inline constexpr std::size_t no_column = static_cast<std::size_t>(-1);
 
@@ -71,6 +71,9 @@ static_assert(std::forward_iterator<SetBits>);
                           impl::md::dextents<std::size_t, 2>{colours, n}};
 }
 
+} // namespace ddx::rt::detail
+
+namespace ddx::rt {
 // A stored cell of a derivative block: its dense (row, column) position and
 // the slot where its value is kept in the compressed block.
 struct Cell {
@@ -165,7 +168,7 @@ struct Colouring {
   // The compressed block's width, which is the number of owned cells.
   [[nodiscard]] constexpr std::size_t width() const noexcept {
     return static_cast<std::size_t>(std::ranges::count_if(
-        cell, [](std::size_t k) { return k != no_column; }));
+        cell, [](std::size_t k) { return k != detail::no_column; }));
   }
   [[nodiscard]] constexpr auto colours() const noexcept {
     return std::views::iota(0uz, count());
@@ -179,14 +182,15 @@ struct Colouring {
   // skipped.
   [[nodiscard]] constexpr auto owned_cells(std::size_t c) const {
     const auto n = colour.size();
-    const auto owner = by_colour(scatter, count(), n);
-    const auto slot = by_colour(cell, count(), n);
+    const auto owner = detail::by_colour(scatter, count(), n);
+    const auto slot = detail::by_colour(cell, count(), n);
     return std::views::iota(0uz, n) |
            std::views::transform([c, owner, slot](std::size_t i) {
              return Cell{.row = i, .column = owner[c, i], .slot = slot[c, i]};
            }) |
-           std::views::filter(
-               [](const Cell &owned) { return owned.column != no_column; });
+           std::views::filter([](const Cell &owned) {
+             return owned.column != detail::no_column;
+           });
   }
   // Every stored cell, in colour-major order.
   [[nodiscard]] constexpr auto entries() const {
@@ -201,13 +205,14 @@ struct Colouring {
     const auto n = colour.size();
     const auto colours = count();
     const std::size_t c = colour[j];
-    return by_colour(scatter, colours, n)[c, i] == j
-               ? std::optional{by_colour(cell, colours, n)[c, i]}
+    return detail::by_colour(scatter, colours, n)[c, i] == j
+               ? std::optional{detail::by_colour(cell, colours, n)[c, i]}
                : std::nullopt;
   }
 };
+} // namespace ddx::rt
 
-namespace detail {
+namespace ddx::rt::detail {
 
 // Nested loops, as views::cartesian_product measured 7-21% slower here. The
 // size_t constraint keeps a dynamic_bitset, a range of bools, out of this one.
@@ -242,8 +247,6 @@ using Indices = boost::container::small_vector<std::size_t, 2>;
   return out;
 }
 
-} // namespace detail
-
 // rows[i][j] is true when d2f/dxi dxj may be nonzero. The pattern is
 // symmetric and conservative: a superset costs sweeps, never correctness.
 template <impl::Numeric T>
@@ -257,7 +260,7 @@ template <impl::Numeric T>
 
   // One support set per reachable node, indexed by rank. Operands precede
   // their users, so they are always ranked first.
-  std::vector<NodeId> rank(b.size(), no_node);
+  std::vector rank(b.size(), no_node);
   std::vector<SymbolSet> support;
   support.reserve(static_cast<std::size_t>(std::ranges::count(live, true)));
   const auto of = [&](NodeId u) -> const SymbolSet & {
@@ -274,13 +277,19 @@ template <impl::Numeric T>
   // Couples the operands of a field op and returns true. Returns false for any
   // other op, whose caller then couples the union with itself.
   const auto step = [&rows](OpCode op, const auto &l, const auto &r) {
-    if (op == OpCode::Mul) {
+    switch (coupling_of(op)) {
+    case Coupling::product:
       detail::couple(rows, l, r);
-    } else if (op == OpCode::Div) {
+      return true;
+    case Coupling::quotient:
       detail::couple(rows, l, r);
       detail::couple(rows, r, r);
+      return true;
+    case Coupling::linear:
+      return true;
+    default:
+      return false;
     }
-    return op == OpCode::Add || op == OpCode::Mul || op == OpCode::Div;
   };
   // Applies a binary op element by element, coupling like the Binary arm.
   const auto zipped = [&](OpCode op, const Elements &l,
@@ -288,7 +297,7 @@ template <impl::Numeric T>
     if (l.empty() || r.size() != l.size()) {
       return std::nullopt;
     }
-    if (op == OpCode::Lt || op == OpCode::Le) {
+    if (coupling_of(op) == Coupling::none) {
       return Elements(l.size());
     }
     Elements out(l.size());
@@ -312,7 +321,7 @@ template <impl::Numeric T>
     case OpCode::VecConst:
       return Elements(shape_of(b, v).rows);
     case OpCode::Map:
-      if (op != OpCode::Neg) {
+      if (coupling_of(op) != Coupling::linear) {
         for (const auto &e : each(node.in[0])) {
           detail::couple(rows, e, e);
         }
@@ -401,7 +410,7 @@ template <impl::Numeric T>
       break;
     case Kind::Unary:
       here = of(node.in[0]);
-      if (op != OpCode::Neg) {
+      if (coupling_of(op) != Coupling::linear) {
         detail::couple(rows, here, here);
       }
       break;
@@ -424,7 +433,7 @@ template <impl::Numeric T>
       break;
     case Kind::Binary:
       // Comparisons have zero derivative, so they get no support or coupling.
-      if (op == OpCode::Lt || op == OpCode::Le) {
+      if (coupling_of(op) == Coupling::none) {
         break;
       }
       here = of(node.in[0]);
@@ -437,8 +446,7 @@ template <impl::Numeric T>
       // Conservatively the union of the operands' supports. Products couple
       // their two operands; the remaining tensor ops are linear.
       detail::for_each_operand(b, v, [&](NodeId u) { here |= of(u); });
-      if (op == OpCode::Scale || op == OpCode::Dot || op == OpCode::MatVec ||
-          op == OpCode::Outer) {
+      if (coupling_of(op) == Coupling::product) {
         detail::couple(rows, of(node.in[0]), of(node.in[1]));
       }
       break;
@@ -463,4 +471,4 @@ constexpr void scatter(const auto &layout, auto &&cell, auto &&dense,
 // Ref: Coleman & Moré, SIAM J. Numer. Anal. 20(1) (1983) 187.
 [[nodiscard]] DDX_API Colouring colour_columns(const CouplingRows &rows);
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail

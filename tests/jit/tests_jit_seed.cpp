@@ -14,8 +14,8 @@
 // because a mix-up gives silently wrong arithmetic rather than a crash.
 
 namespace {
-using ddx::rt::Arena;
-using ddx::rt::Graph;
+using ddx::rt::detail::Arena;
+using ddx::rt::detail::Graph;
 
 
 // The inputs are x, y, then v0, v1, the order input_column() states.
@@ -41,7 +41,7 @@ TEST(JitSeed, MatchesTheInterpreterToTheBit) {
   // Enough points to cross the lane width with a ragged tail, since the masked
   // loads on the direction columns are their own code path.
   static constexpr std::size_t n = 37;
-  std::vector<std::vector<double>> columns(4, std::vector<double>(n));
+  std::vector columns(4, std::vector<double>(n));
   for (const auto [j, column] : columns | std::views::enumerate) {
     for (const auto [i, cell] : column | std::views::enumerate) {
       cell = 0.3 + 0.4 * static_cast<double>((i + 3 * j) % 5) / 5.0;
@@ -59,7 +59,7 @@ TEST(JitSeed, MatchesTheInterpreterToTheBit) {
     const auto point =
         columns | std::views::transform([i](const auto &c) { return c[i]; }) |
         ddx::impl::to<std::vector>();
-    const auto want = ddx::rt::evaluate_all(b, point);
+    const auto want = ddx::rt::detail::evaluate_all(b, point);
     EXPECT_EQ(got[i], want[graph.outputs()[0]]) << "at point " << i;
   }
 }
@@ -72,10 +72,10 @@ TEST(JitSeed, DirectionIsNotReadAsASymbol) {
   const auto kernel = must_compile(graph);
 
   // v0 = 1, v1 = 0 selects only the x*x term and nothing of exp(y).
-  const std::array<double, 1> x{3.0};
-  const std::array<double, 1> y{2.0};
-  const std::array<double, 1> v0{1.0};
-  const std::array<double, 1> v1{0.0};
+  const std::array x{3.0};
+  const std::array y{2.0};
+  const std::array v0{1.0};
+  const std::array v1{0.0};
   const double *const xs[]{x.data(), y.data(), v0.data(), v1.data()};
 
   double out = 0.0;

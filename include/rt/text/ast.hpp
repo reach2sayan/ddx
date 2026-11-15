@@ -11,7 +11,7 @@
 #include <variant>
 #include <vector>
 
-namespace ddx::rt::text {
+namespace ddx::rt::detail::text {
 
 inline constexpr std::uint32_t no_term = ~std::uint32_t{0};
 
@@ -43,4 +43,4 @@ struct Ast {
 
 [[nodiscard]] DDX_API result<Ast> parse(std::string_view source);
 
-} // namespace ddx::rt::text
+} // namespace ddx::rt::detail::text

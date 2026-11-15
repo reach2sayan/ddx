@@ -2,20 +2,11 @@
 // resolves as a real shared object.
 #include "ddx.hpp"
 
-#include <array>
 #include <cmath>
 #include <cstdio>
-#include <span>
 
 #ifdef DDX_CONSUMER_RT
-#include "rt/bridge.hpp"
 #include "rt/equation.hpp"
-#endif
-
-#ifdef DDX_HAS_JIT
-#include "jit/kernel.hpp"
-#include "rt/derivative.hpp"
-#include "rt/graph.hpp"
 #endif
 
 namespace {
@@ -42,36 +33,26 @@ int main() {
   }
 
 #ifdef DDX_CONSUMER_RT
-  // The runtime graph is the header set that needs Boost.
-  rt::Arena<> b;
-  const auto root = rt::to_graph(b, x * y + sin(x));
-  const auto rg = rt::derive_jacobian(b, root.id(b));
-  const auto values = rt::evaluate_all(b, std::array{1.25, 0.5});
-  if (!close(values[rg.partial[0]], 0.5 + std::cos(1.25)) ||
-      !close(values[rg.partial[1]], 1.25)) {
-    return fail("runtime-graph jacobian is wrong");
+  // The runtime equation is the header set that needs Boost.
+  auto f = rt::equation([] {
+    const auto rx = rt::var("x");
+    const auto ry = rt::var("y");
+    return rx * ry + sin(rx);
+  });
+  const auto rg = f.jacobian(1.25, 0.5);
+  if (!rg || !close((*rg)[0], 0.5 + std::cos(1.25)) || !close((*rg)[1], 1.25)) {
+    return fail("runtime jacobian is wrong");
   }
 #endif
 
 #ifdef DDX_HAS_JIT
-  // This is the one call that must resolve out of libddx_jit.so.
-  auto compiler = jit::Compiler::create();
-  if (!compiler) {
-    return fail(compiler.error().detail.c_str());
+  // The compile must resolve out of the installed library.
+  f.options({.backend = rt::Backend::Compile});
+  if (const auto status = f.compile_status(); !status) {
+    return fail(status.error().detail.c_str());
   }
-  const auto jacobian = rt::derive_jacobian(b, std::array{root.id(b)});
-  auto kernel = compiler->compile(rt::Graph<>::freeze(
-      b, {.values = {root.id(b)}, .jacobian = jacobian.partial},
-      {}, jacobian.pattern));
-  if (!kernel) {
-    return fail(kernel.error().detail.c_str());
-  }
-
-  double xs0 = 1.25, xs1 = 0.5, out_f = 0, out_gx = 0, out_gy = 0;
-  const double *const in[] = {&xs0, &xs1};
-  double *const outs[] = {&out_f, &out_gx, &out_gy};
-  (*kernel)(in, std::span{outs, 1}, std::span{outs + 1, 2}, {}, 1);
-  if (!close(out_gx, 0.5 + std::cos(1.25)) || !close(out_gy, 1.25)) {
+  const auto compiled = f.jacobian(1.25, 0.5);
+  if (!compiled || *compiled != *rg) {
     return fail("JIT-compiled jacobian is wrong");
   }
 #endif

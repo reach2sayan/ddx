@@ -183,8 +183,8 @@ TEST(RtExtern, ABatchMatchesThePointCalls) {
   std::vector<double> ga(n);
   std::vector<double> gb(n);
   const std::array<const double *, 2> in{as.data(), bs.data()};
-  const std::array<double *, 1> fs{f.data()};
-  const std::array<double *, 2> gs{ga.data(), gb.data()};
+  const std::array fs{f.data()};
+  const std::array gs{ga.data(), gb.data()};
   ASSERT_TRUE(eq.jacobian(in, fs, gs, n).has_value());
   for (const std::size_t i : std::views::iota(0uz, n)) {
     const auto J = *eq.jacobian(as[i], bs[i]);
@@ -227,6 +227,35 @@ TEST(RtExtern, CalledFromManyThreads) {
     EXPECT_EQ(got[t], *eq.jacobian(0.1 * static_cast<double>(t), 1.0));
   }
   EXPECT_GT(calls.load(), 0u);
+}
+
+// The interpreter calls once per argument list and lane, however many value
+// and partial components the sweep reads, as the JIT does.
+TEST(RtExtern, OneCallServesEveryComponent) {
+  std::size_t calls = 0;
+  auto eq = ddx::rt::equation([&calls] {
+    const auto a = ddx::rt::var("a");
+    const auto b = ddx::rt::var("b");
+    return ddx::rt::extern_fn(
+        {.name = "g", .arity = 2, .order = 2},
+        [&calls](std::span<const double> in, std::span<double> out) {
+          ++calls;
+          g_of(in, out);
+        })(a, b);
+  });
+  eq.options({.backend = ddx::rt::Backend::Interpret});
+  const auto &at = points[0];
+  ASSERT_TRUE(eq.evaluate(at).has_value());
+  calls = 0;
+  ASSERT_TRUE(eq.evaluate(at).has_value());
+  const std::size_t per_value = calls;
+  ASSERT_GT(per_value, 0u);
+  ASSERT_TRUE(eq.hessian(at).has_value());
+  calls = 0;
+  const auto h = eq.hessian(at);
+  ASSERT_TRUE(h.has_value());
+  EXPECT_EQ(calls, per_value);
+  expect_close(*h, *native().hessian(at), 1e-12);
 }
 
 TEST(RtExtern, ASystemThroughOneFunction) {
@@ -281,11 +310,11 @@ void expect_reentry_matches(auto inner_model, auto native_model,
     expect_close(*eq.jacobian(point), *native.jacobian(point), 1e-10);
   }
   for (const std::size_t count : {3uz, n}) {
-    std::vector<std::vector<double>> columns(symbols,
+    std::vector columns(symbols,
                                              std::vector<double>(count));
-    std::vector<std::vector<double>> partials(symbols,
+    std::vector partials(symbols,
                                               std::vector<double>(count));
-    std::vector<std::vector<double>> want = partials;
+    std::vector want = partials;
     std::vector<double> f(count);
     std::vector<double> want_f(count);
     std::vector<const double *> xs;
@@ -299,8 +328,8 @@ void expect_reentry_matches(auto inner_model, auto native_model,
       gs.push_back(partials[j].data());
       want_gs.push_back(want[j].data());
     }
-    const std::array<double *, 1> fs{f.data()};
-    const std::array<double *, 1> want_fs{want_f.data()};
+    const std::array fs{f.data()};
+    const std::array want_fs{want_f.data()};
     ASSERT_TRUE(eq.jacobian(xs, fs, gs, count).has_value());
     ASSERT_TRUE(native.jacobian(xs, want_fs, want_gs, count).has_value());
     expect_close(f, want_f, 1e-10);

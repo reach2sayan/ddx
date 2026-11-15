@@ -17,7 +17,7 @@
 // assertions here are on node identity rather than node count.
 
 namespace {
-using ddx::rt::Arena;
+using ddx::rt::detail::Arena;
 using RE = ddx::rt::Expression<>;
 
 TEST(RtArena, IdenticalSubtreesInternToOneNode) {
@@ -91,8 +91,8 @@ TEST(RtArena, LiteralsFoldBeforeReachingTheGraph) {
   const auto x = var(b, "x");
   const std::size_t before = b.size();
   const auto c = RE{2} * RE{3} + RE{1};
-  EXPECT_TRUE(c.pending());
-  EXPECT_DOUBLE_EQ(c.literal(), 7.0);
+  EXPECT_TRUE(ddx::rt::detail::Router::pending(c));
+  EXPECT_DOUBLE_EQ(ddx::rt::detail::Router::literal(c), 7.0);
   EXPECT_EQ(b.size(), before);
 
   EXPECT_TRUE(b.is_constant((RE{2} * RE{3}).id(b), 6.0));
@@ -138,8 +138,8 @@ TEST(RtArena, SlotsAreDeclarationOrder) {
   const auto a = var(b, "a");
 
   EXPECT_EQ(b.symbols(), (std::vector<std::string>{"z", "a"}));
-  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::Slot>(b[z.id(b)]).value, 0u);
-  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::Slot>(b[a.id(b)]).value, 1u);
+  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::detail::Slot>(b[z.id(b)]).value, 0u);
+  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::detail::Slot>(b[a.id(b)]).value, 1u);
   EXPECT_EQ(b[s.id(b)].in[0], z.id(b)) << "the subexpression still names z";
 }
 
@@ -148,19 +148,19 @@ TEST(RtArena, SlotsAreDeclarationOrder) {
 TEST(RtArena, ParamsShareTheNamespaceAndNumberTheirOwnSlots) {
   Arena<> b;
   const auto x = var(b, "x");
-  const auto k = ddx::rt::param(b, "k");
+  const auto k = ddx::rt::detail::param(b, "k");
   const auto y = var(b, "y");
 
   EXPECT_EQ(b.symbols(), (std::vector<std::string>{"x", "y"}));
   EXPECT_EQ(b.params(), (std::vector<std::string>{"k"}));
   EXPECT_EQ(b[k.id(b)].op, ddx::rt::OpCode::Param);
-  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::Slot>(b[k.id(b)]).value, 0u);
-  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::Slot>(b[y.id(b)]).value, 1u);
-  EXPECT_EQ(ddx::rt::param(b, "k").id(b), k.id(b));
-  EXPECT_TRUE(ddx::rt::param(b, "x").poisoned()) << "x is a symbol";
+  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::detail::Slot>(b[k.id(b)]).value, 0u);
+  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::detail::Slot>(b[y.id(b)]).value, 1u);
+  EXPECT_EQ(ddx::rt::detail::param(b, "k").id(b), k.id(b));
+  EXPECT_TRUE(ddx::rt::detail::param(b, "x").poisoned()) << "x is a symbol";
   EXPECT_TRUE(var(b, "k").poisoned()) << "k is a parameter";
-  EXPECT_EQ(ddx::rt::input_column(b.inputs(), ddx::rt::OpCode::Param,
-                                  ddx::rt::Slot{0}),
+  EXPECT_EQ(ddx::rt::detail::input_column(b.inputs(), ddx::rt::OpCode::Param,
+                                          ddx::rt::detail::Slot{0}),
             2u);
   (void)x;
 }
@@ -168,17 +168,17 @@ TEST(RtArena, ParamsShareTheNamespaceAndNumberTheirOwnSlots) {
 // Ops whose operands differ in meaning take named operands. Positional
 // operands do not compile, and the names follow the opcode table's order.
 namespace named {
-using ddx::rt::NodeId;
 using ddx::rt::OpCode;
-using ddx::rt::opcode;
+using ddx::rt::detail::NodeId;
+using ddx::rt::detail::opcode;
 // Detects whether build(arena, u, m) compiles.
 template <typename Build>
 constexpr bool compiles = std::is_invocable_v<Build, Arena<> &, NodeId, NodeId>;
 static_assert(
-    !compiles<decltype([](auto &b, auto u,
-                          auto m) -> decltype(b.make(opcode<OpCode::RowScale>,
-                                                     ddx::rt::NoPayload{}, u,
-                                                     m)) { return {}; })>);
+    !compiles<decltype([](auto &b, auto u, auto m)
+                           -> decltype(b.make(opcode<OpCode::RowScale>,
+                                              ddx::rt::detail::NoPayload{}, u,
+                                              m)) { return {}; })>);
 static_assert(
     compiles<decltype([](auto &b, auto u, auto m)
                           -> decltype(b.make(opcode<OpCode::RowScale>,
@@ -232,8 +232,9 @@ TEST(RtArena, CompoundAssignmentTakesAScalar) {
 
   RE lit = 3.0;
   lit *= 4.0;
-  EXPECT_TRUE(lit.pending()) << "two literals reached the graph";
-  EXPECT_EQ(lit.literal(), 12.0);
+  EXPECT_TRUE(ddx::rt::detail::Router::pending(lit))
+      << "two literals reached the graph";
+  EXPECT_EQ(ddx::rt::detail::Router::literal(lit), 12.0);
 }
 
 TEST(RtInterpreter, EvaluatesSharedNodesOnce) {
@@ -241,21 +242,22 @@ TEST(RtInterpreter, EvaluatesSharedNodesOnce) {
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = (x * y) + sin(x * y);
-  const std::array<double, 2> pt{0.5, 1.5};
+  const std::array pt{0.5, 1.5};
   const double xy = 0.75;
-  EXPECT_NEAR(ddx::rt::evaluate(b, f.id(b), pt), xy + std::sin(xy), 1e-15);
+  EXPECT_NEAR(ddx::rt::detail::evaluate(b, f.id(b), pt), xy + std::sin(xy),
+              1e-15);
 }
 
 // A literal condition picks its arm (NaN reads as true, as in select_impl),
 // and equal arms need no select at all.
 TEST(RtArena, SelectFoldsWhereABinaryWould) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
-  EXPECT_EQ(select(ddx::rt::lit(b, 1.0), x, y).id(b), x.id(b));
-  EXPECT_EQ(select(ddx::rt::lit(b, 0.0), x, y).id(b), y.id(b));
-  EXPECT_EQ(select(ddx::rt::lit(b, -0.0), x, y).id(b), y.id(b));
-  EXPECT_EQ(select(ddx::rt::lit(b, std::nan("")), x, y).id(b), x.id(b));
+  EXPECT_EQ(select(ddx::rt::detail::lit(b, 1.0), x, y).id(b), x.id(b));
+  EXPECT_EQ(select(ddx::rt::detail::lit(b, 0.0), x, y).id(b), y.id(b));
+  EXPECT_EQ(select(ddx::rt::detail::lit(b, -0.0), x, y).id(b), y.id(b));
+  EXPECT_EQ(select(ddx::rt::detail::lit(b, std::nan("")), x, y).id(b), x.id(b));
   EXPECT_EQ(select(lt(x, y), x, x).id(b), x.id(b));
   const auto kept = select(lt(x, y), x, y);
   EXPECT_EQ(b[kept.id(b)].op, ddx::rt::OpCode::Select);
@@ -264,7 +266,7 @@ TEST(RtArena, SelectFoldsWhereABinaryWould) {
 // The six comparison operators build only lt and le nodes, some with their
 // operands swapped, and a bare number converts on either side.
 TEST(RtArena, ComparisonOperatorsAreTheTwoNodes) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   EXPECT_EQ((x < y).id(b), lt(x, y).id(b));
@@ -290,10 +292,10 @@ TEST(RtArena, FloatConstantsInternByTheirBits) {
   const float nan = std::numeric_limits<float>::quiet_NaN();
   EXPECT_EQ(lit(b, nan).id(b), lit(b, nan).id(b));
 
-  const std::array<float, 2> zeros{0.0f, 0.0f};
-  const std::array<float, 2> negative_zeros{-0.0f, -0.0f};
-  EXPECT_NE(ddx::rt::vec_constant<float>(b, zeros).id(b),
-            ddx::rt::vec_constant<float>(b, negative_zeros).id(b));
+  const std::array zeros{0.0f, 0.0f};
+  const std::array negative_zeros{-0.0f, -0.0f};
+  EXPECT_NE(ddx::rt::detail::vec_constant<float>(b, zeros).id(b),
+            ddx::rt::detail::vec_constant<float>(b, negative_zeros).id(b));
 }
 
 // Handles from two arenas cannot be combined, since a node built from both

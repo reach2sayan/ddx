@@ -167,15 +167,19 @@ protected:
     boost::container::small_vector<std::ranges::range_value_t<decltype(xs)>, 64>
         out;
     out.reserve(std::ranges::size(xs) + std::ranges::size(seeds));
-    std::ranges::copy(xs, std::back_inserter(out));
-    std::ranges::copy(seeds, std::back_inserter(out));
+    impl::append(out, xs);
+    impl::append(out, seeds);
     return out;
   }
 
   // Row-major rows x columns from the pattern's cells, with the zeros put back.
-  [[nodiscard]] static constexpr std::vector<T>
-  dense(const Sparsity &pattern, std::span<const T> cells) {
-    std::vector<T> out(pattern.size() * pattern.columns, T{0});
+  // A pattern holding every cell already has that layout.
+  [[nodiscard]] static constexpr std::vector<T> dense(const Sparsity &pattern,
+                                                      std::vector<T> cells) {
+    if (pattern.nonzeros() == pattern.size() * pattern.columns) {
+      return cells;
+    }
+    std::vector out(pattern.size() * pattern.columns, T{0});
     scatter(
         pattern, [&cells](std::size_t k) { return &cells[k]; },
         [&out](std::size_t c) { return &out[c]; }, pattern.columns, 1);
@@ -190,11 +194,9 @@ private:
   template <Want W, auto Block>
   [[nodiscard]] constexpr result<std::vector<T>>
   dense_at(std::span<const T> along, const auto &...args) const {
-    return self()
-        .template at<W>(along, args...)
-        .transform([this](const auto &b) {
-          return dense(self().jacobian_sparsity(), b.*Block);
-        });
+    return self().template at<W>(along, args...).transform([this](auto b) {
+      return dense(self().jacobian_sparsity(), std::move(b.*Block));
+    });
   }
 };
 
@@ -227,9 +229,10 @@ struct Sweeps {
   Lazy<DenseHessian> dense;
   // Indexed by Want: the extra block of Hvp, Vjp, Jvp and JacobianJvp.
   std::array<Lazy<std::vector<NodeId>>, want_count> products;
-  Lazy<ArenaWalk> hessian_walk; // a system's hessian() at a point
-  Lazy<ArenaWalk> taylor_walk;  // root 0's univariate_derivative
-  Lazy<bool> taylor_computes;   // taylor_walk at TaylorDual, any order
+  Lazy<ArenaWalk> hessian_walk;  // a system's hessian() at a point
+  Lazy<ArenaWalk> taylor_walk;   // root 0's univariate_derivative
+  Lazy<ArenaWalk> residual_walk; // every implicit's residual
+  Lazy<bool> taylor_computes;    // taylor_walk at TaylorDual, any order
 #ifdef DDX_HAS_JIT
   Lazy<Rebalanced> rebalanced;
 #endif
@@ -337,7 +340,7 @@ public:
     if (bad_) {
       return std::unexpected{*bad_};
     }
-    std::vector<T> at(arena_->inputs().named(), T{});
+    std::vector at(arena_->inputs().named(), T{});
     result<void> ok{};
     if constexpr ((impl::CEntry<Args> && ...) && sizeof...(Args) > 0) {
       ok = assign_named(
@@ -395,7 +398,7 @@ public:
                                  std::string_view>
   [[nodiscard]] result<Restricted<Core>> restrict(const R &names) const {
     DDX_CHECK(alive());
-    std::vector<bool> chosen(symbol_count(), false);
+    std::vector chosen(symbol_count(), false);
     for (const std::string_view name : names) {
       DDX_TRY(slot, arena_->symbol(name));
       chosen[*slot] = true;
@@ -412,10 +415,12 @@ public:
   [[nodiscard]] result<std::vector<T>>
   residual(const rt::detail::CPointArg auto &...args) const {
     return point(args...).transform([this](const auto &at) {
+      const ArenaWalk &walk = point_walk(sweeps_->residual_walk, [this] {
+        return arena_->closures() | impl::to<std::vector>();
+      });
       [[maybe_unused]] const auto held = reading();
       const auto closures = arena_->closures();
-      const auto values = evaluate_reachable(*arena_, closures, at,
-                                             tensor_kernels(), contraction());
+      const auto values = walk(*arena_, at, tensor_kernels());
       return closures |
              std::views::transform([&values](NodeId f) { return values[f]; }) |
              impl::to<std::vector>();
@@ -500,8 +505,7 @@ public:
   // find their pipelines built and never take a write lock.
   [[nodiscard]] result<void> prepare(std::initializer_list<Want> wants) const {
     for (const Want want : wants) {
-      DDX_CHECK(ready(want));
-      (void)pipeline(want);
+      DDX_CHECK(pipeline(want));
     }
     return {};
   }
@@ -515,19 +519,19 @@ public:
   // What one call for `want` steps through, counted on its frozen graph. Builds
   // the pipeline as prepare() does but evaluates nothing.
   [[nodiscard]] result<Census> census(Want want = Want::Jacobian) const {
-    return ready(want).transform(
-        [&] { return detail::census_of(*pipeline(want)->graph); });
+    return pipeline(want).transform(
+        [](const auto &c) { return detail::census_of(*c->graph); });
   }
 
   // uses_kernel() with the reason when it is false: the equation's own error,
   // not_compiling under Interpret, or the JIT's refusal and its detail.
   [[nodiscard]] jit::compile_result<void>
   compile_status(Want want = Want::Jacobian) const {
-    return ready(want)
+    return pipeline(want)
         .transform_error([](error e) {
           return jit::compile_error{.code = e.code, .detail = {}};
         })
-        .and_then([&] { return pipeline(want)->status; });
+        .and_then([](const auto &c) { return c->status; });
   }
 
   // One Taylor sweep seeded with c[0] = x0 and c[1] = 1; the derivative is
@@ -588,17 +592,15 @@ public:
         // A short block repeats its last point.
         const std::size_t width = std::min(W, xs.size() - base);
         for (const auto [k, a] : at | std::views::enumerate) {
-          a = Taylor::variable(xs[base + std::min<std::size_t>(k, width - 1)]);
+          a = Taylor::variable(
+              xs[base + std::min(static_cast<std::size_t>(k), width - 1)]);
         }
-        walk.template operator()<W>(*arena_, at, std::span<Taylor>{kept.tape},
-                                    std::span<Taylor>{kept.vtape});
+        walk.template operator()<W>(*arena_, at, std::span{kept.tape},
+                                    std::span{kept.vtape});
         std::ranges::transform(
             std::span{kept.tape}.subspan(roots_[0] * W, width),
-            out.begin() + base, [](const Taylor &t) {
-              return t.c[Order] *
-                     static_cast<T>(
-                         impl::detail::compile_time_factorial(Order));
-            });
+            out.begin() + base,
+            [](const Taylor &t) { return t.template derivative<Order>(); });
       }
     };
     xs.size() < block_lanes
@@ -840,12 +842,15 @@ protected:
     return {.jacobian = jacobian_};
   }
 
-  // The pipeline for `want`, frozen and compiled on first ask.
-  [[nodiscard]] std::shared_ptr<const Compiled> pipeline(Want want) const {
+  // The pipeline for `want`, frozen and compiled on first ask, once ready()
+  // lets it through.
+  [[nodiscard]] result<std::shared_ptr<const Compiled>>
+  pipeline(Want want) const {
     return pipeline_in(*pipelines_, every_cell(), want);
   }
-  [[nodiscard]] std::shared_ptr<const Compiled>
+  [[nodiscard]] result<std::shared_ptr<const Compiled>>
   pipeline_in(Pipelines &pipelines, const Cells &cells, Want want) const {
+    DDX_CHECK(ready(want));
     return pipelines[std::to_underlying(want)].template snapshot<Yield>(
         compiling(), [&] { return frozen_for(want, cells); });
   }
@@ -861,22 +866,22 @@ protected:
                                          std::span<const T *const> xs,
                                          const Columns<T> &out,
                                          std::size_t n) const {
-    return checked(pipelines, cells, want, xs, out)
-        .transform([&](const std::shared_ptr<const Compiled> &c) {
-          run(*c, xs, out, n);
+    return pipeline_in(pipelines, cells, want)
+        .and_then([&](const std::shared_ptr<const Compiled> &c) {
+          return dispatch_on(*c, xs, out, n);
         });
   }
 
-  // The pipeline a call runs on, once the call is known to fit it.
-  [[nodiscard]] result<std::shared_ptr<const Compiled>>
-  checked(Pipelines &pipelines, const Cells &cells, Want want,
-          std::span<const T *const> xs, const Columns<T> &out) const {
-    DDX_CHECK(ready(want));
-    auto c = pipeline_in(pipelines, cells, want);
+  // Runs a call on a pipeline already fetched, once the call is known to fit
+  // it.
+  [[nodiscard]] result<void> dispatch_on(const Compiled &c,
+                                         std::span<const T *const> xs,
+                                         const Columns<T> &out,
+                                         std::size_t n) const {
     // Count columns, not nodes, since a vector output is one column per
     // element.
-    const bool fits = xs.size() == c->graph->arity() &&
-                      std::ranges::none_of(zip_blocks(out, c->graph->layout()),
+    const bool fits = xs.size() == c.graph->arity() &&
+                      std::ranges::none_of(zip_blocks(out, c.graph->layout()),
                                            [](const auto &pair) {
                                              const auto &[columns, count] =
                                                  pair;
@@ -885,7 +890,8 @@ protected:
     if (!fits) {
       return fail(errc::wrong_column_count);
     }
-    return c;
+    run(c, xs, out, n);
+    return {};
   }
 
   // A system's Hessians read off the arena one point at a time, since a frozen
@@ -913,7 +919,7 @@ protected:
     [[maybe_unused]] const auto held = sweeping();
     values.resize(arena_->size());
     kept.values.vtape.resize(walk.extent());
-    walk(*arena_, at, std::span<T>{values}, std::span<T>{kept.values.vtape},
+    walk(*arena_, at, std::span{values}, std::span{kept.values.vtape},
          tensor_kernels());
     const impl::md::mdspan dense{
         h.data(), impl::md::dextents<std::size_t, 3>{roots_.size(), n, n}};
@@ -970,8 +976,9 @@ private:
 
   [[nodiscard]] const std::vector<Hessian> &hessians() const {
     return sweep(sweeps_->hessians, [this] {
-      return roots_ | std::views::transform([this](NodeId r) {
-               return derive_hessian(*arena_, r);
+      detail::SweepScratch scratch;
+      return roots_ | std::views::transform([&](NodeId r) {
+               return derive_hessian(*arena_, r, scratch);
              }) |
              impl::to<std::vector>();
     });
@@ -1153,7 +1160,7 @@ private:
   [[nodiscard]] constexpr result<void>
   assign_named(std::vector<T> &at,
                const rt::detail::CNamedRange auto &entries) const {
-    std::vector<bool> seen(at.size(), false);
+    std::vector seen(at.size(), false);
     for (const auto &[name, value] : entries) {
       const auto input = arena_->lookup(std::string_view{name});
       if (!input) {
@@ -1226,10 +1233,11 @@ private:
 
   // The options a pipeline compiles under, and none under Interpret.
   [[nodiscard]] std::optional<jit::Options> compiling() const {
-    if (jit::CKernelScalar<T> && options_.backend == jit::Backend::Compile) {
+    if (jit::detail::CKernelScalar<T> &&
+        options_.backend == jit::Backend::Compile) {
       // A short batch emits scalar, the threshold the sweep uses; an explicit
       // `lanes` is honoured.
-      return jit::for_batch(options_, block_lanes);
+      return jit::detail::for_batch(options_, block_lanes);
     }
     return std::nullopt;
   }
@@ -1319,7 +1327,7 @@ private:
   // ask; null where the kernel is lowered from the equation's own roots.
   [[nodiscard]] const Rebalanced *rebalanced([[maybe_unused]] Want want) const {
 #ifdef DDX_HAS_JIT
-    if constexpr (jit::CKernelScalar<T>) {
+    if constexpr (jit::detail::CKernelScalar<T>) {
       // A graph with tensor steps is never rebalanced. The roots' cone is read,
       // not the whole arena, and under the lock since another sweep may append.
       const auto tensors = [this] {
@@ -1357,7 +1365,7 @@ private:
            const Columns<T> &out, std::size_t n) const {
     [[maybe_unused]] const auto held = sweeping();
     TapeLease<T> lease{calls_out_};
-    if constexpr (jit::CKernelScalar<T>) {
+    if constexpr (jit::detail::CKernelScalar<T>) {
       if (c.kernel) {
         const detail::TensorCall<T> call{.arena = arena_.get(),
                                          .graph = c.compile_graph.get(),
@@ -1407,7 +1415,7 @@ private:
         }
       }
       evaluate_block<W>(*arena_, std::span<const T>{point}, graph.schedule(),
-                        std::span<T>{tape}, t);
+                        std::span{tape}, t);
       scatter_blocks(graph.output_rows(), std::span<const T>{tape},
                      std::span<const T>{vtape}, out, base, W, width);
     }
@@ -1507,16 +1515,8 @@ private:
   std::unique_ptr<typename C::Pipelines> pipelines_;
 };
 
-// An equation's function count as its type states it: a fixed count of one
-// narrows the value to a scalar, while a run-time count answers a vector.
-template <std::size_t N> struct Fixed {
-  static constexpr std::optional<std::size_t> expected = N;
-  static constexpr bool scalar = N == 1;
-};
-struct Dynamic {
-  static constexpr std::optional<std::size_t> expected = std::nullopt;
-  static constexpr bool scalar = false;
-};
+// Tags a System: its function count is known only at run time.
+struct Dynamic {};
 
 // Run `assemble` inside a fresh arena, and hand both back.
 template <impl::Numeric T>

@@ -13,7 +13,7 @@
 namespace ddx::rt::detail {
 
 // True when the pack is exactly Dynamic, so the output count is not fixed.
-template <typename T, typename... Rest>
+template <typename... Rest>
 inline constexpr bool dynamic_outputs =
     sizeof...(Rest) == 1 && (std::same_as<Rest, Dynamic> && ...);
 
@@ -35,13 +35,15 @@ namespace ddx::impl {
 // A runtime equation with its output count in the type, or with Dynamic a
 // count known only at run time, where single-output members return an error.
 template <Numeric T, typename... Rest>
-  requires(rt::detail::dynamic_outputs<T, Rest...> ||
+  requires(rt::detail::dynamic_outputs<Rest...> ||
            (std::same_as<Rest, rt::Expression<T>> && ...))
 class Equation<rt::Expression<T>, Rest...> : public rt::detail::Core<T> {
-  // The output-count policy: Fixed by the pack size, or Dynamic.
-  using Outputs = std::conditional_t<rt::detail::dynamic_outputs<T, Rest...>,
-                                     rt::detail::Dynamic,
-                                     rt::detail::Fixed<1 + sizeof...(Rest)>>;
+public:
+  // The output count fixed by the type, or 0 for a System.
+  static constexpr std::size_t output_dim =
+      rt::detail::dynamic_outputs<Rest...> ? 0 : 1 + sizeof...(Rest);
+
+private:
   using Base = rt::detail::Core<T>;
   friend Base;
   friend struct rt::detail::Creating;
@@ -49,16 +51,16 @@ class Equation<rt::Expression<T>, Rest...> : public rt::detail::Core<T> {
   // A null owned arena means the outputs live in the caller's arena, which is
   // then copied. Build failures are carried by the equation; see poisoned().
   [[nodiscard]] static constexpr Equation
-  create(std::unique_ptr<rt::Arena<T>> owned,
+  create(std::unique_ptr<rt::detail::Arena<T>> owned,
          std::span<const rt::Expression<T>> outputs) {
     return Base::template make<Equation>(outputs, std::move(owned));
   }
 
   template <typename... Es>
-    requires(Outputs::expected == sizeof...(Es) + 1 &&
+    requires(output_dim == sizeof...(Es) + 1 &&
              (std::same_as<Es, rt::Expression<T>> && ...))
   [[nodiscard]] static constexpr Equation
-  create(std::unique_ptr<rt::Arena<T>> owned, rt::Expression<T> first,
+  create(std::unique_ptr<rt::detail::Arena<T>> owned, rt::Expression<T> first,
          Es... rest) {
     const std::array outputs{first, rest...};
     return create(std::move(owned),
@@ -66,14 +68,11 @@ class Equation<rt::Expression<T>, Rest...> : public rt::detail::Core<T> {
   }
 
 public:
-  // The output count fixed by the type, or 0 for a System.
-  static constexpr std::size_t output_dim = Outputs::expected.value_or(0);
-
   // Returns a single T for one output and a vector otherwise.
   [[nodiscard]] constexpr auto
   evaluate(const rt::detail::CPointArg auto &...args) const {
     return this->values(args...).transform([](std::vector<T> f) {
-      if constexpr (Outputs::scalar) {
+      if constexpr (output_dim == 1) {
         return f.front();
       } else {
         return f;

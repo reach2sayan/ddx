@@ -11,7 +11,7 @@
 // f'' = -2c + k/(x(1-x)), so neither needs finite differences.
 
 namespace {
-using ddx::rt::Arena;
+using ddx::rt::detail::Arena;
 
 auto free_energy(Arena<> &b, double c, double k) {
   return ddx::rt::equation(models::regular_solution(var(b, "x"), c, k));

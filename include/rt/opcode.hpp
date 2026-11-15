@@ -110,6 +110,9 @@ enum class OpCode : std::uint8_t {
   DDX_RT_OP_TABLE(DDX_RT_ENUMERATOR)
 #undef DDX_RT_ENUMERATOR
 };
+} // namespace ddx::rt
+
+namespace ddx::rt::detail {
 
 #define DDX_RT_COUNT(...) +1
 inline constexpr std::size_t op_count = 0 DDX_RT_OP_TABLE(DDX_RT_COUNT);
@@ -204,7 +207,22 @@ enum class Kind : std::uint8_t {
   Tensor
 };
 
-namespace detail {
+// How an op couples its operands in the Hessian: not at all (a comparison,
+// whose derivative is zero), linearly, as a product of the two, as a quotient
+// (the denominator also with itself), or every operand with every other.
+enum class Coupling : std::uint8_t { none, linear, product, quotient, full };
+
+// The ops whose coupling is not their kind's default: full for a scalar op,
+// linear for a tensor op, none for a comparison.
+#define DDX_RT_COUPLING_TABLE(X)                                               \
+  X(Neg, linear)                                                               \
+  X(Add, linear)                                                               \
+  X(Mul, product)                                                              \
+  X(Div, quotient)                                                             \
+  X(Scale, product)                                                            \
+  X(Dot, product)                                                              \
+  X(MatVec, product)                                                           \
+  X(Outer, product)
 
 struct OpInfo {
   std::string_view name; // the factory spelling and the Python name
@@ -213,6 +231,8 @@ struct OpInfo {
   Kind kind;
   std::uint8_t payload = payload_index<NoPayload>; // an index into Payloads
   Yields yields = Yields::Scalar;
+  Coupling coupling = Coupling::full;
+  bool compares = false; // a comparison, though its kind is Binary
 };
 
 // Fills one entry per opcode from each sub-table, indexed by enumerator so
@@ -234,6 +254,14 @@ inline constexpr std::array op_info = [] {
 #define DDX_RT_ROW(fn, Op, label, ...)                                         \
   t[static_cast<std::size_t>(OpCode::Op)] = {#fn, label, 2, Kind::Binary};
   DDX_RT_BINARY_TABLE(DDX_RT_ROW)
+#undef DDX_RT_ROW
+#define DDX_RT_ROW(fn, Op, text, ...)                                          \
+  t[static_cast<std::size_t>(OpCode::Op)] = {.name = #fn,                      \
+                                             .label = text,                    \
+                                             .arity = 2,                       \
+                                             .kind = Kind::Binary,             \
+                                             .coupling = Coupling::none,       \
+                                             .compares = true};
   DDX_RT_COMPARE_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
 #define DDX_RT_ROW(fn, Op, label, functor, yields, names)                      \
@@ -252,9 +280,18 @@ inline constexpr std::array op_info = [] {
   DDX_RT_NARY_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
 #define DDX_RT_ROW(fn, Op, label, arity, kind, payload, yields, names)         \
-  t[static_cast<std::size_t>(OpCode::Op)] = {                                  \
-      #fn, label, arity, Kind::kind, payload_index<payload>, Yields::yields};
+  t[static_cast<std::size_t>(OpCode::Op)] = {#fn,                              \
+                                             label,                            \
+                                             arity,                            \
+                                             Kind::kind,                       \
+                                             payload_index<payload>,           \
+                                             Yields::yields,                   \
+                                             Coupling::linear};
   DDX_RT_TENSOR_TABLE(DDX_RT_ROW)
+#undef DDX_RT_ROW
+#define DDX_RT_ROW(Op, how)                                                    \
+  t[static_cast<std::size_t>(OpCode::Op)].coupling = Coupling::how;
+  DDX_RT_COUPLING_TABLE(DDX_RT_ROW)
 #undef DDX_RT_ROW
   return t;
 }();
@@ -274,11 +311,17 @@ static_assert([] {
   assert(i < op_count);
   return op_info[i];
 }
-} // namespace detail
 
+} // namespace ddx::rt::detail
+
+namespace ddx::rt {
+// An opcode's label, as census() rows and text spell it.
 [[nodiscard]] constexpr std::string_view label_of(OpCode op) noexcept {
   return detail::info(op).label;
 }
+} // namespace ddx::rt
+
+namespace ddx::rt::detail {
 [[nodiscard]] constexpr std::string_view name_of(OpCode op) noexcept {
   return detail::info(op).name;
 }
@@ -287,6 +330,12 @@ static_assert([] {
 }
 [[nodiscard]] constexpr Kind kind_of(OpCode op) noexcept {
   return detail::info(op).kind;
+}
+[[nodiscard]] constexpr Coupling coupling_of(OpCode op) noexcept {
+  return info(op).coupling;
+}
+[[nodiscard]] constexpr bool compares(OpCode op) noexcept {
+  return info(op).compares;
 }
 [[nodiscard]] constexpr Yields yields_of(OpCode op) noexcept {
   return detail::info(op).yields;
@@ -312,11 +361,6 @@ opcode_of(std::string_view label) noexcept {
   return row == detail::op_info.end() ? std::nullopt
                                       : std::optional{static_cast<OpCode>(
                                             row - detail::op_info.begin())};
-}
-
-[[nodiscard]] inline std::vector<std::string> opcode_labels() {
-  return detail::op_info | std::views::transform(&detail::OpInfo::label) |
-         impl::to<std::vector<std::string>>();
 }
 
 template <impl::Numeric T>
@@ -349,16 +393,6 @@ static_assert(std::ranges::all_of(std::views::iota(0uz, op_count), [](auto i) {
   default:
     std::unreachable();
   }
-}
-// The Nary opcode that folds with the given binary op, if any.
-[[nodiscard]] constexpr std::optional<OpCode> fold_of(OpCode binary) noexcept {
-#define DDX_RT_FOLD(fn, Op, label, arity, kind, bin)                           \
-  if (binary == OpCode::bin) {                                                 \
-    return OpCode::Op;                                                         \
-  }
-  DDX_RT_NARY_TABLE(DDX_RT_FOLD)
-#undef DDX_RT_FOLD
-  return std::nullopt;
 }
 // Whether the node reads a list in Model::lists rather than fixed operands.
 [[nodiscard]] constexpr bool has_list(OpCode op) noexcept {
@@ -467,4 +501,4 @@ struct Inputs {
   return start[named_index(op).value_or(named_count)] + slot.value;
 }
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail

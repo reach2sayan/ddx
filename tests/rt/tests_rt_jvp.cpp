@@ -17,7 +17,7 @@ std::vector<double> dense_column(const std::vector<double> &jac, std::size_t m,
                                  std::size_t n, std::span<const double> v) {
   const ddx::impl::md::mdspan J{jac.data(),
                                 ddx::impl::md::dextents<std::size_t, 2>{m, n}};
-  std::vector<double> out(m, 0.0);
+  std::vector out(m, 0.0);
   for (const auto [i, j] : std::views::cartesian_product(
            std::views::iota(0uz, m), std::views::iota(0uz, n))) {
     out[i] += J[i, j] * v[j];
@@ -26,13 +26,13 @@ std::vector<double> dense_column(const std::vector<double> &jac, std::size_t m,
 }
 
 TEST(RtJvp, MatchesTheDenseJacobianTimesTheDirection) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(exp(x * y), x * x - y, log(x) + sin(y));
 
   const std::array point{1.3, 0.7};
-  const std::array<double, 2> v{2.0, -0.5};
+  const std::array v{2.0, -0.5};
 
   const auto dense = *eq.jacobian(point);
   const auto want = dense_column(dense, 3, 2, v);
@@ -47,16 +47,16 @@ TEST(RtJvp, MatchesTheDenseJacobianTimesTheDirection) {
 
 TEST(RtJvp, AgreesWithADualPointThroughTheInterpreter) {
   using D = ddx::impl::Dual<double>;
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = exp(x * y) + sin(x) * y;
 
   const std::array point{0.6, 1.4};
-  const std::array<double, 2> v{1.5, -0.25};
+  const std::array v{1.5, -0.25};
 
-  const std::array<D, 2> seeded{D{point[0], v[0]}, D{point[1], v[1]}};
-  const auto dual = ddx::rt::evaluate(b, f.id(b), seeded);
+  const std::array seeded{D{point[0], v[0]}, D{point[1], v[1]}};
+  const auto dual = ddx::rt::detail::evaluate(b, f.id(b), seeded);
 
   const auto eq = ddx::rt::equation(f);
   const auto got = *eq.jvp(std::span<const double>{v}, point);
@@ -65,7 +65,7 @@ TEST(RtJvp, AgreesWithADualPointThroughTheInterpreter) {
 }
 
 TEST(RtJvp, AUnitDirectionIsOneJacobianColumn) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x * x * y, log(x) + y);
@@ -74,7 +74,7 @@ TEST(RtJvp, AUnitDirectionIsOneJacobianColumn) {
   const auto dense = *eq.jacobian(point);
 
   for (const std::size_t j : std::views::iota(0uz, 2uz)) {
-    std::array<double, 2> v{0.0, 0.0};
+    std::array v{0.0, 0.0};
     v[j] = 1.0;
     const auto column = *eq.jvp(std::span<const double>{v}, point);
     for (const std::size_t i : std::views::iota(0uz, 2uz)) {
@@ -84,27 +84,27 @@ TEST(RtJvp, AUnitDirectionIsOneJacobianColumn) {
 }
 
 TEST(RtJvp, RefusesADirectionOfTheWrongLength) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto eq = ddx::rt::equation(x + y);
 
-  const std::vector<double> tooLong{1.0, 2.0, 3.0};
+  const std::vector tooLong{1.0, 2.0, 3.0};
   const auto r = eq.jvp(std::span<const double>{tooLong}, 1.0, 2.0);
   ASSERT_FALSE(r.has_value());
   EXPECT_EQ(r.error().code, ddx::errc::wrong_direction);
 }
 
 TEST(RtJvp, BatchAgreesWithThePointSpelling) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   auto eq = ddx::rt::equation(exp(x) * y, x * x - y);
 
   static constexpr std::size_t n = 34;
-  std::array<std::vector<double>, 2> xs{std::vector<double>(n),
+  std::array xs{std::vector<double>(n),
                                         std::vector<double>(n)};
-  std::array<std::vector<double>, 2> vs{std::vector<double>(n),
+  std::array vs{std::vector<double>(n),
                                         std::vector<double>(n)};
   for (const std::size_t i : std::views::iota(0uz, n)) {
     xs[0][i] = 0.2 + 0.01 * static_cast<double>(i);
@@ -115,9 +115,9 @@ TEST(RtJvp, BatchAgreesWithThePointSpelling) {
   const double *const xp[]{xs[0].data(), xs[1].data()};
   const double *const vp[]{vs[0].data(), vs[1].data()};
 
-  std::array<std::vector<double>, 2> f{std::vector<double>(n),
+  std::array f{std::vector<double>(n),
                                        std::vector<double>(n)};
-  std::array<std::vector<double>, 2> out{std::vector<double>(n),
+  std::array out{std::vector<double>(n),
                                          std::vector<double>(n)};
   double *const fp[]{f[0].data(), f[1].data()};
   double *const op[]{out[0].data(), out[1].data()};
@@ -125,7 +125,7 @@ TEST(RtJvp, BatchAgreesWithThePointSpelling) {
   ASSERT_TRUE(eq.jvp(xp, vp, fp, op, n).has_value());
 
   for (const std::size_t i : std::views::iota(0uz, n)) {
-    const std::array<double, 2> v{vs[0][i], vs[1][i]};
+    const std::array v{vs[0][i], vs[1][i]};
     const auto want =
         *eq.jvp(std::span<const double>{v}, std::array{xs[0][i], xs[1][i]});
     EXPECT_NEAR(out[0][i], want[0], 1e-10 * std::max(1.0, std::abs(want[0])));
@@ -134,7 +134,7 @@ TEST(RtJvp, BatchAgreesWithThePointSpelling) {
 }
 
 TEST(RtJvp, CostsOneColumnPerFunction) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   std::vector<ddx::rt::Expression<>> v;
   for (const char *name : {"a", "b", "c", "d", "e"}) {
     v.push_back(var(b, name));
@@ -152,17 +152,18 @@ TEST(RtJvp, CostsOneColumnPerFunction) {
 // DiffMode::Symbolic runs n tangent sweeps with unit seeds and must emit the
 // same arithmetic as reverse mode.
 TEST(RtJvp, SymbolicModeStillAgreesWithReverse) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = exp(x * y) + log(x) * sin(y);
 
   const auto fwd =
-      ddx::rt::derive_jacobian<ddx::DiffMode::Symbolic>(b, f.id(b));
-  const auto rev = ddx::rt::derive_jacobian<ddx::DiffMode::Reverse>(b, f.id(b));
+      ddx::rt::detail::derive_jacobian<ddx::DiffMode::Symbolic>(b, f.id(b));
+  const auto rev =
+      ddx::rt::detail::derive_jacobian<ddx::DiffMode::Reverse>(b, f.id(b));
 
   const std::array point{1.4, 0.9};
-  const auto values = ddx::rt::evaluate_all(b, point);
+  const auto values = ddx::rt::detail::evaluate_all(b, point);
   for (const std::size_t j : std::views::iota(0uz, 2uz)) {
     EXPECT_NEAR(values[fwd.partial[j]], values[rev.partial[j]], 1e-12);
   }

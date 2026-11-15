@@ -11,7 +11,7 @@ TEST(BitExactness, EveryDriverIsBitStableAcrossBuilds) {
   BitHash feed;
   for (const int i : std::views::iota(1, 121)) {
     const double a = 0.01 * i, b = 0.02 * i + 0.3, c = 0.015 * i + 0.5;
-    const std::array<double, 3> p{a, b, c};
+    const std::array p{a, b, c};
     for (double v : Equation{e}.jacobian(p))
       feed(v);
     const auto g1 = Equation{e}.template derivative_tensor<1>(p);
@@ -93,7 +93,7 @@ TEST(SeededEval, CarriesDualsThroughTheTree) {
   using Syms = ddx::impl::expr_symbols_t<decltype(e)>;
 
   using D = Dual<double>;
-  const std::array<D, 2> seed{D{3.0, 1.0}, D{4.0, 0.0}};
+  const std::array seed{D{3.0, 1.0}, D{4.0, 0.0}};
   const auto r = e.template eval_seeded<Syms>(seed);
   EXPECT_DOUBLE_EQ(r.get<0>(), 13.0);
   EXPECT_DOUBLE_EQ(r.get<1>(), 6.0);
@@ -122,7 +122,7 @@ TEST(DerivativeTensorTest, ForwardAndReverseHessiansAgree) {
     Variable<D, FixedString{"c"}> c;
     Variable<D, FixedString{"d"}> d;
     auto e = a * log(a) + b * log(b) + c * c * d + exp(a * d);
-    const std::array<double, 4> p{0.3, 0.4, 0.5, 0.6};
+    const std::array p{0.3, 0.4, 0.5, 0.6};
     const auto T = Equation{e}.template derivative_tensor<2>(p);
     const auto R = Equation{e}.hessian(p);
     for (const auto [i, j] : std::views::cartesian_product(
@@ -138,7 +138,7 @@ TEST(DerivativeTensorTest, ForwardAndReverseHessiansAgree) {
     Variable<D, FixedString{"d"}> d;
     Variable<D, FixedString{"e"}> e5;
     auto e = a * log(a) + b * log(b) + c * c * d + exp(a * d) + e5 * e5 * b;
-    const std::array<double, 5> p{0.3, 0.4, 0.5, 0.6, 0.7};
+    const std::array p{0.3, 0.4, 0.5, 0.6, 0.7};
     const auto T = Equation{e}.template derivative_tensor<2>(p);
     const auto R = Equation{e}.hessian(p);
     for (const auto [i, j] : std::views::cartesian_product(

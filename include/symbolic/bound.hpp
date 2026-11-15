@@ -80,7 +80,7 @@ template <FixedString... Syms, Numeric... Vs>
   using Scalar = std::common_type_t<Vs...>;
   constexpr auto pos =
       detail::arg_of_canonical<SymList, N, symbol_type<Syms>...>();
-  const auto args = std::tuple<Vs...>{nv.value...};
+  const auto args = std::tuple{nv.value...};
   return meta::unpack(meta::iota<N>, [&](auto... i) {
     return ValueMap<Scalar, SymList>{
         std::array{static_cast<Scalar>(std::get<pos[i]>(args))...}};

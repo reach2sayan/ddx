@@ -15,12 +15,10 @@
 #include <stack>
 #include <vector>
 
-namespace ddx::rt {
+namespace ddx::rt::detail {
 
 // Blocked summation of long Add chains, which a kernel otherwise pays as
 // latency. Only the kernel graph uses it, so it may differ by a few ULP.
-
-namespace detail {
 
 // The terms of a maximal single-use Add spine, in left-to-right order.
 template <impl::Numeric T>
@@ -78,12 +76,14 @@ blocked_sum(Arena<T> &b, std::span<const NodeId> terms, std::size_t blocks) {
 // bottom-up and interning maps unchanged subtrees back to themselves.
 template <impl::Numeric T>
 [[nodiscard]] constexpr std::vector<NodeId>
-rebalance(Arena<T> &b, std::span<const NodeId> roots, std::size_t blocks = 16,
-          std::size_t least = 16) {
+rebalance(Arena<T> &b, std::span<const NodeId> roots) {
+  // Sums of at least `least` terms are split into `blocks` partial sums.
+  constexpr std::size_t blocks = 16;
+  constexpr std::size_t least = 16;
   const auto size = static_cast<NodeId>(b.size());
   const std::vector live = detail::reachable(b, roots);
 
-  std::vector<std::uint32_t> uses(size, 0);
+  std::vector uses(size, static_cast<std::uint32_t>(0));
   for (const NodeId v : detail::live_ids(live)) {
     detail::for_each_operand(b, v, [&uses](NodeId u) { ++uses[u]; });
   }
@@ -127,5 +127,4 @@ rebalance(Arena<T> &b, std::span<const NodeId> roots, std::size_t blocks = 16,
          impl::to<std::vector>();
 }
 
-} // namespace detail
-} // namespace ddx::rt
+} // namespace ddx::rt::detail

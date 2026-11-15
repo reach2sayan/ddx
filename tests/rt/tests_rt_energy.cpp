@@ -15,7 +15,7 @@
 // differences on the interpreter, which shares no code with the reverse sweep.
 
 namespace {
-using ddx::rt::Arena;
+using ddx::rt::detail::Arena;
 using models::composition;
 using models::RE;
 
@@ -30,19 +30,20 @@ std::vector<RE> species(Arena<> &b, std::size_t n) {
 }
 
 // Central differences on the interpreter, independent of the reverse sweep.
-void expect_jacobian_matches_differences(Arena<> &b, ddx::rt::NodeId root,
-                                         const ddx::rt::JacobianRow &g,
+void expect_jacobian_matches_differences(Arena<> &b,
+                                         ddx::rt::detail::NodeId root,
+                                         const ddx::rt::detail::JacobianRow &g,
                                          std::vector<double> pt,
                                          double tol = 2e-6) {
-  const auto values = ddx::rt::evaluate_all(b, pt);
+  const auto values = ddx::rt::detail::evaluate_all(b, pt);
   for (const std::size_t i : std::views::iota(0uz, pt.size())) {
     const double h = 1e-6 * std::max(1.0, std::abs(pt[i]));
     auto hi = pt, lo = pt;
     hi[i] += h;
     lo[i] -= h;
-    const double fd =
-        (ddx::rt::evaluate(b, root, hi) - ddx::rt::evaluate(b, root, lo)) /
-        (2 * h);
+    const double fd = (ddx::rt::detail::evaluate(b, root, hi) -
+                       ddx::rt::detail::evaluate(b, root, lo)) /
+                      (2 * h);
     EXPECT_NEAR(values[g.partial[i]], fd, tol * std::max(1.0, std::abs(fd)))
         << "d/dx" << i;
   }
@@ -52,7 +53,7 @@ TEST(RtEnergy, UniquacJacobian) {
   Arena<> b;
   const auto x = species(b, 8);
   const auto f = models::uniquac(x);
-  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
+  const auto g = ddx::rt::detail::derive_jacobian(b, f.id(b));
   expect_jacobian_matches_differences(b, f.id(b), g, composition(8));
 }
 
@@ -61,7 +62,7 @@ TEST(RtEnergy, PengRobinsonJacobian) {
   auto x = species(b, 6);
   const auto Z = var(b, "Z");
   const auto f = models::peng_robinson(x, Z);
-  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
+  const auto g = ddx::rt::detail::derive_jacobian(b, f.id(b));
   auto pt = composition(6);
   pt.push_back(0.93); // Z is the last symbol
   expect_jacobian_matches_differences(b, f.id(b), g, pt);
@@ -71,7 +72,7 @@ TEST(RtEnergy, MseJacobian) {
   Arena<> b;
   const auto x = species(b, 6);
   const auto f = models::mse(x);
-  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
+  const auto g = ddx::rt::detail::derive_jacobian(b, f.id(b));
   expect_jacobian_matches_differences(b, f.id(b), g, composition(6));
 }
 
@@ -81,14 +82,14 @@ TEST(RtEnergy, StableDownToTraceMoleFractions) {
   Arena<> b;
   const auto x = species(b, n);
   const auto f = models::uniquac(x);
-  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
+  const auto g = ddx::rt::detail::derive_jacobian(b, f.id(b));
 
   double previous_value = 0;
   double previous_trace = 0;
   for (const double trace : {1e-3, 1e-6, 1e-9, 1e-12, 1e-15}) {
-    std::vector<double> pt(n, (1.0 - trace) / (n - 1));
+    std::vector pt(n, (1.0 - trace) / (n - 1));
     pt[0] = trace;
-    const auto values = ddx::rt::evaluate_all(b, pt);
+    const auto values = ddx::rt::detail::evaluate_all(b, pt);
 
     EXPECT_TRUE(std::isfinite(values[g.value])) << "G at trace " << trace;
     for (const std::size_t i : std::views::iota(0uz, n)) {
@@ -110,18 +111,18 @@ TEST(RtEnergy, StableDownToTraceMoleFractions) {
 
 // Checks every cell of a swept Hessian, including cells the colouring dropped,
 // against central differences of the swept Jacobian row.
-void expect_matches_differences(const ddx::rt::Hessian &h, Arena<> &b,
+void expect_matches_differences(const ddx::rt::detail::Hessian &h, Arena<> &b,
                                 std::size_t n) {
   const auto pt = composition(n);
-  const auto values = ddx::rt::evaluate_all(b, pt);
+  const auto values = ddx::rt::detail::evaluate_all(b, pt);
   const auto dims = std::views::iota(0uz, n);
   for (const auto [i, j] : std::views::cartesian_product(dims, dims)) {
     constexpr double step = 1e-5;
     auto hi = pt, lo = pt;
     hi[j] += step;
     lo[j] -= step;
-    const double fd = (ddx::rt::evaluate_all(b, hi)[h.partial[i]] -
-                       ddx::rt::evaluate_all(b, lo)[h.partial[i]]) /
+    const double fd = (ddx::rt::detail::evaluate_all(b, hi)[h.partial[i]] -
+                       ddx::rt::detail::evaluate_all(b, lo)[h.partial[i]]) /
                       (2 * step);
     EXPECT_NEAR(values[h.at(i, j)], fd, 1e-4 * std::max(1.0, std::abs(fd)))
         << "H[" << i << "][" << j << "]";
@@ -133,7 +134,7 @@ TEST(RtEnergy, HessianMatchesDifferencesOfTheJacobian) {
   Arena<> b;
   const auto x = species(b, n);
   const auto f = models::uniquac(x);
-  const auto h = ddx::rt::derive_hessian(b, f.id(b));
+  const auto h = ddx::rt::detail::derive_hessian(b, f.id(b));
   expect_matches_differences(h, b, n);
 }
 
@@ -144,8 +145,8 @@ TEST(RtEnergy, MixingRulesGiveADenseHessian) {
     Arena<> b;
     auto x = species(b, n);
     const auto f = models::peng_robinson(x, RE{0.9}); // Z pinned: n symbols
-    const auto rows = ddx::rt::coupling_pattern(b, f.id(b));
-    const auto colouring = ddx::rt::colour_columns(rows);
+    const auto rows = ddx::rt::detail::coupling_pattern(b, f.id(b));
+    const auto colouring = ddx::rt::detail::colour_columns(rows);
     EXPECT_EQ(colouring.count(), n) << "n=" << n;
 
     for (const auto [i, row] : rows | std::views::enumerate) {
@@ -161,7 +162,7 @@ TEST(RtEnergy, JacobianStaysCheapAsSpeciesAreAdded) {
     const auto x = species(b, n);
     const auto f = models::uniquac(x);
     const std::size_t built = b.size();
-    (void)ddx::rt::derive_jacobian(b, f.id(b));
+    (void)ddx::rt::detail::derive_jacobian(b, f.id(b));
     const std::size_t added = b.size() - built;
 
     // One reverse sweep costs a small multiple of the function, not of n.
@@ -183,8 +184,8 @@ TEST(RtEnergySparse, FiniteRangeGivesFewColours) {
     Arena<> b;
     const auto s = species(b, n);
     const auto e = models::cluster_expansion(s, 2);
-    const auto colouring =
-        ddx::rt::colour_columns(ddx::rt::coupling_pattern(b, e.id(b)));
+    const auto colouring = ddx::rt::detail::colour_columns(
+        ddx::rt::detail::coupling_pattern(b, e.id(b)));
 
     // The degree is bounded, so the colour count must not grow with n; it
     // measures 5 with smallest-last ordering.
@@ -198,17 +199,17 @@ TEST(RtEnergySparse, BondedChainIsBanded) {
   Arena<> b;
   const auto r = species(b, n);
   const auto e = models::bonded_chain(r);
-  const auto rows = ddx::rt::coupling_pattern(b, e.id(b));
+  const auto rows = ddx::rt::detail::coupling_pattern(b, e.id(b));
 
   // A bend term spans three sites, so nothing couples further than two apart.
   for (const auto [index, row] : rows | std::views::enumerate) {
     const auto i = static_cast<std::size_t>(index);
-    for (const std::size_t j : ddx::rt::set_bits(row)) {
+    for (const std::size_t j : ddx::rt::detail::set_bits(row)) {
       const auto span = i > j ? i - j : j - i;
       EXPECT_LE(span, 2u) << "unexpected coupling " << i << "," << j;
     }
   }
-  EXPECT_LE(ddx::rt::colour_columns(rows).count(), 5u);
+  EXPECT_LE(ddx::rt::detail::colour_columns(rows).count(), 5u);
 }
 
 TEST(RtEnergySparse, ColouredHessianIsStillCorrect) {
@@ -217,7 +218,7 @@ TEST(RtEnergySparse, ColouredHessianIsStillCorrect) {
   Arena<> b;
   const auto s = species(b, n);
   const auto e = models::cluster_expansion(s, 2);
-  const auto h = ddx::rt::derive_hessian(b, e.id(b));
+  const auto h = ddx::rt::detail::derive_hessian(b, e.id(b));
   EXPECT_LT(h.colours(), n)
       << "a banded pattern should beat one sweep per column";
   expect_matches_differences(h, b, n);

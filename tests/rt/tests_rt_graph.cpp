@@ -15,11 +15,18 @@
 // The freeze must keep each operand in its position and drop nothing reachable.
 
 namespace {
-using ddx::rt::Graph;
-using ddx::rt::NodeId;
+using ddx::rt::detail::Graph;
+using ddx::rt::detail::NodeId;
+
+// The ids a frozen graph keeps, counted through live().
+std::size_t graph_live_count(const auto &g) {
+  return static_cast<std::size_t>(
+      std::ranges::count_if(std::views::iota(NodeId{}, NodeId{g.size()}),
+                            [&g](NodeId v) { return g.live(v); }));
+}
 
 TEST(RtGraph, OperandOrderSurvivesCompression) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x / y; // not commutative: the slots must not be swapped
@@ -31,19 +38,19 @@ TEST(RtGraph, OperandOrderSurvivesCompression) {
 }
 
 TEST(RtGraph, UnaryNodeHasOneOperand) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto f = sin(x);
   const auto graph = ddx::test::freeze_values(b, std::array{f.id(b)});
   const auto [lhs, rhs, absent] = graph.operands(f.id(b));
   EXPECT_EQ(lhs, x.id(b));
-  EXPECT_EQ(rhs, ddx::rt::no_node);
+  EXPECT_EQ(rhs, ddx::rt::detail::no_node);
 }
 
 // When roots are not outputs, the value block is empty and nodes only the value
 // needs are dead; d(x*y)/dx needs y, never the product.
 TEST(RtGraph, RootsAloneLeaveTheValueOut) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = x * log(x) + 0.3 * (x * y);
@@ -61,11 +68,11 @@ TEST(RtGraph, RootsAloneLeaveTheValueOut) {
             both.output_blocks().jacobian.size());
   EXPECT_FALSE(alone.live(root));
   EXPECT_TRUE(both.live(root));
-  EXPECT_LT(alone.live_count(), both.live_count());
+  EXPECT_LT(graph_live_count(alone), graph_live_count(both));
 }
 
 TEST(RtGraph, EverythingTheOutputsReachIsLive) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto f = exp(x) * sin(y);
@@ -76,12 +83,13 @@ TEST(RtGraph, EverythingTheOutputsReachIsLive) {
   EXPECT_TRUE(graph.live(x.id(b)));
   EXPECT_TRUE(graph.live(y.id(b)));
   EXPECT_FALSE(graph.live(dead.id(b)));
-  EXPECT_LT(graph.live_count(), graph.size());
+  // The dead node, built after the output, is not copied at all.
+  EXPECT_LT(graph.size(), b.size());
 }
 
 TEST(RtGraph, CarriesSymbolsAndOutputs) {
-  ddx::rt::Arena<> b;
-  const auto root = ddx::rt::to_graph(b, ddx::var<"x"> * ddx::var<"y">);
+  ddx::rt::detail::Arena<> b;
+  const auto root = ddx::rt::detail::to_graph(b, ddx::var<"x"> * ddx::var<"y">);
   const auto graph =
       ddx::test::GraphBuilder{b}.value(root).build_jacobian().finish();
 
@@ -90,9 +98,9 @@ TEST(RtGraph, CarriesSymbolsAndOutputs) {
 }
 
 TEST(RtGraph, IdOrderIsTopological) {
-  ddx::rt::Arena<> b;
-  const auto root = ddx::rt::to_graph(b, sin(ddx::var<"x"> * ddx::var<"y">) +
-                                             exp(ddx::var<"x">));
+  ddx::rt::detail::Arena<> b;
+  const auto root = ddx::rt::detail::to_graph(
+      b, sin(ddx::var<"x"> * ddx::var<"y">) + exp(ddx::var<"x">));
   const auto graph =
       ddx::test::GraphBuilder{b}.value(root).build_jacobian().finish();
 
@@ -101,7 +109,7 @@ TEST(RtGraph, IdOrderIsTopological) {
   for (const NodeId v :
        std::views::iota(NodeId{0}, static_cast<NodeId>(graph.size()))) {
     for (const NodeId child : graph.operands(v)) {
-      if (child != ddx::rt::no_node) {
+      if (child != ddx::rt::detail::no_node) {
         EXPECT_LT(child, v) << "node " << v << " has a forward reference";
       }
     }
@@ -113,7 +121,7 @@ TEST(RtGraph, IdOrderIsTopological) {
 // Tape rows are reused once their last reader is done, so a dense model's sweep
 // touches a fraction of its ids. Only the size is checked here.
 TEST(RtGraph, PacksTheTapeByLiveness) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = std::views::iota(0uz, 64uz) |
                  std::views::transform([&](std::size_t i) {
                    return var(b, std::format("x{:02}", i));
@@ -124,12 +132,12 @@ TEST(RtGraph, PacksTheTapeByLiveness) {
                      .values_from(std::span<const NodeId>{&root, 1})
                      .build_jacobian()
                      .finish();
-  const double ratio =
-      static_cast<double>(g.tape_rows()) / static_cast<double>(g.live_count());
+  const double ratio = static_cast<double>(g.tape_rows()) /
+                       static_cast<double>(graph_live_count(g));
   std::printf("[ ddx ] mse n = 64: %zu live nodes, %zu tape rows (%.3f)\n",
-              g.live_count(), g.tape_rows(), ratio);
+              graph_live_count(g), g.tape_rows(), ratio);
   EXPECT_LT(ratio, 0.25);
-  auto rows = ddx::rt::in_order(g.output_blocks()) | std::views::join |
+  auto rows = ddx::rt::detail::in_order(g.output_blocks()) | std::views::join |
               std::views::transform([&g](NodeId o) { return g.rows()[o]; }) |
               ddx::impl::to<std::vector<std::uint32_t>>();
   for (const std::uint32_t r : rows) {
@@ -138,7 +146,7 @@ TEST(RtGraph, PacksTheTapeByLiveness) {
   std::ranges::sort(rows);
   EXPECT_EQ(std::ranges::adjacent_find(rows), rows.end());
   // No step reads the row it writes, since the lane loops assume no aliasing.
-  for (const ddx::rt::Step &s : g.schedule()) {
+  for (const ddx::rt::detail::Step &s : g.schedule()) {
     for (const std::uint32_t in : s.in) {
       EXPECT_NE(in, s.out);
     }

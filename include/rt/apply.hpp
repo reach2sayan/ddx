@@ -12,9 +12,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace ddx::rt {
-
-namespace detail {
+namespace ddx::rt::detail {
 
 template <typename Fn>
 inline constexpr bool is_field_op_v = meta::contains(
@@ -140,8 +138,6 @@ dispatch(OpCode op, auto &&visit) {
   std::unreachable();
 }
 
-} // namespace detail
-
 // Whether apply<T>(op, ...) computes op or returns T{}. Leaves are always
 // supported.
 template <impl::Numeric T>
@@ -166,4 +162,4 @@ template <impl::Numeric T>
   });
 }
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail

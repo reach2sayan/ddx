@@ -20,12 +20,10 @@
 #include <utility>
 #include <vector>
 
-namespace ddx::rt {
+namespace ddx::rt::detail {
 
 // Points per block sweep, which is two AVX2 registers of doubles.
 inline constexpr std::size_t block_lanes = 8;
-
-namespace detail {
 
 // Applies one op across W lanes for any arity. supported() keeps the loop
 // compiling at scalars where the op is undefined.
@@ -113,8 +111,8 @@ template <typename U> struct TapeView {
   std::span<const TensorRow> tensor_rows{};
   U *vtape = nullptr;
   const TensorKernelTable<U> *kernels = nullptr;
-  // Each node's mate, or empty for no pairing: Graph::pairs' products, or an
-  // ArenaWalk's paired_ops.
+  // Each node's mate, or empty for no pairing: Graph::pairs' products and
+  // extern rings, or an ArenaWalk's paired_ops and extern rings.
   std::span<const NodeId> pairs{};
 
   [[nodiscard]] constexpr TapeRow row(NodeId v) const noexcept {
@@ -132,23 +130,36 @@ template <typename U> struct TapeView {
   }
 };
 
-// Calls an extern function once per lane and keeps this node's component.
-// lane is taken by value here and below, for the reason lanes_apply gives.
+// Calls an extern function once per lane and keeps this node's component, and
+// those of its ring under ring_externs, whose other members find their rows
+// written. lane is taken by value here and below, for the reason lanes_apply
+// gives.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_NOINLINE constexpr void lanes_extern(const Arena<T> &b, NodeId v, U *out,
                                          auto lane, const TapeView<U> &t) {
   if constexpr (std::same_as<U, T>) {
+    const NodeId mate = t.pairs.empty() ? no_node : t.pairs[v];
+    if (mate < v) {
+      return;
+    }
     const auto [fn, component] = get<ExternRef>(b[v]);
     const ExternEntry<T> &e = b.externs()[fn];
     const auto args = arguments(b, v);
+    boost::container::small_vector<std::pair<U *, std::uint32_t>, 8> ring{
+        {out, component}};
+    for (NodeId m = mate; m != no_node && m != v; m = t.pairs[m]) {
+      ring.emplace_back(lane(t.row(m)), get<ExternRef>(b[m]).component);
+    }
     boost::container::small_vector<T, 8> in(args.size());
-    boost::container::small_vector<T, 16> answer(e.size());
+    boost::container::small_vector<T, 32> answer(e.size());
     for (std::size_t k = 0; k < W; ++k) {
       for (const auto [j, arg] : args | std::views::enumerate) {
         in[static_cast<std::size_t>(j)] = lane(t.row(arg))[k];
       }
       (*e.fn)(in, answer);
-      out[k] = answer[component];
+      for (const auto [row, c] : ring) {
+        row[k] = answer[c];
+      }
     }
   } else {
     std::ranges::fill_n(out, W, U{});
@@ -183,7 +194,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
     };
     const auto [self, w] = row(v);
     const auto mine = [self, w](std::size_t k) {
-      return std::span<U>{self + k * w, w};
+      return std::span{self + k * w, w};
     };
     const TensorKernelTable<U> &kt = *t.kernels;
     const auto at = [&](NodeId s, std::size_t k) { return lane(t.row(s))[k]; };
@@ -225,11 +236,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
                       const U>{b.tensors()[get<TensorRef>(b[source]).value]
                                    .data}
                 : in(source, k);
-        for (std::size_t i = 0; i < m.cols; ++i) {
-          for (std::size_t j = 0; j < m.rows; ++j) {
-            to[j + i * m.rows] = from[i + j * m.cols];
-          }
-        }
+        transpose(m.cols, m.rows, from, to);
         break;
       }
       case OpCode::StackRows: { // item i is row i, so (i, j) is at i + j * rows
@@ -263,7 +270,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
         if (const NodeId mate = t.pairs[v]; mate > v) {
           // The first of a pair computes both in one pass over the matrix.
           const auto [other_at, other_w] = row(mate);
-          const std::span<U> other{other_at + k * other_w, other_w};
+          const std::span other{other_at + k * other_w, other_w};
           const bool transposed =
               get<Orientation>(n) == Orientation::transposed;
           const auto [matrix, vec] = operands<OpCode::MatVec>(n);
@@ -425,8 +432,8 @@ inline constexpr std::array paired_ops{
   });
 }
 
-// Each scheduled node's mate under paired_ops, or empty when none pair.
-// Interning leaves at most one node per op and operand.
+// Each scheduled node's mate under paired_ops or ring_externs, or empty when
+// none pair. Interning leaves at most one node per op and operand.
 [[nodiscard]] constexpr std::vector<NodeId>
 mates_of(const auto &nodes, std::span<const Step> schedule) {
   using Candidate = std::tuple<std::ptrdiff_t, NodeId, NodeId>;
@@ -452,6 +459,7 @@ mates_of(const auto &nodes, std::span<const Step> schedule) {
       mates[std::get<2>(run[1])] = std::get<2>(run[0]);
     }
   }
+  ring_externs(nodes, schedule, mates);
   return mates;
 }
 
@@ -517,8 +525,6 @@ sweep_step(const Arena<T> &b, std::span<const Node<T>> nodes,
   }
 }
 
-} // namespace detail
-
 // Evaluates schedule at W points at once. point_lanes is symbol-major (s * W +
 // k) and tape is node-major, so every lane loop is contiguous.
 template <std::size_t W, impl::Numeric T, std::ranges::random_access_range R,
@@ -553,7 +559,6 @@ constexpr void evaluate_into(const Arena<T> &b, const R &point,
   evaluate_block<1>(b, point, schedule, v, tensors);
 }
 
-namespace detail {
 // A cached schedule and tensor layout for walking ids at many points. values
 // is id-indexed and arena-sized, and vtape is extent() long.
 class ArenaWalk {
@@ -607,7 +612,7 @@ public:
              const TensorKernelTable<T> &kernels = reference_table<T>) const {
     using U = std::ranges::range_value_t<decltype(point)>;
     std::vector<U> values(b.size()), vtape(extent());
-    (*this)(b, point, std::span<U>{values}, std::span<U>{vtape}, kernels);
+    (*this)(b, point, std::span{values}, std::span{vtape}, kernels);
     return values;
   }
 
@@ -616,7 +621,6 @@ private:
   TensorLayout layout_;
   std::vector<NodeId> mates_;
 };
-} // namespace detail
 
 // evaluate_all restricted to the nodes the roots reach. The result is still
 // id-indexed; entries the roots do not reach must not be read.
@@ -631,15 +635,6 @@ evaluate_reachable(const Arena<T> &b, std::span<const NodeId> roots,
                            contract}(b, point, kernels);
 }
 
-// Whether every op the roots reach is supported at U; ArenaWalk::computes over
-// the walk the roots would sweep.
-template <impl::Numeric U, impl::Numeric T>
-[[nodiscard]] constexpr bool computes_at(const Arena<T> &b,
-                                         std::span<const NodeId> roots) {
-  return detail::ArenaWalk{b, detail::live_ids(detail::reachable(b, roots))}
-      .template computes<U>(b);
-}
-
 // Evaluates every node in id order; this is the reference the JIT is checked
 // against. The point's element type picks the arithmetic, so duals work too.
 template <impl::Numeric T, std::ranges::random_access_range R>
@@ -650,4 +645,4 @@ evaluate_all(const Arena<T> &b, const R &point,
   return detail::ArenaWalk{b}(b, point, kernels);
 }
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail

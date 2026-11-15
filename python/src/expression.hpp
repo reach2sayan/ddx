@@ -26,7 +26,7 @@ namespace ddx::py {
 class PyExpression {
 public:
   using Base = rt::Expression<double>;
-  using SharedArena = std::shared_ptr<rt::Arena<double>>;
+  using SharedArena = std::shared_ptr<rt::detail::Arena<double>>;
 
   constexpr PyExpression() = default;
 
@@ -41,13 +41,27 @@ public:
     return expression_.poisoned();
   }
 
-  // Raises immediately if the expression is poisoned, instead of carrying the
+  // Raises the reason a poisoned expression carries, instead of carrying the
   // poison on to equation().
-  [[nodiscard]] static PyExpression checked(const Base &e, SharedArena arena) {
+  static void ensure(const Base &e) {
     if (const auto why = rt::detail::Router::why(e)) {
       fail_with(*why);
     }
+  }
+  [[nodiscard]] static PyExpression checked(const Base &e, SharedArena arena) {
+    ensure(e);
     return {e, std::move(arena)};
+  }
+  // The arena of the first operand that has one.
+  [[nodiscard]] static const SharedArena &
+  first_arena(const std::same_as<PyExpression> auto &...es) {
+    static const SharedArena none;
+    for (const SharedArena *a : {&es.arena_...}) {
+      if (*a) {
+        return *a;
+      }
+    }
+    return none;
   }
   // Packs scalars into a vector in their own arena, else in `fallback`, the
   // model running now.
@@ -61,7 +75,8 @@ public:
     }
     const auto bases = scalars | std::views::transform(&PyExpression::base) |
                        impl::to<std::vector>();
-    return checked(rt::pack(*arena, std::span<const Base>{bases}), arena);
+    return checked(rt::detail::pack(*arena, std::span<const Base>{bases}),
+                   arena);
   }
 
   // Accumulating operators, so a loop of `acc += term` builds one node. The
@@ -83,26 +98,27 @@ public:
   }
   // () for a scalar, (n,) for a vector, and (rows, cols) for a matrix.
   [[nodiscard]] std::vector<std::size_t> shape() const {
-    if (!arena_ || expression_.pending()) {
+    if (!arena_ || rt::detail::Router::pending(expression_)) {
       return {};
     }
-    const rt::Node<double> &n = (*arena_)[expression_.id()];
+    const rt::detail::Node<double> &n =
+        (*arena_)[rt::detail::Router::id(expression_)];
     if (n.op == rt::OpCode::MatConst) {
       const auto &t =
-          arena_->tensors()[rt::detail::get<rt::TensorRef>(n).value];
+          arena_->tensors()[rt::detail::get<rt::detail::TensorRef>(n).value];
       return {t.rows, t.cols};
     }
-    const rt::Shape s = expression_.shape();
+    const rt::detail::Shape s = rt::detail::Router::shape(expression_);
     if (s.cols > 1) {
       return {s.rows, s.cols};
     }
-    return size() == 0 ? std::vector<std::size_t>{}
-                       : std::vector<std::size_t>{size()};
+    return size() == 0 ? std::vector<std::size_t>{} : std::vector{size()};
   }
 
   // The node id in `arena`, refusing a handle from another arena. A pending
   // literal is materialised into `arena`.
-  [[nodiscard]] rt::NodeId root_in(rt::Arena<double> &arena) const {
+  [[nodiscard]] rt::detail::NodeId
+  root_in(rt::detail::Arena<double> &arena) const {
     if (arena_ && arena_.get() != &arena) {
       fail_with(errc::no_graph);
     }
@@ -111,16 +127,18 @@ public:
 
   [[nodiscard]] std::string repr() const {
     if (!arena_) {
-      return std::format("Expression({})", expression_.literal());
+      return std::format("Expression({})",
+                         rt::detail::Router::literal(expression_));
     }
-    const rt::NodeId v = expression_.id(*arena_);
-    const rt::Node<double> &n = (*arena_)[v];
+    const rt::detail::NodeId v = expression_.id(*arena_);
+    const rt::detail::Node<double> &n = (*arena_)[v];
     switch (n.op) {
     case rt::OpCode::Const:
       return std::format("Expression({})", n.value);
     case rt::OpCode::Var:
-      return std::format("Expression({})",
-                         arena_->symbols()[rt::detail::get<rt::Slot>(n).value]);
+      return std::format(
+          "Expression({})",
+          arena_->symbols()[rt::detail::get<rt::detail::Slot>(n).value]);
     default:
       // Shows the op and node id rather than the whole subtree.
       return std::format("Expression({} #{})", rt::label_of(n.op), v);
@@ -131,17 +149,17 @@ private:
   // The only functions that build a new handle with an arena. They are keyed by
   // opcode, so the module registers every operator without a friend each.
   friend PyExpression unary(rt::OpCode op, const PyExpression &u) {
-    return {Base::form(op, u.expression_), u.arena_};
+    return {rt::detail::Router::form(op, u.expression_), u.arena_};
   }
   friend PyExpression binary(rt::OpCode op, const PyExpression &l,
                              const PyExpression &r) {
-    return {Base::form(op, l.expression_, r.expression_),
-            l.arena_ ? l.arena_ : r.arena_};
+    return {rt::detail::Router::form(op, l.expression_, r.expression_),
+            first_arena(l, r)};
   }
   // Applies the base's own composition of two handles, keeping the arena.
   friend PyExpression combine(const PyExpression &l, const PyExpression &r,
                               auto &&fn) {
-    return {fn(l.expression_, r.expression_), l.arena_ ? l.arena_ : r.arena_};
+    return {fn(l.expression_, r.expression_), first_arena(l, r)};
   }
   // A composition that may refuse, such as a reduction or a vector factory in
   // module.cpp, raises where it is formed.
@@ -150,8 +168,7 @@ private:
   }
   friend PyExpression reduce(const PyExpression &u, const PyExpression &v,
                              auto &&fn) {
-    return checked(fn(u.expression_, v.expression_),
-                   u.arena_ ? u.arena_ : v.arena_);
+    return checked(fn(u.expression_, v.expression_), first_arena(u, v));
   }
 
 public:
@@ -185,8 +202,8 @@ struct PyTransposed {
 // The arena is taken from whichever operand has one.
 [[nodiscard]] inline PyExpression
 select(const PyExpression &c, const PyExpression &t, const PyExpression &f) {
-  const auto arena = c.arena() ? c.arena() : t.arena() ? t.arena() : f.arena();
-  return {select(c.base(), t.base(), f.base()), arena};
+  return {select(c.base(), t.base(), f.base()),
+          PyExpression::first_arena(c, t, f)};
 }
 
 } // namespace ddx::py

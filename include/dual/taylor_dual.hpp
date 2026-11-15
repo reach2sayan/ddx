@@ -65,6 +65,13 @@ struct TaylorDual : compound_from_binary<TaylorDual<S, N>> {
     return r;
   }
 
+  // f^(K)(x0): coefficient K with its factorial put back.
+  template <std::size_t K>
+    requires(K <= N)
+  [[nodiscard]] constexpr S derivative() const {
+    return c[K] * static_cast<S>(detail::compile_time_factorial(K));
+  }
+
   constexpr TaylorDual operator+(const TaylorDual &o) const noexcept {
     TaylorDual r;
     std::ranges::transform(c, o.c, r.c.begin(), std::plus{});

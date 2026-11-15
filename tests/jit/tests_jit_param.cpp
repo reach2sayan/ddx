@@ -16,20 +16,20 @@
 namespace {
 
 TEST(JitParam, ColumnsAreSymbolsThenParamsThenSeeds) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
-  const auto a = ddx::rt::param(b, "a");
+  const auto a = ddx::rt::detail::param(b, "a");
   const auto f = a * x * x + exp(x) * seed(b, 0);
   const auto graph = ddx::test::GraphBuilder{b}.value(f).finish();
   ASSERT_EQ(graph.arity(), 3u);
 
-  auto compiler = ddx::jit::Compiler::create();
+  auto compiler = ddx::jit::detail::Compiler::create();
   ASSERT_TRUE(compiler.has_value());
   const auto kernel = compiler->compile(graph);
   ASSERT_TRUE(kernel.has_value()) << kernel.error().detail;
 
   static constexpr std::size_t n = 37;
-  std::vector<std::vector<double>> columns(3, std::vector<double>(n));
+  std::vector columns(3, std::vector<double>(n));
   for (const auto [j, column] : columns | std::views::enumerate) {
     for (const auto [i, cell] : column | std::views::enumerate) {
       cell = 0.3 + 0.4 * static_cast<double>((i + 3 * j) % 5) / 5.0 +
@@ -47,7 +47,7 @@ TEST(JitParam, ColumnsAreSymbolsThenParamsThenSeeds) {
     const double xv = columns[0][i];
     const double av = columns[1][i];
     const double v = columns[2][i];
-    const auto want = ddx::rt::evaluate_all(b, std::vector{xv, av, v});
+    const auto want = ddx::rt::detail::evaluate_all(b, std::vector{xv, av, v});
     EXPECT_EQ(got[i], want[graph.outputs()[0]]) << "at point " << i;
   }
 }

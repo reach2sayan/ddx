@@ -27,7 +27,7 @@
 
 // Lowers an Ast into an arena through Expression::form, which interns, folds
 // and propagates poison exactly as hand-built expressions do.
-namespace ddx::rt::text {
+namespace ddx::rt::detail::text {
 
 namespace detail {
 
@@ -80,7 +80,7 @@ form(const Ast &ast, std::span<const Expression<T>> symbols,
       return fail(errc::bad_syntax);
     }
     return meta::unpack(meta::iota<arity>, [&](auto... i) {
-      return Expr::form(t.op, built[t.in[i]]...);
+      return rt::detail::Router::form(t.op, built[t.in[i]]...);
     });
   };
 
@@ -131,11 +131,11 @@ template <std::floating_point T>
   // the same model built by hand regardless of parse order.
   arena.reserve(arena.size() + ast.names.size() + ast.terms.size(),
                 arena.symbols().size() + ast.names.size());
-  std::vector<Expr> symbols;
-  symbols.reserve(ast.names.size());
-  std::ranges::transform(
-      ast.names, std::back_inserter(symbols),
-      [&arena](const std::string &name) { return var(arena, name); });
+  const auto symbols = ast.names |
+                       std::views::transform([&arena](const std::string &name) {
+                         return var(arena, name);
+                       }) |
+                       impl::to<std::vector>();
 
   // Terms are stored children first, so operands are always already built.
   std::vector<Expr> built;
@@ -150,4 +150,4 @@ template <std::floating_point T>
   return built[ast.root];
 }
 
-} // namespace ddx::rt::text
+} // namespace ddx::rt::detail::text

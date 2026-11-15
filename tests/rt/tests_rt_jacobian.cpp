@@ -50,10 +50,11 @@ void expect_close(double got, double want) {
 // the columns of both sides line up by name.
 template <ddx::impl::CExpression E, std::size_t N>
 void expect_agrees_with_ddx(const E &e, std::array<double, N> pt) {
-  ddx::rt::Arena<> b;
-  const auto root = ddx::rt::to_graph(b, e);
-  const auto g = ddx::rt::derive_jacobian(b, root.id(b));
-  const auto values = ddx::rt::evaluate_all(b, std::span<const double>{pt});
+  ddx::rt::detail::Arena<> b;
+  const auto root = ddx::rt::detail::to_graph(b, e);
+  const auto g = ddx::rt::detail::derive_jacobian(b, root.id(b));
+  const auto values =
+      ddx::rt::detail::evaluate_all(b, std::span<const double>{pt});
 
   const double expected = ddx::meta::unpack(
       pt, [&](auto... a) { return ddx::Equation{e}.evaluate(a...); });
@@ -87,8 +88,9 @@ TEST(RtJacobian, Arithmetic) {
 }
 
 template <typename E>
-constexpr bool bridges =
-    requires(ddx::rt::Arena<> &b, const E &e) { ddx::rt::to_graph(b, e); };
+constexpr bool bridges = requires(ddx::rt::detail::Arena<> &b, const E &e) {
+  ddx::rt::detail::to_graph(b, e);
+};
 
 // rt has no leaf that reads a symbol but differentiates to zero, so a frozen
 // leaf is refused; a Jacobian row comes back thawed and lowers normally.
@@ -132,22 +134,23 @@ TEST(RtJacobian, SharedAndNested) {
 // max, min and abs have no compile-time derivative entry, so they are checked
 // against central differences on the interpreter.
 TEST(RtJacobian, SelectingOpsAgainstFiniteDifferences) {
-  using ddx::rt::Arena;
   using ddx::rt::Expression;
+  using ddx::rt::detail::Arena;
   const auto check = [](auto build, std::array<double, 2> pt) {
     Arena<> b;
     const auto vx = var(b, "x");
     const auto vy = var(b, "y");
     const auto f = build(vx, vy);
-    const auto g = ddx::rt::derive_jacobian(b, f.id(b));
-    const auto values = ddx::rt::evaluate_all(b, std::span<const double>{pt});
+    const auto g = ddx::rt::detail::derive_jacobian(b, f.id(b));
+    const auto values =
+        ddx::rt::detail::evaluate_all(b, std::span<const double>{pt});
     for (const std::size_t i : std::views::iota(0uz, 2uz)) {
       const double h = 1e-6;
       auto hi = pt, lo = pt;
       hi[i] += h;
       lo[i] -= h;
-      const double fd = (ddx::rt::evaluate(b, g.value, hi) -
-                         ddx::rt::evaluate(b, g.value, lo)) /
+      const double fd = (ddx::rt::detail::evaluate(b, g.value, hi) -
+                         ddx::rt::detail::evaluate(b, g.value, lo)) /
                         (2 * h);
       EXPECT_NEAR(values[g.partial[i]], fd, 1e-5 * std::max(1.0, std::abs(fd)));
     }
@@ -162,10 +165,10 @@ TEST(RtJacobian, SelectingOpsAgainstFiniteDifferences) {
 
 TEST(RtJacobian, DerivFromValueReusesThePrimalNode) {
   // exp's derivative is its primal, so the sweep must not build a second exp.
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto vx = var(b, "x");
   const auto f = exp(vx);
-  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
+  const auto g = ddx::rt::detail::derive_jacobian(b, f.id(b));
   EXPECT_EQ(g.partial[0], f.id(b));
 }
 
@@ -201,11 +204,11 @@ static_assert(!std::equality_comparable<ddx::rt::Expression<>>);
 static_assert(ddx::impl::CCommutativeMultiply<ddx::rt::Expression<>>);
 
 TEST(RtJacobian, UnusedSymbolHasZeroPartial) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto vx = var(b, "x");
   const auto vy = var(b, "y");
   const auto f = vx * vx;
-  const auto g = ddx::rt::derive_jacobian(b, f.id(b));
+  const auto g = ddx::rt::detail::derive_jacobian(b, f.id(b));
   ASSERT_EQ(g.partial.size(), 2u);
   EXPECT_TRUE(b.is_constant(g.partial[1], 0.0));
   (void)vy;
@@ -241,15 +244,16 @@ TEST(RtJacobian, UnaryRulesAgree) {
 // it, reading the same rules seeded with a unit adjoint.
 TEST(RtJacobian, ForwardModeAgreesWithReverse) {
   const auto check = [](auto build, std::array<double, 2> pt) {
-    ddx::rt::Arena<> b;
+    ddx::rt::detail::Arena<> b;
     const auto vx = var(b, "x");
     const auto vy = var(b, "y");
     const auto f = build(vx, vy);
     const auto fwd =
-        ddx::rt::derive_jacobian<ddx::DiffMode::Symbolic>(b, f.id(b));
+        ddx::rt::detail::derive_jacobian<ddx::DiffMode::Symbolic>(b, f.id(b));
     const auto rev =
-        ddx::rt::derive_jacobian<ddx::DiffMode::Reverse>(b, f.id(b));
-    const auto values = ddx::rt::evaluate_all(b, std::span<const double>{pt});
+        ddx::rt::detail::derive_jacobian<ddx::DiffMode::Reverse>(b, f.id(b));
+    const auto values =
+        ddx::rt::detail::evaluate_all(b, std::span<const double>{pt});
     for (const std::size_t i : std::views::iota(0uz, 2uz)) {
       const double want = values[rev.partial[i]];
       EXPECT_NEAR(values[fwd.partial[i]], want,
@@ -275,7 +279,7 @@ TEST(RtJacobian, ForwardModeAgreesWithReverse) {
 // cells exist and the dense form must fill in the other 20.
 TEST(RtJacobian, ABandedSystemKeepsOnlyTheCellsThatExist) {
   static constexpr std::size_t n = 6;
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
 
   const auto name = [](std::size_t i) { return "x" + std::to_string(i); };
   const auto x =
@@ -293,10 +297,9 @@ TEST(RtJacobian, ABandedSystemKeepsOnlyTheCellsThatExist) {
     rows.push_back(r);
   }
 
-  const auto j =
-      ddx::rt::derive_jacobian(b, rows | std::views::transform([&](auto &r) {
-                                    return r.id(b);
-                                  }) | ddx::impl::to<std::vector>());
+  const auto j = ddx::rt::detail::derive_jacobian(
+      b, rows | std::views::transform([&](auto &r) { return r.id(b); }) |
+             ddx::impl::to<std::vector>());
 
   const auto &pattern = j.pattern;
   EXPECT_EQ(pattern.size(), n);
@@ -321,14 +324,14 @@ TEST(RtJacobian, ABandedSystemKeepsOnlyTheCellsThatExist) {
 }
 
 TEST(RtJacobian, DenseCompressedAndTheNodesAllAgree) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = var(b, "x");
   const auto y = var(b, "y");
   const auto z = var(b, "z");
   // No row is dense and no column is empty.
   const auto eq = ddx::rt::equation(x * log(x) + y, y * y + z, exp(x * z));
 
-  const std::vector<double> at{0.6, 1.4, 0.9};
+  const std::vector at{0.6, 1.4, 0.9};
   const auto dense = *eq.jacobian(at);
   ASSERT_EQ(dense.size(), 3u * 3u);
 
@@ -357,7 +360,7 @@ TEST(RtJacobian, DenseCompressedAndTheNodesAllAgree) {
 // In a*b - a*b + c the adjoints reaching a*b fold to zero before a node is
 // built, so a and b get no column, as if the partial never existed.
 TEST(RtJacobian, AFoldedPartialIsAStructuralHole) {
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto a = var(b, "a");
   const auto bb = var(b, "b");
   const auto c = var(b, "c");
@@ -377,12 +380,12 @@ TEST(RtJacobian, AFoldedPartialIsAStructuralHole) {
       pattern.rows() |
       std::views::transform([](const auto &row) { return row.size(); }) |
       ddx::impl::to<std::vector<std::size_t>>();
-  EXPECT_EQ(widths, (std::vector<std::size_t>{1, 1, 0}));
+  EXPECT_EQ(widths, (std::vector{1uz, 1uz, 0uz}));
   EXPECT_TRUE(pattern.at(0, 2).has_value());  // c
   EXPECT_FALSE(pattern.at(0, 0).has_value()); // a
   EXPECT_FALSE(pattern.at(0, 1).has_value()); // b
 
-  const std::vector<double> at{0.3, 0.7, 1.1, 0.5, 0.2, 0.9};
+  const std::vector at{0.3, 0.7, 1.1, 0.5, 0.2, 0.9};
   const auto dense = *eq.jacobian(at);
   ASSERT_EQ(dense.size(), 18u);
   EXPECT_EQ(dense[0 * 6 + 2], 1.0); // d/dc of (... + c)
@@ -398,7 +401,7 @@ TEST(RtJacobian, AFoldedPartialIsAStructuralHole) {
 // cells exist and hessian_cell must place each compressed column.
 TEST(RtJacobian, HessianCellPlacesEveryCompressedColumn) {
   static constexpr std::size_t n = 6;
-  ddx::rt::Arena<> b;
+  ddx::rt::detail::Arena<> b;
   const auto x = std::views::iota(0uz, n) |
                  std::views::transform([&](std::size_t i) {
                    return var(b, "x" + std::to_string(i));
@@ -410,7 +413,7 @@ TEST(RtJacobian, HessianCellPlacesEveryCompressedColumn) {
   }
   const auto eq = ddx::rt::equation(energy);
 
-  const std::vector<double> at{0.3, 0.7, 1.1, 0.5, 0.2, 0.9};
+  const std::vector at{0.3, 0.7, 1.1, 0.5, 0.2, 0.9};
   const auto dense = *eq.hessian(at);
   ASSERT_EQ(dense.size(), n * n);
 
@@ -454,7 +457,7 @@ TEST(RtJacobian, SelectDifferentiatesTheArmTheConditionTakes) {
   });
 
   for (const auto &[px, py] : {std::pair{1.0, 3.0}, std::pair{3.0, 1.0}}) {
-    const std::array<double, 2> at{px, py};
+    const std::array at{px, py};
     const bool takes_x = px < py;
     EXPECT_DOUBLE_EQ(*eq.evaluate(at), takes_x ? px * px : py * py * py);
 
@@ -495,12 +498,12 @@ TEST(RtJacobian, SelectDiscardsTheUnchosenArmsPartials) {
   EXPECT_DOUBLE_EQ((*log_arm.hessian(2.0))[0], -0.25);
 
   // Both arms are chosen within one batch.
-  const std::array<double, 3> xs{-1.0, 0.0, 1.0};
+  const std::array xs{-1.0, 0.0, 1.0};
   std::array<double, 3> f{};
   std::array<double, 3> g{};
   const std::array<const double *, 1> in{xs.data()};
-  const std::array<double *, 1> fv{f.data()};
-  const std::array<double *, 1> gv{g.data()};
+  const std::array fv{f.data()};
+  const std::array gv{g.data()};
   ASSERT_TRUE(log_arm.jacobian(in, fv, gv, xs.size()).has_value());
   EXPECT_EQ(g, (std::array{0.0, 0.0, 1.0}));
 }
@@ -524,9 +527,9 @@ TEST(RtJacobian, SelectReadsAnyNonzeroConditionAsTrue) {
     return select(x, ddx::rt::Expression<double>{7.0},
                   ddx::rt::Expression<double>{9.0});
   });
-  const std::array<double, 1> zero{0.0};
-  const std::array<double, 1> two{2.0};
-  const std::array<double, 1> negative{-3.0};
+  const std::array zero{0.0};
+  const std::array two{2.0};
+  const std::array negative{-3.0};
   EXPECT_DOUBLE_EQ(*eq.evaluate(zero), 9.0);
   EXPECT_DOUBLE_EQ(*eq.evaluate(two), 7.0);
   EXPECT_DOUBLE_EQ(*eq.evaluate(negative), 7.0);
@@ -542,7 +545,7 @@ TEST(RtJacobian, ComparisonsComposeFromTheTwoOpcodes) {
       const auto x = ddx::rt::var("x");
       return build(x, ddx::rt::var("y"));
     });
-    const std::array<double, 2> at{a, b};
+    const std::array at{a, b};
     return *eq.evaluate(at);
   };
   const auto less = [](auto x, auto y) { return x < y; };
@@ -575,7 +578,7 @@ TEST(RtJacobian, SelectSurvivesEveryWalkerThatRebuildsANode) {
     const auto y = ddx::rt::var("y");
     return select(le(x, y), exp(x) * y, log(y) + x * x);
   });
-  const std::array<double, 2> at{0.6, 1.4};
+  const std::array at{0.6, 1.4};
   const auto swept = *eq.jacobian(at);
   const auto swept_h = *eq.hessian(at);
 
@@ -622,7 +625,7 @@ TEST(RtJacobian, ComparisonsAgreeWithTheKernelAtNaN) {
       const auto t = ddx::rt::var("t");
       return select(c, t, f);
     });
-    const std::array<double, 3> at{nan, 1.0, 2.0}; // c, f, t
+    const std::array at{nan, 1.0, 2.0}; // c, f, t
     const double interpreted = *raw.evaluate(at);
     raw.options({.backend = ddx::jit::Backend::Compile, .points = 1});
     ASSERT_TRUE(raw.uses_kernel());
@@ -672,7 +675,7 @@ TEST(RtJacobian, BothArmsOfASelectOverASharedSubexpression) {
 
   // With the condition false, f = s*s - s.
   {
-    const std::array<double, 3> at{0.7, 0.3, 1.9};
+    const std::array at{0.7, 0.3, 1.9};
     const double s = std::sin(at[0] * at[1]) + at[2];
     const double c = std::cos(at[0] * at[1]);
     const auto span = std::span<const double>{at};
@@ -691,7 +694,7 @@ TEST(RtJacobian, BothArmsOfASelectOverASharedSubexpression) {
 
   // With the condition true, the same nodes take the other arm: f = 2 s*s.
   {
-    const std::array<double, 3> at{0.3, 0.7, 1.9};
+    const std::array at{0.3, 0.7, 1.9};
     const double s = std::sin(at[0] * at[1]) + at[2];
     const auto span = std::span<const double>{at};
     EXPECT_DOUBLE_EQ(*eq.evaluate(span), 2 * s * s);
@@ -732,19 +735,20 @@ TEST(RtJacobian, PowAtAZeroBaseIsGuardedOnTheGraph) {
 
   // With a literal exponent, equal(3, 0) folds to 0 and the select to its false
   // arm, 3 * (x * x), so no Select node remains.
-  ddx::rt::Arena<> b;
-  const auto x = ddx::rt::var(b, "x");
-  const auto cubic = ddx::rt::derive_jacobian<ddx::impl::DiffMode::Reverse>(
-      b, pow(x, 3.0).id(b));
+  ddx::rt::detail::Arena<> b;
+  const auto x = ddx::rt::detail::var(b, "x");
+  const auto cubic =
+      ddx::rt::detail::derive_jacobian<ddx::impl::DiffMode::Reverse>(
+          b, pow(x, 3.0).id(b));
   const auto live =
       ddx::rt::detail::reachable(b, std::span{&cubic.partial[0], 1});
   for (const std::size_t v : std::views::iota(0uz, b.size())) {
-    EXPECT_FALSE(live[v] && b[static_cast<ddx::rt::NodeId>(v)].op ==
+    EXPECT_FALSE(live[v] && b[static_cast<ddx::rt::detail::NodeId>(v)].op ==
                                 ddx::rt::OpCode::Select)
         << "node " << v;
   }
-  EXPECT_DOUBLE_EQ(ddx::rt::evaluate(b, cubic.partial[0], std::array{2.0}),
-                   12.0);
+  EXPECT_DOUBLE_EQ(
+      ddx::rt::detail::evaluate(b, cubic.partial[0], std::array{2.0}), 12.0);
 }
 
 // A partial taken during construction can be built on, as in Proton's

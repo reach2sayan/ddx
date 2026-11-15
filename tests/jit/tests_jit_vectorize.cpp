@@ -16,8 +16,8 @@
 // asserted on the IR rather than inferred from timings.
 
 namespace {
-using ddx::rt::Arena;
-using ddx::rt::Graph;
+using ddx::rt::detail::Arena;
+using ddx::rt::detail::Graph;
 
 // libmvec offers widths 2, 4 and 8, and the host picks, so any width counts.
 bool has_vector_doubles(const std::string &ir) {

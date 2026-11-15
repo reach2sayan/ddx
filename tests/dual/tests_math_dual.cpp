@@ -354,7 +354,7 @@ TEST(FrozenVariable, EvaluatesAndSeesZeroDerivative) {
 // Every unary math function must instantiate at 3 variables and agree with
 // reverse mode.
 TEST(ForwardJacobian, CoversEveryUnaryMathFunction) {
-  [[maybe_unused]] const std::array<double, 3> pt{0.6, 0.4, 1.3};
+  [[maybe_unused]] const std::array pt{0.6, 0.4, 1.3};
   [[maybe_unused]] auto y = var<"y">;
   [[maybe_unused]] auto z = var<"z">;
 }

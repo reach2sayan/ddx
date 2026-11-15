@@ -14,9 +14,7 @@
 #include <utility>
 #include <vector>
 
-namespace ddx::rt {
-
-namespace detail {
+namespace ddx::rt::detail {
 
 // The rules are written over Expression, which works elementwise on vectors,
 // so a Map or Zip uses its inner opcode's rule and yields a Map or Zip again.
@@ -105,12 +103,10 @@ fold_steps(Arena<T> &b, NodeId v) {
   std::vector<std::pair<NodeId, NodeId>> steps{{terms[0], terms[1]}};
   for (const NodeId t : terms | std::views::drop(2)) {
     const auto [l, r] = steps.back();
-    steps.emplace_back(H<T>::form(op, H<T>{b, l}, H<T>{b, r}).id(b), t);
+    steps.emplace_back(Router::form(op, H<T>{b, l}, H<T>{b, r}).id(b), t);
   }
   return steps;
 }
-
-} // namespace detail
 
 // One root's row of the Jacobian.
 struct JacobianRow {
@@ -119,7 +115,6 @@ struct JacobianRow {
   std::vector<NodeId> implicit; // df/dz with every z held, one per implicit.
 };
 
-namespace detail {
 // At an implicit z a reverse sweep either solves through it, folding
 // adj[z] * dz/dx into each symbol, or holds z and only collects df/dz.
 enum class AtImplicits : bool { solved, held };
@@ -159,7 +154,6 @@ struct SweepScratch {
 template <AtImplicits At, impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow reverse_sweep(Arena<T> &b, NodeId root,
                                                   SweepScratch &scratch);
-} // namespace detail
 
 template <impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow
@@ -174,7 +168,6 @@ template <impl::Numeric T>
   return build_reverse_jacobian(b, root, s);
 }
 
-namespace detail {
 // For implicit z with F(z, x) = 0, dz/dx_s = -F_s / F_z, built once per arena
 // from a reverse sweep of F holding z fixed, and kept on the Arena.
 struct Implicits {
@@ -220,7 +213,7 @@ template <impl::Numeric T>
           b.externs(), [](const ExternEntry<T> &e) { return e.order >= 2; })) {
     return false;
   }
-  std::vector<NodeId> wanted(roots.begin(), roots.end());
+  std::vector wanted(roots.begin(), roots.end());
   impl::append(wanted, b.closures());
   return reaches(b, wanted, [&b](const Node<T> &node) {
     return kind_of(node.op) == Kind::Extern &&
@@ -299,13 +292,12 @@ constexpr void mark_moving(const Arena<T> &b, std::span<const NodeId> cone,
                      [&](NodeId u) { moving[v] = moving[v] || moving[u]; });
   }
 }
-} // namespace detail
 
 // The reverse sweep, appending adjoint nodes above the cone so reverse id order
 // stays topological. Solved implicits fold adj[z] * dz/dx_s in at the end.
 template <detail::AtImplicits At, impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow
-detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &scratch) {
+reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &scratch) {
   const auto n = static_cast<NodeId>(b.size());
   const auto cone = cone_of(b, std::span{&root, 1}, scratch.marked);
   // Contributions are built for moving nodes and also constants, whose nodes
@@ -654,8 +646,8 @@ detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &scratch) {
   }
 
   JacobianRow g{.value = root,
-                .partial = std::vector<NodeId>(b.symbols().size(), no_node),
-                .implicit = std::vector<NodeId>(implicits, no_node)};
+                .partial = std::vector(b.symbols().size(), no_node),
+                .implicit = std::vector(implicits, no_node)};
   // Only a touched id holds an adjoint; putting it back readies the next sweep.
   for (const NodeId v : touched) {
     const Node<T> &node = b[v];
@@ -686,15 +678,14 @@ detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &scratch) {
 }
 
 // Forward mode: dv/ds carried up the roots' cone in one pass, where
-// `tangent[j]` is ds for symbol j.
+// `tangent[j]` is ds for symbol j. `cone` and `moves` depend on the roots
+// alone, so sweeps along several tangents compute them once.
 template <impl::Numeric T>
 [[nodiscard]] constexpr std::vector<NodeId>
 tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
-              std::span<const NodeId> tangent) {
+              std::span<const NodeId> tangent, std::span<const NodeId> cone,
+              const std::vector<bool> &moves) {
   const auto n = static_cast<NodeId>(b.size());
-  std::vector<bool> moves; // cone_of's marks, which come back clear
-  const auto cone = detail::cone_of(b, roots, moves);
-  detail::mark_moving(b, cone, moves);
   b.reserve(n + 2 * cone.size());
   std::vector d(n, no_node);
   // A node that holds still has a zero tangent of its shape, made only when an
@@ -728,7 +719,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
     case Kind::Extern: {
       Expression<T> sum{0};
       detail::extern_partials(b, v, [&](NodeId arg, const Expression<T> &c) {
-        sum = sum + c * Expression{b, at(arg)};
+        sum = sum + c * dv(arg);
       });
       d[v] = sum.id(b);
       break;
@@ -737,7 +728,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       if (op == OpCode::SumN) { // The sum of the terms' tangents.
         Expression<T> sum{0};
         for (const NodeId t : arguments(b, v)) {
-          sum += Expression{b, at(t)};
+          sum += dv(t);
         }
         d[v] = sum.id(b);
         break;
@@ -757,7 +748,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
           continue;
         }
         const Expression pr = detail::contribution_to<1>(step, one, l, r);
-        carried = pl * carried + pr * Expression{b, at(term)};
+        carried = pl * carried + pr * dv(term);
       }
       d[v] = carried.id(b);
       break;
@@ -783,8 +774,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
     case Kind::Unary: {
       const Expression u{b, node.in[0]};
       const Expression self{b, v};
-      d[v] =
-          (detail::partial(op, u, self) * Expression{b, at(node.in[0])}).id(b);
+      d[v] = (detail::partial(op, u, self) * dv(node.in[0])).id(b);
       break;
     }
     case Kind::Ternary:
@@ -793,9 +783,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       {
         const auto [cond, then, otherwise] =
             detail::operands<OpCode::Select>(node.in);
-        d[v] = select(Expression{b, cond}, Expression{b, at(then)},
-                      Expression{b, at(otherwise)})
-                   .id(b);
+        d[v] = select(Expression{b, cond}, dv(then), dv(otherwise)).id(b);
       }
       break;
     case Kind::Binary: {
@@ -859,6 +847,15 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
   return roots | std::views::transform([&](NodeId r) { return at(r); }) |
          impl::to<std::vector>();
 }
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::vector<NodeId>
+tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
+              std::span<const NodeId> tangent) {
+  std::vector<bool> moves; // cone_of's marks, which come back clear
+  const auto cone = detail::cone_of(b, roots, moves);
+  detail::mark_moving(b, cone, moves);
+  return tangent_sweep(b, roots, tangent, cone, moves);
+}
 
 // One forward sweep per symbol, kept as a check on the reverse Jacobian, which
 // builds fewer nodes everywhere except at a single variable.
@@ -866,18 +863,20 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow build_symbolic_jacobian(Arena<T> &b,
                                                             NodeId root) {
   const auto nsym = b.symbols().size();
-  JacobianRow g{.value = root,
-                .partial = std::vector<NodeId>(nsym, no_node),
-                .implicit = {}};
-  const std::array<NodeId, 1> roots{root};
+  JacobianRow g{
+      .value = root, .partial = std::vector(nsym, no_node), .implicit = {}};
+  const std::array roots{root};
 
   // One unit vector, reused by moving the 1 through it.
   const NodeId one = b.constant(T{1});
   const NodeId zero = b.constant(T{0});
-  std::vector<NodeId> unit(nsym, zero);
+  std::vector unit(nsym, zero);
+  std::vector<bool> moves;
+  const auto cone = detail::cone_of(b, std::span{roots}, moves);
+  detail::mark_moving(b, cone, moves);
   for (const std::size_t s : std::views::iota(0uz, nsym)) {
     unit[s] = one;
-    g.partial[s] = tangent_sweep(b, roots, unit).front();
+    g.partial[s] = tangent_sweep(b, roots, unit, cone, moves).front();
     unit[s] = zero;
   }
   return g;
@@ -938,7 +937,6 @@ template <impl::DiffMode Mode = impl::DiffMode::Reverse, impl::Numeric T>
   }
 }
 
-namespace detail {
 // The arena f is differentiated in, or the reason it cannot be.
 template <impl::Numeric T>
 [[nodiscard]] result<Arena<T> *> differentiable(const Expression<T> &f) {
@@ -948,21 +946,24 @@ template <impl::Numeric T>
                                        : errc::tensor_shape;
   return why ? fail(*why) : result<Arena<T> *>{b};
 }
-} // namespace detail
 
+} // namespace ddx::rt::detail
+
+namespace ddx::rt {
 // df/dx for every symbol in symbols() order, usable in an arena still being
 // built. Each is poisoned when f cannot be differentiated.
 template <impl::Numeric T>
 [[nodiscard]] std::vector<Expression<T>> gradient(const Expression<T> &f) {
   const auto b = detail::differentiable(f);
   if (!b) {
-    const Arena<T> *const at = detail::arena_of<T>({&f, 1});
+    const detail::Arena<T> *const at = detail::arena_of<T>({&f, 1});
     return std::vector(at ? at->symbols().size() : 1uz,
                        detail::Router::poison<T>(b.error().code));
   }
-  return derive_jacobian(**b, f.id(**b)).partial |
-         std::views::transform([&b](NodeId p) {
-           return p == no_node ? Expression<T>{T{0}} : Expression{**b, p};
+  return detail::derive_jacobian(**b, f.id(**b)).partial |
+         std::views::transform([&b](detail::NodeId p) {
+           return p == detail::no_node ? Expression<T>{T{0}}
+                                       : Expression{**b, p};
          }) |
          impl::to<std::vector>();
 }
@@ -971,9 +972,12 @@ template <impl::Numeric T>
 [[nodiscard]] Expression<T> derivative(const Expression<T> &f,
                                        std::string_view symbol) {
   const auto in = detail::differentiable(f).and_then(
-      [&](const Arena<T> *b) { return b->symbol(symbol); });
+      [&](const detail::Arena<T> *b) { return b->symbol(symbol); });
   return in ? gradient(f)[*in] : detail::Router::poison<T>(in.error().code);
 }
+} // namespace ddx::rt
+
+namespace ddx::rt::detail {
 
 // One sweep per colour: from the sum of a colour's partials, row i gets the sum
 // of d2f/dxi dxj over the colour, at most one of which is nonzero.
@@ -995,9 +999,12 @@ struct Hessian {
   }
 };
 
+// `scratch` is lent to the gradient sweep and every colour's sweep, and may be
+// lent on to the next root's.
 template <impl::Numeric T>
-[[nodiscard]] Hessian derive_hessian(Arena<T> &b, NodeId root) {
-  const auto g = build_reverse_jacobian(b, root);
+[[nodiscard]] Hessian derive_hessian(Arena<T> &b, NodeId root,
+                                     detail::SweepScratch &scratch) {
+  const auto g = build_reverse_jacobian(b, root, scratch);
   const auto rows = coupling_pattern(b, root);
   Hessian h{.value = g.value,
             .partial = g.partial,
@@ -1008,7 +1015,6 @@ template <impl::Numeric T>
   // Only the cells a column owns are kept, since each other cell would cost an
   // output column and a whole cone of nodes.
   h.compressed.assign(h.colouring.width(), h.zero);
-  detail::SweepScratch scratch;
   for (const std::size_t c : h.colouring.colours()) {
     // Summing a colour's partials first lets one sweep do |colour| sweeps'
     // work.
@@ -1026,8 +1032,12 @@ template <impl::Numeric T>
   }
   return h;
 }
+template <impl::Numeric T>
+[[nodiscard]] Hessian derive_hessian(Arena<T> &b, NodeId root) {
+  detail::SweepScratch scratch;
+  return derive_hessian(b, root, scratch);
+}
 
-namespace detail {
 // Sum_j seed_j * ids[j], the root every seeded product sweeps from. Literal
 // zero partials drop out through the algebra rules before any node exists.
 template <impl::Numeric T>
@@ -1040,7 +1050,6 @@ template <impl::Numeric T>
                                     std::views::transform(std::move(term)),
                                 Expression<T>{0}, std::plus<>{});
 }
-} // namespace detail
 
 // H(x)v without forming H: sweeping from s = Sum_j v_j df/dx_j gives
 // ds/dx_i = (Hv)_i in one sweep.
@@ -1069,7 +1078,6 @@ derive_vjp(Arena<T> &b, std::span<const NodeId> roots) {
   return build_reverse_jacobian(b, along.id(b)).partial;
 }
 
-namespace detail {
 // One seed per symbol, the direction a forward sweep carries.
 template <impl::Numeric T>
 [[nodiscard]] constexpr std::vector<NodeId> seeds_along(Arena<T> &b) {
@@ -1078,7 +1086,6 @@ template <impl::Numeric T>
              [&b](std::uint32_t j) { return seed(b, j).id(b); }) |
          impl::to<std::vector>();
 }
-} // namespace detail
 
 // J v by one forward sweep, a node per root. Rooted at the Jacobian's cells
 // it gives dJ/dv in the Jacobian's layout.
@@ -1088,4 +1095,4 @@ derive_jvp(Arena<T> &b, std::span<const NodeId> roots) {
   return tangent_sweep(b, roots, detail::seeds_along(b));
 }
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail

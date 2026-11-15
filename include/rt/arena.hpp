@@ -33,7 +33,7 @@
 #include <utility>
 #include <vector>
 
-namespace ddx::rt {
+namespace ddx::rt::detail {
 
 // A typed index that reads as a plain index but is only made explicitly, so
 // one kind of index, or a count, never becomes another by accident.
@@ -79,17 +79,17 @@ inline constexpr NodeId no_node{~std::uint32_t{0}};
 inline constexpr TapeRow no_row{~std::uint32_t{0}};
 inline constexpr ListOffset no_list{~std::uint32_t{0}};
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail
 
 template <typename Tag>
-struct std::formatter<ddx::rt::Id<Tag>> : std::formatter<std::uint32_t> {
-  auto format(ddx::rt::Id<Tag> id, auto &ctx) const {
+struct std::formatter<ddx::rt::detail::Id<Tag>>
+    : std::formatter<std::uint32_t> {
+  auto format(ddx::rt::detail::Id<Tag> id, auto &ctx) const {
     return std::formatter<std::uint32_t>::format(id.value, ctx);
   }
 };
 
-namespace ddx::rt {
-namespace detail {
+namespace ddx::rt::detail {
 // A tensor op's or a select's operands under their table names, in slot
 // order, as make() takes them and operands() returns them.
 template <OpCode Op> struct Operands;
@@ -142,22 +142,12 @@ inline constexpr PendingEntry no_entry{~std::uint32_t{0}};
 template <OpCode Fold> struct Folding {
   PendingEntry entry;
 };
-} // namespace detail
 
+} // namespace ddx::rt::detail
+
+namespace ddx::rt {
 template <impl::Numeric T> class Expression;
-template <impl::Numeric T = double> class DDX_TEMPLATE_API Arena;
-
-// The one primitive that names an input; var(), param() and implicit() all
-// call it, and Arena befriends it.
-template <impl::Numeric T>
-[[nodiscard]] constexpr Expression<T> named(Arena<T> &b, OpCode op,
-                                            std::string_view name);
-template <impl::Numeric T, std::invocable<const Expression<T> &> F>
-[[nodiscard]] constexpr Expression<T>
-implicit(Arena<T> &b, std::string_view name, F &&residual);
-namespace detail {
-struct Implicits;
-}
+template <impl::Numeric T> class ExternFunction;
 
 // A caller-supplied function: `fn(in, out)` writes its answer in ExternRecord's
 // layout. It may evaluate another ddx equation; see TapeLease in rt/core.hpp.
@@ -203,18 +193,30 @@ struct ExternRecord {
   }
 };
 
+} // namespace ddx::rt
+
+namespace ddx::rt::detail {
+template <impl::Numeric T = double> class DDX_TEMPLATE_API Arena;
+
+// The one primitive that names an input; var(), param() and implicit() all
+// call it, and Arena befriends it.
+template <impl::Numeric T>
+[[nodiscard]] constexpr Expression<T> named(Arena<T> &b, OpCode op,
+                                            std::string_view name);
+template <impl::Numeric T, std::invocable<const Expression<T> &> F>
+[[nodiscard]] constexpr Expression<T>
+implicit(Arena<T> &b, std::string_view name, F &&residual);
+struct Implicits;
+
 template <impl::Numeric T> struct ExternEntry : ExternRecord {
   std::shared_ptr<const ExternFn<T>> fn;
 };
 
-template <impl::Numeric T> class ExternFunction;
 template <impl::Numeric T>
 [[nodiscard]] ExternFunction<T> extern_fn(Arena<T> &b, ExternRecord record,
                                           std::type_identity_t<ExternFn<T>> fn);
-namespace detail {
 template <impl::Numeric T, typename Sink>
 constexpr void extern_partials(Arena<T> &b, NodeId v, Sink &&sink);
-}
 
 // A named input: its kind of leaf and its slot among that kind.
 struct Input {
@@ -251,8 +253,6 @@ struct Step {
 };
 static_assert(sizeof(Step) == 40);
 
-namespace detail {
-
 template <typename P> [[nodiscard]] constexpr P get(const auto &node) noexcept {
   assert(info(node.op).payload == payload_index<P>);
   return from_word<P>(node.payload);
@@ -274,13 +274,6 @@ template <typename P> [[nodiscard]] constexpr P get(const auto &node) noexcept {
 [[nodiscard]] constexpr bool on_tensors(const auto &node) noexcept {
   return kind_of(node.op) == Kind::Tensor || is_tensor(node);
 }
-
-[[nodiscard]] constexpr auto operands_of(const auto &nodes, NodeId v) {
-  return nodes.operands(v) |
-         std::views::filter([](NodeId u) { return u != no_node; });
-}
-
-} // namespace detail
 
 // Unused operands are no_node; a node with a list uses `list` instead. The
 // payload is a word that detail::get reads as the op's payload type.
@@ -339,14 +332,16 @@ template <impl::Numeric T> struct Model {
   return s.lists().subspan(s.list_of(v), count);
 }
 
-namespace detail {
 // Calls `f` on every id a node reads, its list or its operands. Every
 // reachability walk uses this one definition of a node's children.
 constexpr void for_each_operand(const auto &s, NodeId v, auto &&f) {
   if (has_list(s.op_of(v))) {
     std::ranges::for_each(arguments(s, v), f);
   } else {
-    std::ranges::for_each(operands_of(s, v), f);
+    std::ranges::for_each(s.operands(v) | std::views::filter([](NodeId u) {
+                            return u != no_node;
+                          }),
+                          f);
   }
 }
 
@@ -371,7 +366,6 @@ reachable(const auto &nodes, std::span<const NodeId> roots,
   }
   return live;
 }
-} // namespace detail
 
 // A row's shape as rows x cols, column-major, with cols 1 for a vector.
 struct Shape {
@@ -488,6 +482,48 @@ DDX_ALWAYS_INLINE constexpr bool tensor_row(const auto &s, NodeId v, auto in,
 }
 
 // Nodes are interned as they are formed, so equal subexpressions share an id.
+// An open-addressed table of indices into a pool, probed linearly and kept at
+// most half full, where linear probing starts to degrade. Hand-written, since
+// interning runs in constant evaluation, where no library table is constexpr.
+class InternTable {
+public:
+  static constexpr std::uint32_t free = ~std::uint32_t{0};
+
+  // The slot holding an entry `same` accepts, or the free slot it would take.
+  // Unbounded, since the table is at most half full and every run reaches a
+  // free slot.
+  [[nodiscard]] constexpr std::uint32_t &slot(std::size_t h, auto &&same) {
+    auto run = std::views::iota(h) |
+               std::views::transform([mask = slots_.size() - 1](std::size_t k) {
+                 return k & mask;
+               });
+    return slots_[*std::ranges::find_if(run, [&](std::size_t k) {
+      return slots_[k] == free || same(slots_[k]);
+    })];
+  }
+
+  // Makes room for `count` entries, re-adding the pool's first `entries` in
+  // order, so of two equal entries the first keeps its slot. `hash_of(k)` and
+  // `same(j, k)` describe entry k.
+  constexpr void reserve(std::size_t count, std::size_t entries, auto &&hash_of,
+                         auto &&same) {
+    if (2 * count <= slots_.size()) {
+      return;
+    }
+    slots_.assign(std::bit_ceil(std::max(64uz, 2 * count)), free);
+    for (std::uint32_t k = 0; k < entries; ++k) {
+      std::uint32_t &at =
+          slot(hash_of(k), [&](std::uint32_t j) { return same(j, k); });
+      if (at == free) {
+        at = k;
+      }
+    }
+  }
+
+private:
+  std::vector<std::uint32_t> slots_; // a power-of-two size, as the mask needs
+};
+
 template <impl::Numeric T> class DDX_TEMPLATE_API Arena {
 public:
   using value_type = T;
@@ -496,12 +532,15 @@ public:
   }
 
   // Reserves room for `nodes` nodes in total, in the arena and its hash table.
+  // Grows geometrically, so callers reserving a little more each time do not
+  // reallocate each time.
   constexpr void reserve(std::size_t nodes, std::size_t symbols = 0) {
-    model_.nodes.reserve(nodes);
-    shapes_.reserve(nodes);
-    if (2 * nodes > table_.size()) {
-      rehash(nodes);
+    if (nodes > model_.nodes.capacity()) {
+      const std::size_t room = std::max(nodes, 2 * model_.nodes.capacity());
+      model_.nodes.reserve(room);
+      shapes_.reserve(room);
     }
+    reserve_nodes(nodes);
     const auto k = *named_index(OpCode::Var);
     by_name_.reserve(by_name_.size() + symbols -
                      std::min(symbols, model_.names[k].size()));
@@ -511,20 +550,32 @@ public:
 
   // A VecConst for one column of `data`, a MatConst otherwise. Interned by
   // content where T compares, so a matrix given twice is kept once.
-  [[nodiscard]] constexpr NodeId tensor_const(std::uint32_t rows,
-                                              std::uint32_t cols,
-                                              std::span<const T> data) {
-    assert(data.size() == std::size_t{rows} * cols);
+  // `data` is any sized range of T, so a fill is matched before it is built.
+  [[nodiscard]] constexpr NodeId
+  tensor_const(std::uint32_t rows, std::uint32_t cols, const auto &data)
+    requires std::same_as<std::ranges::range_value_t<decltype(data)>, T>
+  {
+    assert(std::ranges::size(data) == std::size_t{rows} * cols);
     auto k = static_cast<std::uint32_t>(model_.tensors.size());
     if constexpr (std::equality_comparable<T>) {
-      if ((model_.tensors.size() + 1) * 2 > tensor_table_.size()) {
-        rehash_tensors(model_.tensors.size() + 1);
-      }
-      const std::size_t i = tensor_slot(rows, cols, data);
-      if (tensor_table_[i] == kFreeList) {
-        tensor_table_[i] = k;
+      tensor_table_.reserve(
+          model_.tensors.size() + 1, model_.tensors.size(),
+          [this](std::uint32_t j) {
+            const TensorConst<T> &t = model_.tensors[j];
+            return tensor_hash(t.rows, t.cols, t.data);
+          },
+          [this](std::uint32_t i, std::uint32_t j) {
+            return spells(model_.tensors[i], model_.tensors[j].rows,
+                          model_.tensors[j].cols, model_.tensors[j].data);
+          });
+      std::uint32_t &at = tensor_table_.slot(
+          tensor_hash(rows, cols, data), [&](std::uint32_t i) {
+            return spells(model_.tensors[i], rows, cols, data);
+          });
+      if (at == InternTable::free) {
+        at = k;
       } else {
-        k = tensor_table_[i];
+        k = at;
       }
     }
     if (k == model_.tensors.size()) {
@@ -537,8 +588,8 @@ public:
   }
   // A row of `shape` holding v everywhere; a matrix is its table's MatRow.
   [[nodiscard]] constexpr NodeId filled(Shape shape, const T &v) {
-    const NodeId t =
-        tensor_const(shape.rows, shape.cols, std::vector<T>(shape.size(), v));
+    const NodeId t = tensor_const(shape.rows, shape.cols,
+                                  std::views::repeat(v, shape.size()));
     return shape.cols == 1
                ? t
                : make(opcode<OpCode::MatRow>, Orientation::plain, t);
@@ -650,9 +701,6 @@ public:
   }
   [[nodiscard]] constexpr const std::vector<std::string> &params() const {
     return names(OpCode::Param);
-  }
-  [[nodiscard]] constexpr const std::vector<std::string> &implicits() const {
-    return names(OpCode::Implicit);
   }
   // Every named input in column order: kinds in table order, each in
   // declaration order.
@@ -767,7 +815,7 @@ private:
   }
 
   // The call node for the function's value; sweeps ask for other components.
-  template <impl::Numeric U> friend class ExternFunction;
+  template <impl::Numeric U> friend class rt::ExternFunction;
   constexpr NodeId extern_call(std::uint32_t function,
                                std::span<const NodeId> args) {
     return make(opcode<OpCode::Extern>, ExternRef{.function = function},
@@ -777,33 +825,30 @@ private:
   // The pool offset of `ids`, appending them if new. Lists are interned by
   // content like nodes, so an offset identifies a list.
   [[nodiscard]] constexpr ListOffset list(std::span<const NodeId> ids) {
-    if ((listed_.size() + 1) * 2 > list_table_.size()) {
-      rehash_lists(listed_.size() + 1);
-    }
-    const auto spells = [this, ids](std::uint32_t k) {
+    const auto listed = [this](std::uint32_t k) {
       const ListKey key = listed_[k];
-      return key.size == ids.size() &&
-             std::ranges::equal(
-                 std::span{model_.lists}.subspan(key.at, key.size), ids);
+      return std::span{model_.lists}.subspan(key.at, key.size);
     };
-    auto run = probe(hash_ids(ids), list_table_.size());
-    const std::size_t i = *std::ranges::find_if(run, [&](std::size_t k) {
-      return list_table_[k] == kFreeList || spells(list_table_[k]);
+    list_table_.reserve(
+        listed_.size() + 1, listed_.size(),
+        [&](std::uint32_t k) { return hash_ids(listed(k)); },
+        [](std::uint32_t, std::uint32_t) { return false; });
+    std::uint32_t &slot = list_table_.slot(hash_ids(ids), [&](std::uint32_t k) {
+      return std::ranges::equal(listed(k), ids);
     });
-    if (list_table_[i] != kFreeList) {
-      return listed_[list_table_[i]].at;
+    if (slot != InternTable::free) {
+      return listed_[slot].at;
     }
     const ListOffset at{static_cast<std::uint32_t>(model_.lists.size())};
     impl::append(model_.lists, ids);
-    list_table_[i] = static_cast<std::uint32_t>(listed_.size());
+    slot = static_cast<std::uint32_t>(listed_.size());
     listed_.push_back(
         {.at = at, .size = static_cast<std::uint32_t>(ids.size())});
     return at;
   }
-  // The slot holding the tensor spelled `data`, or the free one it would take.
-  [[nodiscard]] constexpr std::size_t
-  tensor_slot(std::uint32_t rows, std::uint32_t cols,
-              std::span<const T> data) const {
+  // The hash of a tensor spelled `data`.
+  [[nodiscard]] static constexpr std::size_t
+  tensor_hash(std::uint32_t rows, std::uint32_t cols, const auto &data) {
     std::uint64_t h = rows;
     mix(h, cols);
     if constexpr (word_sized) {
@@ -811,42 +856,19 @@ private:
         mix(h, std::bit_cast<Word>(v));
       }
     }
-    auto run = probe(static_cast<std::size_t>(h), tensor_table_.size());
-    return *std::ranges::find_if(run, [&](std::size_t j) {
-      if (tensor_table_[j] == kFreeList) {
-        return true;
-      }
-      const TensorConst<T> &t = model_.tensors[tensor_table_[j]];
-      return t.rows == rows && t.cols == cols &&
-             std::ranges::equal(t.data, data, identical);
-    });
+    return static_cast<std::size_t>(h);
   }
-  // In pool order, so a repeated tensor keeps its first index, as a scan
-  // would find it.
-  constexpr void rehash_tensors(std::size_t tensors) {
-    tensor_table_.assign(std::bit_ceil(std::max(64uz, 2 * tensors)), kFreeList);
-    for (const auto [k, t] : model_.tensors | std::views::enumerate) {
-      const std::size_t i = tensor_slot(t.rows, t.cols, t.data);
-      if (tensor_table_[i] == kFreeList) {
-        tensor_table_[i] = static_cast<std::uint32_t>(k);
-      }
-    }
-  }
-  constexpr void rehash_lists(std::size_t lists) {
-    list_table_.assign(std::bit_ceil(std::max(64uz, 2 * lists)), kFreeList);
-    for (const auto [k, key] : listed_ | std::views::enumerate) {
-      auto run =
-          probe(hash_ids(std::span{model_.lists}.subspan(key.at, key.size)),
-                list_table_.size());
-      list_table_[*std::ranges::find_if(run, [this](std::size_t j) {
-        return list_table_[j] == kFreeList;
-      })] = static_cast<std::uint32_t>(k);
-    }
+  [[nodiscard]] static constexpr bool spells(const TensorConst<T> &t,
+                                             std::uint32_t rows,
+                                             std::uint32_t cols,
+                                             const auto &data) {
+    return t.rows == rows && t.cols == cols &&
+           std::ranges::equal(t.data, data, identical);
   }
 
   // An `op=` fold's terms, as a list sharing its prefix with copied handles so
   // each copy keeps its value. The fold becomes a node only when first read.
-  template <impl::Numeric U> friend class Expression;
+  template <impl::Numeric U> friend class rt::Expression;
   struct Pending {
     NodeId term = no_node;
     detail::PendingEntry prev = detail::no_entry; // None for the first term.
@@ -983,41 +1005,24 @@ private:
     return static_cast<std::size_t>(h);
   }
 
-  // Unbounded, since the table is at most half full and every run reaches an
-  // empty slot.
-  static constexpr auto probe(std::size_t h, std::size_t size) {
-    return std::views::iota(h) |
-           std::views::transform(
-               [mask = size - 1](std::size_t k) { return k & mask; });
-  }
-
-  // Rebuilds the table for `nodes` nodes, at a power-of-two size (as the mask
-  // needs) at most half full, where linear probing starts to degrade.
-  constexpr void rehash(std::size_t nodes) {
-    table_.assign(std::bit_ceil(std::max(64uz, 2 * nodes)), no_node);
-    for (const auto [id, n] : model_.nodes | std::views::enumerate) {
-      auto run = probe(hash_of(n), table_.size());
-      table_[*std::ranges::find_if(run, [this](std::size_t i) {
-        return table_[i] == no_node;
-      })] = static_cast<NodeId>(id);
-    }
+  constexpr void reserve_nodes(std::size_t nodes) {
+    table_.reserve(
+        nodes, model_.nodes.size(),
+        [this](std::uint32_t k) { return hash_of(model_.nodes[k]); },
+        [](std::uint32_t, std::uint32_t) { return false; });
   }
 
   constexpr NodeId intern(const Node<T> &n) {
-    if ((model_.nodes.size() + 1) * 2 > table_.size()) {
-      rehash(model_.nodes.size() + 1);
-    }
-    // The probe stops at the node itself or at the empty slot it would take.
-    auto run = probe(hash_of(n), table_.size());
-    const std::size_t i = *std::ranges::find_if(run, [this, &n](std::size_t k) {
-      return table_[k] == no_node || same(model_.nodes[table_[k]], n);
+    reserve_nodes(model_.nodes.size() + 1);
+    std::uint32_t &slot = table_.slot(hash_of(n), [this, &n](std::uint32_t k) {
+      return same(model_.nodes[k], n);
     });
-    if (table_[i] != no_node) {
-      return table_[i];
+    if (slot != InternTable::free) {
+      return NodeId{slot};
     }
     const auto id = static_cast<NodeId>(model_.nodes.size());
     model_.nodes.push_back(n);
-    table_[i] = id;
+    slot = id;
     shapes_.push_back(shape_from(id));
     assert(shapes_.size() == model_.nodes.size());
     return id;
@@ -1351,10 +1356,7 @@ private:
         return m.data;
       }
       t.resize(m.data.size());
-      for (const auto [i, j] : std::views::cartesian_product(
-               std::views::iota(0uz, m.rows), std::views::iota(0uz, m.cols))) {
-        t[j + i * m.cols] = m.data[i + j * m.rows];
-      }
+      transpose(m.rows, m.cols, m.data, t);
       return t;
     };
     const Shape s = shape_of(*this, v);
@@ -1408,7 +1410,7 @@ private:
     T reduced{};
     const bool computed = tensor_row(
         *this, v, [&](int i) { return i == 0 ? *u : *w; },
-        [&](int i) { return i == 0 ? *su : *sw; }, std::span<T>{out}, reduced,
+        [&](int i) { return i == 0 ? *su : *sw; }, std::span{out}, reduced,
         K{});
     if (!computed) {
       return std::nullopt;
@@ -1452,7 +1454,7 @@ private:
   Model<T> model_;
   // Everything below indexes model_. The hash tables are hand-written because
   // interning runs in constant evaluation, where no library one is constexpr.
-  std::vector<NodeId> table_; // Power-of-two size; no_node marks a free slot.
+  InternTable table_;
   // Each node's shape by id, recorded when intern() appended it.
   std::vector<Shape> shapes_;
   // The lists in the pool, and a table over them by content like table_.
@@ -1460,11 +1462,10 @@ private:
     ListOffset at;
     std::uint32_t size;
   };
-  static constexpr std::uint32_t kFreeList = ~std::uint32_t{0};
   std::vector<ListKey> listed_;
-  std::vector<std::uint32_t> list_table_;
+  InternTable list_table_;
   // model_.tensors by content, like list_table_.
-  std::vector<std::uint32_t> tensor_table_;
+  InternTable tensor_table_;
   // Per named kind, the leaf node of each slot.
   PerKind<std::vector<NodeId>> ids_;
   // Every named input sorted by name, a hand-written flat map since no library
@@ -1544,7 +1545,6 @@ rows_of(const std::array<NodeId, 3> &ids) {
 
 // The steps of `order` with each node's contraction resolved once, rather than
 // re-derived per point inside the sweep.
-namespace detail {
 [[nodiscard]] constexpr std::vector<Step>
 schedule_of(const CNodeSource auto &nodes,
             std::ranges::input_range auto &&order,
@@ -1619,7 +1619,7 @@ reads_of(const auto &s, const Step &step) {
 fused_into(const auto &s, std::span<const Step> schedule,
            std::span<const NodeId> outputs) {
   std::vector into(s.size(), no_node);
-  std::vector<std::uint32_t> uses(s.size(), 0);
+  std::vector uses(s.size(), static_cast<std::uint32_t>(0));
   for (const Step &step : schedule) {
     for_each_operand(s, step.node, [&](NodeId u) { ++uses[u]; });
   }
@@ -1659,7 +1659,7 @@ fused_into(const auto &s, std::span<const Step> schedule,
 [[nodiscard]] constexpr std::vector<std::uint32_t>
 last_uses(const auto &s, std::span<const Step> schedule,
           std::span<const NodeId> outputs, std::span<const NodeId> fused = {}) {
-  std::vector<std::uint32_t> last(s.size(), 0);
+  std::vector last(s.size(), static_cast<std::uint32_t>(0));
   // Ascending, and a node is formed before it is read, so the last write wins.
   for (const auto [p, step] : schedule | std::views::enumerate) {
     last[step.node] = static_cast<std::uint32_t>(p);
@@ -1681,6 +1681,42 @@ last_uses(const auto &s, std::span<const Step> schedule,
   return last;
 }
 
+// Links the scheduled components of each extern call, keyed by function and
+// interned argument list, into a ring: the lowest id points at the highest and
+// every other at the next lower. Only the lowest has a higher mate, so it makes
+// the one call and writes every member's row. Returns whether any ring formed.
+constexpr bool ring_externs(const auto &s, std::span<const Step> schedule,
+                            std::vector<NodeId> &mates) {
+  using Member = std::tuple<std::uint32_t, ListOffset, NodeId>;
+  auto calls =
+      schedule | std::views::filter([](const Step &step) {
+        return kind_of(step.op) == Kind::Extern;
+      }) |
+      std::views::transform([&s](const Step &step) {
+        return Member{get<ExternRef>(s[step.node]).function,
+                      s.list_of(step.node), step.node};
+      }) |
+      impl::to<std::vector>();
+  std::ranges::sort(calls);
+  bool any = false;
+  for (const auto ring :
+       calls | std::views::chunk_by([](const Member &x, const Member &y) {
+         return std::get<0>(x) == std::get<0>(y) &&
+                std::get<1>(x) == std::get<1>(y);
+       })) {
+    if (std::ranges::size(ring) < 2) {
+      continue;
+    }
+    mates.resize(s.size(), no_node);
+    any = true;
+    NodeId lower = std::get<2>(ring.back());
+    for (const NodeId v : ring | std::views::elements<2>) {
+      mates[v] = std::exchange(lower, v);
+    }
+  }
+  return any;
+}
+
 // Packs the tape by liveness and writes every Step's rows. Frees happen after
 // the take, so a step never writes a row it reads and lane loops never alias.
 struct Packed {
@@ -1691,7 +1727,7 @@ struct Packed {
                                          std::span<Step> schedule,
                                          std::span<const NodeId> outputs) {
   const auto last = last_uses(s, schedule, outputs);
-  Packed out{.by_id = std::vector<TapeRow>(s.size(), no_row)};
+  Packed out{.by_id = std::vector(s.size(), no_row)};
   std::vector taken(s.size(), no_row); // A node's row while live.
   std::vector<TapeRow> free;
   TapeRow next{0};
@@ -1722,7 +1758,6 @@ struct Packed {
   out.rows = next;
   return out;
 }
-} // namespace detail
 
 // A tensor node's place in the tensor tape, per lane; width 0 means no row.
 // An output matrix records `rows` too, since it leaves row-major.
@@ -1740,7 +1775,6 @@ struct TensorLayout {
 
 // Packs the tensor tape by liveness like the scalar rows, reusing a freed row
 // for the next node of the same width.
-namespace detail {
 [[nodiscard]] constexpr TensorLayout
 tensor_layout(const auto &s, std::span<const Step> schedule,
               std::span<const NodeId> outputs = {},
@@ -1810,9 +1844,7 @@ reaches(const auto &nodes, std::span<const NodeId> roots, auto &&pred) {
                              [&](NodeId v) { return pred(nodes[v]); });
 }
 
-} // namespace detail
+} // namespace ddx::rt::detail
 
-} // namespace ddx::rt
-
-DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::Arena<double>)
-DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::Arena<float>)
+DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::detail::Arena<double>)
+DDX_EXTERN_INSTANCE(class DDX_INSTANCE_API ::ddx::rt::detail::Arena<float>)

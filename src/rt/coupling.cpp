@@ -16,7 +16,7 @@
 #include <utility>
 #include <vector>
 
-namespace ddx::rt {
+namespace ddx::rt::detail {
 namespace {
 
 // CSR has no undirected form, so each conflict is inserted both ways. The
@@ -46,7 +46,7 @@ Colouring colour_columns(const CouplingRows &rows) {
 
   // Greedy colouring quality depends on the vertex order, so use smallest-last.
   Colouring out{
-      .colour = std::vector<std::size_t>(n, 0), .scatter = {}, .cell = {}};
+      .colour = std::vector(n, 0uz), .scatter = {}, .cell = {}};
   const auto order = boost::smallest_last_vertex_ordering(conflicts);
   // clang-format off
   const auto count = static_cast<std::size_t>(
@@ -81,4 +81,4 @@ Colouring colour_columns(const CouplingRows &rows) {
   return out;
 }
 
-} // namespace ddx::rt
+} // namespace ddx::rt::detail

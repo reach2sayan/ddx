@@ -59,7 +59,7 @@ TEST(RtStack, AThousandChainedSymbolsOnAOneMegabyteStack) {
       return acc;
     });
     ASSERT_FALSE(eq.poisoned());
-    const std::vector<double> at(kSymbols, 0.5);
+    const std::vector at(kSymbols, 0.5);
     const std::span<const double> p{at};
     EXPECT_TRUE(eq.evaluate(p).has_value());
     EXPECT_TRUE(eq.gradient(p).has_value());
@@ -81,7 +81,7 @@ TEST(RtStack, AVectorChainDeepOnAOneMegabyteStack) {
       return sum(acc * x);
     });
     ASSERT_FALSE(eq.poisoned());
-    const std::vector<double> at(8, 0.5);
+    const std::vector at(8, 0.5);
     const std::span<const double> p{at};
     EXPECT_TRUE(eq.gradient(p).has_value());
     EXPECT_TRUE(eq.hvp(p, p).has_value());
