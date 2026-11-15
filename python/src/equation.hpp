@@ -334,7 +334,7 @@ private:
     const auto lead =
         static_cast<std::ptrdiff_t>(height() == 1 && !axes.empty());
     Shape dims;
-    std::ranges::copy(axes | std::views::drop(lead), std::back_inserter(dims));
+    impl::append(dims, axes | std::views::drop(lead));
     if (at.batched()) {
       dims.push_back(ssize(at.size()));
     }

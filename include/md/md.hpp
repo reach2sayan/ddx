@@ -21,19 +21,14 @@ using DDX_MDSPAN_NS::extents;
 using DDX_MDSPAN_NS::layout_right;
 using DDX_MDSPAN_NS::mdspan;
 
-template <typename E>
-concept CExtents = requires {
-  []<typename I, std::size_t... N>(meta::Type<extents<I, N...>>) {
-  }(meta::type_c<std::remove_cvref_t<E>>);
-};
-
 // Every extent is known at compile time, so a tensor can own a std::array and
 // stay usable in constant evaluation.
 template <typename E>
-concept CStaticExtents =
-    CExtents<E> && (std::remove_cvref_t<E>::rank_dynamic() == 0);
+concept CStaticExtents = requires {
+  []<typename I, std::size_t... N>(meta::Type<extents<I, N...>>) {
+  }(meta::type_c<std::remove_cvref_t<E>>);
+} && (std::remove_cvref_t<E>::rank_dynamic() == 0);
 
-static_assert(CExtents<extents<std::size_t, 2, 3>>);
 static_assert(CStaticExtents<extents<std::size_t, 2, 3>>);
 static_assert(!CStaticExtents<dextents<std::size_t, 2>>);
 

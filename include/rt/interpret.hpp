@@ -223,11 +223,7 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
                       const U>{b.tensors()[get<TensorRef>(b[source]).value]
                                    .data}
                 : in(source, k);
-        for (std::size_t i = 0; i < m.cols; ++i) {
-          for (std::size_t j = 0; j < m.rows; ++j) {
-            to[j + i * m.rows] = from[i + j * m.cols];
-          }
-        }
+        transpose(m.cols, m.rows, from, to);
         break;
       }
       case OpCode::StackRows: { // item i is row i, so (i, j) is at i + j * rows

@@ -366,8 +366,7 @@ public:
     const Lowered l = lower();
     const auto v = rt::detail::evaluate_reachable(
         l.arena, l.roots, std::array{Taylor::variable(x0)});
-    return v[l.roots[0]].c[Order] *
-           static_cast<scalar>(detail::compile_time_factorial(Order));
+    return v[l.roots[0]].template derivative<Order>();
   }
 };
 

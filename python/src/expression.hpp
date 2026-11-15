@@ -41,13 +41,27 @@ public:
     return expression_.poisoned();
   }
 
-  // Raises immediately if the expression is poisoned, instead of carrying the
+  // Raises the reason a poisoned expression carries, instead of carrying the
   // poison on to equation().
-  [[nodiscard]] static PyExpression checked(const Base &e, SharedArena arena) {
+  static void ensure(const Base &e) {
     if (const auto why = rt::detail::Router::why(e)) {
       fail_with(*why);
     }
+  }
+  [[nodiscard]] static PyExpression checked(const Base &e, SharedArena arena) {
+    ensure(e);
     return {e, std::move(arena)};
+  }
+  // The arena of the first operand that has one.
+  [[nodiscard]] static const SharedArena &
+  first_arena(const std::same_as<PyExpression> auto &...es) {
+    static const SharedArena none;
+    for (const SharedArena *a : {&es.arena_...}) {
+      if (*a) {
+        return *a;
+      }
+    }
+    return none;
   }
   // Packs scalars into a vector in their own arena, else in `fallback`, the
   // model running now.
@@ -98,8 +112,7 @@ public:
     if (s.cols > 1) {
       return {s.rows, s.cols};
     }
-    return size() == 0 ? std::vector<std::size_t>{}
-                       : std::vector{size()};
+    return size() == 0 ? std::vector<std::size_t>{} : std::vector{size()};
   }
 
   // The node id in `arena`, refusing a handle from another arena. A pending
@@ -141,12 +154,12 @@ private:
   friend PyExpression binary(rt::OpCode op, const PyExpression &l,
                              const PyExpression &r) {
     return {rt::detail::Router::form(op, l.expression_, r.expression_),
-            l.arena_ ? l.arena_ : r.arena_};
+            first_arena(l, r)};
   }
   // Applies the base's own composition of two handles, keeping the arena.
   friend PyExpression combine(const PyExpression &l, const PyExpression &r,
                               auto &&fn) {
-    return {fn(l.expression_, r.expression_), l.arena_ ? l.arena_ : r.arena_};
+    return {fn(l.expression_, r.expression_), first_arena(l, r)};
   }
   // A composition that may refuse, such as a reduction or a vector factory in
   // module.cpp, raises where it is formed.
@@ -155,8 +168,7 @@ private:
   }
   friend PyExpression reduce(const PyExpression &u, const PyExpression &v,
                              auto &&fn) {
-    return checked(fn(u.expression_, v.expression_),
-                   u.arena_ ? u.arena_ : v.arena_);
+    return checked(fn(u.expression_, v.expression_), first_arena(u, v));
   }
 
 public:
@@ -190,8 +202,8 @@ struct PyTransposed {
 // The arena is taken from whichever operand has one.
 [[nodiscard]] inline PyExpression
 select(const PyExpression &c, const PyExpression &t, const PyExpression &f) {
-  const auto arena = c.arena() ? c.arena() : t.arena() ? t.arena() : f.arena();
-  return {select(c.base(), t.base(), f.base()), arena};
+  return {select(c.base(), t.base(), f.base()),
+          PyExpression::first_arena(c, t, f)};
 }
 
 } // namespace ddx::py

@@ -259,6 +259,16 @@ static_assert(TensorKernels<Kernels<float>, float>);
 } // namespace reference
 
 namespace detail {
+// Writes the cols x rows transpose of a rows x cols column-major `from`.
+constexpr void transpose(std::size_t rows, std::size_t cols, const auto &from,
+                         auto &&to) noexcept {
+  for (std::size_t i = 0; i < rows; ++i) {
+    for (std::size_t j = 0; j < cols; ++j) {
+      to[j + i * cols] = from[i + j * rows];
+    }
+  }
+}
+
 template <impl::Numeric T = double>
 inline constexpr TensorKernelTable<T> reference_table =
     tensor_kernel_table<reference::Kernels<T>, T>();

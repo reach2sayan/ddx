@@ -167,8 +167,8 @@ protected:
     boost::container::small_vector<std::ranges::range_value_t<decltype(xs)>, 64>
         out;
     out.reserve(std::ranges::size(xs) + std::ranges::size(seeds));
-    std::ranges::copy(xs, std::back_inserter(out));
-    std::ranges::copy(seeds, std::back_inserter(out));
+    impl::append(out, xs);
+    impl::append(out, seeds);
     return out;
   }
 
@@ -587,17 +587,15 @@ public:
         // A short block repeats its last point.
         const std::size_t width = std::min(W, xs.size() - base);
         for (const auto [k, a] : at | std::views::enumerate) {
-          a = Taylor::variable(xs[base + std::min(static_cast<std::size_t>(k), width - 1)]);
+          a = Taylor::variable(
+              xs[base + std::min(static_cast<std::size_t>(k), width - 1)]);
         }
         walk.template operator()<W>(*arena_, at, std::span{kept.tape},
                                     std::span{kept.vtape});
         std::ranges::transform(
             std::span{kept.tape}.subspan(roots_[0] * W, width),
-            out.begin() + base, [](const Taylor &t) {
-              return t.c[Order] *
-                     static_cast<T>(
-                         impl::detail::compile_time_factorial(Order));
-            });
+            out.begin() + base,
+            [](const Taylor &t) { return t.template derivative<Order>(); });
       }
     };
     xs.size() < block_lanes
@@ -1511,16 +1509,8 @@ private:
   std::unique_ptr<typename C::Pipelines> pipelines_;
 };
 
-// An equation's function count as its type states it: a fixed count of one
-// narrows the value to a scalar, while a run-time count answers a vector.
-template <std::size_t N> struct Fixed {
-  static constexpr std::optional<std::size_t> expected = N;
-  static constexpr bool scalar = N == 1;
-};
-struct Dynamic {
-  static constexpr std::optional<std::size_t> expected = std::nullopt;
-  static constexpr bool scalar = false;
-};
+// Tags a System: its function count is known only at run time.
+struct Dynamic {};
 
 // Run `assemble` inside a fresh arena, and hand both back.
 template <impl::Numeric T>

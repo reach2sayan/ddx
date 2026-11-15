@@ -121,10 +121,10 @@ public:
         source_ ? summed(mat_[*source_]) : stacked(partials.subspan(at_, n_));
     return partials.size() == n_ ? block : bordered(partials, block);
   }
-  [[nodiscard]] std::uint32_t n2() const noexcept { return n2_; }
-  [[nodiscard]] std::uint32_t n3() const noexcept { return n3_; }
 
 private:
+  template <impl::Numeric U>
+  friend DenseHessian derive_dense_hessian(Arena<U> &b, NodeId root);
   using E = Expression<T>;
 
   [[nodiscard]] E expr(NodeId id) const { return E{b_, id}; }
@@ -662,8 +662,8 @@ template <impl::Numeric T>
   return {.value = g.value,
           .partial = g.partial,
           .block = sweep.block(g.partial),
-          .n2_terms = sweep.n2(),
-          .n3_terms = sweep.n3()};
+          .n2_terms = sweep.n2_,
+          .n3_terms = sweep.n3_};
 }
 
 } // namespace ddx::rt::detail

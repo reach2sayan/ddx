@@ -76,8 +76,10 @@ blocked_sum(Arena<T> &b, std::span<const NodeId> terms, std::size_t blocks) {
 // bottom-up and interning maps unchanged subtrees back to themselves.
 template <impl::Numeric T>
 [[nodiscard]] constexpr std::vector<NodeId>
-rebalance(Arena<T> &b, std::span<const NodeId> roots, std::size_t blocks = 16,
-          std::size_t least = 16) {
+rebalance(Arena<T> &b, std::span<const NodeId> roots) {
+  // Sums of at least `least` terms are split into `blocks` partial sums.
+  constexpr std::size_t blocks = 16;
+  constexpr std::size_t least = 16;
   const auto size = static_cast<NodeId>(b.size());
   const std::vector live = detail::reachable(b, roots);
 

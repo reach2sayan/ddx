@@ -720,7 +720,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
     case Kind::Extern: {
       Expression<T> sum{0};
       detail::extern_partials(b, v, [&](NodeId arg, const Expression<T> &c) {
-        sum = sum + c * Expression{b, at(arg)};
+        sum = sum + c * dv(arg);
       });
       d[v] = sum.id(b);
       break;
@@ -729,7 +729,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       if (op == OpCode::SumN) { // The sum of the terms' tangents.
         Expression<T> sum{0};
         for (const NodeId t : arguments(b, v)) {
-          sum += Expression{b, at(t)};
+          sum += dv(t);
         }
         d[v] = sum.id(b);
         break;
@@ -749,7 +749,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
           continue;
         }
         const Expression pr = detail::contribution_to<1>(step, one, l, r);
-        carried = pl * carried + pr * Expression{b, at(term)};
+        carried = pl * carried + pr * dv(term);
       }
       d[v] = carried.id(b);
       break;
@@ -775,8 +775,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
     case Kind::Unary: {
       const Expression u{b, node.in[0]};
       const Expression self{b, v};
-      d[v] =
-          (detail::partial(op, u, self) * Expression{b, at(node.in[0])}).id(b);
+      d[v] = (detail::partial(op, u, self) * dv(node.in[0])).id(b);
       break;
     }
     case Kind::Ternary:
@@ -785,9 +784,7 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
       {
         const auto [cond, then, otherwise] =
             detail::operands<OpCode::Select>(node.in);
-        d[v] = select(Expression{b, cond}, Expression{b, at(then)},
-                      Expression{b, at(otherwise)})
-                   .id(b);
+        d[v] = select(Expression{b, cond}, dv(then), dv(otherwise)).id(b);
       }
       break;
     case Kind::Binary: {
@@ -858,9 +855,8 @@ template <impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow build_symbolic_jacobian(Arena<T> &b,
                                                             NodeId root) {
   const auto nsym = b.symbols().size();
-  JacobianRow g{.value = root,
-                .partial = std::vector(nsym, no_node),
-                .implicit = {}};
+  JacobianRow g{
+      .value = root, .partial = std::vector(nsym, no_node), .implicit = {}};
   const std::array roots{root};
 
   // One unit vector, reused by moving the 1 through it.

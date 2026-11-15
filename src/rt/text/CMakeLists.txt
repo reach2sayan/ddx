@@ -2,7 +2,7 @@
 # Boost.Parser's parse() uses try/catch.
 add_library(ddx_text_objs OBJECT parse.cpp)
 
-target_compile_definitions(ddx_text_objs PRIVATE DDX_BUILDING BOOST_PARSER_DISABLE_TRACE)
+target_compile_definitions(ddx_text_objs PRIVATE BOOST_PARSER_DISABLE_TRACE)
 target_link_libraries(ddx_text_objs PRIVATE ddx Boost::headers)
 ddx_target_flags(ddx_text_objs EXCEPTIONS LIBRARY)
 

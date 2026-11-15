@@ -97,9 +97,7 @@ roots_of(const pyb::object &built, rt::detail::Arena<double> &arena) {
            // Cast by value, so a bare number such as `lambda: 2.0` converts
            // to a constant.
            const auto e = pyb::cast<PyExpression>(item);
-           if (e.poisoned()) {
-             fail_with(*rt::detail::Router::why(e.base()));
-           }
+           PyExpression::ensure(e.base());
            return e.root_in(arena);
          }) |
          impl::to<std::vector>();
@@ -447,9 +445,7 @@ PYBIND11_MODULE(_ddx, m) {
 
   // Symbolic derivatives, built in the model running now.
   const auto rooted = [](const PyExpression &f) {
-    if (f.poisoned()) {
-      ddx::py::fail_with(*rt::detail::Router::why(f.base()));
-    }
+    PyExpression::ensure(f.base());
     const auto arena = f.arena() ? f.arena() : ddx::py::arena_now();
     return std::pair{PyExpression::Base{*arena, f.base().id(*arena)}, arena};
   };

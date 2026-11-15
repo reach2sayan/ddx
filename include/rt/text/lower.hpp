@@ -131,11 +131,11 @@ template <std::floating_point T>
   // the same model built by hand regardless of parse order.
   arena.reserve(arena.size() + ast.names.size() + ast.terms.size(),
                 arena.symbols().size() + ast.names.size());
-  std::vector<Expr> symbols;
-  symbols.reserve(ast.names.size());
-  std::ranges::transform(
-      ast.names, std::back_inserter(symbols),
-      [&arena](const std::string &name) { return var(arena, name); });
+  const auto symbols = ast.names |
+                       std::views::transform([&arena](const std::string &name) {
+                         return var(arena, name);
+                       }) |
+                       impl::to<std::vector>();
 
   // Terms are stored children first, so operands are always already built.
   std::vector<Expr> built;

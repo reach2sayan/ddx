@@ -275,11 +275,6 @@ template <typename P> [[nodiscard]] constexpr P get(const auto &node) noexcept {
   return kind_of(node.op) == Kind::Tensor || is_tensor(node);
 }
 
-[[nodiscard]] constexpr auto operands_of(const auto &nodes, NodeId v) {
-  return nodes.operands(v) |
-         std::views::filter([](NodeId u) { return u != no_node; });
-}
-
 // Unused operands are no_node; a node with a list uses `list` instead. The
 // payload is a word that detail::get reads as the op's payload type.
 template <impl::Numeric T> struct Node {
@@ -343,7 +338,10 @@ constexpr void for_each_operand(const auto &s, NodeId v, auto &&f) {
   if (has_list(s.op_of(v))) {
     std::ranges::for_each(arguments(s, v), f);
   } else {
-    std::ranges::for_each(operands_of(s, v), f);
+    std::ranges::for_each(s.operands(v) | std::views::filter([](NodeId u) {
+                            return u != no_node;
+                          }),
+                          f);
   }
 }
 
@@ -484,6 +482,48 @@ DDX_ALWAYS_INLINE constexpr bool tensor_row(const auto &s, NodeId v, auto in,
 }
 
 // Nodes are interned as they are formed, so equal subexpressions share an id.
+// An open-addressed table of indices into a pool, probed linearly and kept at
+// most half full, where linear probing starts to degrade. Hand-written, since
+// interning runs in constant evaluation, where no library table is constexpr.
+class InternTable {
+public:
+  static constexpr std::uint32_t free = ~std::uint32_t{0};
+
+  // The slot holding an entry `same` accepts, or the free slot it would take.
+  // Unbounded, since the table is at most half full and every run reaches a
+  // free slot.
+  [[nodiscard]] constexpr std::uint32_t &slot(std::size_t h, auto &&same) {
+    auto run = std::views::iota(h) |
+               std::views::transform([mask = slots_.size() - 1](std::size_t k) {
+                 return k & mask;
+               });
+    return slots_[*std::ranges::find_if(run, [&](std::size_t k) {
+      return slots_[k] == free || same(slots_[k]);
+    })];
+  }
+
+  // Makes room for `count` entries, re-adding the pool's first `entries` in
+  // order, so of two equal entries the first keeps its slot. `hash_of(k)` and
+  // `same(j, k)` describe entry k.
+  constexpr void reserve(std::size_t count, std::size_t entries, auto &&hash_of,
+                         auto &&same) {
+    if (2 * count <= slots_.size()) {
+      return;
+    }
+    slots_.assign(std::bit_ceil(std::max(64uz, 2 * count)), free);
+    for (std::uint32_t k = 0; k < entries; ++k) {
+      std::uint32_t &at =
+          slot(hash_of(k), [&](std::uint32_t j) { return same(j, k); });
+      if (at == free) {
+        at = k;
+      }
+    }
+  }
+
+private:
+  std::vector<std::uint32_t> slots_; // a power-of-two size, as the mask needs
+};
+
 template <impl::Numeric T> class DDX_TEMPLATE_API Arena {
 public:
   using value_type = T;
@@ -495,9 +535,7 @@ public:
   constexpr void reserve(std::size_t nodes, std::size_t symbols = 0) {
     model_.nodes.reserve(nodes);
     shapes_.reserve(nodes);
-    if (2 * nodes > table_.size()) {
-      rehash(nodes);
-    }
+    reserve_nodes(nodes);
     const auto k = *named_index(OpCode::Var);
     by_name_.reserve(by_name_.size() + symbols -
                      std::min(symbols, model_.names[k].size()));
@@ -513,14 +551,24 @@ public:
     assert(data.size() == std::size_t{rows} * cols);
     auto k = static_cast<std::uint32_t>(model_.tensors.size());
     if constexpr (std::equality_comparable<T>) {
-      if ((model_.tensors.size() + 1) * 2 > tensor_table_.size()) {
-        rehash_tensors(model_.tensors.size() + 1);
-      }
-      const std::size_t i = tensor_slot(rows, cols, data);
-      if (tensor_table_[i] == kFreeList) {
-        tensor_table_[i] = k;
+      tensor_table_.reserve(
+          model_.tensors.size() + 1, model_.tensors.size(),
+          [this](std::uint32_t j) {
+            const TensorConst<T> &t = model_.tensors[j];
+            return tensor_hash(t.rows, t.cols, t.data);
+          },
+          [this](std::uint32_t i, std::uint32_t j) {
+            return spells(model_.tensors[i], model_.tensors[j].rows,
+                          model_.tensors[j].cols, model_.tensors[j].data);
+          });
+      std::uint32_t &at = tensor_table_.slot(
+          tensor_hash(rows, cols, data), [&](std::uint32_t i) {
+            return spells(model_.tensors[i], rows, cols, data);
+          });
+      if (at == InternTable::free) {
+        at = k;
       } else {
-        k = tensor_table_[i];
+        k = at;
       }
     }
     if (k == model_.tensors.size()) {
@@ -770,33 +818,30 @@ private:
   // The pool offset of `ids`, appending them if new. Lists are interned by
   // content like nodes, so an offset identifies a list.
   [[nodiscard]] constexpr ListOffset list(std::span<const NodeId> ids) {
-    if ((listed_.size() + 1) * 2 > list_table_.size()) {
-      rehash_lists(listed_.size() + 1);
-    }
-    const auto spells = [this, ids](std::uint32_t k) {
+    const auto listed = [this](std::uint32_t k) {
       const ListKey key = listed_[k];
-      return key.size == ids.size() &&
-             std::ranges::equal(
-                 std::span{model_.lists}.subspan(key.at, key.size), ids);
+      return std::span{model_.lists}.subspan(key.at, key.size);
     };
-    auto run = probe(hash_ids(ids), list_table_.size());
-    const std::size_t i = *std::ranges::find_if(run, [&](std::size_t k) {
-      return list_table_[k] == kFreeList || spells(list_table_[k]);
+    list_table_.reserve(
+        listed_.size() + 1, listed_.size(),
+        [&](std::uint32_t k) { return hash_ids(listed(k)); },
+        [](std::uint32_t, std::uint32_t) { return false; });
+    std::uint32_t &slot = list_table_.slot(hash_ids(ids), [&](std::uint32_t k) {
+      return std::ranges::equal(listed(k), ids);
     });
-    if (list_table_[i] != kFreeList) {
-      return listed_[list_table_[i]].at;
+    if (slot != InternTable::free) {
+      return listed_[slot].at;
     }
     const ListOffset at{static_cast<std::uint32_t>(model_.lists.size())};
     impl::append(model_.lists, ids);
-    list_table_[i] = static_cast<std::uint32_t>(listed_.size());
+    slot = static_cast<std::uint32_t>(listed_.size());
     listed_.push_back(
         {.at = at, .size = static_cast<std::uint32_t>(ids.size())});
     return at;
   }
-  // The slot holding the tensor spelled `data`, or the free one it would take.
-  [[nodiscard]] constexpr std::size_t
-  tensor_slot(std::uint32_t rows, std::uint32_t cols,
-              std::span<const T> data) const {
+  // The hash of a tensor spelled `data`.
+  [[nodiscard]] static constexpr std::size_t
+  tensor_hash(std::uint32_t rows, std::uint32_t cols, std::span<const T> data) {
     std::uint64_t h = rows;
     mix(h, cols);
     if constexpr (word_sized) {
@@ -804,37 +849,14 @@ private:
         mix(h, std::bit_cast<Word>(v));
       }
     }
-    auto run = probe(static_cast<std::size_t>(h), tensor_table_.size());
-    return *std::ranges::find_if(run, [&](std::size_t j) {
-      if (tensor_table_[j] == kFreeList) {
-        return true;
-      }
-      const TensorConst<T> &t = model_.tensors[tensor_table_[j]];
-      return t.rows == rows && t.cols == cols &&
-             std::ranges::equal(t.data, data, identical);
-    });
+    return static_cast<std::size_t>(h);
   }
-  // In pool order, so a repeated tensor keeps its first index, as a scan
-  // would find it.
-  constexpr void rehash_tensors(std::size_t tensors) {
-    tensor_table_.assign(std::bit_ceil(std::max(64uz, 2 * tensors)), kFreeList);
-    for (const auto [k, t] : model_.tensors | std::views::enumerate) {
-      const std::size_t i = tensor_slot(t.rows, t.cols, t.data);
-      if (tensor_table_[i] == kFreeList) {
-        tensor_table_[i] = static_cast<std::uint32_t>(k);
-      }
-    }
-  }
-  constexpr void rehash_lists(std::size_t lists) {
-    list_table_.assign(std::bit_ceil(std::max(64uz, 2 * lists)), kFreeList);
-    for (const auto [k, key] : listed_ | std::views::enumerate) {
-      auto run =
-          probe(hash_ids(std::span{model_.lists}.subspan(key.at, key.size)),
-                list_table_.size());
-      list_table_[*std::ranges::find_if(run, [this](std::size_t j) {
-        return list_table_[j] == kFreeList;
-      })] = static_cast<std::uint32_t>(k);
-    }
+  [[nodiscard]] static constexpr bool spells(const TensorConst<T> &t,
+                                             std::uint32_t rows,
+                                             std::uint32_t cols,
+                                             std::span<const T> data) {
+    return t.rows == rows && t.cols == cols &&
+           std::ranges::equal(t.data, data, identical);
   }
 
   // An `op=` fold's terms, as a list sharing its prefix with copied handles so
@@ -976,41 +998,24 @@ private:
     return static_cast<std::size_t>(h);
   }
 
-  // Unbounded, since the table is at most half full and every run reaches an
-  // empty slot.
-  static constexpr auto probe(std::size_t h, std::size_t size) {
-    return std::views::iota(h) |
-           std::views::transform(
-               [mask = size - 1](std::size_t k) { return k & mask; });
-  }
-
-  // Rebuilds the table for `nodes` nodes, at a power-of-two size (as the mask
-  // needs) at most half full, where linear probing starts to degrade.
-  constexpr void rehash(std::size_t nodes) {
-    table_.assign(std::bit_ceil(std::max(64uz, 2 * nodes)), no_node);
-    for (const auto [id, n] : model_.nodes | std::views::enumerate) {
-      auto run = probe(hash_of(n), table_.size());
-      table_[*std::ranges::find_if(run, [this](std::size_t i) {
-        return table_[i] == no_node;
-      })] = static_cast<NodeId>(id);
-    }
+  constexpr void reserve_nodes(std::size_t nodes) {
+    table_.reserve(
+        nodes, model_.nodes.size(),
+        [this](std::uint32_t k) { return hash_of(model_.nodes[k]); },
+        [](std::uint32_t, std::uint32_t) { return false; });
   }
 
   constexpr NodeId intern(const Node<T> &n) {
-    if ((model_.nodes.size() + 1) * 2 > table_.size()) {
-      rehash(model_.nodes.size() + 1);
-    }
-    // The probe stops at the node itself or at the empty slot it would take.
-    auto run = probe(hash_of(n), table_.size());
-    const std::size_t i = *std::ranges::find_if(run, [this, &n](std::size_t k) {
-      return table_[k] == no_node || same(model_.nodes[table_[k]], n);
+    reserve_nodes(model_.nodes.size() + 1);
+    std::uint32_t &slot = table_.slot(hash_of(n), [this, &n](std::uint32_t k) {
+      return same(model_.nodes[k], n);
     });
-    if (table_[i] != no_node) {
-      return table_[i];
+    if (slot != InternTable::free) {
+      return NodeId{slot};
     }
     const auto id = static_cast<NodeId>(model_.nodes.size());
     model_.nodes.push_back(n);
-    table_[i] = id;
+    slot = id;
     shapes_.push_back(shape_from(id));
     assert(shapes_.size() == model_.nodes.size());
     return id;
@@ -1344,10 +1349,7 @@ private:
         return m.data;
       }
       t.resize(m.data.size());
-      for (const auto [i, j] : std::views::cartesian_product(
-               std::views::iota(0uz, m.rows), std::views::iota(0uz, m.cols))) {
-        t[j + i * m.cols] = m.data[i + j * m.rows];
-      }
+      transpose(m.rows, m.cols, m.data, t);
       return t;
     };
     const Shape s = shape_of(*this, v);
@@ -1445,7 +1447,7 @@ private:
   Model<T> model_;
   // Everything below indexes model_. The hash tables are hand-written because
   // interning runs in constant evaluation, where no library one is constexpr.
-  std::vector<NodeId> table_; // Power-of-two size; no_node marks a free slot.
+  InternTable table_;
   // Each node's shape by id, recorded when intern() appended it.
   std::vector<Shape> shapes_;
   // The lists in the pool, and a table over them by content like table_.
@@ -1453,11 +1455,10 @@ private:
     ListOffset at;
     std::uint32_t size;
   };
-  static constexpr std::uint32_t kFreeList = ~std::uint32_t{0};
   std::vector<ListKey> listed_;
-  std::vector<std::uint32_t> list_table_;
+  InternTable list_table_;
   // model_.tensors by content, like list_table_.
-  std::vector<std::uint32_t> tensor_table_;
+  InternTable tensor_table_;
   // Per named kind, the leaf node of each slot.
   PerKind<std::vector<NodeId>> ids_;
   // Every named input sorted by name, a hand-written flat map since no library

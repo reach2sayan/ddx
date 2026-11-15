@@ -6,7 +6,7 @@ else ()
     add_library(ddx_jit_objs OBJECT codegen.cpp compiler.cpp)
 endif ()
 
-target_compile_definitions(ddx_jit_objs PRIVATE DDX_BUILDING ${LLVM_DEFINITIONS_LIST})
+target_compile_definitions(ddx_jit_objs PRIVATE ${LLVM_DEFINITIONS_LIST})
 target_include_directories(ddx_jit_objs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(ddx_jit_objs SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
 target_link_libraries(ddx_jit_objs PRIVATE ddx Boost::headers ${DDX_LLVM_LIBS})
