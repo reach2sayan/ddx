@@ -111,8 +111,8 @@ template <typename U> struct TapeView {
   std::span<const TensorRow> tensor_rows{};
   U *vtape = nullptr;
   const TensorKernelTable<U> *kernels = nullptr;
-  // Each node's mate, or empty for no pairing: Graph::pairs' products, or an
-  // ArenaWalk's paired_ops.
+  // Each node's mate, or empty for no pairing: Graph::pairs' products and
+  // extern rings, or an ArenaWalk's paired_ops and extern rings.
   std::span<const NodeId> pairs{};
 
   [[nodiscard]] constexpr TapeRow row(NodeId v) const noexcept {
@@ -130,15 +130,26 @@ template <typename U> struct TapeView {
   }
 };
 
-// Calls an extern function once per lane and keeps this node's component.
-// lane is taken by value here and below, for the reason lanes_apply gives.
+// Calls an extern function once per lane and keeps this node's component, and
+// those of its ring under ring_externs, whose other members find their rows
+// written. lane is taken by value here and below, for the reason lanes_apply
+// gives.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_NOINLINE constexpr void lanes_extern(const Arena<T> &b, NodeId v, U *out,
                                          auto lane, const TapeView<U> &t) {
   if constexpr (std::same_as<U, T>) {
+    const NodeId mate = t.pairs.empty() ? no_node : t.pairs[v];
+    if (mate < v) {
+      return;
+    }
     const auto [fn, component] = get<ExternRef>(b[v]);
     const ExternEntry<T> &e = b.externs()[fn];
     const auto args = arguments(b, v);
+    boost::container::small_vector<std::pair<U *, std::uint32_t>, 8> ring{
+        {out, component}};
+    for (NodeId m = mate; m != no_node && m != v; m = t.pairs[m]) {
+      ring.emplace_back(lane(t.row(m)), get<ExternRef>(b[m]).component);
+    }
     boost::container::small_vector<T, 8> in(args.size());
     boost::container::small_vector<T, 32> answer(e.size());
     for (std::size_t k = 0; k < W; ++k) {
@@ -146,7 +157,9 @@ DDX_NOINLINE constexpr void lanes_extern(const Arena<T> &b, NodeId v, U *out,
         in[static_cast<std::size_t>(j)] = lane(t.row(arg))[k];
       }
       (*e.fn)(in, answer);
-      out[k] = answer[component];
+      for (const auto [row, c] : ring) {
+        row[k] = answer[c];
+      }
     }
   } else {
     std::ranges::fill_n(out, W, U{});
@@ -419,8 +432,8 @@ inline constexpr std::array paired_ops{
   });
 }
 
-// Each scheduled node's mate under paired_ops, or empty when none pair.
-// Interning leaves at most one node per op and operand.
+// Each scheduled node's mate under paired_ops or ring_externs, or empty when
+// none pair. Interning leaves at most one node per op and operand.
 [[nodiscard]] constexpr std::vector<NodeId>
 mates_of(const auto &nodes, std::span<const Step> schedule) {
   using Candidate = std::tuple<std::ptrdiff_t, NodeId, NodeId>;
@@ -446,6 +459,7 @@ mates_of(const auto &nodes, std::span<const Step> schedule) {
       mates[std::get<2>(run[1])] = std::get<2>(run[0]);
     }
   }
+  ring_externs(nodes, schedule, mates);
   return mates;
 }
 

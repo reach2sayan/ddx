@@ -1681,6 +1681,42 @@ last_uses(const auto &s, std::span<const Step> schedule,
   return last;
 }
 
+// Links the scheduled components of each extern call, keyed by function and
+// interned argument list, into a ring: the lowest id points at the highest and
+// every other at the next lower. Only the lowest has a higher mate, so it makes
+// the one call and writes every member's row. Returns whether any ring formed.
+constexpr bool ring_externs(const auto &s, std::span<const Step> schedule,
+                            std::vector<NodeId> &mates) {
+  using Member = std::tuple<std::uint32_t, ListOffset, NodeId>;
+  auto calls =
+      schedule | std::views::filter([](const Step &step) {
+        return kind_of(step.op) == Kind::Extern;
+      }) |
+      std::views::transform([&s](const Step &step) {
+        return Member{get<ExternRef>(s[step.node]).function,
+                      s.list_of(step.node), step.node};
+      }) |
+      impl::to<std::vector>();
+  std::ranges::sort(calls);
+  bool any = false;
+  for (const auto ring :
+       calls | std::views::chunk_by([](const Member &x, const Member &y) {
+         return std::get<0>(x) == std::get<0>(y) &&
+                std::get<1>(x) == std::get<1>(y);
+       })) {
+    if (std::ranges::size(ring) < 2) {
+      continue;
+    }
+    mates.resize(s.size(), no_node);
+    any = true;
+    NodeId lower = std::get<2>(ring.back());
+    for (const NodeId v : ring | std::views::elements<2>) {
+      mates[v] = std::exchange(lower, v);
+    }
+  }
+  return any;
+}
+
 // Packs the tape by liveness and writes every Step's rows. Frees happen after
 // the take, so a step never writes a row it reads and lane loops never alias.
 struct Packed {

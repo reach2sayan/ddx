@@ -229,6 +229,35 @@ TEST(RtExtern, CalledFromManyThreads) {
   EXPECT_GT(calls.load(), 0u);
 }
 
+// The interpreter calls once per argument list and lane, however many value
+// and partial components the sweep reads, as the JIT does.
+TEST(RtExtern, OneCallServesEveryComponent) {
+  std::size_t calls = 0;
+  auto eq = ddx::rt::equation([&calls] {
+    const auto a = ddx::rt::var("a");
+    const auto b = ddx::rt::var("b");
+    return ddx::rt::extern_fn(
+        {.name = "g", .arity = 2, .order = 2},
+        [&calls](std::span<const double> in, std::span<double> out) {
+          ++calls;
+          g_of(in, out);
+        })(a, b);
+  });
+  eq.options({.backend = ddx::rt::Backend::Interpret});
+  const auto &at = points[0];
+  ASSERT_TRUE(eq.evaluate(at).has_value());
+  calls = 0;
+  ASSERT_TRUE(eq.evaluate(at).has_value());
+  const std::size_t per_value = calls;
+  ASSERT_GT(per_value, 0u);
+  ASSERT_TRUE(eq.hessian(at).has_value());
+  calls = 0;
+  const auto h = eq.hessian(at);
+  ASSERT_TRUE(h.has_value());
+  EXPECT_EQ(calls, per_value);
+  expect_close(*h, *native().hessian(at), 1e-12);
+}
+
 TEST(RtExtern, ASystemThroughOneFunction) {
   const auto sys = ddx::rt::equation([] {
     const auto a = ddx::rt::var("a");

@@ -222,6 +222,7 @@ public:
     if (g.has_tensors_) {
       g.pair_products();
     }
+    g.ring_externs();
     // Packs the tape rows by liveness, for scalar and tensor rows alike.
     auto packed = detail::pack_rows(b, g.schedule_, g.outputs_);
     g.rows_ = std::move(packed.by_id);
@@ -367,6 +368,35 @@ private:
       out.push_back(step);
       if (paired_[step.node] != no_node) {
         out.push_back(moved[paired_[step.node]]);
+      }
+    }
+    schedule_ = std::move(out);
+  }
+
+  // Rings each extern call's components and schedules the ring right after its
+  // lowest id, which writes every member's row, so packing hands none of those
+  // rows to another node in between.
+  void ring_externs() {
+    if (!detail::ring_externs(*this, schedule_, paired_)) {
+      return;
+    }
+    std::vector<Step> at(properties_.size());
+    for (const Step &step : schedule_) {
+      at[step.node] = step;
+    }
+    std::vector<Step> out;
+    out.reserve(schedule_.size());
+    for (const Step &step : schedule_) {
+      const NodeId v = step.node;
+      const bool extern_call = kind_of(step.op) == Kind::Extern;
+      if (extern_call && paired_[v] != no_node && paired_[v] < v) {
+        continue;
+      }
+      out.push_back(step);
+      if (extern_call && paired_[v] != no_node) {
+        for (NodeId m = paired_[v]; m != v; m = paired_[m]) {
+          out.push_back(at[m]);
+        }
       }
     }
     schedule_ = std::move(out);

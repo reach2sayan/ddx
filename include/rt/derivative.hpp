@@ -297,7 +297,7 @@ constexpr void mark_moving(const Arena<T> &b, std::span<const NodeId> cone,
 // stays topological. Solved implicits fold adj[z] * dz/dx_s in at the end.
 template <detail::AtImplicits At, impl::Numeric T>
 [[nodiscard]] constexpr JacobianRow
-detail::reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &scratch) {
+reverse_sweep(Arena<T> &b, NodeId root, SweepScratch &scratch) {
   const auto n = static_cast<NodeId>(b.size());
   const auto cone = cone_of(b, std::span{&root, 1}, scratch.marked);
   // Contributions are built for moving nodes and also constants, whose nodes
