@@ -157,7 +157,7 @@ DDX_NOINLINE constexpr void lanes_extern(const Arena<T> &b, NodeId v, U *out,
         in[static_cast<std::size_t>(j)] = lane(t.row(arg))[k];
       }
       (*e.fn)(in, answer);
-      for (const auto [row, c] : ring) {
+      for (const auto &[row, c] : ring) {
         row[k] = answer[c];
       }
     }
