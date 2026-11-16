@@ -528,10 +528,12 @@ sweep_step(const Arena<T> &b, std::span<const Node<T>> nodes,
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }
-  } else if (is_field_op(s.op)) {
+  } else if (impl::CArithmetic<U> && is_field_op(s.op)) {
     // The field ops' own small switch puts the op sequence into the branch
     // history; through the one jump table, a run of them with no fma between
     // mispredicted every few steps (10x the misses on a flattened UNIQUAC).
+    // Arithmetic only: a series op inlined twice contracts to fma differently
+    // per copy, and the batched and one-point sweeps then disagree in bits.
     detail::lanes_apply<W, true>(b, i, n, out, lane, s, t);
   } else if (!detail::lanes_mated<W>(i, s, lane, t)) {
     detail::lanes_apply<W>(b, i, n, out, lane, s, t);
