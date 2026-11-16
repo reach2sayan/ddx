@@ -8,8 +8,6 @@
 #include "util/meta.hpp"
 #include "util/scope_guard.hpp"
 
-#include <boost/hof/match.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -23,7 +21,6 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
-#include <variant>
 
 namespace ddx::rt {
 
@@ -156,19 +153,14 @@ public:
     return why_.has_value();
   }
 
-  // The node id in arena b, materialising a pending literal or an unfinished
-  // op= fold first.
+  // The node id in arena b, materialising a pending literal first.
   [[nodiscard]] constexpr NodeId
   id(Arena<T> &b, Shape shape = {.rows = 0, .cols = 0}) const {
     assert(!why_ && "a refusal has no identity: it would read as a constant");
     if (arena_ == nullptr) {
       return shape.size() ? b.filled(shape, lit_) : b.constant(lit_);
     }
-    // b may be a copy of arena_.
-    return std::visit(
-        boost::hof::match([](NodeId at) { return at; },
-                          [&b](const auto &at) { return b.fold_of(at); }),
-        at_);
+    return at_;
   }
   [[nodiscard]] constexpr Expression operator[](std::size_t i) const {
     if (why_) {
@@ -289,46 +281,20 @@ public:
     return l + (-r);
   }
 
-  // On a scalar node, op= collects terms into one n-ary node built on first
-  // read, so a loop of k updates is one node. Other cases use the operator.
+  // Exactly the operator: an equation flattens each chain into one n-ary node.
   constexpr Expression &operator+=(const Expression &o) {
-    return accumulate<OpCode::SumN>(o);
+    return *this = *this + o;
   }
-  constexpr Expression &operator-=(const Expression &o) { return *this += -o; }
+  constexpr Expression &operator-=(const Expression &o) {
+    return *this = *this - o;
+  }
   constexpr Expression &operator*=(const Expression &o) {
-    return accumulate<OpCode::ProdN>(o);
+    return *this = *this * o;
   }
   constexpr Expression &operator/=(const Expression &o) {
-    return accumulate<OpCode::QuotN>(o);
+    return *this = *this / o;
   }
 
-private:
-  template <OpCode Fold> constexpr Expression &accumulate(const Expression &o) {
-    if (why_ || o.why_ || pending() || size() || o.size() || is_matrix() ||
-        o.is_matrix() || (!o.pending() && o.arena_ != arena_)) {
-      return *this = form(detail::fold_op(Fold), *this, o);
-    }
-    const T identity = Fold == OpCode::SumN ? T{0} : T{1};
-    if constexpr (std::equality_comparable<T>) {
-      using impl::same_value;
-      if (o.pending() && same_value(o.lit_, identity)) {
-        return *this;
-      }
-    }
-    const NodeId t = o.id(*arena_);
-    if (arena_->is_constant(t, identity)) {
-      return *this;
-    }
-    using Folding = detail::Folding<Fold>;
-    const auto *folding = std::get_if<Folding>(&at_);
-    const detail::PendingEntry last =
-        folding ? folding->entry
-                : arena_->push_term(detail::no_entry, id(*arena_));
-    at_ = Folding{arena_->push_term(last, t)};
-    return *this;
-  }
-
-public:
 #define DDX_RT_UNFN(fn, Op, label, ...)                                        \
   friend constexpr Expression fn(const Expression &u) {                        \
     return form(OpCode::Op, u);                                                \
@@ -416,23 +382,18 @@ private:
   // Whether this is a mat_constant table, which arithmetic reads through
   // row().
   [[nodiscard]] constexpr bool is_matrix() const noexcept {
-    const auto *node = std::get_if<NodeId>(&at_);
-    return arena_ != nullptr && node &&
-           arena_->op_of(*node) == OpCode::MatConst;
+    return arena_ != nullptr && arena_->op_of(at_) == OpCode::MatConst;
   }
   [[nodiscard]] constexpr Expression row() const {
     return is_matrix() ? Expression{*arena_,
                                     arena_->make(detail::opcode<OpCode::MatRow>,
                                                  Orientation::plain,
-                                                 std::get<NodeId>(at_))}
+                                                 at_)}
                        : *this;
   }
 
   Arena<T> *arena_ = nullptr;
-  // A node id, or the fold that op= is still accumulating.
-#define DDX_RT_FOLDING(fn, Op, ...) , detail::Folding<OpCode::Op>
-  std::variant<NodeId DDX_RT_NARY_TABLE(DDX_RT_FOLDING)> at_{no_node};
-#undef DDX_RT_FOLDING
+  NodeId at_ = no_node;
   Shape shape_{0, 0};
   T lit_{};
   std::optional<errc> why_;

@@ -96,15 +96,28 @@ template <typename Fn, bool Computes, std::size_t Arity> struct OpRow {
 template <typename Fn, bool Probed, std::size_t Arity>
 using op_row_t = OpRow<Fn, Probed || is_field_op_v<Fn>, Arity>;
 
+// visit(row), or unreachable for a row outside the field ops when only they
+// are dispatched, which leaves the switch just their cases.
+template <bool FieldOnly, typename R>
+DDX_ALWAYS_INLINE constexpr auto visit_row(auto &&visit, R row)
+    -> decltype(visit(row)) {
+  if constexpr (FieldOnly && !is_field_op_v<typename R::functor>) {
+    std::unreachable();
+  } else {
+    return visit(row);
+  }
+}
+
 // The single switch over the opcode tables. Every per-opcode query is a
 // visitor over the OpRow, so the operation set is spelled out only here.
-template <impl::Numeric T>
+// FieldOnly requires is_field_op(op).
+template <impl::Numeric T, bool FieldOnly = false>
 [[nodiscard]] DDX_ALWAYS_INLINE constexpr decltype(auto)
 dispatch(OpCode op, auto &&visit) {
   switch (op) {
 #define DDX_RT_DISPATCH(fn, Op, label, functor, ...)                           \
   case OpCode::Op:                                                             \
-    return visit(op_row_t<functor, probes_##Op<T>, arity_of(OpCode::Op)>{});
+    return visit_row<FieldOnly>(visit, op_row_t<functor, probes_##Op<T>, arity_of(OpCode::Op)>{});
     DDX_RT_UNARY_TABLE(DDX_RT_DISPATCH)
     DDX_RT_BINARY_TABLE(DDX_RT_DISPATCH)
     DDX_RT_COMPARE_TABLE(DDX_RT_DISPATCH)
@@ -112,30 +125,36 @@ dispatch(OpCode op, auto &&visit) {
 #undef DDX_RT_DISPATCH
 #define DDX_RT_DISPATCH(fn, Op, label)                                         \
   case OpCode::Op:                                                             \
-    return visit(OpRow<impl::detail::Op##Fn<T>, probes_##Op<T>, 1>{});
+    return visit_row<FieldOnly>(visit, OpRow<impl::detail::Op##Fn<T>, probes_##Op<T>, 1>{});
     DDX_UNARY_MATH_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
 #define DDX_RT_DISPATCH(fn, Op, label, ...)                                    \
   case OpCode::Op:                                                             \
-    return visit(OpRow<void, true, 0>{});
+    return visit_row<FieldOnly>(visit, OpRow<void, true, 0>{});
     DDX_RT_LEAF_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
     // Extern calls are unsupported at every scalar so Taylor sweeps avoid
     // them. N-ary folds use a field op, so they are supported everywhere.
 #define DDX_RT_DISPATCH(fn, Op, label, arity, kind, ...)                       \
   case OpCode::Op:                                                             \
-    return visit(OpRow<void, Kind::kind == Kind::Nary, arity>{});
+    return visit_row<FieldOnly>(visit, OpRow<void, Kind::kind == Kind::Nary, arity>{});
     DDX_RT_EXTERN_TABLE(DDX_RT_DISPATCH)
     DDX_RT_NARY_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
     // Tensor rows run only through the interpreter's kernel table.
 #define DDX_RT_DISPATCH(fn, Op, label, arity, ...)                             \
   case OpCode::Op:                                                             \
-    return visit(OpRow<void, false, arity>{});
+    return visit_row<FieldOnly>(visit, OpRow<void, false, arity>{});
     DDX_RT_TENSOR_TABLE(DDX_RT_DISPATCH)
 #undef DDX_RT_DISPATCH
   }
   std::unreachable();
+}
+
+// Whether op is one of the field ops, which every scalar computes.
+[[nodiscard]] constexpr bool is_field_op(OpCode op) noexcept {
+  return dispatch<double>(
+      op, []<typename R>(R) { return is_field_op_v<typename R::functor>; });
 }
 
 // Whether apply<T>(op, ...) computes op or returns T{}. Leaves are always

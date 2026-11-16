@@ -13,12 +13,14 @@
 #include <cmath>
 #include <cstdio>
 #include <format>
+#include <initializer_list>
 #include <ranges>
 #include <string>
 #include <vector>
 
-// A loop of acc op= term builds one fold node (SumN, ProdN or QuotN) where
-// acc = acc op term builds a chain; both agree to rounding.
+// acc op= term is acc = acc op term, and an equation flattens each
+// single-use chain of it into one fold node (SumN, ProdN or QuotN) that
+// rounds as the chain does.
 
 namespace {
 using ddx::rt::OpCode;
@@ -53,6 +55,33 @@ std::vector<double> ramp(std::size_t n) {
            return 0.3 + 0.17 * static_cast<double>(i);
          }) |
          ddx::impl::to<std::vector>();
+}
+
+// The roots as an equation holds them, with their chains flattened.
+std::vector<ddx::rt::detail::NodeId> flat(Arena<> &b,
+                                          std::initializer_list<RE> roots) {
+  const auto ids = roots | std::views::transform([&b](const RE &r) {
+                     return r.id(b);
+                   }) |
+                   ddx::impl::to<std::vector>();
+  return ddx::rt::detail::flatten(b, ids);
+}
+ddx::rt::detail::NodeId flat(Arena<> &b, const RE &root) {
+  return flat(b, {root}).front();
+}
+// The fold node under a flattened root. A product's chain sits under its last
+// Mul, which an add still contracts into an fma.
+ddx::rt::detail::NodeId fold_of(const Arena<> &b, ddx::rt::detail::NodeId f) {
+  if (b[f].op != OpCode::Mul) {
+    return f;
+  }
+  const auto in = b[f].in;
+  return b[in[0]].op == OpCode::ProdN ? in[0] : in[1];
+}
+// The terms of a chain of `total` in its fold node: a product's last factor
+// stays outside.
+std::size_t listed_terms(OpCode op, std::size_t total) {
+  return op == OpCode::ProdN ? total - 1 : total;
 }
 
 void expect_close(double got, double want, double rel) {
@@ -111,36 +140,30 @@ protected:
   }
 };
 
+// The loop starts from x0 + 1, which a sum's chain absorbs as two terms.
 TEST_P(RtFold, ALoopIsOneNode) {
-  Arena<> fold;
-  const auto root = folded(fold_symbols(fold, 6));
-  const auto &node = fold[root.id(fold)];
-  EXPECT_EQ(node.op, GetParam().op);
-  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::detail::Count>(node).value,
-            kTerms + 1);
-  EXPECT_EQ(ddx::rt::detail::arguments(fold, root.id(fold)).size(), kTerms + 1);
-
-  Arena<> chain;
-  (void)chained(fold_symbols(chain, 6)).id(chain);
-  EXPECT_EQ(chain.size(), fold.size() + kTerms - 1);
+  Arena<> b;
+  const auto x = fold_symbols(b, 6);
+  const auto root = folded(x);
+  EXPECT_EQ(root.id(b), chained(x).id(b)); // the very same chain
+  const auto f = fold_of(b, flat(b, root));
+  const std::size_t terms = listed_terms(
+      GetParam().op, kTerms + (GetParam().binary == OpCode::Add ? 2 : 1));
+  EXPECT_EQ(b[f].op, GetParam().op);
+  EXPECT_EQ(ddx::rt::detail::get<ddx::rt::detail::Count>(b[f]).value, terms);
+  EXPECT_EQ(ddx::rt::detail::arguments(b, f).size(), terms);
 }
 
-TEST_P(RtFold, TwoTermsAreTheChainsBinaryNode) {
+TEST_P(RtFold, TwoTermsStayTheBinaryNode) {
   Arena<> b;
-  const auto x = fold_symbols(b, 2);
+  const auto x = fold_symbols(b, 4);
   auto acc = x[0];
   GetParam().assign(acc, x[1]);
-  EXPECT_EQ(acc.id(b), GetParam().chain(x[0], x[1]).id(b));
+  EXPECT_EQ(flat(b, acc), acc.id(b));
   EXPECT_EQ(b[acc.id(b)].op, GetParam().binary);
-  // Reading the accumulator makes the next term resume from the read node.
-  const auto read = acc.id(b);
-  GetParam().assign(acc, x[0] * x[1]);
-  EXPECT_EQ(acc.id(b), GetParam().chain(RE{b, read}, x[0] * x[1]).id(b));
-  // Without a read, a third term makes the fold.
-  auto fresh = x[0];
-  GetParam().assign(fresh, x[1]);
-  GetParam().assign(fresh, x[0] * x[1]);
-  EXPECT_EQ(b[fresh.id(b)].op, GetParam().op);
+  GetParam().assign(acc, x[2]);
+  GetParam().assign(acc, x[3]);
+  EXPECT_EQ(b[fold_of(b, flat(b, acc))].op, GetParam().op);
 }
 
 TEST_P(RtFold, TheIdentityOnTheRightIsDropped) {
@@ -163,12 +186,9 @@ TEST_P(RtFold, ACopyOfAnAccumulatorKeepsItsValue) {
   const RE before = acc;
   f.assign(acc, x[0] * x[1]);
   f.assign(acc, x[1] * x[2]);
-  const auto kept = before.id(b);
-  const auto grown = acc.id(b);
-  // Reading a fold again returns the node it formed rather than a new one.
-  const std::size_t n = b.size();
-  EXPECT_EQ(acc.id(b), grown);
-  EXPECT_EQ(b.size(), n);
+  const auto both = flat(b, {before, acc});
+  const auto kept = both[0];
+  const auto grown = both[1];
   const auto p = ramp(3);
   const auto values = ddx::rt::detail::evaluate_all(b, p);
   const auto step = f.step;
@@ -177,99 +197,123 @@ TEST_P(RtFold, ACopyOfAnAccumulatorKeepsItsValue) {
   EXPECT_DOUBLE_EQ(values[grown], step(step(three, p[0] * p[1]), p[1] * p[2]));
 }
 
+// The value is the chain's to the bit. Derivatives agree to rounding: a fold
+// hands its terms their adjoints first to last, the chain last to first.
 TEST_P(RtFold, ValueGradientHvpAndHessianMatchTheChain) {
   constexpr std::size_t n = 6;
-  Arena<> fold, chain;
-  const auto fs = folded(fold_symbols(fold, n)).id(fold);
-  const auto fc = chained(fold_symbols(chain, n)).id(chain);
-  const auto gs = ddx::rt::detail::derive_jacobian(fold, fs);
-  const auto gc = ddx::rt::detail::derive_jacobian(chain, fc);
-  const auto hs = ddx::rt::detail::derive_hessian(fold, fs);
-  const auto hc = ddx::rt::detail::derive_hessian(chain, fc);
-  const auto ps = ddx::rt::detail::derive_hvp(fold, fs);
-  const auto pc = ddx::rt::detail::derive_hvp(chain, fc);
+  Arena<> b;
+  const auto root = chained(fold_symbols(b, n));
+  const auto fc = root.id(b);
+  const auto fs = flat(b, root);
+  ASSERT_EQ(b[fold_of(b, fs)].op, GetParam().op);
+  const auto gs = ddx::rt::detail::derive_jacobian(b, fs);
+  const auto gc = ddx::rt::detail::derive_jacobian(b, fc);
+  const auto hs = ddx::rt::detail::derive_hessian(b, fs);
+  const auto hc = ddx::rt::detail::derive_hessian(b, fc);
+  const auto ps = ddx::rt::detail::derive_hvp(b, fs);
+  const auto pc = ddx::rt::detail::derive_hvp(b, fc);
 
   auto at = ramp(n);
   for (const std::size_t i : std::views::iota(0uz, n)) {
     at.push_back(1.0 - 0.1 * static_cast<double>(i)); // the direction
   }
-  const auto vs = ddx::rt::detail::evaluate_all(fold, at);
-  const auto vc = ddx::rt::detail::evaluate_all(chain, at);
-  expect_close(vs[fs], vc[fc], 1e-14);
+  const auto v = ddx::rt::detail::evaluate_all(b, at);
+  EXPECT_EQ(v[fs], v[fc]);
   for (const std::size_t i : std::views::iota(0uz, n)) {
-    expect_close(vs[gs.partial[i]], vc[gc.partial[i]], 1e-13);
-    expect_close(vs[ps.product[i]], vc[pc.product[i]], 1e-12);
+    expect_close(v[gs.partial[i]], v[gc.partial[i]], 1e-13);
+    expect_close(v[ps.product[i]], v[pc.product[i]], 1e-12);
     for (const std::size_t j : std::views::iota(0uz, n)) {
-      expect_close(vs[hs.at(i, j)], vc[hc.at(i, j)], 1e-12);
+      expect_close(v[hs.at(i, j)], v[hc.at(i, j)], 1e-12);
     }
   }
 }
 
-// Each read resumes from the previous read's node, so the pool holds each
-// term once rather than k^2 / 2 times, and the last read matches the fold.
-TEST_P(RtFold, ReadingEveryStepListsEachTermOnce) {
+// A partial that is itself a root ends the chain below it: the fold above
+// takes it as its first term, and the partial is a fold of its own.
+TEST_P(RtFold, ASharedPartialSplitsTheChain) {
   constexpr std::size_t n = 6;
-  constexpr std::size_t k = 2000;
   const Fold &f = GetParam();
-  Arena<> read, once;
-  const auto x = fold_symbols(read, n);
+  Arena<> b;
+  const auto x = fold_symbols(b, n);
   RE acc = x[0] + 1.0;
-  for (const std::size_t t : std::views::iota(0uz, k)) {
+  for (const std::size_t t : std::views::iota(0uz, 5uz)) {
     f.assign(acc, f.term(x, t));
-    (void)acc.id(read);
   }
-  const auto fr = acc.id(read);
-  const auto fo = folded(fold_symbols(once, n), k).id(once);
-  EXPECT_LE(read.lists().size(), 2 * k);
-  EXPECT_LE(read.size(), once.size() + 2 * k);
+  const RE shared = acc;
+  for (const std::size_t t : std::views::iota(5uz, 10uz)) {
+    f.assign(acc, f.term(x, t));
+  }
+  const auto roots = flat(b, {acc, shared});
+  EXPECT_EQ(b[fold_of(b, roots[0])].op, f.op);
+  EXPECT_EQ(b[fold_of(b, roots[1])].op, f.op);
+  const auto upper = ddx::rt::detail::arguments(b, fold_of(b, roots[0]));
+  EXPECT_EQ(upper.size(), listed_terms(f.op, 6));
+  EXPECT_EQ(upper.front(), roots[1]);
+  const auto v = ddx::rt::detail::evaluate_all(b, ramp(n));
+  EXPECT_EQ(v[roots[0]], v[acc.id(b)]);
+  EXPECT_EQ(v[roots[1]], v[shared.id(b)]);
+}
 
-  const auto at = ramp(n);
-  const auto vr = ddx::rt::detail::evaluate_all(read, at);
-  const auto vo = ddx::rt::detail::evaluate_all(once, at);
-  EXPECT_EQ(vr[fr], vo[fo]);
-  const auto gr = ddx::rt::detail::derive_jacobian(read, fr);
-  const auto go = ddx::rt::detail::derive_jacobian(once, fo);
-  const auto wr = ddx::rt::detail::evaluate_all(read, at);
-  const auto wo = ddx::rt::detail::evaluate_all(once, at);
-  for (const std::size_t i : std::views::iota(0uz, n)) {
-    expect_close(wr[gr.partial[i]], wo[go.partial[i]], 1e-12);
-  }
+// Only a running operand is followed: (a + b) + (c + d) keeps c + d as one
+// term, and a divisor that is a quotient is never part of the chain.
+TEST(RtFoldShape, NothingIsReassociated) {
+  Arena<> b;
+  const auto x = fold_symbols(b, 4);
+  const auto sum = flat(b, (x[0] + x[1]) + (x[2] + x[3]));
+  ASSERT_EQ(b[sum].op, OpCode::SumN);
+  const auto terms = ddx::rt::detail::arguments(b, sum);
+  ASSERT_EQ(terms.size(), 3u);
+  EXPECT_EQ(b[terms[2]].op, OpCode::Add);
+  const RE nested = x[0] / (x[1] / (x[2] / x[3]));
+  EXPECT_EQ(flat(b, nested), nested.id(b));
+  const auto quot = flat(b, x[0] / x[1] / x[2] / x[3]);
+  EXPECT_EQ(b[quot].op, OpCode::QuotN);
+  const auto v = ddx::rt::detail::evaluate_all(b, ramp(4));
+  const auto p = ramp(4);
+  EXPECT_EQ(v[sum], (p[0] + p[1]) + (p[2] + p[3]));
+  EXPECT_EQ(v[quot], p[0] / p[1] / p[2] / p[3]);
+}
+
+// A sum written right-nested is still one running value plus a term at each
+// step, so it is a chain too.
+TEST(RtFoldShape, ARightNestedSumIsAChain) {
+  Arena<> b;
+  const auto x = fold_symbols(b, 4);
+  const RE root = x[0] + (x[1] + (x[2] + x[3]));
+  const auto f = flat(b, root);
+  EXPECT_EQ(b[f].op, OpCode::SumN);
+  const auto v = ddx::rt::detail::evaluate_all(b, ramp(4));
+  EXPECT_EQ(v[f], v[root.id(b)]);
 }
 
 // A sum couples none of its terms, a product couples every pair, and a quotient
 // also couples each divisor with itself.
 TEST_P(RtFold, CouplingPatternIsTheChains) {
   constexpr std::size_t n = 6;
-  Arena<> fold, chain;
-  const auto x = fold_symbols(fold, n);
-  const auto y = fold_symbols(chain, n);
+  Arena<> b;
+  const auto x = fold_symbols(b, n);
   // Each term reads one symbol, so the coupling is the fold's own.
-  const auto build = [&](const std::vector<RE> &s, auto &&combine) {
-    RE acc = s[0] * s[0];
-    for (const RE &si : s | std::views::drop(1)) {
-      combine(acc, si + 1.0);
-    }
-    return acc;
-  };
-  const auto fs = build(x, GetParam().assign).id(fold);
-  const auto fc = build(y, [&](RE &a, const RE &t) {
-                    a = GetParam().chain(a, t);
-                  }).id(chain);
-  ASSERT_EQ(fold[fs].op, GetParam().op);
-  EXPECT_EQ(ddx::rt::detail::coupling_pattern(fold, fs),
-            ddx::rt::detail::coupling_pattern(chain, fc));
+  RE acc = x[0] * x[0];
+  for (const RE &xi : x | std::views::drop(1)) {
+    GetParam().assign(acc, xi + 1.0);
+  }
+  const auto fc = acc.id(b);
+  const auto fs = flat(b, acc);
+  ASSERT_EQ(b[fold_of(b, fs)].op, GetParam().op);
+  EXPECT_EQ(ddx::rt::detail::coupling_pattern(b, fs),
+            ddx::rt::detail::coupling_pattern(b, fc));
 }
 
 TEST_P(RtFold, SweepsAtADualScalar) {
   using D = ddx::impl::Dual<double>;
-  Arena<> fold, chain;
-  const auto fs = folded(fold_symbols(fold, 2), 20).id(fold);
-  const auto fc = chained(fold_symbols(chain, 2), 20).id(chain);
+  Arena<> b;
+  const auto root = chained(fold_symbols(b, 2), 20);
+  const auto fc = root.id(b);
+  const auto fs = flat(b, root);
   const std::vector p{D{0.7, 1.0}, D{1.3, 0.0}}; // d/dx0
-  const auto vs = ddx::rt::detail::evaluate_all(fold, p);
-  const auto vc = ddx::rt::detail::evaluate_all(chain, p);
-  expect_close(vs[fs].get<0>(), vc[fc].get<0>(), 1e-14);
-  expect_close(vs[fs].get<1>(), vc[fc].get<1>(), 1e-13);
+  const auto v = ddx::rt::detail::evaluate_all(b, p);
+  EXPECT_EQ(v[fs].get<0>(), v[fc].get<0>());
+  expect_close(v[fs].get<1>(), v[fc].get<1>(), 1e-13);
 }
 
 // Checks every derivative equation() answers, and the dense Hessian, whose
@@ -316,8 +360,8 @@ TEST(RtFoldProd, AZeroTermHasAFiniteGradient) {
   acc *= x[1];
   acc *= x[2];
   acc *= x[0] + x[1];
-  const auto f = acc.id(b);
-  ASSERT_EQ(b[f].op, OpCode::ProdN);
+  const auto f = flat(b, acc);
+  ASSERT_EQ(b[fold_of(b, f)].op, OpCode::ProdN);
   const auto g = ddx::rt::detail::derive_jacobian(b, f);
   const std::vector p{2.0, 0.0, 3.0}; // x1 = 0
   const auto v = ddx::rt::detail::evaluate_all(b, p);
@@ -327,7 +371,7 @@ TEST(RtFoldProd, AZeroTermHasAFiniteGradient) {
   EXPECT_DOUBLE_EQ(v[g.partial[2]], 0.0);
 }
 
-// Changing op mid-loop closes the fold so far as the first term of the next.
+// Changing op mid-loop makes the fold so far the first term of the next.
 TEST(RtFoldMixed, AnotherOpStartsANewFold) {
   Arena<> b;
   const auto x = fold_symbols(b, 3);
@@ -340,7 +384,7 @@ TEST(RtFoldMixed, AnotherOpStartsANewFold) {
   acc /= x[1] + 1.0;
   acc -= x[0];
   acc -= x[2];
-  const auto f = acc.id(b);
+  const auto f = flat(b, acc);
   EXPECT_EQ(b[f].op, OpCode::SumN);
   const auto p = ramp(3);
   const auto v = ddx::rt::detail::evaluate_all(b, p);
@@ -373,7 +417,7 @@ TEST(RtSumN, ListsInternByContent) {
     for (const std::size_t t : std::views::iota(1uz, terms)) {
       acc += x[t];
     }
-    return acc.id(b);
+    return flat(b, acc);
   };
   const auto four = sum(4);
   const std::size_t pool = b.lists().size();
@@ -405,7 +449,8 @@ TEST(RtSumN, ZeroTermsAreDroppedAndMinusNegates) {
 TEST(RtSumN, FusedAndUnfusedSchedulesAgree) {
   Arena<> b;
   const auto x = fold_symbols(b, 6);
-  const auto f = summed(x).id(b);
+  const auto f = flat(b, summed(x));
+  ASSERT_EQ(b[f].op, OpCode::SumN);
   const auto fused = ddx::test::freeze_values(b, std::array{f}, true);
   const auto plain = ddx::test::freeze_values(b, std::array{f}, false);
   // When fused, the product terms need no multiplies of their own.
@@ -415,19 +460,19 @@ TEST(RtSumN, FusedAndUnfusedSchedulesAgree) {
   std::vector<double> tf(fused.tape_rows()), tp(plain.tape_rows());
   ddx::rt::detail::evaluate_into(
       b, p, fused.schedule(), std::span{tf},
-      ddx::rt::detail::TapeView<double>{.scalar_rows = fused.rows()});
+      ddx::rt::detail::TapeView<double>::of(fused, nullptr, nullptr));
   ddx::rt::detail::evaluate_into(
       b, p, plain.schedule(), std::span{tp},
-      ddx::rt::detail::TapeView<double>{.scalar_rows = plain.rows()});
+      ddx::rt::detail::TapeView<double>::of(plain, nullptr, nullptr));
   expect_close(tf[fused.rows()[f]], tp[plain.rows()[f]], 1e-14);
   expect_close(tf[fused.rows()[f]], ddx::rt::detail::evaluate(b, f, p), 1e-14);
 }
 
-// The kernel's blocked summation treats a SumN as the spine it already is.
+// The kernel's blocked summation splits a long SumN into partial sums.
 TEST(RtSumN, RebalanceBlocksTheSum) {
   Arena<> b;
   const auto x = fold_symbols(b, 6);
-  const auto f = summed(x).id(b);
+  const auto f = flat(b, summed(x));
   const auto moved = ddx::rt::detail::rebalance(b, std::span{&f, 1});
   ASSERT_EQ(moved.size(), 1u);
   EXPECT_NE(moved[0], f);
@@ -437,12 +482,12 @@ TEST(RtSumN, RebalanceBlocksTheSum) {
   expect_close(values[moved[0]], values[f], 1e-13);
 }
 
-// models::mse at n = 64 writes its n^2 pair terms with +=, giving one SumN
-// instead of n^2 Add nodes.
+// models::mse at n = 64 writes its n^2 pair terms with +=, which flattens
+// into one SumN instead of n^2 Add nodes.
 TEST(RtSumN, MseSumsItsPairTermsInOneNode) {
   constexpr std::size_t n = 64;
   Arena<> b;
-  const auto f = models::mse(fold_symbols(b, n)).id(b);
+  const auto f = flat(b, models::mse(fold_symbols(b, n)));
   const auto g = ddx::rt::detail::derive_jacobian(b, f);
   std::printf("[ ARENA    ] mse n=%zu: %zu nodes with the gradient\n", n,
               b.size());

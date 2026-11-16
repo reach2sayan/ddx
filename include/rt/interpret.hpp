@@ -114,6 +114,8 @@ template <typename U> struct TapeView {
   // Each node's mate, or empty for no pairing: Graph::pairs' products and
   // extern rings, or an ArenaWalk's paired_ops and extern rings.
   std::span<const NodeId> pairs{};
+  // fold_terms of the schedule, which every fold step reads.
+  std::span<const FoldTerm> folds{};
 
   [[nodiscard]] constexpr TapeRow row(NodeId v) const noexcept {
     return scalar_rows.empty() ? TapeRow{v} : scalar_rows[v];
@@ -126,7 +128,8 @@ template <typename U> struct TapeView {
             .tensor_rows = graph.tensors().rows,
             .vtape = vtape,
             .kernels = kernels,
-            .pairs = graph.pairs()};
+            .pairs = graph.pairs(),
+            .folds = graph.folds()};
   }
 };
 
@@ -294,45 +297,47 @@ DDX_NOINLINE constexpr void lanes_tensor(const Arena<T> &b, NodeId v,
 
 // Folds the terms in list order, matching the binary chain it replaces. The
 // first product is not fused, since fma(x, y, 0) would turn -0.0 into +0.0.
-template <std::size_t W, impl::Numeric T, impl::Numeric U>
-DDX_NOINLINE constexpr void lanes_fold(const Arena<T> &b, NodeId v, OpCode op,
-                                       bool fused, U *DDX_RESTRICT out,
-                                       auto lane, const TapeView<U> &t) {
-  const auto row = [&](NodeId u) { return lane(t.row(u)); };
+template <std::size_t W, impl::Numeric U>
+DDX_NOINLINE constexpr void lanes_fold(std::span<const FoldTerm> terms,
+                                       OpCode op, U *DDX_RESTRICT out,
+                                       auto lane) {
   if (op != OpCode::SumN) {
     dispatch<U>(fold_op(op), [&]<typename R>(R) {
       if constexpr (R::arity == 2) {
-        for (const auto [i, term] : arguments(b, v) | std::views::enumerate) {
-          const U *const r = row(term);
+        std::ranges::copy_n(lane(terms.front().row), W, out);
+        for (const FoldTerm &term : terms | std::views::drop(1)) {
+          const U *const r = lane(term.row);
           for (std::size_t k = 0; k < W; ++k) {
-            out[k] = i == 0 ? r[k]
-                            : supported<typename R::functor, U, R::computes>(
-                                  out[k], r[k]);
+            out[k] = supported<typename R::functor, U, R::computes>(out[k],
+                                                                    r[k]);
           }
         }
       }
     });
     return;
   }
-  for (const auto [i, term] : arguments(b, v) | std::views::enumerate) {
-    const Contraction c = fused ? product_of(b, term) : Contraction{};
-    if (!c) {
-      const U *const r = row(term);
+  if (const FoldTerm &first = terms.front(); first.x != no_row) {
+    const U *const x = lane(first.x);
+    const U *const y = lane(first.y);
+    for (std::size_t k = 0; k < W; ++k) {
+      out[k] = first.negated ? -(x[k] * y[k]) : x[k] * y[k];
+    }
+  } else {
+    std::ranges::copy_n(lane(first.row), W, out);
+  }
+  for (const FoldTerm &term : terms | std::views::drop(1)) {
+    if (term.x == no_row) {
+      const U *const r = lane(term.row);
       for (std::size_t k = 0; k < W; ++k) {
-        out[k] = i == 0 ? r[k] : out[k] + r[k];
+        out[k] = out[k] + r[k];
       }
       continue;
     }
-    const U *const x = row(c.x);
-    const U *const y = row(c.y);
+    const U *const x = lane(term.x);
+    const U *const y = lane(term.y);
     for (std::size_t k = 0; k < W; ++k) {
-      if (i == 0) {
-        out[k] = c.negated ? -(x[k] * y[k]) : x[k] * y[k];
-      } else if (c.negated) {
-        out[k] = fma_fn<std::negate<>>{}(x[k], y[k], out[k]);
-      } else {
-        out[k] = fma_fn<std::identity>{}(x[k], y[k], out[k]);
-      }
+      out[k] = term.negated ? fma_fn<std::negate<>>{}(x[k], y[k], out[k])
+                            : fma_fn<std::identity>{}(x[k], y[k], out[k]);
     }
   }
 }
@@ -341,12 +346,13 @@ DDX_NOINLINE constexpr void lanes_fold(const Arena<T> &b, NodeId v, OpCode op,
 // Testing the kind after the opcode switch costs scalar sweeps nothing.
 template <std::size_t W, impl::Numeric T, impl::Numeric U>
 DDX_ALWAYS_INLINE constexpr void
-lanes_opaque(const Arena<T> &b, NodeId v, const Node<T> &n, bool fused, U *out,
+lanes_opaque(const Arena<T> &b, NodeId v, const Node<T> &n, U *out,
              auto &&lane, const TapeView<U> &t) {
   if (on_tensors(n)) {
     lanes_tensor<W>(b, v, n, out, lane, t);
   } else if (kind_of(n.op) == Kind::Nary) {
-    lanes_fold<W>(b, v, n.op, fused, out, lane, t);
+    lanes_fold<W>(t.folds.subspan(std::size_t{n.list}, get<Count>(n).value),
+                  n.op, out, lane);
   } else {
     lanes_extern<W>(b, v, out, lane, t);
   }
@@ -379,12 +385,12 @@ lanes_by_constant(const Arena<T> &b, const Node<T> &n, U *DDX_RESTRICT out,
 
 // Opaque rows return true and run after the dispatch: called inside it, GCC
 // spills the closure and reloads the tape base on every step.
-template <std::size_t W, impl::Numeric T, typename U>
+template <std::size_t W, bool FieldOnly = false, impl::Numeric T, typename U>
 DDX_ALWAYS_INLINE constexpr void
 lanes_apply(const Arena<T> &b, NodeId i, const Node<T> &n, U *DDX_RESTRICT out,
             auto &&lane, const Step &s, const TapeView<U> &t) {
   const auto &in = s.in;
-  const bool opaque = dispatch<U>(s.op, [&]<typename R>(R) {
+  const bool opaque = dispatch<U, FieldOnly>(s.op, [&]<typename R>(R) {
     using Fn = typename R::functor;
     if constexpr (std::is_void_v<Fn>) {
       return true;
@@ -416,8 +422,10 @@ lanes_apply(const Arena<T> &b, NodeId i, const Node<T> &n, U *DDX_RESTRICT out,
       return false;
     }
   });
-  if (opaque) {
-    lanes_opaque<W>(b, i, n, s.fused, out, lane, t);
+  if constexpr (!FieldOnly) {
+    if (opaque) {
+      lanes_opaque<W>(b, i, n, out, lane, t);
+    }
   }
 }
 
@@ -520,6 +528,11 @@ sweep_step(const Arena<T> &b, std::span<const Node<T>> nodes,
     for (std::size_t k = 0; k < W; ++k) {
       out[k] = src[static_cast<std::ptrdiff_t>(k)];
     }
+  } else if (is_field_op(s.op)) {
+    // The field ops' own small switch puts the op sequence into the branch
+    // history; through the one jump table, a run of them with no fma between
+    // mispredicted every few steps (10x the misses on a flattened UNIQUAC).
+    detail::lanes_apply<W, true>(b, i, n, out, lane, s, t);
   } else if (!detail::lanes_mated<W>(i, s, lane, t)) {
     detail::lanes_apply<W>(b, i, n, out, lane, s, t);
   }
@@ -568,7 +581,8 @@ public:
   constexpr ArenaWalk(const Arena<T> &b, auto ids,
                       Contract contract = Contract::on)
       : schedule_{schedule_of(b, ids, contract)},
-        layout_{tensor_layout(b, schedule_)}, mates_{mates_of(b, schedule_)} {}
+        layout_{tensor_layout(b, schedule_)}, mates_{mates_of(b, schedule_)},
+        folds_{fold_terms(b, schedule_, [](NodeId u) { return TapeRow{u}; })} {}
   // Walks every node in id order, where children precede parents.
   template <impl::Numeric T>
   constexpr explicit ArenaWalk(const Arena<T> &b)
@@ -598,7 +612,10 @@ public:
     assert((std::same_as<U, T> || computes<U>(b)));
     // Only the arena's own scalar has a kernel table for tensor rows.
     TapeView<U> tensors{
-        .tensor_rows = layout_.rows, .vtape = vtape.data(), .pairs = mates_};
+        .tensor_rows = layout_.rows,
+        .vtape = vtape.data(),
+        .pairs = mates_,
+        .folds = folds_};
     if constexpr (std::same_as<U, T>) {
       tensors.kernels = &kernels;
     }
@@ -620,6 +637,7 @@ private:
   std::vector<Step> schedule_;
   TensorLayout layout_;
   std::vector<NodeId> mates_;
+  std::vector<FoldTerm> folds_;
 };
 
 // evaluate_all restricted to the nodes the roots reach. The result is still

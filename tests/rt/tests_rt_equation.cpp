@@ -722,8 +722,10 @@ TEST(RtEquation, ScalarAccessorsAgreeWithTheArenaWalkToTheBit) {
   // sweeps the arena several times.
   const auto expr = (x * log(x) + y * y * z) * log(x + y + z) / (z + y);
 
-  // Taken before the equation, so interning reuses these same nodes.
-  const auto root = expr.id(b);
+  // Flattened before the equation, as it flattens x + y + z, so interning
+  // reuses these same nodes.
+  const auto built = expr.id(b);
+  const auto root = ddx::rt::detail::flatten(b, std::span{&built, 1}).front();
   const auto row = ddx::rt::detail::derive_jacobian(b, root);
   const auto hess = ddx::rt::detail::derive_hessian(b, root);
   const auto eq = ddx::rt::equation(expr);

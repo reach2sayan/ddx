@@ -227,6 +227,9 @@ public:
     auto packed = detail::pack_rows(b, g.schedule_, g.outputs_);
     g.rows_ = std::move(packed.by_id);
     g.tape_rows_ = packed.rows;
+    g.folds_ = detail::fold_terms(g, g.schedule_, [&g](NodeId u) {
+      return g.rows_.empty() ? TapeRow{u} : g.rows_[u];
+    });
     if (fuse) {
       g.fused_ = detail::fused_into(g, g.schedule_, g.outputs_);
     }
@@ -314,6 +317,10 @@ public:
   // liveness, so the tape is much smaller than the arena.
   [[nodiscard]] std::span<const TapeRow> rows() const noexcept { return rows_; }
   [[nodiscard]] std::size_t tape_rows() const noexcept { return tape_rows_; }
+  // Each fold's terms at its list offsets, rows resolved.
+  [[nodiscard]] std::span<const FoldTerm> folds() const noexcept {
+    return folds_;
+  }
 
   [[nodiscard]] OpCode op_of(NodeId v) const { return properties_[v].op; }
 
@@ -448,6 +455,7 @@ private:
   std::vector<NodeId> paired_;
   std::vector<TapeRow> rows_;
   std::size_t tape_rows_ = 0;
+  std::vector<FoldTerm> folds_;
   std::vector<bool> live_;
   std::vector<NodeId> live_order_;
   std::vector<Step> schedule_;

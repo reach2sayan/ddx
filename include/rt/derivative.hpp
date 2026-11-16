@@ -726,11 +726,16 @@ tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
     }
     case Kind::Nary: {
       if (op == OpCode::SumN) { // The sum of the terms' tangents.
-        Expression<T> sum{0};
-        for (const NodeId t : arguments(b, v)) {
-          sum += dv(t);
+        // The first is kept even when zero, which decides the sign of a zero
+        // sum; later zeros are dropped.
+        const auto args = arguments(b, v) | impl::to<std::vector>();
+        std::vector terms{at(args.front())};
+        for (const NodeId t : args | std::views::drop(1)) {
+          if (const NodeId dt = at(t); !b.is_constant(dt, T{0})) {
+            terms.push_back(dt);
+          }
         }
-        d[v] = sum.id(b);
+        d[v] = b.folded(OpCode::SumN, terms);
         break;
       }
       // The chain's tangent one step at a time, from the running value and,
