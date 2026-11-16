@@ -749,6 +749,7 @@ protected:
       // only.
       poison(error{errc::unsupported_scalar});
     } else {
+      roots_ = detail::flatten(*arena_, roots_);
       // One reverse sweep per output is cheap, and the column counts, the
       // pattern and constant evaluation all read it.
       jacobian_ = derive_jacobian(*arena_, roots_);

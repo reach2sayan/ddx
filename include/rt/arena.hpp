@@ -134,15 +134,6 @@ template <OpCode Op>
   return operands<Op>(node.in);
 }
 
-// One term an `op=` fold has taken, indexing the arena's pending list.
-using PendingEntry = Id<struct PendingTag>;
-inline constexpr PendingEntry no_entry{~std::uint32_t{0}};
-// A handle's fold in progress: its last entry, typed by the Nary op that its
-// entries are read under.
-template <OpCode Fold> struct Folding {
-  PendingEntry entry;
-};
-
 } // namespace ddx::rt::detail
 
 namespace ddx::rt {
@@ -217,6 +208,15 @@ template <impl::Numeric T>
                                           std::type_identity_t<ExternFn<T>> fn);
 template <impl::Numeric T, typename Sink>
 constexpr void extern_partials(Arena<T> &b, NodeId v, Sink &&sink);
+// The two that build fold nodes; Arena befriends them.
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::vector<NodeId>
+flatten(Arena<T> &b, std::span<const NodeId> roots);
+template <impl::Numeric T>
+[[nodiscard]] constexpr std::vector<NodeId>
+tangent_sweep(Arena<T> &b, std::span<const NodeId> roots,
+              std::span<const NodeId> tangent, std::span<const NodeId> cone,
+              const std::vector<bool> &moves);
 
 // A named input: its kind of leaf and its slot among that kind.
 struct Input {
@@ -252,6 +252,15 @@ struct Step {
   OpCode op = OpCode::Const;
 };
 static_assert(sizeof(Step) == 40);
+
+// A fold term's tape rows, resolved with the schedule so a sweep reads no node
+// per term: its own row, and the factors of a fused sum's product.
+struct FoldTerm {
+  TapeRow row = no_row;
+  TapeRow x = no_row;
+  TapeRow y = no_row;
+  bool negated = false;
+};
 
 template <typename P> [[nodiscard]] constexpr P get(const auto &node) noexcept {
   assert(info(node.op).payload == payload_index<P>);
@@ -866,58 +875,22 @@ private:
            std::ranges::equal(t.data, data, identical);
   }
 
-  // An `op=` fold's terms, as a list sharing its prefix with copied handles so
-  // each copy keeps its value. The fold becomes a node only when first read.
-  template <impl::Numeric U> friend class rt::Expression;
-  struct Pending {
-    NodeId term = no_node;
-    detail::PendingEntry prev = detail::no_entry; // None for the first term.
-    NodeId node = no_node; // The node this entry materialised as.
-    // Whether `node` is bit-exactly the fold's running value here, so that a
-    // later read may resume from it.
-    bool running = false;
-  };
-  std::vector<Pending> pending_;
-  [[nodiscard]] constexpr detail::PendingEntry
-  push_term(detail::PendingEntry prev, NodeId term) {
-    pending_.push_back({.term = term, .prev = prev});
-    return detail::PendingEntry{
-        static_cast<std::uint32_t>(pending_.size() - 1)};
-  }
-  template <OpCode Fold>
-  [[nodiscard]] constexpr NodeId fold_of(detail::Folding<Fold> folding) {
-    const detail::PendingEntry entry = folding.entry;
-    if (pending_[entry].node != no_node) {
-      return pending_[entry].node;
-    }
-    // Walk back to the start or to an earlier running value, so a loop reading
-    // its accumulator every step lists each term only once.
-    std::vector<NodeId> terms;
-    bool resumed = false;
-    for (auto i = entry; i != detail::no_entry; i = pending_[i].prev) {
-      if (i != entry && pending_[i].running) {
-        terms.push_back(pending_[i].node);
-        resumed = true;
-        break;
-      }
-      terms.push_back(pending_[i].term);
-    }
-    std::ranges::reverse(terms);
-    const NodeId node = terms.size() == 1 ? terms[0]
-                        : terms.size() == 2
-                            ? make(fold_op(Fold), terms[0], terms[1])
-                            : listed(Fold, terms);
-    // An Add contracts whichever operand is a product, so it is the running
-    // value only when its first operand is not one, and a product never is.
-    const auto product = [this](NodeId u) {
-      return static_cast<bool>(product_of(*this, u));
-    };
-    pending_[entry].node = node;
-    pending_[entry].running =
-        Fold != OpCode::SumN ||
-        (!product(node) &&
-         (terms.size() != 2 || resumed || !product(terms[0])));
-    return node;
+  // The fold of `terms` under `nary`: the term itself, the binary node, or the
+  // list node, which is what a chain of its binary op flattens into.
+  template <impl::Numeric U>
+  friend constexpr std::vector<NodeId>
+  detail::flatten(Arena<U> &, std::span<const NodeId>);
+  template <impl::Numeric U>
+  friend constexpr std::vector<NodeId>
+  detail::tangent_sweep(Arena<U> &, std::span<const NodeId>,
+                        std::span<const NodeId>, std::span<const NodeId>,
+                        const std::vector<bool> &);
+  [[nodiscard]] constexpr NodeId folded(OpCode nary,
+                                        std::span<const NodeId> terms) {
+    assert(!terms.empty());
+    return terms.size() == 1   ? terms[0]
+           : terms.size() == 2 ? make(fold_op(nary), terms[0], terms[1])
+                               : listed(nary, terms);
   }
   // Another component of the extern call `v`: the same function and list.
   template <impl::Numeric U, typename Sink>
@@ -1564,6 +1537,31 @@ schedule_of(const CNodeSource auto &nodes,
                        .op = op};
          }) |
          impl::to<std::vector>();
+}
+
+// The terms of every scheduled fold at the offsets its list has in lists(),
+// which interning may share between folds; `row` maps an id to its tape row.
+[[nodiscard]] constexpr std::vector<FoldTerm>
+fold_terms(const CNodeSource auto &nodes, std::span<const Step> schedule,
+           auto &&row) {
+  std::vector<FoldTerm> out;
+  for (const Step &s : schedule) {
+    if (kind_of(s.op) != Kind::Nary) {
+      continue;
+    }
+    out.resize(nodes.lists().size());
+    const std::size_t at{nodes.list_of(s.node)};
+    for (const auto [i, t] : arguments(nodes, s.node) | std::views::enumerate) {
+      FoldTerm &f = out[at + static_cast<std::size_t>(i)];
+      f.row = row(t);
+      if (const Contraction c = s.fused ? product_of(nodes, t) : Contraction{}) {
+        f.x = row(c.x);
+        f.y = row(c.y);
+        f.negated = c.negated;
+      }
+    }
+  }
+  return out;
 }
 
 // The ids a step reads, which liveness is computed over: an fma's three, a

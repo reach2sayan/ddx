@@ -9,42 +9,115 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
-#include <numeric>
+#include <iterator>
+#include <optional>
 #include <ranges>
 #include <span>
-#include <stack>
 #include <vector>
 
 namespace ddx::rt::detail {
 
-// Blocked summation of long Add chains, which a kernel otherwise pays as
-// latency. Only the kernel graph uses it, so it may differ by a few ULP.
-
-// The terms of a maximal single-use Add spine, in left-to-right order.
+// Each single-use chain of a binary op that has an n-ary form becomes one
+// node over the chain's terms in its order, so it rounds as the chain does.
+// Only the running operand is followed, since a + (b + c) would reassociate;
+// a commutative op may hold it on either side. Implicit closures are roots
+// too, and are rewritten with them.
 template <impl::Numeric T>
-[[nodiscard]] auto spine_terms(const Arena<T> &b, NodeId top,
-                               std::span<const std::uint32_t> uses,
-                               const std::vector<bool> &root) {
-  // Roots end a spine even when used once, so they are never absorbed into it.
-  const auto links = [&](NodeId u) {
-    return b[u].op == OpCode::Add && uses[u] == 1 && !root[u];
+[[nodiscard]] constexpr std::vector<NodeId>
+flatten(Arena<T> &b, std::span<const NodeId> roots) {
+  std::vector<NodeId> &closures = b.model_.closures;
+  const auto size = static_cast<NodeId>(b.size());
+  auto tops = roots | impl::to<std::vector>();
+  std::ranges::copy_if(closures, std::back_inserter(tops),
+                       [](NodeId f) { return f != no_node; });
+  const std::vector live = detail::reachable(b, tops);
+
+  std::vector uses(size, std::uint32_t{0});
+  for (const NodeId v : detail::live_ids(live)) {
+    detail::for_each_operand(b, v, [&uses](NodeId u) { ++uses[u]; });
+  }
+  std::vector is_root(size, false);
+  for (const NodeId r : tops) {
+    is_root[r] = true;
+  }
+
+  // The operand slot the chain through v continues in, if any.
+  const auto running = [&](NodeId v) -> std::optional<std::size_t> {
+    const OpCode step = b.op_of(v);
+    const auto in = b.operands(v);
+    const auto links = [&](NodeId u) {
+      return b.op_of(u) == step && uses[u] == 1 && !is_root[u];
+    };
+    if (links(in[0])) {
+      return 0;
+    }
+    if (is_commutative<T>(step) && links(in[1])) {
+      return 1;
+    }
+    return std::nullopt;
   };
-  boost::container::small_vector<NodeId, 64> terms;
-  std::stack<NodeId, boost::container::small_vector<NodeId, 32>> stack;
-  stack.push(top);
-  while (!stack.empty()) {
-    const NodeId u = stack.top();
-    stack.pop();
-    if (b[u].op != OpCode::Add || (u != top && !links(u))) {
-      terms.push_back(u);
+  const auto chains = [&](NodeId v) {
+    return nary_of(b.op_of(v)).has_value() && running(v).has_value();
+  };
+  // A product's last step stays a Mul, the product an add contracts into an
+  // fma; the chain below it is flattened.
+  std::vector below_product(size, false);
+  const auto keeps_step = [&](NodeId v) {
+    return b.op_of(v) == OpCode::Mul && !below_product[v];
+  };
+
+  // A chain's interior is read by its top alone, so it is never rebuilt.
+  std::vector absorbed(size, false);
+  for (const NodeId v : detail::live_ids(live) | std::views::reverse) {
+    if (absorbed[v] || !chains(v)) {
       continue;
     }
-    const auto [a, c, absent] = b.operands(u); // Add is binary
-    stack.push(c); // pushed first so that the left operand pops first
-    stack.push(a);
+    if (keeps_step(v)) {
+      below_product[b.operands(v)[*running(v)]] = true;
+      continue;
+    }
+    for (NodeId u = v; const auto side = running(u);) {
+      u = b.operands(u)[*side];
+      absorbed[u] = true;
+    }
   }
-  return terms;
+
+  std::vector remap(size, no_node);
+  const auto mapped = [&remap](NodeId u) { return remap[u]; };
+  for (const NodeId v : detail::live_ids(live)) {
+    if (absorbed[v]) {
+      continue;
+    }
+    if (is_leaf(b.op_of(v))) {
+      remap[v] = v;
+      continue;
+    }
+    if (!chains(v) || keeps_step(v)) {
+      remap[v] = b.rebuild(v, mapped);
+      continue;
+    }
+    // Last term first, down to the chain's first two.
+    std::vector<NodeId> terms;
+    NodeId u = v;
+    for (auto side = running(u); side; side = running(u)) {
+      terms.push_back(remap[b.operands(u)[1 - *side]]);
+      u = b.operands(u)[*side];
+    }
+    const auto first = b.operands(u);
+    terms.push_back(remap[first[1]]);
+    terms.push_back(remap[first[0]]);
+    std::ranges::reverse(terms);
+    remap[v] = b.folded(*nary_of(b.op_of(v)), terms);
+  }
+
+  for (NodeId &f : closures) {
+    f = f == no_node ? f : remap[f];
+  }
+  return roots | std::views::transform(mapped) | impl::to<std::vector>();
 }
+
+// Blocked summation of long sums, which a kernel otherwise pays as latency.
+// Only the kernel graph uses it, so it may differ by a few ULP.
 
 // Sums terms into `blocks` interleaved partial sums, then combines pairwise.
 template <impl::Numeric T>
@@ -80,51 +153,24 @@ rebalance(Arena<T> &b, std::span<const NodeId> roots) {
   // Sums of at least `least` terms are split into `blocks` partial sums.
   constexpr std::size_t blocks = 16;
   constexpr std::size_t least = 16;
-  const auto size = static_cast<NodeId>(b.size());
   const std::vector live = detail::reachable(b, roots);
 
-  std::vector uses(size, static_cast<std::uint32_t>(0));
+  std::vector remap(b.size(), no_node);
+  const auto mapped = [&remap](NodeId u) { return remap[u]; };
   for (const NodeId v : detail::live_ids(live)) {
-    detail::for_each_operand(b, v, [&uses](NodeId u) { ++uses[u]; });
-  }
-  std::vector is_root(size, false);
-  for (const NodeId r : roots) {
-    is_root[r] = true;
-  }
-
-  std::vector remap(size, no_node);
-  for (const NodeId v : detail::live_ids(live)) {
-
-    // A copy, since building may reallocate the arena.
-    const Node node = b[v];
-    if (is_leaf(node.op)) {
+    if (is_leaf(b.op_of(v))) {
       remap[v] = v;
-      continue;
+    } else if (b.op_of(v) == OpCode::SumN &&
+               arguments(b, v).size() >= least) {
+      const auto terms = arguments(b, v) | std::views::transform(mapped) |
+                         impl::to<std::vector>();
+      remap[v] = detail::blocked_sum(b, terms, blocks);
+    } else {
+      remap[v] = b.rebuild(v, mapped);
     }
-    // A SumN is an already flattened spine; an Add spine is collected from
-    // its single-use interior.
-    const bool spine_top =
-        node.op == OpCode::SumN ||
-        (node.op == OpCode::Add && (uses[v] != 1 || is_root[v]));
-    if (spine_top) {
-      auto terms =
-          node.op == OpCode::SumN
-              ? arguments(b, v) |
-                    impl::to<boost::container::small_vector<NodeId, 64>>()
-              : detail::spine_terms(b, v, uses, is_root);
-      if (terms.size() >= least) {
-        std::ranges::transform(terms, terms.begin(),
-                               [&remap](NodeId t) { return remap[t]; });
-        remap[v] = detail::blocked_sum(b, terms, blocks);
-        continue;
-      }
-    }
-    remap[v] = b.rebuild(v, [&remap](NodeId u) { return remap[u]; });
   }
 
-  return roots |
-         std::views::transform([&remap](NodeId r) { return remap[r]; }) |
-         impl::to<std::vector>();
+  return roots | std::views::transform(mapped) | impl::to<std::vector>();
 }
 
 } // namespace ddx::rt::detail

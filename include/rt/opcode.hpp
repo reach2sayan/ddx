@@ -62,8 +62,9 @@ namespace ddx::rt {
 // A call to a user function over a list of arguments. Its ExternRef payload
 // picks the function and the component: the value or one partial.
 #define DDX_RT_EXTERN_TABLE(X) X(extern_call, Extern, "extern", 0, Extern)
-// A left fold ((t0 op t1) op t2) ... over a list, built by chains of +=, *=
-// or /=. The last cell is the binary op; sums fuse product terms into fmas.
+// A left fold ((t0 op t1) op t2) ... over a list, which an equation makes of
+// each single-use chain of the binary op, the last cell. Sums fuse product
+// terms into fmas.
 #define DDX_RT_NARY_TABLE(X)                                                   \
   X(sum_n, SumN, "sum_n", 0, Nary, Add)                                        \
   X(prod_n, ProdN, "prod_n", 0, Nary, Mul)                                     \
@@ -315,7 +316,7 @@ static_assert([] {
 } // namespace ddx::rt::detail
 
 namespace ddx::rt {
-// An opcode's label, as census() rows and text spell it.
+// An opcode's label, as census() rows spell it.
 [[nodiscard]] constexpr std::string_view label_of(OpCode op) noexcept {
   return detail::info(op).label;
 }
@@ -353,7 +354,7 @@ using payload_of_t = DDX_TYPE(meta::at<detail::info(Op).payload>(Payloads{}));
 template <OpCode Op>
 inline constexpr std::integral_constant<OpCode, Op> opcode{};
 
-// Looks up an opcode by label, for the bridge and the text parser.
+// Looks up an opcode by label, for the bridge.
 [[nodiscard]] constexpr std::optional<OpCode>
 opcode_of(std::string_view label) noexcept {
   const auto row =
@@ -394,12 +395,24 @@ static_assert(std::ranges::all_of(std::views::iota(0uz, op_count), [](auto i) {
     std::unreachable();
   }
 }
+// The Nary op a chain of `step` flattens into, if any.
+[[nodiscard]] constexpr std::optional<OpCode> nary_of(OpCode step) noexcept {
+  switch (step) {
+#define DDX_RT_NARY_OF(fn, Op, label, arity, kind, binary)                     \
+  case OpCode::binary:                                                         \
+    return OpCode::Op;
+    DDX_RT_NARY_TABLE(DDX_RT_NARY_OF)
+#undef DDX_RT_NARY_OF
+  default:
+    return std::nullopt;
+  }
+}
 // Whether the node reads a list in Model::lists rather than fixed operands.
 [[nodiscard]] constexpr bool has_list(OpCode op) noexcept {
   const auto payload = detail::info(op).payload;
   return payload == payload_index<Count> || payload == payload_index<ExternRef>;
 }
-// Whether text and Python may call the op by name: scalar operand ops only.
+// Whether Python may call the op by name: scalar operand ops only.
 [[nodiscard]] constexpr bool callable(OpCode op) noexcept {
   return !is_leaf(op) && !has_list(op) && kind_of(op) != Kind::Tensor &&
          yields_of(op) == Yields::Scalar;

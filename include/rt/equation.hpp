@@ -17,7 +17,7 @@ template <typename... Rest>
 inline constexpr bool dynamic_outputs =
     sizeof...(Rest) == 1 && (std::same_as<Rest, Dynamic> && ...);
 
-// A friend of Equation, so that the equation() factories here and in rt/text
+// A friend of Equation, so that the equation() factories here
 // are the only callers of create().
 struct Creating {
   template <typename Eq>

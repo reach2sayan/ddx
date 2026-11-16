@@ -3,6 +3,7 @@
 #include "rt/derivative.hpp"
 #include "rt/graph.hpp"
 #include "rt/interpret.hpp"
+#include "rt/rebalance.hpp"
 
 #include <gtest/gtest.h>
 
@@ -11,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <ranges>
+#include <span>
 #include <vector>
 
 // A fold is one step in the kernel as in the sweep, in list order with a sum's
@@ -68,8 +70,13 @@ void expect_bit_identical(bool contract,
   for (const char *name : {"x", "y", "z"}) {
     x.push_back(var(b, name));
   }
-  const auto f = built(x).id(b);
-  ASSERT_EQ(b[f].op, op);
+  // Flattened as an equation would, which is where the fold node is made.
+  const auto root = built(x).id(b);
+  const auto f = ddx::rt::detail::flatten(b, std::span{&root, 1}).front();
+  // A product's chain sits under its last Mul, which stays contractible.
+  const auto in = b[f].in;
+  ASSERT_TRUE(b[f].op == op || (b[f].op == ddx::rt::OpCode::Mul &&
+                                (b[in[0]].op == op || b[in[1]].op == op)));
   const auto g = ddx::rt::detail::derive_jacobian(b, f);
   const auto graph =
       Graph<>::freeze(b, {.values = {f}, .jacobian = g.partial, .hessian = {}},
@@ -103,7 +110,7 @@ void expect_bit_identical(bool contract,
         ddx::impl::to<std::vector>();
     ddx::rt::detail::evaluate_into(
         b, p, graph.schedule(), std::span{tape},
-        ddx::rt::detail::TapeView<double>{.scalar_rows = graph.rows()});
+        ddx::rt::detail::TapeView<double>::of(graph, nullptr, nullptr));
     EXPECT_EQ(std::bit_cast<std::uint64_t>(value[i]),
               std::bit_cast<std::uint64_t>(tape[graph.rows()[f]]))
         << "value at point " << i << (contract ? " fused" : " plain");

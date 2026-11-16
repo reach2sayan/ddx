@@ -315,21 +315,9 @@ def test_select_takes_the_arm_the_condition_names() -> None:
     assert gradient == pytest.approx([0.0, 3.0])
 
 
-def test_a_comparison_is_infix_in_text() -> None:
-    """`<` is an operator in the grammar, where `select` is a call."""
-    written = ddx.equation("select(x < y, x*x, y**3)")
-    by_hand = ddx.equation(
-        lambda: ddx.select(
-            ddx.var("x") < ddx.var("y"),
-            ddx.var("x") * ddx.var("x"),
-            ddx.var("y") ** 3,
-        )
-    )
-    assert written.jacobian([1.0, 3.0])[1] == pytest.approx(
-        by_hand.jacobian([1.0, 3.0])[1]
-    )
-    assert ddx.equation("x != y").evaluate([1.0, 3.0]) == 1.0
-    assert ddx.equation("x == y").evaluate([3.0, 3.0]) == 1.0
+def test_equality_is_infix() -> None:
+    assert ddx.equation(lambda: ddx.var("x") != ddx.var("y")).evaluate([1.0, 3.0]) == 1.0
+    assert ddx.equation(lambda: ddx.var("x") == ddx.var("y")).evaluate([3.0, 3.0]) == 1.0
 
 
 def test_a_derivative_is_an_expression_to_build_on() -> None:

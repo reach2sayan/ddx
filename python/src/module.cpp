@@ -6,8 +6,6 @@
 #include "rt/arena.hpp"
 #include "rt/expressions.hpp"
 #include "rt/tensor.hpp"
-#include "rt/text/ast.hpp"
-#include "rt/text/lower.hpp"
 #include "util/meta.hpp"
 #include "util/ranges.hpp"
 #include "util/scope_guard.hpp"
@@ -101,20 +99,6 @@ roots_of(const pyb::object &built, rt::detail::Arena<double> &arena) {
            return e.root_in(arena);
          }) |
          impl::to<std::vector>();
-}
-
-// ddx.equation over source strings instead of a callback. Every source is
-// parsed into one arena before the equation is formed.
-[[nodiscard]] pyb::object text_equation(std::span<const std::string> sources) {
-  auto arena = std::make_shared<rt::detail::Arena<double>>();
-  pyb::list built;
-  for (const std::string &source : sources) {
-    const rt::detail::text::Ast ast = unwrap(rt::detail::text::parse(source));
-    built.append(pyb::cast(
-        PyExpression{unwrap(rt::detail::text::lower(*arena, ast)), arena}));
-  }
-  auto roots = roots_of(built, *arena);
-  return pyb::cast(PyEquation{std::move(arena), std::move(roots)});
 }
 
 // ddx.equation: installs an arena, runs the model in it, and forms an
@@ -294,20 +278,7 @@ PYBIND11_MODULE(_ddx, m) {
 
   pyb::implicitly_convertible<double, PyExpression>();
 
-  // Registered after the class so the stubs show its Python name. The str
-  // overload comes first, because the callable overload would also match a str.
-  m.def(
-      "equation",
-      [](const std::string &source) {
-        return ddx::py::text_equation(std::span{&source, 1});
-      },
-      pyb::arg("source"));
-  m.def(
-      "equation",
-      [](const std::vector<std::string> &sources) {
-        return ddx::py::text_equation(sources);
-      },
-      pyb::arg("source"));
+  // Registered after the class so the stubs show its Python name.
   m.def("equation", &ddx::py::make_equation, pyb::arg("model"));
 #define DDX_PY_INPUT(fn, Op, ...)                                              \
   if constexpr (rt::OpCode::Op != rt::OpCode::Implicit) {                      \

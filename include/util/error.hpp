@@ -39,10 +39,8 @@ namespace ddx {
   X(jit_verify, "the emitted module failed verification")                                     \
   X(jit_lookup, "the compiled kernel has no such symbol")                                     \
                                                                                               \
-  /* The text surface. */                                                                     \
-  X(bad_syntax,       "not an expression this grammar accepts")                               \
-  X(unknown_function, "no function of that name")                                             \
-  X(wrong_argument_count, "the function takes a different number of arguments")      \
+  /* Extern calls. */                                                                          \
+  X(wrong_argument_count, "an extern function takes a different number of arguments") \
                                                                                               \
   /* Appended, so no earlier value moves. */                                                  \
   X(unclosed_implicit, "an implicit input is named without the residual it is a root of") \

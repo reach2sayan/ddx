@@ -147,14 +147,6 @@ matrix that moves with a symbol and is then multiplied (`gemv(exp(outer(x, x)),
 x)`) has no O(n²) form, and `dense_hessian` refuses it with
 `errc::dense_refused`; `hessian`, `hvp` and `jacobian_jvp` answer it.
 
-An equation can also be a string, in Python's arithmetic grammar
-(`rt/text/equation.hpp`), answering `result<Equation>`:
-
-```cpp
-const auto eq  = *rt::equation("sin(x)*y + 3");
-const auto sys = *rt::equation("x*x + y*y - 4", "x*y - 1");
-```
-
 ## Expressions
 
 | Kind | Available |
